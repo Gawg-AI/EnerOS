@@ -42,6 +42,10 @@ pub extern "C" fn _start(
     ready_ntfn: u64,
     eipc_mask: u64,
     heartbeat_slot: u64,
+    // 70.5（WP-70.5.6）：x5 预留（spawn 侧恒 0）；x6 = 墙钟 epoch 秒
+    //（SPEC-B X6 链——0 = 时间缺失 → v2 token 过期判据 fail-closed）。
+    _reserved_x5: u64,
+    wall_epoch_secs: u64,
 ) -> ! {
     eneros_sel4_sys::safe::set_ipc_buffer(ipc_buffer);
     // SAFETY: `_start` 单线程首调（首次 alloc 前）。
@@ -60,9 +64,29 @@ pub extern "C" fn _start(
     } else {
         eneros_runtime::println!("[svc-mgmt] config EIPC NOT granted -> ConfigGet unavailable");
     }
+    // 70.5：unix 偏移 = 墙钟(ms) - 单调(ms)（启动期一次捕获；墙钟 0 =
+    // 时间缺失 → v2 面拒绝——过期判据不可信即 fail-closed）。
+    let unix_offset_ms = if wall_epoch_secs != 0 {
+        Some(
+            wall_epoch_secs
+                .saturating_mul(1000)
+                .saturating_sub(eneros_business_services::now_ms()),
+        )
+    } else {
+        None
+    };
     eneros_runtime::println!(
         "[svc-mgmt] management RPC up (session-authenticated; real actions only)"
     );
+    if eneros_business_services::STATION_PUBKEY_SEC1.is_empty() {
+        eneros_runtime::println!(
+            "[svc-mgmt] MGT station key absent —— legacy principal accepted (dev-only mode, WP-70.5.6)"
+        );
+    } else {
+        eneros_runtime::println!(
+            "[svc-mgmt] MGT station key deployed —— signed principal v2 enforced"
+        );
+    }
     // SPEC-C（WP-C.2）：history-query 取数通道——svc-mgmt 第 2 授予边
     // （SPEC-B：硬编码掩码位 `& 2` 收编 eipc_granted_slot 按名解析）；
     // 未授予 → 执行器回 "telemetry-not-bound"（fail-closed）。
@@ -81,6 +105,7 @@ pub extern "C" fn _start(
         );
     }
     let mut handler = MgmtHandler {
+        unix_offset_ms,
         rpc: eneros_business_services::mgmt_rpc::ManagementRpc::new(TargetExecutor {
             config_ep,
             telemetry_slot,
@@ -333,6 +358,8 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
 
 #[cfg(target_os = "none")]
 struct MgmtHandler {
+    /// unix 偏移（墙钟秒*1000 - 启动单调 ms；None = 时间缺失）。
+    unix_offset_ms: Option<u64>,
     rpc: eneros_business_services::mgmt_rpc::ManagementRpc<TargetExecutor>,
 }
 
@@ -341,6 +368,99 @@ impl eneros_control_services::ControlServiceHandler for MgmtHandler {
     fn handle(&mut self, req: &[u8], resp: &mut alloc::vec::Vec<u8>, now_ms: u64) -> bool {
         use eneros_business_services::mgmt_rpc::*;
         const SESSION_LEN: usize = 16 + 4 + 4 + 16 + 8;
+        // 70.5（WP-70.5.6）：station 公钥部署面——
+        // 在位 → MGT1 v2（session 48B ‖ token 64B ‖ sig 字段 74B）强制：
+        //   验签通过才构建会话（wire 角色/主字段不可信——签名绑定）；
+        //   旧 48B 无签会话 = ERR:principal-unverified（不降级）。
+        // 缺失 → 显式开发模式：48B 旧面保留（qemu-test 兼容；启动日志
+        // 已明示）。
+        let station_key = eneros_business_services::STATION_PUBKEY_SEC1;
+        let station_deployed = !station_key.is_empty();
+        // v2 判别 = v1 会话块之后的 token 魔数（位置固定，与变长 action
+        // 无关）；长度下界 = v1 会话 + v2 尾段 + request_id + 长度字节。
+        const V2_TAIL_LEN: usize =
+            eneros_business_services::mgmt_principal::SESSION_V2_LEN - SESSION_LEN;
+        let v2_shaped = req.len() >= 5 + SESSION_LEN + 8 + 1
+            && req[5 + SESSION_LEN..5 + SESSION_LEN + 8]
+                == eneros_business_services::mgmt_principal::TOKEN_MAGIC;
+        // station 部署面：非 v2 形状（旧 48B 无签/畸形）= 一律拒绝——
+        // 静默回退 v1 = 签名 principal 强制面开洞（70.5 实弹自咬修复）。
+        if station_deployed && !v2_shaped && req.len() >= 5 + SESSION_LEN + 8 + 1 {
+            eneros_runtime::println!(
+                "[svc-mgmt] MGT-PRINCIPAL rejected (unverified session shape) —— station 部署面 v2 强制"
+            );
+            resp.extend_from_slice(b"ERR:principal-unverified");
+            return false;
+        }
+        if station_deployed && v2_shaped && req.len() >= 5 + SESSION_LEN + V2_TAIL_LEN + 8 + 1 {
+            {
+                let tail = &req[5 + SESSION_LEN..5 + SESSION_LEN + V2_TAIL_LEN];
+                let Some(offset) = self.unix_offset_ms else {
+                    eneros_runtime::println!(
+                        "[svc-mgmt] MGT-PRINCIPAL rejected (wall clock unavailable) —— 过期判据 fail-closed"
+                    );
+                    resp.extend_from_slice(b"ERR:time-unavailable");
+                    return false;
+                };
+                let now_unix_ms = now_ms.saturating_add(offset);
+                match eneros_business_services::mgmt_principal::verify_v2_tail(
+                    tail,
+                    station_key,
+                    now_unix_ms,
+                ) {
+                    Ok(vp) => {
+                        let request_id = u64::from_le_bytes(
+                            req[5 + SESSION_LEN + V2_TAIL_LEN..5 + SESSION_LEN + V2_TAIL_LEN + 8]
+                                .try_into()
+                                .unwrap(),
+                        );
+                        let action_len = req[5 + SESSION_LEN + V2_TAIL_LEN + 8] as usize;
+                        let action_start = 5 + SESSION_LEN + V2_TAIL_LEN + 9;
+                        if action_start + action_len > req.len() {
+                            resp.extend_from_slice(b"ERR:len");
+                            return false;
+                        }
+                        let action =
+                            core::str::from_utf8(&req[action_start..action_start + action_len])
+                                .unwrap_or("")
+                                .to_string();
+                        let arg = &req[action_start + action_len..];
+                        let session = AuthenticatedSession {
+                            principal: vp.principal,
+                            roles: vp.roles,
+                            tenant_scope: vp.tenant_scope,
+                            channel_binding: vp.channel_binding,
+                            expires_at_ms: vp.expires_at_ms,
+                        };
+                        let result = self.rpc.handle(&session, request_id, &action, arg, now_ms);
+                        resp.push(match result.status {
+                            RpcStatus::Completed => 1u8,
+                            RpcStatus::Accepted => 2,
+                            RpcStatus::Failed => 0,
+                        });
+                        resp.extend_from_slice(result.detail.as_bytes());
+                        if let Some(p) = &result.payload {
+                            if !p.is_empty() {
+                                resp.extend_from_slice(&(p.len() as u32).to_le_bytes());
+                                resp.extend_from_slice(p);
+                            }
+                        }
+                        return true;
+                    }
+                    Err(e) => {
+                        eneros_runtime::println!("[svc-mgmt] MGT-PRINCIPAL rejected ({e:?})");
+                        resp.extend_from_slice(b"ERR:principal");
+                        return false;
+                    }
+                }
+            }
+            // 尾段形态不符（含旧 48B 面）= 未签名/畸形——v2 强制面拒绝。
+            eneros_runtime::println!(
+                "[svc-mgmt] MGT-PRINCIPAL rejected (unverified session shape) —— station 部署面 v2 强制"
+            );
+            resp.extend_from_slice(b"ERR:principal-unverified");
+            return false;
+        }
         if req.len() < 5 + SESSION_LEN + 8 + 1 {
             resp.extend_from_slice(b"ERR:proto");
             return false;

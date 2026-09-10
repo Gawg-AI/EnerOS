@@ -1020,7 +1020,9 @@ fn collect_toml_files(configs_dir: &Path) -> Vec<PathBuf> {
 /// `qa gate ...` 分发。
 pub fn command_gate(root: &Path, args: &[String]) -> DynResult<()> {
     let (mode, tail) = args.split_first().ok_or_else(|| {
-        invalid("gate requires a subcommand: orphan-check|config-refs|mock-leak|config-syntax")
+        invalid(
+            "gate requires a subcommand: orphan-check|config-refs|mock-leak|config-syntax|ota-anchor",
+        )
     })?;
     match mode.as_str() {
         "orphan-check" => command_orphan_check(root, tail),
@@ -1031,8 +1033,135 @@ pub fn command_gate(root: &Path, args: &[String]) -> DynResult<()> {
         "keys" => command_keys_gate(root, tail),
         // 蓝图 67 WP-67.1.1：sign-key-discipline 门（自 eneros-ci 迁入）。
         "sign-keys" => command_sign_keys_gate(root, tail),
+        // 蓝图 70.5（WP-70.5.5）：产物级用途化 OTA 锚检查。
+        "ota-anchor" => command_ota_anchor_gate(root, tail),
         other => Err(invalid(format!("unknown gate subcommand '{other}'"))),
     }
+}
+
+/// 冻结测试锚（OTA 域）：种子 [0x41;32] 派生 SM2 公钥（未压缩 65B）。
+/// 词形冻结同源 = config_compile::tests::accept_test_signing_key_yields_
+/// frozen_anchor（[00] §3.4 冻结词形；改钥须两处同步 + 重审）。
+const FROZEN_TEST_ANCHOR_PUBKEY_HEX: &str = "041f58396696deec97a0090fa612eb5c4784f0b114693696916c01e9cff8ebc5c7ec0c18caf02a7478c73e54bf13a06fb11624fd1a233ab5e41217aa7bb3803e04";
+
+/// `qa gate ota-anchor --profile <id>`（蓝图 70.5 WP-70.5.5）：
+/// 产物级用途化锚检查——**静态门（sign-keys）与源守卫之外**的第三层，
+/// 检查实际产物（product/config-bundle.bin）中的 OTA 信任锚：
+/// 1. 结构面（所有 profile）：bundle 可解码、含 `ota` 条目、root_key
+///    64B 非零、曲线点有效（复用 config-bundle payload 域检原语）；
+/// 2. 禁用面（profile ∈ key-policy test_trust_forbidden_profiles——
+///    声明面由此门首次消费）：锚 ≠ 冻结测试锚（release 产物信任测试
+///    锚 = FAIL）；
+/// 3. 指纹登记：SM3(锚) 前 8B（key_id 口径）入 stdout 证据链。
+///
+/// 区分两种失败（方向 3 §6 WP-70.5.5 失败语义）：无产物 = 构建链未跑
+/// （BUILD-CHAIN-MISSING）；产物锚违规 = 真实接受集合错误
+/// （TEST-ANCHOR-IN-FORBIDDEN-PROFILE / ANCHOR-INVALID）——不同词形，
+/// 不共用一个 PASS。
+pub fn command_ota_anchor_gate(root: &Path, args: &[String]) -> DynResult<()> {
+    let mut profile: Option<&str> = None;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--profile" => {
+                profile = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| invalid("--profile requires a value"))?
+                        .as_str(),
+                );
+                index += 2;
+            }
+            other => return Err(invalid(format!("unknown ota-anchor option '{other}'"))),
+        }
+    }
+    let profile = profile.ok_or_else(|| invalid("ota-anchor requires --profile <id>"))?;
+
+    // key-policy：消费 test_trust_forbidden_profiles（此前声明未消费）。
+    let policy_path = root.join("product/security/key-policy.json");
+    let policy: serde_json::Value = serde_json::from_str(&fs::read_to_string(&policy_path)?)
+        .map_err(|error| invalid(format!("key-policy.json 解析失败: {error}")))?;
+    let forbidden: Vec<String> = policy
+        .get("test_trust_forbidden_profiles")
+        .and_then(serde_json::Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let profile_is_forbidden = forbidden.iter().any(|p| p == profile);
+
+    // 产物解码。
+    let bundle_path = root.join("product/config-bundle.bin");
+    if !bundle_path.is_file() {
+        return Err(invalid(
+            "BUILD-CHAIN-MISSING: product/config-bundle.bin 不存在——先运行 xtask config compile（与静态门失败不同词形）",
+        ));
+    }
+    let bytes = fs::read(&bundle_path)?;
+    let bundle = eneros_config_bundle::decode_bundle_full(&bytes)
+        .map_err(|error| invalid(format!("config-bundle.bin 解码失败: {error:?}")))?;
+    let entry = bundle
+        .entries
+        .iter()
+        .find(|e| e.config_id.as_str() == "ota")
+        .ok_or_else(|| invalid("产物 bundle 不含 ota 条目（OTA 策略取数面缺源）"))?;
+
+    // 锚域检（payload 原语复用——与 OtaConsumer 同纪律）。
+    let config_id =
+        eneros_config_bundle::ConfigId::from_static(eneros_config_bundle::schema::ota::CONFIG_ID);
+    let fields = eneros_config_bundle::payload::decode_fields(
+        &entry.payload,
+        &config_id,
+        eneros_config_bundle::schema::ota::MAX_FIELD,
+    )?;
+    let key_bytes = eneros_config_bundle::payload::field(
+        &fields,
+        eneros_config_bundle::schema::ota::FIELD_ROOT_KEY,
+    )
+    .ok_or_else(|| invalid("ota 条目缺 root_key 字段"))?;
+    if key_bytes.len() != eneros_config_bundle::schema::ota::ROOT_KEY_LEN {
+        return Err(invalid(format!(
+            "ANCHOR-INVALID: root_key {}B ≠ 64B",
+            key_bytes.len()
+        )));
+    }
+    if key_bytes.iter().all(|b| *b == 0) {
+        return Err(invalid("ANCHOR-INVALID: root_key 全零"));
+    }
+
+    // 指纹登记：锚前 4B hex（与 svc-ota OTA-CONFIG 行 SM3-8B 口径不同源
+    // 但同用途——本门指纹只作证据链登记，判据面用全字节等值；口径差
+    // 异如实注明，不冒充同源）。
+    let fingerprint_hex: String = key_bytes
+        .iter()
+        .take(4)
+        .map(|b| format!("{b:02x}"))
+        .collect();
+
+    if profile_is_forbidden {
+        let test_anchor: Vec<u8> = (0..FROZEN_TEST_ANCHOR_PUBKEY_HEX.len())
+            .step_by(2)
+            .map(|i| {
+                u8::from_str_radix(&FROZEN_TEST_ANCHOR_PUBKEY_HEX[i..i + 2], 16)
+                    .expect("冻结锚 hex")
+            })
+            .collect();
+        if key_bytes == &test_anchor[1..65] {
+            return Err(invalid(
+                "TEST-ANCHOR-IN-FORBIDDEN-PROFILE: release 产物 OTA 锚 = 冻结测试锚（test_trust_forbidden_profiles 消费判据）",
+            ));
+        }
+        println!(
+            "OTA-ANCHOR-GATE: PASS profile={profile} forbidden=yes anchor_fp={fingerprint_hex}（≠ 测试锚）"
+        );
+    } else {
+        println!(
+            "OTA-ANCHOR-GATE: PASS profile={profile} forbidden=no anchor_fp={fingerprint_hex}（信息性登记——测试链允许显式测试锚）"
+        );
+    }
+    Ok(())
 }
 
 /// `qa gate keys`（47 WP-47.3 私钥出仓门禁）：

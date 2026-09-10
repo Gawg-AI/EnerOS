@@ -11,10 +11,11 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
+use alloc::rc::Rc;
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
-use std::rc::Rc;
 
 use eneros_crypto::pki::x509::X509Certificate;
 use eneros_protocol_abstract::channel::{
@@ -23,34 +24,8 @@ use eneros_protocol_abstract::channel::{
 };
 use eneros_protocol_abstract::transport::{TransportFactory, TransportHandle, TransportSpec};
 
+pub use crate::embedded::TransportHandleIo;
 use crate::embedded::{DefaultCipherSuite, EmbeddedTlsStream, PkiProvider, VerifyRole};
-
-/// embedded-io 适配：`TransportHandle` → `embedded_io::{Read, Write}`。
-pub struct TransportHandleIo(pub Box<dyn TransportHandle>);
-
-impl embedded_io::ErrorType for TransportHandleIo {
-    type Error = embedded_io::ErrorKind;
-}
-
-impl embedded_io::Read for TransportHandleIo {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        self.0
-            .recv(buf)
-            .map_err(|_| embedded_io::ErrorKind::ConnectionReset)
-    }
-}
-
-impl embedded_io::Write for TransportHandleIo {
-    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        self.0
-            .send(buf)
-            .map_err(|_| embedded_io::ErrorKind::WriteZero)?;
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> Result<(), Self::Error> {
-        Ok(())
-    }
-}
 
 /// 已建立 TLS 通道（TLS 1.3；对端身份 = 已验叶子 CN）。
 pub struct SecureChannelImpl {

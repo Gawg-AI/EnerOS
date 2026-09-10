@@ -20,9 +20,7 @@ mod tests {
     // 导入随 EipcBlockDevice 迁出而移除。
     use eneros_durable_state::PersistIo;
     use eneros_durable_state::StoreError;
-    use eneros_ota_ab::upgrade::UpgradeMeta;
     use eneros_storage::driver::BlockDevice;
-    use heapless::String as HString;
 
     use super::*;
 
@@ -165,120 +163,137 @@ mod tests {
         assert_eq!(io4.write(0, b"w"), Err(StoreError::Unavailable));
     }
 
+    /// 70.5 v2 API 测试夹具：确定性密钥 + 真实 AbPartitionOta（SimStorage
+    /// 块命令面）+ 已签描述构造。
+    mod ota_v2 {
+        use alloc::vec::Vec;
+
+        use eneros_agent_sdk::ota_wire::{
+            encode_download_v2, UpdateDescription, DESC_USAGE_OTA_AB_IMAGE,
+        };
+        use eneros_crypto::{sm2_sign, sm3_hash, CsRng, Sm2KeyPair, Sm2PrivateKey};
+
+        use crate::ota_service::{DeviceIdentity, OtaPolicy};
+
+        pub(super) fn keypair(seed: u8) -> (Sm2PrivateKey, [u8; 64], Sm2KeyPair) {
+            let sk = Sm2PrivateKey::from_bytes(&[seed; 32]).expect("测试私钥");
+            let kp = Sm2KeyPair::from_private_key(&sk).expect("测试公钥");
+            let mut root_key = [0u8; 64];
+            root_key.copy_from_slice(&kp.public_key.to_bytes_uncompressed()[1..65]);
+            (sk, root_key, kp)
+        }
+
+        pub(super) fn policy(root_key: [u8; 64]) -> OtaPolicy {
+            OtaPolicy {
+                partition_blocks: 2048,
+                chunk_size: 512,
+                max_boot_attempts: 3,
+                root_key,
+                signature_mandatory: true,
+                generation: 1,
+            }
+        }
+
+        pub(super) fn identity() -> DeviceIdentity {
+            DeviceIdentity {
+                current_version: alloc::string::String::from("0.122.0"),
+                sku: alloc::string::String::from("qemu"),
+                security_version: 1,
+                security_floor: 1,
+            }
+        }
+
+        pub(super) fn sign_digest(sk: &Sm2PrivateKey, digest: &[u8; 32]) -> [u8; 64] {
+            let kp = Sm2KeyPair::from_private_key(sk).expect("kp");
+            let sig = sm2_sign(
+                digest,
+                sk,
+                &kp.public_key,
+                &mut CsRng::from_seed(&[0x77; 32]),
+            )
+            .expect("sign");
+            let mut out = [0u8; 64];
+            out.copy_from_slice(&sig.to_bytes()[..64]);
+            out
+        }
+
+        /// 已签描述 + 镜像签章 + 镜像 → 0x02 v2 请求。
+        pub(super) fn req02(sk: &Sm2PrivateKey, target: &str, image: &[u8]) -> Vec<u8> {
+            let hash = sm3_hash(image);
+            let desc = UpdateDescription {
+                usage: DESC_USAGE_OTA_AB_IMAGE,
+                sku: alloc::string::String::from("qemu"),
+                target_version: alloc::string::String::from(target),
+                baseline_version: alloc::string::String::from("0.122.0"),
+                security_version: 2,
+                image_len: image.len() as u64,
+                image_hash: hash,
+                policy_generation: 1,
+            };
+            let desc_sig = {
+                let bytes = desc.encode().expect("desc encode");
+                sign_digest(sk, &sm3_hash(&bytes))
+            };
+            let image_sig = sign_digest(sk, &hash);
+            encode_download_v2(&desc, &desc_sig, &image_sig, 512, image)
+        }
+    }
+
     #[test]
     fn eipc_block_device_full_ota_download_verify_commit() {
-        use eneros_crypto::{sm2_sign, sm3_hash, CsRng, Sm2KeyPair};
         use eneros_ota_ab::ab_partition::{AbPartitionOta, PARTITION_BLOCKS, SLOT_A_BASE_BLOCK};
 
-        use crate::ota_service::{OtaPolicy, OtaService};
+        use self::ota_v2::{identity, keypair, policy, req02};
+        use crate::ota_service::{OtaService, OtaStep};
+
         let total_blocks = SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS + 1;
         let storage = SimStorage::new((total_blocks * 512) as usize, 7);
         let client = SimClient { storage };
         let io = BlockIo::new(client, "svc-storage", 7, 1000);
         let dev = EipcBlockDevice::new(io, 512, total_blocks);
 
-        let mut rng = CsRng::new();
-        let kp = Sm2KeyPair::generate(&mut rng).expect("keygen");
-        let pub_bytes = kp.public_key.to_bytes_uncompressed();
-        let mut root_key = [0u8; 64];
-        root_key.copy_from_slice(&pub_bytes[1..]);
-
+        let (sk, root_key, kp) = keypair(0x5A);
         let ota = AbPartitionOta::new(dev, kp.public_key, 1_000);
-        let policy = OtaPolicy {
-            partition_blocks: PARTITION_BLOCKS,
-            chunk_size: 512,
-            max_boot_attempts: 3,
-            root_key,
-            signature_mandatory: true,
-        };
-        let mut svc = OtaService::new(ota, policy, "0.0.0", "qemu", 1, 1);
+        let mut svc = OtaService::new(ota, policy(root_key), &identity());
 
-        // 构造 1024B 镜像并签名。
+        // 1024B 镜像，描述/镜像双签（真实 SM2/SM3 回读验证）。
         let image: Vec<u8> = (0..1024u32).map(|i| (i % 251) as u8).collect();
-        let hash = sm3_hash(&image);
-        let sig = sm2_sign(&hash, &kp.private_key, &kp.public_key, &mut rng).expect("sign");
-        let meta = UpgradeMeta {
-            target_version: HString::try_from("0.123.0").unwrap(),
-            image_size: image.len() as u64,
-            image_hash: hash,
-            image_sig: sig.to_bytes(),
-            download_url: HString::new(),
-            chunk_size: 512,
-            total_chunks: 2,
-            downloaded_chunks: 0,
-        };
-
-        let step = svc
-            .download_and_verify(&meta, "qemu", &image)
-            .expect("download_and_verify should succeed with valid key/signature");
-        assert!(matches!(step, crate::ota_service::OtaStep::Verified));
+        let req = req02(&sk, "0.123.0", &image);
+        let mut resp = Vec::new();
+        assert!(crate::ota_service::handle_ota_ab_command(
+            Some(&mut svc),
+            &req,
+            &mut resp
+        ));
+        assert_eq!(resp, vec![2u8]); // Verified
         let trial = svc
             .mark_trial_boot(eneros_ota_ab::ab_partition::PartitionSlot::B, "0.123.0")
             .expect("trial");
-        assert!(matches!(trial, crate::ota_service::OtaStep::TrialStarted));
+        assert!(matches!(trial, OtaStep::TrialStarted));
         let commit = svc.commit().expect("commit");
-        assert!(matches!(commit, crate::ota_service::OtaStep::Committed));
+        assert!(matches!(commit, OtaStep::Committed));
     }
 
     #[test]
     fn ota_ab_command_protocol_roundtrip() {
-        use eneros_crypto::{sm2_sign, sm3_hash, CsRng, Sm2KeyPair};
         use eneros_ota_ab::ab_partition::{AbPartitionOta, PARTITION_BLOCKS, SLOT_A_BASE_BLOCK};
 
-        use crate::ota_service::handle_ota_ab_command;
-        use crate::ota_service::{OtaPolicy, OtaService};
+        use self::ota_v2::{identity, keypair, policy, req02};
+        use crate::ota_service::{handle_ota_ab_command, OtaService};
+
         let total_blocks = SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS + 1;
         let storage = SimStorage::new((total_blocks * 512) as usize, 7);
         let client = SimClient { storage };
         let io = BlockIo::new(client, "svc-storage", 7, 1000);
         let dev = EipcBlockDevice::new(io, 512, total_blocks);
 
-        let mut rng = CsRng::new();
-        let kp = Sm2KeyPair::generate(&mut rng).expect("keygen");
-        let pub_bytes = kp.public_key.to_bytes_uncompressed();
-        let mut root_key = [0u8; 64];
-        root_key.copy_from_slice(&pub_bytes[1..]);
-
+        let (sk, root_key, kp) = keypair(0x5A);
         let ota = AbPartitionOta::new(dev, kp.public_key, 1_000);
-        let policy = OtaPolicy {
-            partition_blocks: PARTITION_BLOCKS,
-            chunk_size: 512,
-            max_boot_attempts: 3,
-            root_key,
-            signature_mandatory: true,
-        };
-        let mut svc = OtaService::new(ota, policy, "0.0.0", "qemu", 1, 1);
+        let mut svc = OtaService::new(ota, policy(root_key), &identity());
 
+        // 0x02 DOWNLOAD-DESC（v2 wire 全链）。
         let image: Vec<u8> = (0..1024u32).map(|i| (i % 251) as u8).collect();
-        let hash = sm3_hash(&image);
-        let sig = sm2_sign(&hash, &kp.private_key, &kp.public_key, &mut rng).expect("sign");
-        let meta = UpgradeMeta {
-            target_version: HString::try_from("0.123.0").unwrap(),
-            image_size: image.len() as u64,
-            image_hash: hash,
-            image_sig: sig.to_bytes(),
-            download_url: HString::new(),
-            chunk_size: 512,
-            total_chunks: 2,
-            downloaded_chunks: 0,
-        };
-
-        // 0x02 DOWNLOAD+VERIFY
-        let mut req: Vec<u8> = b"OTA1".to_vec();
-        req.push(0x02);
-        let mut target = [0u8; 32];
-        target[..7].copy_from_slice(b"0.123.0");
-        req.extend_from_slice(&target);
-        let mut sku = [0u8; 16];
-        sku[..4].copy_from_slice(b"qemu");
-        req.extend_from_slice(&sku);
-        req.extend_from_slice(&1u32.to_le_bytes());
-        req.extend_from_slice(&meta.image_size.to_le_bytes());
-        req.extend_from_slice(&meta.image_hash);
-        req.extend_from_slice(&meta.image_sig);
-        req.extend_from_slice(&meta.chunk_size.to_le_bytes());
-        req.extend_from_slice(&(image.len() as u32).to_le_bytes());
-        req.extend_from_slice(&image);
+        let req = req02(&sk, "0.123.0", &image);
         let mut resp = Vec::new();
         assert!(handle_ota_ab_command(Some(&mut svc), &req, &mut resp));
         assert_eq!(resp, [2u8]);
@@ -303,11 +318,14 @@ mod tests {
 
     #[test]
     fn ota_ab_command_negative_cases() {
-        use eneros_crypto::{sm2_sign, sm3_hash, CsRng, Sm2KeyPair};
+        use eneros_agent_sdk::ota_wire::{
+            encode_check_desc, UpdateDescription, DESC_USAGE_OTA_AB_IMAGE,
+        };
+        use eneros_crypto::sm3_hash;
         use eneros_ota_ab::ab_partition::{AbPartitionOta, PARTITION_BLOCKS, SLOT_A_BASE_BLOCK};
 
-        use crate::ota_service::handle_ota_ab_command;
-        use crate::ota_service::{OtaPolicy, OtaService};
+        use self::ota_v2::{identity, keypair, policy};
+        use crate::ota_service::{handle_ota_ab_command, OtaService};
 
         let total_blocks = SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS + 1;
         let storage = SimStorage::new((total_blocks * 512) as usize, 7);
@@ -315,67 +333,34 @@ mod tests {
         let io = BlockIo::new(client, "svc-storage", 7, 1000);
         let dev = EipcBlockDevice::new(io, 512, total_blocks);
 
-        let mut rng = CsRng::new();
-        let kp = Sm2KeyPair::generate(&mut rng).expect("keygen");
-        let pub_bytes = kp.public_key.to_bytes_uncompressed();
-        let mut root_key = [0u8; 64];
-        root_key.copy_from_slice(&pub_bytes[1..]);
-
+        let (sk, root_key, kp) = keypair(0x5A);
         let ota = AbPartitionOta::new(dev, kp.public_key, 1_000);
-        let policy = OtaPolicy {
-            partition_blocks: PARTITION_BLOCKS,
-            chunk_size: 512,
-            max_boot_attempts: 3,
-            root_key,
-            signature_mandatory: true,
-        };
-        let mut svc = OtaService::new(ota, policy, "0.0.0", "qemu", 1, 1);
+        let mut svc = OtaService::new(ota, policy(root_key), &identity());
 
-        // 0x01 downgrade/equal -> Reject(0)
-        let mut req1: Vec<u8> = b"OTA1".to_vec();
-        req1.push(0x01);
-        let mut target = [0u8; 32];
-        target[..5].copy_from_slice(b"0.0.0");
-        req1.extend_from_slice(&target);
-        let mut sku = [0u8; 16];
-        sku[..4].copy_from_slice(b"qemu");
-        req1.extend_from_slice(&sku);
-        req1.extend_from_slice(&1u32.to_le_bytes());
+        // 0x01 CHECK-DESC 等版本 → verdict 0（判据 v2：签名描述形）。
+        let desc = UpdateDescription {
+            usage: DESC_USAGE_OTA_AB_IMAGE,
+            sku: alloc::string::String::from("qemu"),
+            target_version: alloc::string::String::from("0.122.0"),
+            baseline_version: alloc::string::String::from("0.122.0"),
+            security_version: 2,
+            image_len: 16,
+            image_hash: [7; 32],
+            policy_generation: 1,
+        };
+        let bytes = desc.encode().expect("encode");
+        let desc_sig = ota_v2::sign_digest(&sk, &sm3_hash(&bytes));
+        let req1 = encode_check_desc(&desc, &desc_sig);
         let mut resp1 = Vec::new();
         assert!(handle_ota_ab_command(Some(&mut svc), &req1, &mut resp1));
         assert_eq!(resp1, [0u8]);
 
-        // 0x02 bad signature -> rejected/error
+        // 0x02 镜像签章损坏 → verify-failed（回读 SM2 验签拒绝，不激活）。
         let image: Vec<u8> = (0..512u32).map(|i| (i % 251) as u8).collect();
-        let hash = sm3_hash(&image);
-        let sig = sm2_sign(&hash, &kp.private_key, &kp.public_key, &mut rng).expect("sign");
-        let mut bad_sig = sig.to_bytes();
-        bad_sig[0] ^= 0xFF;
-        let meta = UpgradeMeta {
-            target_version: HString::try_from("0.123.0").unwrap(),
-            image_size: image.len() as u64,
-            image_hash: hash,
-            image_sig: bad_sig,
-            download_url: HString::new(),
-            chunk_size: 512,
-            total_chunks: 1,
-            downloaded_chunks: 0,
-        };
-        let mut req2: Vec<u8> = b"OTA1".to_vec();
-        req2.push(0x02);
-        let mut target2 = [0u8; 32];
-        target2[..7].copy_from_slice(b"0.123.0");
-        req2.extend_from_slice(&target2);
-        let mut sku2 = [0u8; 16];
-        sku2[..4].copy_from_slice(b"qemu");
-        req2.extend_from_slice(&sku2);
-        req2.extend_from_slice(&1u32.to_le_bytes());
-        req2.extend_from_slice(&meta.image_size.to_le_bytes());
-        req2.extend_from_slice(&meta.image_hash);
-        req2.extend_from_slice(&meta.image_sig);
-        req2.extend_from_slice(&meta.chunk_size.to_le_bytes());
-        req2.extend_from_slice(&(image.len() as u32).to_le_bytes());
-        req2.extend_from_slice(&image);
+        let mut req2 = ota_v2::req02(&sk, "0.123.0", &image);
+        // image_sig 段 = 5+158+64 .. +64：翻转一位。
+        let isig_off = 5 + 158 + 64;
+        req2[isig_off] ^= 0xFF;
         let mut resp2 = Vec::new();
         assert!(!handle_ota_ab_command(Some(&mut svc), &req2, &mut resp2));
         assert!(resp2.starts_with(b"ERR:"));
@@ -393,7 +378,7 @@ mod tests {
         let mut resp = Vec::new();
         let mut req: Vec<u8> = b"OTA1".to_vec();
         req.push(0x01);
-        req.resize(5 + 52, 0u8);
+        req.resize(5 + 158 + 64, 0u8);
         assert!(!handle_ota_ab_command::<
             eneros_ota_ab::ab_partition::AbPartitionOta<EipcBlockDevice<SimClient>>,
         >(None, &req, &mut resp));
@@ -402,11 +387,10 @@ mod tests {
 
     #[test]
     fn ota_ab_command_regression_rolls_back() {
-        use eneros_crypto::{sm2_sign, sm3_hash, CsRng, Sm2KeyPair};
         use eneros_ota_ab::ab_partition::{AbPartitionOta, PARTITION_BLOCKS, SLOT_A_BASE_BLOCK};
 
-        use crate::ota_service::handle_ota_ab_command;
-        use crate::ota_service::{OtaPolicy, OtaService};
+        use self::ota_v2::{identity, keypair, policy, req02};
+        use crate::ota_service::{handle_ota_ab_command, OtaService};
 
         let total_blocks = SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS + 1;
         let storage = SimStorage::new((total_blocks * 512) as usize, 7);
@@ -414,41 +398,15 @@ mod tests {
         let io = BlockIo::new(client, "svc-storage", 7, 1000);
         let dev = EipcBlockDevice::new(io, 512, total_blocks);
 
-        let mut rng = CsRng::new();
-        let kp = Sm2KeyPair::generate(&mut rng).expect("keygen");
-        let pub_bytes = kp.public_key.to_bytes_uncompressed();
-        let mut root_key = [0u8; 64];
-        root_key.copy_from_slice(&pub_bytes[1..]);
-
+        let (sk, root_key, kp) = keypair(0x5A);
         let ota = AbPartitionOta::new(dev, kp.public_key, 1_000);
-        let policy = OtaPolicy {
-            partition_blocks: PARTITION_BLOCKS,
-            chunk_size: 512,
-            max_boot_attempts: 1,
-            root_key,
-            signature_mandatory: true,
-        };
-        let mut svc = OtaService::new(ota, policy, "0.0.0", "qemu", 1, 1);
+        let mut pol = policy(root_key);
+        pol.max_boot_attempts = 1;
+        let mut svc = OtaService::new(ota, pol, &identity());
 
         // 0x02 download+verify
         let image: Vec<u8> = (0..512u32).map(|i| (i % 251) as u8).collect();
-        let hash = sm3_hash(&image);
-        let sig = sm2_sign(&hash, &kp.private_key, &kp.public_key, &mut rng).expect("sign");
-        let mut req2: Vec<u8> = b"OTA1".to_vec();
-        req2.push(0x02);
-        let mut target = [0u8; 32];
-        target[..7].copy_from_slice(b"0.123.0");
-        req2.extend_from_slice(&target);
-        let mut sku = [0u8; 16];
-        sku[..4].copy_from_slice(b"qemu");
-        req2.extend_from_slice(&sku);
-        req2.extend_from_slice(&1u32.to_le_bytes());
-        req2.extend_from_slice(&(image.len() as u64).to_le_bytes());
-        req2.extend_from_slice(&hash);
-        req2.extend_from_slice(&sig.to_bytes());
-        req2.extend_from_slice(&512u32.to_le_bytes());
-        req2.extend_from_slice(&(image.len() as u32).to_le_bytes());
-        req2.extend_from_slice(&image);
+        let req2 = req02(&sk, "0.123.0", &image);
         let mut resp2 = Vec::new();
         assert!(handle_ota_ab_command(Some(&mut svc), &req2, &mut resp2));
         assert_eq!(resp2, [2u8]);

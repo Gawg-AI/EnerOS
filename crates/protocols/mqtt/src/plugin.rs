@@ -144,7 +144,14 @@ pub struct MqttPlugin {
     pub ai_dropped_count: u64,
     /// 70.4（WP-70.4.4）：离线存留超龄丢弃计数（观测面）。
     outbox_expired_count: u64,
-    /// 68.5 诊断：最近 MQTT 握手失败详情（Debug 串；None=未失败）。
+    /// 70.5（WP-70.5.6）：目标 TLS 材料（Some = broker 连接经 TLS 1.3
+    /// 工厂包装——明文路径退出；None = 明文（仅显式明文装配合法））。
+    #[cfg(feature = "tls")]
+    tls_material: Option<eneros_tls::target_factory::TlsMaterial>,
+    /// 68.5 诊断：最近 MQTT 握手失败详情（Debug 串）。70.4 复查订正：
+    /// **仅存续于失败未恢复窗**——成功建联即清空，否则粘性 `Some` 使
+    /// debug_line 永远走 `MQTT-HS-ERR` 分支，健康观测词形
+    /// `MQTT-HS n= gen= ready=`（恢复判据锚）被永久遮蔽。
     hs_err_detail: Option<alloc::string::String>,
     /// 蓝图 70.4（WP-70.4.2）：连接代次——每次成功 CONNECT +1（单调）。
     /// 恢复观测面：代次变化即"所有必要订阅已失效并按配置逐项恢复"的
@@ -165,9 +172,19 @@ const CONNECT_BACKOFF_BASE_MS: u64 = 1_000;
 const CONNECT_BACKOFF_CAP_MS: u64 = 30_000;
 
 impl MqttPlugin {
+    /// 70.5（WP-70.5.6）：注入目标 TLS 材料（装配方 = svc-mqtt bin 从
+    /// 构建期嵌入面构造；Some 后 broker 连接强制 TLS 1.3——明文路径
+    /// 退出，断链后经 reconnect 完整重握手）。
+    #[cfg(feature = "tls")]
+    pub fn set_tls_material(&mut self, material: eneros_tls::target_factory::TlsMaterial) {
+        self.tls_material = Some(material);
+    }
+
     pub fn new() -> Self {
         Self {
             client: None,
+            #[cfg(feature = "tls")]
+            tls_material: None,
             state: AdapterState::Uninitialized,
             connected: false,
             last_poll_ms: 0,
@@ -474,7 +491,7 @@ impl ProtocolPlugin for MqttPlugin {
             version: "1.0",
             role: ProtocolRole::Client,
             transport_kinds: &[TransportKind::Tcp],
-            security_profile: SecurityProfile::Tls12,
+            security_profile: SecurityProfile::Tls13,
             point_types: &["float", "int", "bool", "string"],
             resource_budget: ResourceBudget {
                 max_connections: 1,
@@ -558,6 +575,24 @@ impl ProtocolPlugin for MqttPlugin {
         let bytes = broker.as_bytes();
         spec.peer[..bytes.len()].copy_from_slice(bytes);
         spec.peer_len = bytes.len() as u8;
+        // 70.5（WP-70.5.6）：TLS 材料在位 → open = TCP + 真实 TLS 1.3
+        // 握手（证书链/名称/有效期/P-256 验证；失败 = 建联失败，不降级
+        // 明文）。None → 直连工厂（明文——仅显式明文装配合法）。
+        #[cfg(feature = "tls")]
+        let handle = if self.tls_material.is_some() {
+            // 材料取走入 RefCell 容器（工厂/句柄共享——重握手不耗尽 rng）。
+            let mat = core::cell::RefCell::new(self.tls_material.take());
+            let mut tls_factory =
+                eneros_tls::target_factory::TlsTransportFactory::new(transports, &mat);
+            tls_factory
+                .open(&spec)
+                .map_err(|_| ProtocolError::ProtocolInit)?
+        } else {
+            transports
+                .open(&spec)
+                .map_err(|_| ProtocolError::ProtocolInit)?
+        };
+        #[cfg(not(feature = "tls"))]
         let handle = transports
             .open(&spec)
             .map_err(|_| ProtocolError::ProtocolInit)?;
@@ -639,6 +674,10 @@ impl ProtocolPlugin for MqttPlugin {
                     self.conn_gen = self.conn_gen.saturating_add(1);
                     self.connect_failures = 0;
                     self.next_connect_ok_ms = 0;
+                    // 70.4 复查订正：失败详情只存续于失败未恢复窗——
+                    // 成功建联即清空，健康观测词形（MQTT-HS gen/ready，
+                    // 恢复判据锚）恢复可见（粘性 Some = 永久遮蔽）。
+                    self.hs_err_detail = None;
                 }
                 Err(e) => {
                     self.error_count += 1;
@@ -647,8 +686,7 @@ impl ProtocolPlugin for MqttPlugin {
                     // 70.4（WP-70.4.2 预算）：失败即安排退避（1s 倍增至
                     // 30s 封顶——指数臂封顶在移位前 min）。
                     let backoff = core::cmp::min(
-                        CONNECT_BACKOFF_BASE_MS
-                            << self.connect_failures.min(5),
+                        CONNECT_BACKOFF_BASE_MS << self.connect_failures.min(5),
                         CONNECT_BACKOFF_CAP_MS,
                     );
                     self.connect_failures = self.connect_failures.saturating_add(1);
@@ -983,6 +1021,115 @@ mod tests {
         assert_eq!(plugin.connection_generation(), 2, "恢复必须推进代次");
         let _ = plugin.poll(1400, budget);
         assert!(plugin.subscriptions_ready(), "恢复后重新 ready");
+    }
+
+    /// 70.4 复查修复（2026-09-09）：握手失败详情只存续于**失败未恢复窗**
+    /// ——成功建联后必须清空。红 = 旧实现粘性 `Some` 使 debug_line 永远
+    /// 走 `MQTT-HS-ERR` 词形，`MQTT-HS n= gen= ready=` 健康观测行（恢复
+    /// 判据锚）在经历过一次握手失败的会话中永久不可见。
+    #[test]
+    fn handshake_error_detail_clears_on_successful_reconnect() {
+        /// MqttBrokerTransport 同律 echo 假件，但 CONNACK/SUBACK 等待可
+        /// 注入 recv 失败（剩余次数计数控——首次 connect 失败面）。
+        struct FlakyBrokerTransport {
+            last: core::cell::RefCell<alloc::vec::Vec<u8>>,
+            fail_recv_left: alloc::rc::Rc<core::cell::Cell<u32>>,
+        }
+        impl TransportHandle for FlakyBrokerTransport {
+            fn send(&mut self, data: &[u8]) -> Result<(), TransportError> {
+                *self.last.borrow_mut() = data.to_vec();
+                Ok(())
+            }
+            fn recv(&mut self, buf: &mut [u8]) -> Result<usize, TransportError> {
+                let left = self.fail_recv_left.get();
+                if left > 0 {
+                    self.fail_recv_left.set(left - 1);
+                    return Err(TransportError::Io);
+                }
+                let data = self.last.borrow().clone();
+                let reply: alloc::vec::Vec<u8> = if data.first() == Some(&0x10) {
+                    alloc::vec![0x20, 0x02, 0x00, 0x00]
+                } else if data.first() == Some(&0x82) && data.len() >= 4 {
+                    let mut r = alloc::vec![0x90, 0x03];
+                    r.extend_from_slice(&data[2..4]);
+                    r.push(0);
+                    r
+                } else {
+                    data
+                };
+                let n = reply.len().min(buf.len());
+                buf[..n].copy_from_slice(&reply[..n]);
+                Ok(n)
+            }
+            fn close(&mut self) -> Result<(), TransportError> {
+                Ok(())
+            }
+            fn is_connected(&self) -> bool {
+                true
+            }
+            fn reconnect(&mut self, _peer: &str) -> Result<(), TransportError> {
+                Ok(())
+            }
+            fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+                self
+            }
+        }
+        struct FlakyFactory(alloc::rc::Rc<core::cell::Cell<u32>>);
+        impl TransportFactory for FlakyFactory {
+            fn open(
+                &mut self,
+                _spec: &TransportSpec,
+            ) -> Result<Box<dyn TransportHandle>, TransportError> {
+                Ok(Box::new(FlakyBrokerTransport {
+                    last: core::cell::RefCell::default(),
+                    fail_recv_left: alloc::rc::Rc::clone(&self.0),
+                }))
+            }
+            fn supports(&self, kind: TransportKind) -> bool {
+                kind == TransportKind::Tcp
+            }
+        }
+        let fail_recv_left = alloc::rc::Rc::new(core::cell::Cell::new(1u32));
+        let mut plugin = MqttPlugin::new();
+        let mut factory = FlakyFactory(alloc::rc::Rc::clone(&fail_recv_left));
+        let mut cfg = ProtocolConfig::default();
+        cfg.insert("broker", "127.0.0.1:1883");
+        cfg.insert("control_topic", "t/ctl");
+        plugin
+            .start(&cfg, &mut factory, &mut EmptyPointRegistry)
+            .expect("start");
+        let budget = WorkBudget {
+            max_work_ms: 50,
+            max_polls: 1,
+        };
+        // ① 首次 connect：CONNACK 等待注入失败 → 详情入册 + ERR 词形。
+        let _ = plugin.poll(0, budget);
+        assert!(
+            plugin.handshake_error_detail().is_some(),
+            "握手失败详情必须入册（真失败路径）"
+        );
+        assert!(
+            plugin
+                .debug_line()
+                .unwrap_or_default()
+                .starts_with("MQTT-HS-ERR"),
+            "失败未恢复窗必须走 ERR 词形"
+        );
+        // ② 退避（1s）窗后重试：CONNACK + SUBACK 成功 → gen=1、ready。
+        let _ = plugin.poll(1_500, budget);
+        let _ = plugin.poll(1_600, budget);
+        assert_eq!(plugin.connection_generation(), 1, "恢复必须推进代次");
+        assert!(plugin.subscriptions_ready(), "恢复后订阅就绪");
+        // ③ 修复点：健康观测词形恢复可见（红 = 粘性 ERR 永久遮蔽 gen/ready）。
+        let line = plugin.debug_line().unwrap_or_default();
+        assert!(
+            line.starts_with("MQTT-HS n=") && line.contains("gen=1") && line.contains("ready=true"),
+            "恢复后必须回健康观测词形: {line}"
+        );
+        assert!(
+            plugin.handshake_error_detail().is_none(),
+            "成功建联后失败详情必须清空"
+        );
     }
 
     #[test]

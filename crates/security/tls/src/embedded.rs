@@ -13,6 +13,7 @@
 
 extern crate alloc;
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -26,6 +27,7 @@ use embedded_tls::SignatureScheme;
 use eneros_crypto::pki::parser::parse_der;
 use eneros_crypto::pki::verify::CertVerifier;
 use eneros_crypto::pki::x509::{SubjectPublicKey, X509Certificate};
+use eneros_protocol_abstract::transport::TransportHandle;
 
 /// 47（WP-47.5）：叶子证书 SAN（SubjectAltName，OID 2.5.29.17）dNSName
 /// 集合。扩展缺失/解析失败 → None（调用方按兼容路径回退 CN——诚实登记）。
@@ -135,7 +137,7 @@ pub struct PkiVerifier<CS: TlsCipherSuite> {
     /// 已验叶子证书 CN（hostname 校验通过后；工厂对端身份来源）。
     verified_cn: Option<String>,
     /// 47：已验 CN 共享槽（provider 透传；None = 未启用）。
-    verified_cell: Option<std::rc::Rc<core::cell::RefCell<Option<String>>>>,
+    verified_cell: Option<alloc::rc::Rc<core::cell::RefCell<Option<String>>>>,
     _cs: PhantomData<CS>,
 }
 
@@ -168,7 +170,7 @@ impl<CS: TlsCipherSuite> PkiVerifier<CS> {
 
 impl<CS: TlsCipherSuite> PkiVerifier<CS> {
     /// 47：启用已验 CN 共享槽（工厂场景）。
-    pub fn share_verified_cn(&mut self, cell: std::rc::Rc<core::cell::RefCell<Option<String>>>) {
+    pub fn share_verified_cn(&mut self, cell: alloc::rc::Rc<core::cell::RefCell<Option<String>>>) {
         self.verified_cell = Some(cell);
     }
 }
@@ -200,12 +202,40 @@ impl<CS: TlsCipherSuite> TlsVerifier<CS> for PkiVerifier<CS> {
         if chain.is_empty() {
             return Err(TlsError::InvalidCertificate);
         }
+        // 1b. 70.5（WP-70.5.6）：信任根桥接——RFC 8446 允许服务端省略链
+        // 中根证书；本仓 verify_chain 要求链尾=自签根。对链尾 issuer 在
+        // 信任根中找 subject 匹配者并入链（签名验证仍由 verify_chain
+        // 逐级执行——桥接只补路径，不放行任何未签名证书）。
+        {
+            let last = chain.last().expect("非空已检");
+            let looks_root =
+                last.issuer == last.subject && self.roots.iter().any(|r| r.subject == last.subject);
+            if !looks_root {
+                if let Some(root) = self.roots.iter().find(|r| r.subject == last.issuer) {
+                    chain.push(root.clone());
+                }
+            }
+        }
 
         // 2. 链验证（本仓 CertVerifier：有效期 + CRL + SM2/ECDSA 签名 + SPKI 根比对）
+        #[cfg(feature = "std")]
+        eprintln!(
+            "[tls-diag] chain_len={} leaf_issuer={:?} leaf_subject={:?} roots={}",
+            chain.len(),
+            chain.last().map(|c| &c.issuer.cn),
+            chain[0].subject.cn,
+            self.roots
+                .iter()
+                .map(|r| &r.subject.cn)
+                .collect::<Vec<_>>()
+                .len()
+        );
         let verifier = CertVerifier::new(self.roots.clone());
-        verifier
-            .verify_chain(&chain, self.now)
-            .map_err(|_| TlsError::InvalidCertificate)?;
+        verifier.verify_chain(&chain, self.now).map_err(|e| {
+            #[cfg(feature = "std")]
+            eprintln!("[tls-diag] verify_chain err: {e:?}");
+            TlsError::InvalidCertificate
+        })?;
 
         // 3. hostname 校验（客户端角色；47 WP-47.5：SAN 优先，CN 兼容回退）。
         //    RFC 6125：SAN 存在时必须命中 dNSName（不区分大小写）；无 SAN
@@ -219,6 +249,12 @@ impl<CS: TlsCipherSuite> TlsVerifier<CS> for PkiVerifier<CS> {
                     None => leaf.subject.cn.eq_ignore_ascii_case(expected),
                 };
                 if !matched {
+                    eneros_runtime::println!(
+                        "[tls-diag] hostname mismatch expected={:?} san={:?} cn={:?}",
+                        expected,
+                        leaf_san_dns_names(leaf),
+                        leaf.subject.cn
+                    );
                     return Err(TlsError::InvalidCertificate);
                 }
                 self.verified_cn = Some(leaf.subject.cn.clone());
@@ -234,7 +270,15 @@ impl<CS: TlsCipherSuite> TlsVerifier<CS> for PkiVerifier<CS> {
             SubjectPublicKey::EcdsaP256(point) => {
                 self.server_public_key = Some(point.clone());
             }
-            _ => return Err(TlsError::InvalidCertificate),
+            other => {
+                eneros_runtime::println!(
+                    "[tls-diag] leaf SPKI 非 ECDSA P-256（{}）",
+                    matches!(other, eneros_crypto::pki::x509::SubjectPublicKey::Sm2(_))
+                        .then_some("SM2")
+                        .unwrap_or("其他")
+                );
+                return Err(TlsError::InvalidCertificate);
+            }
         }
         self.transcript = Some(transcript.clone());
         Ok(())
@@ -271,6 +315,33 @@ impl<CS: TlsCipherSuite> TlsVerifier<CS> for PkiVerifier<CS> {
     }
 }
 
+/// embedded-io 适配：`TransportHandle` → `embedded_io::{Read, Write}`。
+pub struct TransportHandleIo(pub Box<dyn TransportHandle>);
+
+impl embedded_io::ErrorType for TransportHandleIo {
+    type Error = embedded_io::ErrorKind;
+}
+
+impl embedded_io::Read for TransportHandleIo {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        self.0
+            .recv(buf)
+            .map_err(|_| embedded_io::ErrorKind::ConnectionReset)
+    }
+}
+
+impl embedded_io::Write for TransportHandleIo {
+    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        self.0
+            .send(buf)
+            .map_err(|_| embedded_io::ErrorKind::WriteZero)?;
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
 /// 证书（DER）与私钥（SEC1 DER）持有者，供 [`PkiProvider`] 使用。
 pub struct Identity<'a> {
     /// 设备证书链（DER，叶子在前）
@@ -281,9 +352,24 @@ pub struct Identity<'a> {
 
 /// 适配 `eneros_crypto::rng::CsRng`（本仓 CSRNG）到 `rand_core`（embedded-tls 要求）。
 ///
+/// 70.5：内部持**共享槽** `Rc<RefCell<CsRng>>`——重握手场景下工厂与句柄
+/// 共享同一熵源实例（rng 不随 provider 消耗）。
+///
 /// 生产路径：`CsRng` 必须由平台熵构造（`csrng_from_platform`），
 /// 拒绝任何确定性种子注入（熵纪律 R1-4）。
-pub struct CsRngAdapter(pub eneros_crypto::rng::CsRng);
+pub struct CsRngAdapter(pub alloc::rc::Rc<core::cell::RefCell<eneros_crypto::rng::CsRng>>);
+
+impl CsRngAdapter {
+    fn with_rng(&mut self, f: impl FnOnce(&mut eneros_crypto::rng::CsRng)) {
+        f(&mut self.0.borrow_mut());
+    }
+    fn try_with_rng(
+        &mut self,
+        f: impl FnOnce(&mut eneros_crypto::rng::CsRng) -> Result<(), eneros_crypto::rng::DrbgError>,
+    ) -> Result<(), rand_core::Error> {
+        f(&mut self.0.borrow_mut()).map_err(|_| entropy_error())
+    }
+}
 
 impl rand_core::RngCore for CsRngAdapter {
     fn next_u32(&mut self) -> u32 {
@@ -303,16 +389,18 @@ impl rand_core::RngCore for CsRngAdapter {
         // 不可恢复错误——内部走"重播种+重试一次"（fill_bytes_or_reseed）；
         // 仅熵源彻底不可用（ReseedRequired 且平台熵失败）时 panic。
         // 豁免理由（铁律 3）：rand_core 接口契约 + 熵枯竭属 fatal。
-        if eneros_crypto::rng::fill_bytes_or_reseed(&mut self.0, dst).is_err() {
-            panic!("csrng: entropy exhausted and platform reseed unavailable");
-        }
+        self.with_rng(|rng| {
+            if eneros_crypto::rng::fill_bytes_or_reseed(rng, dst).is_err() {
+                panic!("csrng: entropy exhausted and platform reseed unavailable");
+            }
+        });
     }
 
     fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), rand_core::Error> {
         // FIX-BUGS-0810 B5：Result 路径直接承接（重播种+重试一次，
         // 熵不可用 → Err，不 panic）。no_std 无 std feature：
         // 用自定义错误码（CUSTOM_START 起）构造，不用 Error::new。
-        eneros_crypto::rng::fill_bytes_or_reseed(&mut self.0, dst).map_err(|_| entropy_error())
+        self.try_with_rng(|rng| eneros_crypto::rng::fill_bytes_or_reseed(rng, dst))
     }
 }
 
@@ -325,13 +413,48 @@ fn entropy_error() -> rand_core::Error {
     )
 }
 
+/// 共享 CSRNG（`Rc<RefCell<CsRng>>`——TLS 重握手场景下工厂与句柄共享
+/// 同一熵源实例，rng 不随 provider 消耗；熵合同由装配方保证来源）。
+pub struct SharedCsRng(pub alloc::rc::Rc<core::cell::RefCell<eneros_crypto::rng::CsRng>>);
+
+impl Clone for SharedCsRng {
+    fn clone(&self) -> Self {
+        SharedCsRng(alloc::rc::Rc::clone(&self.0))
+    }
+}
+
+impl rand_core::RngCore for SharedCsRng {
+    fn next_u32(&mut self) -> u32 {
+        let mut b = [0u8; 4];
+        self.fill_bytes(&mut b);
+        u32::from_le_bytes(b)
+    }
+    fn next_u64(&mut self) -> u64 {
+        let mut b = [0u8; 8];
+        self.fill_bytes(&mut b);
+        u64::from_le_bytes(b)
+    }
+    fn fill_bytes(&mut self, dst: &mut [u8]) {
+        // 同 CsRngAdapter：重播种+重试一次；熵彻底不可用 = fatal panic
+        //（豁免理由同 adapter——rand_core 契约 + 熵枯竭属 fatal）。
+        if eneros_crypto::rng::fill_bytes_or_reseed(&mut self.0.borrow_mut(), dst).is_err() {
+            panic!("csrng: entropy exhausted and platform reseed unavailable");
+        }
+    }
+    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), rand_core::Error> {
+        eneros_crypto::rng::fill_bytes_or_reseed(&mut self.0.borrow_mut(), dst)
+            .map_err(|_| entropy_error())
+    }
+}
+impl rand_core::CryptoRng for SharedCsRng {}
+
 /// embedded-tls `CryptoProvider`：本仓 PKI 验证 + ECDSA P-256 签名 + mTLS 客户端证书。
 pub struct PkiProvider<'a, CS: TlsCipherSuite> {
     verifier: PkiVerifier<CS>,
     identity: Option<Identity<'a>>,
     rng: CsRngAdapter,
     /// 47（WP-47.5）：已验叶子 CN 共享槽（工厂读取对端身份用）。
-    verified_cn: std::rc::Rc<core::cell::RefCell<Option<String>>>,
+    verified_cn: alloc::rc::Rc<core::cell::RefCell<Option<String>>>,
 }
 
 impl<'a, CS: TlsCipherSuite> PkiProvider<'a, CS> {
@@ -356,7 +479,7 @@ impl<'a, CS: TlsCipherSuite> PkiProvider<'a, CS> {
             now,
             rng,
             identity,
-            std::rc::Rc::new(core::cell::RefCell::new(None)),
+            alloc::rc::Rc::new(core::cell::RefCell::new(None)),
         )
     }
 
@@ -367,15 +490,33 @@ impl<'a, CS: TlsCipherSuite> PkiProvider<'a, CS> {
         now: u64,
         rng: eneros_crypto::rng::CsRng,
         identity: Option<Identity<'a>>,
-        verified_cn: std::rc::Rc<core::cell::RefCell<Option<String>>>,
+        verified_cn: alloc::rc::Rc<core::cell::RefCell<Option<String>>>,
     ) -> Self {
         let mut verifier = PkiVerifier::new(roots, role, now);
-        verifier.share_verified_cn(std::rc::Rc::clone(&verified_cn));
+        verifier.share_verified_cn(alloc::rc::Rc::clone(&verified_cn));
         Self {
             verifier,
             identity,
-            rng: CsRngAdapter(rng),
+            rng: CsRngAdapter(alloc::rc::Rc::new(core::cell::RefCell::new(rng))),
             verified_cn,
+        }
+    }
+
+    /// 70.5（WP-70.5.6）：共享熵源构造（重握手不耗尽 rng——工厂与句柄
+    /// 持同一 `Rc<RefCell<CsRng>>`；熵合同由装配方保证来源）。
+    pub fn with_shared_rng(
+        roots: Vec<X509Certificate>,
+        role: VerifyRole,
+        now: u64,
+        rng: SharedCsRng,
+        identity: Option<Identity<'a>>,
+    ) -> Self {
+        let verifier = PkiVerifier::new(roots, role, now);
+        Self {
+            verifier,
+            identity,
+            rng: CsRngAdapter(rng.0),
+            verified_cn: alloc::rc::Rc::new(core::cell::RefCell::new(None)),
         }
     }
 
@@ -532,88 +673,10 @@ impl<'b, S: embedded_io::Read + embedded_io::Write + 'b> EmbeddedTlsStream<'b, S
 mod tests {
     use std::io::{Read as _, Write as _};
 
-    use eneros_crypto::pki::parser::to_der;
-    use eneros_crypto::pki::x509::{DistinguishedName, SignatureAlgorithm};
-    use p256::ecdsa::signature::Signer;
-
     use super::*;
+    use crate::tests_support::{make_identity, TestIdentity};
 
     const NOW: u64 = 1_700_000_000;
-
-    /// 测试身份：本仓生成的 ECDSA P-256 自签证书 + SEC1 私钥。
-    struct TestIdentity {
-        cert_der: Vec<u8>,
-        key_der: Vec<u8>,
-        x509: X509Certificate,
-        cn: String,
-    }
-
-    fn make_identity(cn: &str, scalar: u8) -> TestIdentity {
-        let sk: p256::ecdsa::SigningKey =
-            p256::ecdsa::SigningKey::from_bytes(&[scalar; 32].into()).unwrap();
-        let pk = SubjectPublicKey::EcdsaP256(
-            sk.verifying_key()
-                .to_encoded_point(false)
-                .as_bytes()
-                .to_vec(),
-        );
-        let dn = DistinguishedName::new(cn);
-        let unsigned = X509Certificate::new(
-            2,
-            vec![1],
-            SignatureAlgorithm::EcdsaWithSha256,
-            dn.clone(),
-            dn.clone(),
-            NOW,
-            NOW + 86400 * 365,
-            pk,
-            Vec::new(),
-            Vec::new(),
-        );
-        let tbs = unsigned.encode_tbs().unwrap();
-        let sig: p256::ecdsa::Signature = sk.sign(&tbs);
-        let cert = X509Certificate::new(
-            2,
-            vec![1],
-            SignatureAlgorithm::EcdsaWithSha256,
-            dn.clone(),
-            dn.clone(),
-            NOW,
-            NOW + 86400 * 365,
-            SubjectPublicKey::EcdsaP256(
-                sk.verifying_key()
-                    .to_encoded_point(false)
-                    .as_bytes()
-                    .to_vec(),
-            ),
-            Vec::new(),
-            sig.to_der().as_bytes().to_vec(),
-        );
-        let der = to_der(&cert).unwrap();
-        // SEC1 DER（RFC 5915）：SEQUENCE { INTEGER(1), OCTET STRING(scalar),
-        //   [0] prime256v1 OID, [1] BIT STRING 公钥 }——rustls 私钥解析器
-        //   要求曲线参数 OID。
-        let point = sk
-            .verifying_key()
-            .to_encoded_point(false)
-            .as_bytes()
-            .to_vec();
-        let oid = [0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07]; // prime256v1
-        let mut inner = vec![0x02, 0x01, 0x01, 0x04, 0x20];
-        inner.extend_from_slice(&[scalar; 32]);
-        inner.extend_from_slice(&[0xA0, 0x0A]);
-        inner.extend_from_slice(&oid);
-        inner.extend_from_slice(&[0xA1, 0x44, 0x03, 0x42, 0x00]);
-        inner.extend_from_slice(&point);
-        let mut key_der = vec![0x30, inner.len() as u8];
-        key_der.extend(inner);
-        TestIdentity {
-            cert_der: der,
-            key_der,
-            x509: cert,
-            cn: cn.to_string(),
-        }
-    }
 
     fn provider<'a>(
         roots: Vec<X509Certificate>,

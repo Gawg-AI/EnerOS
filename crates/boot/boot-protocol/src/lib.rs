@@ -7,6 +7,7 @@ extern crate alloc;
 pub mod boot_control;
 pub mod boot_info;
 pub mod entropy;
+pub mod identity;
 pub mod install_manifest;
 #[cfg(feature = "alloc")]
 pub mod manifest;
@@ -28,6 +29,11 @@ pub use boot_info::{
 };
 pub use entropy::{
     condition_boot_entropy, EntropyError, CONDITIONED_BOOT_SEED_SIZE, RAW_BOOT_ENTROPY_SIZE,
+};
+pub use identity::{
+    IdentityCapsule, IdentityCapsuleError, IDENTITY_CAPSULE_CRC_OFFSET, IDENTITY_CAPSULE_MAGIC,
+    IDENTITY_CAPSULE_PHYS, IDENTITY_CAPSULE_RESERVE, IDENTITY_CAPSULE_SIZE,
+    IDENTITY_CAPSULE_VERSION,
 };
 pub use install_manifest::{
     InstallManifest, InstallManifestError, INSTALL_MANIFEST_SIGNATURE_SIZE,

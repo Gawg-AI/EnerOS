@@ -1,0 +1,1 @@
+OTA-ANCHOR-GATE: PASS profile=qemu-prod forbidden=yes anchor_fp=bbbd130f（≠ 测试锚）

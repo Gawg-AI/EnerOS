@@ -61,7 +61,6 @@ pub struct MqttClient {
     pub last_activity_ms: u64,
     /// 传输层.
     pub transport: Option<Box<dyn MqttTransport>>,
-    /// 重连状态.
     /// 下一个待分配的 QoS 1/2 packet ID.
     pub pending_publish_packet_id: u16,
     /// 在途 QoS 1/2 消息（packet_id → 状态）.

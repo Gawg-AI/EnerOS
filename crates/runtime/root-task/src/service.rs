@@ -137,6 +137,7 @@ struct OnceFlags {
     hang_injected: bool,
     storage_persist_done: bool,
     ota_download_done: bool,
+    identity_push_done: bool,
 }
 
 #[cfg_attr(not(target_os = "none"), allow(dead_code))] // host 面死码（target run_ipc_loop 活；66.5.2 收窄）
@@ -146,6 +147,7 @@ impl OnceFlags {
             hang_injected: false,
             storage_persist_done: false,
             ota_download_done: false,
+            identity_push_done: false,
         }
     }
 
@@ -172,6 +174,14 @@ impl OnceFlags {
     /// 立 OTA 旗。
     fn mark_ota(&mut self) {
         self.ota_download_done = true;
+    }
+    /// 70.5：身份推送触发窗。
+    fn identity_due(&self, due: bool) -> bool {
+        !self.identity_push_done && due
+    }
+    /// 立身份推送旗。
+    fn mark_identity(&mut self) {
+        self.identity_push_done = true;
     }
 }
 
@@ -372,7 +382,83 @@ impl Orchestration {
         }
     }
 
-    /// OTA 下载探针步（一次性；OTA-DOWNLOAD 词形逐字节不变）。
+    /// 70.5（WP-70.5.1/70.5.4）：可信身份推送步（一次性）——root 读
+    /// boot-manager 写入的 IdentityCapsule（验签链投影）并经 OTA1 0x08
+    /// 分发 svc-ota。capsule 缺失 → 发布装配不推送（OTA not-ready
+    /// fail-closed）；qemu-test 装配以显式 SYNTHETIC 标签兜底。
+    fn identity_push_step(&mut self, ota_handle: &Option<crate::spawn::SpawnedHandle>) {
+        if !self.once.identity_due(crate::wiring::periodic_due(
+            crate::wiring::PeriodicTask::IdentityPush,
+            self.tick,
+        )) {
+            return;
+        }
+        // 70.5 实弹订正：svc-config 未就绪窗的 OTA not-ready = 可恢复态
+        // ——限频重试（每 10 tick；成功/永久拒绝才立旗）。
+        if self.tick % 10 != 0 {
+            return;
+        }
+        let Some(capsule) = resolve_identity_capsule() else {
+            self.once.mark_identity();
+            eneros_runtime::println!(
+                "[eneros-root-task] IDENTITY-PUSH: skipped (capsule absent) — OTA not-ready (fail-closed, WP-70.5.1)"
+            );
+            return;
+        };
+        let Some(h) = ota_handle else {
+            return;
+        };
+        // capsule 已由 boot-manager 封印且 decode 时证 canonical——
+        // to_bytes() 复现原字节（CRC 不变，非重签）。
+        let req = eneros_agent_sdk::ota_wire::encode_identity(&capsule.to_bytes());
+        let mut endpoint = eneros_agent_sdk::endpoint::ChunkedSession::bind_shared_const(
+            "root-ota-identity",
+            h.ep,
+            &mut self.chain_epoch,
+        );
+        let resp = endpoint.call("svc-ota", &req);
+        match resp {
+            Ok(resp) if resp.first() == Some(&1) => {
+                self.once.mark_identity();
+                eneros_runtime::println!(
+                    "[eneros-root-task] IDENTITY-PUSH: OK (slot={} gen={} secver={} floor={} ver={}.{}.{} — svc-ota assembled)",
+                    capsule.selected_slot,
+                    capsule.bootctrl_generation,
+                    capsule.security_version,
+                    capsule.security_floor,
+                    capsule.product_version[0],
+                    capsule.product_version[1],
+                    capsule.product_version[2]
+                );
+            }
+            Ok(resp) if resp.starts_with(b"ERR:not-ready") => {
+                // 可恢复（config 取数未完成）——不立旗，限频重试。
+                if self.tick % 50 == 0 {
+                    eneros_runtime::println!(
+                        "[eneros-root-task] IDENTITY-PUSH: deferred (svc-ota not-ready — retrying)"
+                    );
+                }
+            }
+            Ok(resp) => {
+                self.once.mark_identity();
+                eneros_runtime::println!(
+                    "[eneros-root-task] IDENTITY-PUSH: FAILED (resp={:?}) — OTA not-ready（诚实）",
+                    &resp[..resp.len().min(16)]
+                );
+            }
+            Err(e) => {
+                self.once.mark_identity();
+                eneros_runtime::println!(
+                    "[eneros-root-task] IDENTITY-PUSH: FAILED ({e:?}) — OTA not-ready（诚实）"
+                );
+            }
+        }
+    }
+
+    /// OTA 下载探针步（一次性）。70.5（WP-70.5.5）：**探针生成与调用都
+    /// 受测试专属装配控制**——探针体（固定测试种子签章路径）仅在
+    /// `qemu-test-synth` 装配存在；release 闭包（closure gate 强制该
+    /// feature 不在）只有显式"probe absent"观测行，零签章路径。
     fn ota_download_step(&mut self, ota_handle: &Option<crate::spawn::SpawnedHandle>) {
         if !self.once.ota_due(crate::wiring::periodic_due(
             crate::wiring::PeriodicTask::OtaDownload,
@@ -380,23 +466,46 @@ impl Orchestration {
         )) {
             return;
         }
+        self.once.mark_ota();
         let Some(h) = ota_handle else {
             return;
         };
-        self.once.mark_ota();
-        match ota_download_probe(h.ep, &mut self.chain_epoch) {
-            Ok(()) => {
-                eneros_runtime::println!(
-                    "[eneros-root-task] OTA-DOWNLOAD: OK (real A/B download/verify/trial/commit)"
-                );
-            }
-            Err(e) => {
-                eneros_runtime::println!(
-                    "[eneros-root-task] OTA-DOWNLOAD: FAILED ({e}) — fail-closed 不伪造"
-                );
-            }
+        ota_probe_body(h.ep, &mut self.chain_epoch);
+    }
+}
+
+/// 70.5（WP-70.5.5）：探针体（qemu-test 专属装配；固定测试种子 0x41 与
+/// 测试链 config compile 注入的测试锚配对——release 无此路径亦无该种子）。
+#[cfg(all(target_os = "none", feature = "qemu-test-synth"))]
+fn ota_probe_body(ota_ep: u64, epoch: &mut u64) {
+    let Some(capsule) = resolve_identity_capsule() else {
+        eneros_runtime::println!(
+            "[eneros-root-task] OTA-DOWNLOAD: FAILED (no identity capsule) — 测试装配亦需身份"
+        );
+        return;
+    };
+    match ota_download_probe(ota_ep, epoch, &capsule) {
+        Ok(()) => {
+            eneros_runtime::println!(
+                "[eneros-root-task] OTA-DOWNLOAD: OK (real A/B download/verify/trial/commit)"
+            );
+        }
+        Err(e) => {
+            eneros_runtime::println!(
+                "[eneros-root-task] OTA-DOWNLOAD: FAILED ({e}) — fail-closed 不伪造"
+            );
         }
     }
+}
+
+/// release 装配（无 qemu-test-synth feature）：零探针路径——固定测试
+/// 种子签章代码不在闭包（WP-70.5.5 隔离判据：qemu-prod 门断言本词形
+/// 出现且 OTA-DOWNLOAD 零出现）。
+#[cfg(all(target_os = "none", not(feature = "qemu-test-synth")))]
+fn ota_probe_body(_ota_ep: u64, _epoch: &mut u64) {
+    eneros_runtime::println!(
+        "[eneros-root-task] OTA-DOWNLOAD: probe absent (release assembly — test-probe isolated, WP-70.5.5)"
+    );
 }
 
 /// K2.2/K2.3：root-task IPC 主循环（21-A §2.K2.2/K2.3）。
@@ -783,9 +892,13 @@ pub fn run_ipc_loop(
         // 64.2 WP-64.2.5：旗与到期判定进 OnceFlags（storage_persist_step）。
         orch.storage_persist_step(&ota_handle);
 
-        // 41（OTA A/B）：真实签名镜像 download→verify→trial→commit 探针。
+        // 41（OTA A/B）：真实签名镜像 download→verify→trial→commit 探针
+        //（70.5 WP-70.5.5：探针体受 qemu-test-synth 专属装配控制）。
         // 64.2 WP-64.2.5：旗与到期判定进 OnceFlags（ota_download_step）。
         orch.ota_download_step(&ota_handle);
+
+        // 70.5（WP-70.5.1/70.5.4）：可信身份推送（一次性；先于 OTA 探针）。
+        orch.identity_push_step(&ota_handle);
 
         // 蓝图 40 收尾：心跳监控（WP-40.4）——poll 受监控服务心跳 ntfn；
         // "发过请求却无进展超限" → suspend + restart（无 fault 卡死也终止，
@@ -1175,78 +1288,218 @@ fn storage_persist_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::stri
     Ok(())
 }
 
-/// 47（WP-47.3）：OTA 探针签章测试键种子（qemu-test 专用；release 由
-/// KMS 注入面提供，见 xtask keys 门禁）。
-#[cfg(all(target_os = "none", feature = "sel4-eipc"))]
+/// 70.5（WP-70.5.1）：读取 boot-manager 写入的可信身份 capsule
+/// （BOOT-007 内核映射窗口尾页，boot-protocol 单源常量）。无 capsule
+/// （旧镜像/写失败/直启）→ `None`（全零页/残页 decode 失败 = 诚实缺席）。
+#[cfg(target_os = "none")]
+fn read_identity_capsule() -> Option<eneros_boot_protocol::IdentityCapsule> {
+    use eneros_boot_protocol::{IdentityCapsule, IDENTITY_CAPSULE_PHYS, IDENTITY_CAPSULE_SIZE};
+    let mut raw = [0u8; IDENTITY_CAPSULE_SIZE];
+    // SAFETY: IDENTITY_CAPSULE_PHYS 为内核 BOOT-007 显式 1:1 映射窗口
+    //（boot-protocol 与 kernel boot.c 单源），只读 IDENTITY_CAPSULE_SIZE
+    // 字节；逐字节 volatile 读（无对齐假设）。
+    let src = IDENTITY_CAPSULE_PHYS as *const u8;
+    for (i, b) in raw.iter_mut().enumerate() {
+        *b = unsafe { core::ptr::read_volatile(src.add(i)) };
+    }
+    IdentityCapsule::decode(&raw).ok()
+}
+
+/// 70.5（WP-70.5.1）：身份解析唯一入口——真实 capsule 优先；qemu-test
+/// 专属装配（`qemu-test-synth`，closure gate 强制不出现在 release 闭包）
+/// 以显式 SYNTHETIC 标签构造测试身份；release 缺 capsule → None
+/// （OTA not-ready fail-closed，无任何默认身份分支）。
+#[cfg(target_os = "none")]
+fn resolve_identity_capsule() -> Option<eneros_boot_protocol::IdentityCapsule> {
+    let real = read_identity_capsule();
+    #[cfg(feature = "qemu-test-synth")]
+    {
+        if real.is_none() {
+            eneros_runtime::println!(
+                "[eneros-root-task] IDENTITY: capsule absent — TEST assembly synthetic identity (qemu-test-synth, non-production)"
+            );
+            return Some(synthetic_identity_capsule());
+        }
+    }
+    #[cfg(not(feature = "qemu-test-synth"))]
+    {
+        if real.is_none() {
+            eneros_runtime::println!(
+                "[eneros-root-task] IDENTITY: capsule absent — OTA not-ready (release fail-closed, WP-70.5.1)"
+            );
+        }
+    }
+    real
+}
+
+/// qemu-test 专属合成身份（显式测试标签；固定测试模式字节——不冒充
+/// 任何生产身份，sku="qemu" 与测试链配置域一致）。
+#[cfg(all(target_os = "none", feature = "qemu-test-synth"))]
+fn synthetic_identity_capsule() -> eneros_boot_protocol::IdentityCapsule {
+    let mut sku = [0u8; 16];
+    sku[..4].copy_from_slice(b"qemu");
+    let mut c = eneros_boot_protocol::IdentityCapsule::new(
+        1,          // slot A
+        [0x42; 16], // boot_id（测试模式字节）
+        [0x43; 16], // release_id
+        sku,
+        [0x44; 32],  // manifest_digest（测试模式字节）
+        1,           // bootctrl_generation
+        1,           // security_version
+        1,           // security_floor
+        [0, 120, 0], // product_version "0.120.0"（< 探针目标 9.9.9）
+    );
+    c.seal();
+    c
+}
+
+/// 47（WP-47.3）：OTA 探针签章测试键种子（**qemu-test 专属装配**——
+/// 70.5 WP-70.5.5：本常量与探针调用点同受 `qemu-test-synth` feature 门控，
+/// release 闭包零出现；测试链 config compile 显式注入同源测试锚）。
+#[cfg(all(target_os = "none", feature = "sel4-eipc", feature = "qemu-test-synth"))]
 const OTA_PROBE_TEST_SEED: [u8; 32] = [0x41; 32];
 
-#[cfg(all(target_os = "none", feature = "sel4-eipc"))]
-fn ota_download_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::string::String> {
+/// 70.5（WP-70.5.1/70.5.3）：探针目标版本——必须高于身份快照当前版本
+/// （防降级判据跨测试/生产同律）；"9.9.9" 为测试域惯例形（69.5 t36 同）。
+#[cfg(all(target_os = "none", feature = "sel4-eipc", feature = "qemu-test-synth"))]
+const OTA_PROBE_TARGET_VERSION: &str = "9.9.9";
+
+/// capsule → 身份字符串字段的 NUL 去除解码（探针描述构造用）。
+#[cfg(all(target_os = "none", feature = "sel4-eipc", feature = "qemu-test-synth"))]
+fn capsule_field(raw: &[u8]) -> alloc::string::String {
+    let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
+    alloc::string::String::from(core::str::from_utf8(&raw[..end]).unwrap_or(""))
+}
+
+/// 70.5 v2 探针（qemu-test 专属）：
+/// ① 0x09 POLICY-INFO 查询策略代次 + 锚指纹（描述 policy_generation 锚定；
+/// ② 从身份 capsule 派生描述（sku/baseline/secver 与可信身份同源——
+///    描述与身份不一致在服务端必拒，探针不硬编码身份字面）；
+/// ③ 0x01 CHECK-DESC（判定=1）→ 0x02 DOWNLOAD-DESC（双签+镜像）→
+///    0x03 TRIAL → 0x04 COMMIT（签名描述 v2 wire 全链）。
+#[cfg(all(target_os = "none", feature = "sel4-eipc", feature = "qemu-test-synth"))]
+fn ota_download_probe(
+    ota_ep: u64,
+    epoch: &mut u64,
+    capsule: &eneros_boot_protocol::IdentityCapsule,
+) -> Result<(), alloc::string::String> {
+    use alloc::format;
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    use eneros_agent_sdk::ota_wire::{
+        encode_check_desc, encode_download_v2, encode_policy_query, expect_subcode_resp,
+        parse_policy_resp, UpdateDescription, DESC_USAGE_OTA_AB_IMAGE, SIG_LEN, SUB_COMMIT,
+        SUB_DOWNLOAD, SUB_TRIAL,
+    };
     use eneros_crypto::{sm2_sign, sm3_hash, CsRng, Sm2KeyPair, Sm2PrivateKey};
-
-    // 47（WP-47.3 密钥注入链）：OTA 探针签章**测试键**（种子 0x41——与
-    // config-bundle 测试键一致；仅 qemu-test 装配使用）。release 装配的
-    // 探针签章键由 KMS_DIR 注入面提供（xtask keys 门禁 fail-closed：
-    // 生产无显式键不构建/不装配——见 keys::resolve_signing_key）。
-    let sk = Sm2PrivateKey::from_bytes(&OTA_PROBE_TEST_SEED)
-        .map_err(|e| alloc::format!("ota test key invalid: {e:?}"))?;
-    let kp = Sm2KeyPair::from_private_key(&sk)
-        .map_err(|e| alloc::format!("ota test pubkey derive: {e:?}"))?;
-    let image: alloc::vec::Vec<u8> = (0..512u32).map(|i| (i % 251) as u8).collect();
-    let hash = sm3_hash(&image);
-    let mut rng = CsRng::from_seed(&[0x41u8; 32]);
-    let sig = sm2_sign(&hash, &kp.private_key, &kp.public_key, &mut rng)
-        .map_err(|e| alloc::format!("ota sign: {e:?}"))?;
-
-    // 蓝图 58：download 请求走 ota_wire 单源（布局字节不变）。
-    let req = eneros_agent_sdk::ota_wire::encode_download(
-        b"0.123.0",
-        b"qemu",
-        1,
-        &image,
-        &hash,
-        sig.to_bytes().as_slice(),
-        512,
-    );
 
     let mut endpoint = eneros_agent_sdk::endpoint::ChunkedSession::bind_shared_const(
         "root-ota-download",
         ota_ep,
         epoch,
     );
-    let resp = endpoint.call("svc-ota", &req);
-    let resp = resp.map_err(|e| alloc::format!("ota download transport: {e:?}"))?;
-    if let Err(eneros_agent_sdk::ota_wire::OtaWireError::Rejected(msg)) =
-        eneros_agent_sdk::ota_wire::expect_subcode_resp(
-            &resp,
-            eneros_agent_sdk::ota_wire::SUB_DOWNLOAD,
-        )
-    {
-        return Err(alloc::format!("ota download rejected: {msg}"));
+
+    // ① 策略代次锚（未就绪 → 探针诚实失败）。
+    let resp = endpoint
+        .call("svc-ota", &encode_policy_query())
+        .map_err(|e| format!("policy transport: {e:?}"))?;
+    let (policy_generation, anchor_fp) =
+        parse_policy_resp(&resp).map_err(|e| format!("policy resp: {e:?}"))?;
+    eneros_runtime::println!(
+        "[eneros-root-task] OTA-DOWNLOAD: policy gen={} anchor_fp={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        policy_generation,
+        anchor_fp[0], anchor_fp[1], anchor_fp[2], anchor_fp[3],
+        anchor_fp[4], anchor_fp[5], anchor_fp[6], anchor_fp[7]
+    );
+
+    // 探针签章**测试键**（种子 0x41——与测试链 config 注入锚同源配对）。
+    let sk = Sm2PrivateKey::from_bytes(&OTA_PROBE_TEST_SEED)
+        .map_err(|e| format!("ota test key invalid: {e:?}"))?;
+    let kp =
+        Sm2KeyPair::from_private_key(&sk).map_err(|e| format!("ota test pubkey derive: {e:?}"))?;
+
+    // ② 身份派生描述（sku = 平台绑定 hex32——identity_from_capsule 同源
+    // 规则；baseline 来自 capsule；secver ≥ 可信 floor）。
+    let image: Vec<u8> = (0..512u32).map(|i| (i % 251) as u8).collect();
+    let hash = sm3_hash(&image);
+    let sku_hex: String = capsule
+        .sku
+        .iter()
+        .map(|b| alloc::format!("{b:02x}"))
+        .collect();
+    let desc = UpdateDescription {
+        usage: DESC_USAGE_OTA_AB_IMAGE,
+        sku: sku_hex,
+        target_version: String::from(OTA_PROBE_TARGET_VERSION),
+        baseline_version: format!(
+            "{}.{}.{}",
+            capsule.product_version[0], capsule.product_version[1], capsule.product_version[2]
+        ),
+        security_version: capsule.security_floor as u32,
+        image_len: image.len() as u64,
+        image_hash: hash,
+        policy_generation,
+    };
+    let desc_bytes = desc.encode().map_err(|e| format!("desc encode: {e:?}"))?;
+    let mut rng = CsRng::from_seed(&[0x41u8; 32]);
+    let mut sign_digest = |digest: &[u8; 32]| -> Result<[u8; SIG_LEN], String> {
+        let sig = sm2_sign(digest, &sk, &kp.public_key, &mut rng)
+            .map_err(|e| format!("ota sign: {e:?}"))?;
+        let mut out = [0u8; SIG_LEN];
+        out.copy_from_slice(&sig.to_bytes()[..SIG_LEN]);
+        Ok(out)
+    };
+    let desc_sig = sign_digest(&sm3_hash(&desc_bytes))?;
+    let image_sig = sign_digest(&hash)?;
+
+    // ③ CHECK-DESC 先行（判定=1 才继续——CHECK/DOWNLOAD 同判据的正面样本）。
+    let req_check = encode_check_desc(&desc, &desc_sig);
+    let resp = endpoint
+        .call("svc-ota", &req_check)
+        .map_err(|e| format!("check transport: {e:?}"))?;
+    match resp.as_slice() {
+        [1] => {}
+        other => {
+            return Err(format!(
+                "ota check rejected (verdict={:?})",
+                other.first().copied().unwrap_or(0)
+            ));
+        }
     }
-    eneros_agent_sdk::ota_wire::expect_subcode_resp(
-        &resp,
-        eneros_agent_sdk::ota_wire::SUB_DOWNLOAD,
-    )
-    .map_err(|e| alloc::format!("ota verify unexpected resp: {e:?}"))?;
+
+    // ④ DOWNLOAD-DESC（描述 + 双签 + 镜像；真实 A/B 写 + 回读验签）。
+    let req = encode_download_v2(&desc, &desc_sig, &image_sig, 512, &image);
+    let resp = endpoint
+        .call("svc-ota", &req)
+        .map_err(|e| format!("ota download transport: {e:?}"))?;
+    if let Err(eneros_agent_sdk::ota_wire::OtaWireError::Rejected(msg)) =
+        expect_subcode_resp(&resp, SUB_DOWNLOAD)
+    {
+        return Err(format!("ota download rejected: {msg}"));
+    }
+    expect_subcode_resp(&resp, SUB_DOWNLOAD)
+        .map_err(|e| format!("ota verify unexpected resp: {e:?}"))?;
     eneros_runtime::println!(
         "[eneros-root-task] OTA-DOWNLOAD: verified via svc-ota (real A/B write+readback)"
     );
 
     // 0x03 TRIAL
-    let req3 = eneros_agent_sdk::ota_wire::encode_trial(1, b"0.123.0");
-    let resp3 = endpoint.call("svc-ota", &req3);
-    let resp3 = resp3.map_err(|e| alloc::format!("ota trial transport: {e:?}"))?;
-    eneros_agent_sdk::ota_wire::expect_subcode_resp(&resp3, eneros_agent_sdk::ota_wire::SUB_TRIAL)
-        .map_err(|e| alloc::format!("ota trial unexpected resp: {e:?}"))?;
+    let req3 = eneros_agent_sdk::ota_wire::encode_trial(1, OTA_PROBE_TARGET_VERSION.as_bytes());
+    let resp3 = endpoint
+        .call("svc-ota", &req3)
+        .map_err(|e| format!("ota trial transport: {e:?}"))?;
+    expect_subcode_resp(&resp3, SUB_TRIAL)
+        .map_err(|e| format!("ota trial unexpected resp: {e:?}"))?;
     eneros_runtime::println!("[eneros-root-task] OTA-DOWNLOAD: trial started");
 
     // 0x04 COMMIT
     let req4 = eneros_agent_sdk::ota_wire::encode_commit();
-    let resp4 = endpoint.call("svc-ota", &req4);
-    let resp4 = resp4.map_err(|e| alloc::format!("ota commit transport: {e:?}"))?;
-    eneros_agent_sdk::ota_wire::expect_subcode_resp(&resp4, eneros_agent_sdk::ota_wire::SUB_COMMIT)
-        .map_err(|e| alloc::format!("ota commit unexpected resp: {e:?}"))?;
+    let resp4 = endpoint
+        .call("svc-ota", &req4)
+        .map_err(|e| format!("ota commit transport: {e:?}"))?;
+    expect_subcode_resp(&resp4, SUB_COMMIT)
+        .map_err(|e| format!("ota commit unexpected resp: {e:?}"))?;
     eneros_runtime::println!("[eneros-root-task] OTA-DOWNLOAD: committed");
     Ok(())
 }

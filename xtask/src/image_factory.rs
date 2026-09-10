@@ -1170,6 +1170,7 @@ fn build_raw(root: &Path, options: RawOptions) -> DynResult<()> {
             }
             "BOOT_A" => {
                 components.extend(write_boot_partition(
+                    root,
                     partition,
                     "BOOT_A",
                     ManifestSlot::A,
@@ -1197,6 +1198,7 @@ fn build_raw(root: &Path, options: RawOptions) -> DynResult<()> {
             }
             "BOOT_B" => {
                 components.extend(write_boot_partition(
+                    root,
                     partition,
                     "BOOT_B",
                     ManifestSlot::B,
@@ -1212,6 +1214,7 @@ fn build_raw(root: &Path, options: RawOptions) -> DynResult<()> {
             }
             "RECOVERY" => {
                 components.extend(write_boot_partition(
+                    root,
                     partition,
                     "RECOVERY",
                     ManifestSlot::Recovery,
@@ -1973,8 +1976,16 @@ fn build_user_elf(root: &Path, package: &str, bin: &str, profile_id: &str) -> Dy
     }
     // 45.5（遥测通路）：协议服务侧发送端（Sel4IpcClient + sample_wire）——
     // EL0 target 构建启用 protocol-services sel4 feature（host 不启用）。
+    // 70.5（WP-70.5.5/70.5.6）：qemu-test 叠加 qemu-test-synth（显式明文
+    // 装配模式；closure gate DENY_FEATURE_PATTERNS 强制 release 闭包无
+    // 此 feature）；其余 target 装配叠加 mqtt-tls（目标 TLS 1.3——材料
+    // 缺失时 svc-mqtt 机检能力壳 fail-closed，不降级明文）。
     if package == "eneros-protocol-services" {
-        command.args(["--features", "sel4"]);
+        if profile_id == "qemu-test" {
+            command.args(["--features", "sel4,qemu-test-synth"]);
+        } else {
+            command.args(["--features", "sel4,mqtt-tls"]);
+        }
     }
     // 41（WP-41.3 落盘）：业务服务（svc-ota 等）经 EIPC 调 svc-storage
     // 真落盘——Sel4IpcClient（agent-sdk ipc_sel4）需 sel4 feature。
@@ -2072,8 +2083,44 @@ fn compose_init_bundle(
     Ok(bytes)
 }
 
+/// 70.5（WP-70.5.1，F3-15）：workspace 产品版本单源——读仓库根
+/// `Cargo.toml` 的 `[workspace.package] version`（bump-version 唯一落点），
+/// 解析为 `ProductVersion`。发布 manifest 与组件 version 即本次构建身份；
+/// 两产物（BOOT_A/BOOT_B）各携自身 manifest 版本，capsule 投影后成为
+/// svc-ota 防降级基线。
+fn workspace_product_version(root: &Path) -> DynResult<ProductVersion> {
+    let text = fs::read_to_string(root.join("Cargo.toml"))?;
+    let value: toml::Value = toml::from_str(&text)
+        .map_err(|error| invalid(format!("workspace Cargo.toml 解析失败: {error}")))?;
+    let version = value
+        .get("workspace")
+        .and_then(|w| w.get("package"))
+        .and_then(|p| p.get("version"))
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| invalid("workspace Cargo.toml 缺 [workspace.package].version"))?;
+    let mut parts = version.split('.');
+    let parse = |seg: Option<&str>| -> DynResult<u16> {
+        seg.and_then(|s| s.parse::<u16>().ok())
+            .ok_or_else(|| invalid(format!("workspace 版本 '{version}' 非三段 u16 语义版本")))
+    };
+    let major = parse(parts.next())?;
+    let minor = parse(parts.next())?;
+    let patch = parse(parts.next())?;
+    if parts.next().is_some() {
+        return Err(invalid(format!(
+            "workspace 版本 '{version}' 多于三段（语义版本合同）"
+        )));
+    }
+    Ok(ProductVersion {
+        major,
+        minor,
+        patch,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_boot_partition(
+    root: &Path,
     partition: &mut [u8],
     partition_name: &str,
     slot: ManifestSlot,
@@ -2104,11 +2151,11 @@ fn write_boot_partition(
     let security_version = u64::from(profile.security.minimum_security_version.max(1));
     let kernel_digest: [u8; 32] = Sha256::digest(&kernel.bytes).into();
     let init_digest: [u8; 32] = Sha256::digest(init_bundle).into();
-    let version = ProductVersion {
-        major: 0,
-        minor: 192,
-        patch: 0,
-    };
+    // 70.5（WP-70.5.1，F3-15 归真）：产品版本 = 本次发布构建身份
+    //（workspace Cargo.toml 版本——bump-version 单源），不再固定历史值
+    // 0.192.0；ReleaseManifest header 与组件 version 携带该值，随 Ed25519
+    // 签章进入产物身份链（capsule 投影 → svc-ota 防降级基线）。
+    let version = workspace_product_version(root)?;
     let components = vec![
         Component {
             role: ComponentRole::Kernel,

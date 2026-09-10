@@ -454,32 +454,6 @@ impl SlotTable {
             out.response = b"ERR:DupSession".to_vec();
             return;
         }
-        if self.clients[i].is_none() {
-            self.clients[i] = Some(ClientState {
-                badge,
-                rx: ChunkedReceiver::new(),
-                paged_resp: Vec::new(),
-                pending_full: None,
-                pages_total: 1,
-                pages_pulled: 0,
-                txn: 0,
-                assembly_bytes: 0,
-                last_progress_ms: now_ms(),
-            });
-        }
-        // 同 badge 第二逻辑会话（前一传输在途时到达的 Header）：拒绝到达帧
-        // （客户端按传输错误处理）+ 清场孤儿传输（respawn/中止恢复路径）。
-        // 清场非静默：计数 + 词形（t5 纪律）。
-        let orphan_in_flight = header_frame && !self.clients[i].as_ref().expect("slot").rx.idle();
-        if orphan_in_flight {
-            self.dup_session_rejections = self.dup_session_rejections.saturating_add(1);
-            let line = format!("CHUNKED-DUP-SESSION badge={badge}");
-            self.push_line(&mut out.lines, WORD_DUP_SESSION, line, now_ms());
-            let cs = self.clients[i].as_mut().expect("slot");
-            cs.rx = ChunkedReceiver::new();
-            out.response = b"ERR:DupSession".to_vec();
-            return;
-        }
         if pull_frame {
             let cs = self.clients[i].as_mut().expect("slot");
             // 70.3（WP-70.3.3 / ADR-0053）：Pull 请求 v2 形（7B，携带

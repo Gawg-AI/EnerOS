@@ -341,11 +341,20 @@ impl SignatureAlgorithm {
         }
     }
 
-    /// 编码为 AlgorithmIdentifier DER：`SEQUENCE { OID, NULL }`。
+    /// 编码为 AlgorithmIdentifier DER。
+    ///
+    /// 70.5（WP-70.5.6 实弹互操作订正）：`EcdsaWithSha256` 按 RFC 5758
+    /// §3.2 **必须省略 parameters**（旧实现恒写 NULL——openssl/主流栈
+    /// 按 RFC 缺省 NULL 签发，本编码器 re-encode TBS 字节错位 → 签名
+    /// 验证 SignatureInvalid）。`Sm2WithSm3` 维持 `SEQUENCE { OID, NULL }`
+    /// （SM2 惯例与既有签发链一致）。
     pub fn encode_algorithm_identifier(&self) -> Vec<u8> {
         let mut inner = DerWriter::new();
         inner.write_oid(&self.oid_bytes());
-        inner.write_null();
+        match self {
+            SignatureAlgorithm::EcdsaWithSha256 => {}
+            SignatureAlgorithm::Sm2WithSm3 => inner.write_null(),
+        }
 
         let mut result = DerWriter::new();
         result.write_sequence(inner.as_bytes());

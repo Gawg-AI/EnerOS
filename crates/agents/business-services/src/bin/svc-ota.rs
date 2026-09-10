@@ -1,17 +1,23 @@
-//! svc-ota — 系统 A/B OTA EL0（蓝图 41 WP-41.6）。
+//! svc-ota — 系统 A/B OTA EL0（蓝图 41 WP-41.6；70.5 信任归真）。
 //! EIPC 协议：magic "OTA1" ‖ cmd ‖ payload。
-//! - 0x01 CHECK：target_version(32)‖sku(16)‖secver(4) → verdict(1)
-//! - 0x02 DOWNLOAD+VERIFY：meta（定长）→ step(1)
+//! - 0x01 CHECK-DESC：描述 142B‖desc_sig 64B → verdict(1)（v2 签名描述）
+//! - 0x02 DOWNLOAD-DESC：描述‖desc_sig‖image_sig‖chunk‖len‖image → step(1)
 //! - 0x03 TRIAL：→ step(1)
 //! - 0x04 COMMIT / 0x05 REGRESSION：→ step(1)
 //! - 0x06 PERSIST-TRIAL：remaining(4)‖version(16) → gen(8)（trial 状态真
 //!   落盘——经 EIPC 调 svc-storage 块命令面；存储未授予 → Unavailable）
 //! - 0x07 LOAD-TRIAL：→ found(1)‖remaining(4)‖version(16)（重启恢复读回）
+//! - 0x08 IDENTITY：capsule 136B → ack(1)（root 独占分发可信启动身份）
 //!
-//! 41（WP-41.3 落盘）：EIPC 授予表 `svc-ota → svc-storage`（X3 bit 2 =
-//! 槽 `EIPC_EP_BASE_SLOT+2`）→ `BlockIo`（PersistIo over 块命令面）→
-//! `RegionStateStore<TrialState>` 固定区域（数据盘 8 KiB 偏移，避开首块
-//! 引导区）。未授予 → 全部存储步骤显式 Unavailable（不伪造持久化）。
+//! 70.5（WP-70.5.1/70.5.2，方向 3 方案 B）：
+//! - **信任锚与策略参数唯一来源 = 已验签配置束取数**（svc-ota→svc-config
+//!   授予边，槽序 storage=bit0/config=bit1；OtaConsumer 解码 + 装配侧
+//!   `validate_policy` 域检）——固定开发锚/固定策略静态字面**已退役**
+//!   （源守卫 svc_ota_no_fixed_test_anchor 拦截回归）；
+//! - **设备身份唯一来源 = root 分发的 IdentityCapsule**（0x08；可信启动
+//!   路径投影，MGT1 不能构造）——bin 不再字面构造 "0.0.0"/"qemu"/secver；
+//! - 惰性装配：身份与策略齐备才构造 `AbPartitionOta + OtaService`；
+//!   缺一 → OTA 显式 not-ready（`ERR:ota-unavailable`），不回默认分支。
 
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(target_os = "none", no_main)]
@@ -45,11 +51,9 @@ pub extern "C" fn _start(
     // SAFETY: `_start` 单线程首调（首次 alloc 前）。
     unsafe { ALLOC.init() };
     // 41（WP-41.3 落盘）：存储句柄移交——EIPC 授予表 `svc-ota →
-    // svc-storage`（X3 bit 2 = 槽 EIPC_EP_BASE_SLOT+2）。授予 → 经块命令
-    // 面真落盘（RegionStateStore<TrialState>）；未授予 → 显式 Unavailable
-    // （不伪造持久化）。
-    // EIPC 授予表序：svc-ota 是首个（唯一）storage 客户端 → 槽
-    // EIPC_EP_BASE_SLOT+0、mask bit 0（eipc_grants_for 按服务独立计数）。
+    // svc-storage`（槽序第 1 条 = EIPC_EP_BASE_SLOT+0，bit 0）。授予 →
+    // 经块命令面真落盘（RegionStateStore<TrialState>）；未授予 → 显式
+    // Unavailable（不伪造持久化）。
     let storage = if eipc_mask & 1 != 0 {
         eneros_business_services::block_io::eipc_block_io(
             eneros_agent_sdk::EIPC_EP_BASE_SLOT,
@@ -69,63 +73,30 @@ pub extern "C" fn _start(
             "[svc-ota] block storage NOT granted —— 持久化显式 Unavailable（不伪造）"
         );
     }
-    // 41（OTA A/B 地基）：存储授予时构造真实 AbPartitionOta（经 EipcBlockDevice
-    // 写数据盘 A/B 槽）。root_key 使用当前开发公钥（config-bundle-pubkey）；
-    // 生产由 KMS 注入替换。
-    let ota = if eipc_mask & 1 != 0 {
-        match eneros_business_services::block_io::eipc_block_io(
-            eneros_agent_sdk::EIPC_EP_BASE_SLOT,
-            0,
-            5_000,
-        ) {
-            Some(io) => {
-                // 69.5（WP-69.5.2）：生产块大小单源 = ota-ab
-                // OTA_PROD_BLOCK_SIZE（512）——原手抄字面与 ota.toml ⑧
-                // 的 chunk_size 心算双源分歧（生产实际单槽容量 1 MiB）即
-                // 出于此；容量口径锁 production_slot_capacity_matches_
-                // documented_baseline 与本调用同取一常量。盘上块号语义按
-                // 512B 块绑定（DATA_DISK_BLOCKS 同源），Z15 不得改值。
-                let dev = eneros_agent_sdk::block_io::EipcBlockDevice::new(
-                    io,
-                    eneros_ota_ab::ab_partition::OTA_PROD_BLOCK_SIZE,
-                    eneros_ota_ab::ab_partition::DATA_DISK_BLOCKS,
-                );
-                let mut key65 = [0u8; 65];
-                key65[0] = 0x04;
-                key65[1..].copy_from_slice(&ENEROS_OTA_ROOT_KEY);
-                match eneros_crypto::Sm2PublicKey::from_bytes(&key65) {
-                    Ok(pk) => {
-                        let mgr = eneros_ota_ab::ab_partition::AbPartitionOta::new(
-                            dev,
-                            pk,
-                            eneros_business_services::now_ms(),
-                        );
-                        eneros_runtime::println!(
-                            "[svc-ota] real AbPartitionOta attached (A/B via svc-storage)"
-                        );
-                        Some(eneros_business_services::ota_service::OtaService::new(
-                            mgr,
-                            ENEROS_OTA_POLICY.clone(),
-                            "0.0.0",
-                            "qemu",
-                            1,
-                            1,
-                        ))
-                    }
-                    Err(_) => {
-                        eneros_runtime::println!(
-                            "[svc-ota] OTA root key invalid —— A/B unavailable"
-                        );
-                        None
-                    }
-                }
-            }
-            None => None,
+    // 70.5（WP-70.5.2）：config 授予边（表序第 2 条 = 槽 +1，bit 1）。
+    // 未授予 → 策略取数不可达 → OTA 永久 not-ready（诚实降级）。
+    let config_slot = eneros_agent_sdk::eipc_granted_slot("svc-ota", eipc_mask, "svc-config");
+    match config_slot {
+        Some(slot) => {
+            eneros_runtime::println!(
+                "[svc-ota] config GRANTED (EIPC slot {slot}) —— OTA 策略取数待自检"
+            );
         }
-    } else {
-        None
+        None => {
+            eneros_runtime::println!(
+                "[svc-ota] config NOT granted —— OTA 策略不可得，服务 not-ready（fail-closed）"
+            );
+        }
+    }
+    let mut handler = OtaHandler {
+        storage,
+        config_slot,
+        config_endpoint: None,
+        policy: None,
+        identity: None,
+        ota: None,
+        fetch_failures: 0,
     };
-    let mut handler = OtaHandler { storage, ota };
     eneros_control_services::control_service_main(
         ep,
         "ota",
@@ -146,19 +117,31 @@ const OTA_PERSIST_OFFSET: u64 = eneros_ota_ab::ab_partition::DataRegion::TrialSt
 const OTA_PERSIST_LEN: u64 = 128;
 
 #[cfg(target_os = "none")]
+type TargetOta = eneros_business_services::ota_service::OtaService<
+    eneros_ota_ab::ab_partition::AbPartitionOta<
+        eneros_agent_sdk::block_io::EipcBlockDevice<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
+    >,
+>;
+
+#[cfg(target_os = "none")]
 struct OtaHandler {
     storage: Option<
         eneros_business_services::block_io::BlockIo<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
     >,
-    ota: Option<
-        eneros_business_services::ota_service::OtaService<
-            eneros_ota_ab::ab_partition::AbPartitionOta<
-                eneros_agent_sdk::block_io::EipcBlockDevice<
-                    eneros_agent_sdk::ipc_sel4::Sel4IpcClient,
-                >,
-            >,
-        >,
+    /// svc-config 授予槽（70.5；None = 未授予 → 策略永不可得）。
+    config_slot: Option<u64>,
+    /// svc-config 分块端点（惰性绑定——服务就绪前调用会失败，重试有界）。
+    config_endpoint: Option<
+        eneros_agent_sdk::endpoint::ChunkedEndpoint<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
     >,
+    /// 已验签策略（配置束取数 + validate_policy 域检后入册）。
+    policy: Option<eneros_business_services::ota_service::OtaPolicy>,
+    /// root 分发的可信身份快照（0x08；单调水位）。
+    identity: Option<eneros_business_services::ota_service::DeviceIdentity>,
+    ota: Option<TargetOta>,
+    /// 配置取数失败计数（观测面；驱动重试有界性 = 每条 OTA1 命令至多
+    /// 一次取数尝试——探针流量即上界）。
+    fetch_failures: u64,
 }
 
 #[cfg(target_os = "none")]
@@ -181,6 +164,126 @@ impl OtaHandler {
         store.open().ok()?;
         Some(store)
     }
+
+    /// 配置取数（每条 OTA1 命令至多一次；成功后不再取）。
+    fn fetch_config(&mut self) -> bool {
+        if self.policy.is_some() {
+            return true;
+        }
+        let Some(slot) = self.config_slot else {
+            return false;
+        };
+        if self.config_endpoint.is_none() {
+            self.config_endpoint =
+                eneros_agent_sdk::endpoint::ChunkedEndpoint::bind("svc-ota", "svc-config");
+        }
+        let Some(endpoint) = self.config_endpoint.as_mut() else {
+            self.fetch_failures += 1;
+            return false;
+        };
+        // 取数两步：entry payload（OtaConsumer 解码）+ bundle generation
+        // （策略代次锚——描述 policy_generation 判据 + 轮换预备记账）。
+        let raw = match eneros_agent_sdk::config_client::get_entry(endpoint, "ota") {
+            Ok(raw) => raw,
+            Err(_) => {
+                self.fetch_failures += 1;
+                return false;
+            }
+        };
+        let generation = match eneros_agent_sdk::config_client::get_generation(endpoint) {
+            Ok(g) => g,
+            Err(_) => {
+                self.fetch_failures += 1;
+                return false;
+            }
+        };
+        let body = match eneros_agent_sdk::config_client::decode_response_body(&raw) {
+            Ok(body) => body,
+            Err(_) => {
+                self.fetch_failures += 1;
+                return false;
+            }
+        };
+        let decoded = {
+            use eneros_config_bundle::TypedConfigConsumer;
+            let consumer = eneros_business_services::config_service::OtaConsumer::default();
+            consumer.decode_validate(body)
+        };
+        let cfg = match decoded {
+            Ok(c) => c,
+            Err(_) => {
+                self.fetch_failures += 1;
+                return false;
+            }
+        };
+        let policy = eneros_business_services::ota_service::OtaPolicy {
+            partition_blocks: cfg.partition_blocks,
+            chunk_size: cfg.chunk_size,
+            max_boot_attempts: cfg.max_boot_attempts,
+            root_key: cfg.root_key,
+            signature_mandatory: true,
+            generation,
+        };
+        if eneros_business_services::ota_service::validate_policy(&policy).is_err() {
+            self.fetch_failures += 1;
+            eneros_runtime::println!("[svc-ota] OTA-CONFIG invalid —— 策略域检拒绝（not-ready）");
+            return false;
+        }
+        // 锚指纹（key_id 轮换预备口径）= SM3(root_key) 前 8B hex——只入
+        // 日志，key 字节与原始配置不落任何词形。
+        let fp = eneros_crypto::sm3_hash(&policy.root_key);
+        eneros_runtime::println!(
+            "[svc-ota] OTA-CONFIG gen={:?} partition_blocks={} chunk={} attempts={} anchor_fp={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            generation,
+            policy.partition_blocks,
+            policy.chunk_size,
+            policy.max_boot_attempts,
+            fp[0], fp[1], fp[2], fp[3], fp[4], fp[5], fp[6], fp[7]
+        );
+        self.policy = Some(policy);
+        true
+    }
+
+    /// 惰性装配（身份 + 策略齐备才构造；装配点 = 0x08 后与每条 0x01/0x02
+    /// 命令前——探针流量即重试上界）。A/B 镜像面持独立 storage 连接
+    /// （41 卷装配语义：trial 面与镜像面各一连接，互不串扰）。
+    fn ensure_ready(&mut self, now_ms: u64) {
+        if self.ota.is_some() {
+            return;
+        }
+        if !self.fetch_config() {
+            return;
+        }
+        let (Some(policy), Some(identity)) = (self.policy.clone(), self.identity.clone()) else {
+            return;
+        };
+        let Some(io) = eneros_business_services::block_io::eipc_block_io(
+            eneros_agent_sdk::EIPC_EP_BASE_SLOT,
+            0, // epoch 未知——首个响应吸收（svc-storage 实例 epoch）
+            5_000,
+        ) else {
+            eneros_runtime::println!("[svc-ota] storage 连接不可得 —— A/B not-ready");
+            return;
+        };
+        // 69.5（WP-69.5.2）：生产块大小单源 = ota-ab OTA_PROD_BLOCK_SIZE
+        // （512）；盘上块号语义按 512B 块绑定（DATA_DISK_BLOCKS 同源）。
+        let dev = eneros_agent_sdk::block_io::EipcBlockDevice::new(
+            io,
+            eneros_ota_ab::ab_partition::OTA_PROD_BLOCK_SIZE,
+            eneros_ota_ab::ab_partition::DATA_DISK_BLOCKS,
+        );
+        let mut key65 = [0u8; 65];
+        key65[0] = 0x04;
+        key65[1..].copy_from_slice(&policy.root_key);
+        let Ok(pk) = eneros_crypto::Sm2PublicKey::from_bytes(&key65) else {
+            // fetch_config 域检已验过锚；此处防御性双检（不可达即退）。
+            eneros_runtime::println!("[svc-ota] anchor invalid —— A/B not-ready");
+            return;
+        };
+        let mgr = eneros_ota_ab::ab_partition::AbPartitionOta::new(dev, pk, now_ms);
+        self.ota = Some(TargetOta::new(mgr, policy, &identity));
+        eneros_runtime::println!("[svc-ota] OTA READY (config + identity assembled)");
+    }
 }
 
 #[cfg(target_os = "none")]
@@ -193,8 +296,85 @@ impl eneros_control_services::ControlServiceHandler for OtaHandler {
             resp.extend_from_slice(b"ERR:proto");
             return false;
         }
+        // 0x08 IDENTITY（root 独占分发）：capsule 校验 → 身份入册（单调
+        // 水位）→ 尝试装配。
+        if req[4] == 0x08 {
+            let capsule_bytes = match eneros_agent_sdk::ota_wire::parse_identity_req(req) {
+                Ok(c) => c,
+                Err(_) => {
+                    resp.extend_from_slice(b"ERR:len");
+                    return false;
+                }
+            };
+            let capsule = match eneros_boot_protocol::IdentityCapsule::decode(capsule_bytes) {
+                Ok(c) => c,
+                Err(e) => {
+                    eneros_runtime::println!("[svc-ota] OTA-IDENTITY rejected ({e:?})");
+                    resp.extend_from_slice(b"ERR:identity");
+                    return false;
+                }
+            };
+            let identity = match identity_from_capsule(&capsule) {
+                Ok(i) => i,
+                Err(e) => {
+                    eneros_runtime::println!("[svc-ota] OTA-IDENTITY rejected ({e})");
+                    resp.extend_from_slice(b"ERR:identity");
+                    return false;
+                }
+            };
+            // 单调水位：回退 capsule 拒绝（WP-70.5.4 反测面之一）。
+            if let Some(prev) = &self.identity {
+                if identity.security_floor < prev.security_floor {
+                    eneros_runtime::println!(
+                        "[svc-ota] OTA-IDENTITY stale floor {}<{} —— 拒绝",
+                        identity.security_floor,
+                        prev.security_floor
+                    );
+                    resp.extend_from_slice(b"ERR:identity-stale");
+                    return false;
+                }
+            }
+            eneros_runtime::println!(
+                "[svc-ota] OTA-IDENTITY slot={} gen={} secver={} floor={} sku={} ver={}",
+                capsule.selected_slot,
+                capsule.bootctrl_generation,
+                identity.security_version,
+                identity.security_floor,
+                identity.sku,
+                identity.current_version
+            );
+            self.identity = Some(identity);
+            self.ensure_ready(_now_ms);
+            if self.ota.is_some() {
+                resp.push(1);
+            } else {
+                // 身份已收但策略未得——诚实 not-ready（root 侧只读分发，
+                // 不重试）。
+                resp.extend_from_slice(b"ERR:not-ready");
+                return false;
+            }
+            return true;
+        }
+        // 0x09 POLICY-INFO（只读观测）：策略代次 + 锚指纹（零密钥出域）。
+        // 未就绪 → ERR:not-ready（诚实不可得，不伪造零值）。
+        if req[4] == 0x09 {
+            if req.len() != 5 {
+                resp.extend_from_slice(b"ERR:len");
+                return false;
+            }
+            self.ensure_ready(_now_ms);
+            let Some(policy) = &self.policy else {
+                resp.extend_from_slice(b"ERR:not-ready");
+                return false;
+            };
+            resp.extend_from_slice(&policy.generation.to_le_bytes());
+            let fp = eneros_crypto::sm3_hash(&policy.root_key);
+            resp.extend_from_slice(&fp[..8]);
+            return true;
+        }
         // 0x01-0x05 由可测的纯逻辑函数处理（ota_service::handle_ota_ab_command）。
         if (0x01..=0x05).contains(&req[4]) {
+            self.ensure_ready(_now_ms);
             return handle_ota_ab_command(self.ota.as_mut(), req, resp);
         }
         match req[4] {
@@ -272,24 +452,6 @@ impl eneros_control_services::ControlServiceHandler for OtaHandler {
         }
     }
 }
-
-#[cfg(target_os = "none")]
-static ENEROS_OTA_ROOT_KEY: [u8; 64] = [
-    0x1f, 0x58, 0x39, 0x66, 0x96, 0xde, 0xec, 0x97, 0xa0, 0x09, 0x0f, 0xa6, 0x12, 0xeb, 0x5c, 0x47,
-    0x84, 0xf0, 0xb1, 0x14, 0x69, 0x36, 0x96, 0x91, 0x6c, 0x01, 0xe9, 0xcf, 0xf8, 0xeb, 0xc5, 0xc7,
-    0xec, 0x0c, 0x18, 0xca, 0xf0, 0x2a, 0x74, 0x78, 0xc7, 0x3e, 0x54, 0xbf, 0x13, 0xa0, 0x6f, 0xb1,
-    0x16, 0x24, 0xfd, 0x1a, 0x23, 0x3a, 0xb5, 0xe4, 0x12, 0x17, 0xaa, 0x7b, 0xb3, 0x80, 0x3e, 0x04,
-];
-
-#[cfg(target_os = "none")]
-static ENEROS_OTA_POLICY: eneros_business_services::ota_service::OtaPolicy =
-    eneros_business_services::ota_service::OtaPolicy {
-        partition_blocks: 2048,
-        chunk_size: 65536,
-        max_boot_attempts: 3,
-        root_key: ENEROS_OTA_ROOT_KEY, // 开发公钥；生产 KMS 注入替换
-        signature_mandatory: true,
-    };
 
 #[cfg(target_os = "none")]
 #[panic_handler]

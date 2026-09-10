@@ -1,0 +1,1 @@
+OTA-ANCHOR-GATE: PASS profile=qemu-test forbidden=no anchor_fp=1f583966（信息性登记——测试链允许显式测试锚）

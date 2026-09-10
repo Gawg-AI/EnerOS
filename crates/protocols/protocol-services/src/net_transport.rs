@@ -395,6 +395,10 @@ impl<D: NetDevice + 'static> TransportHandle for TcpStreamHandle<D> {
         Ok(())
     }
 
+    fn set_recv_timeout_ms(&mut self, ms: u64) {
+        self.recv_timeout_ms = ms;
+    }
+
     fn is_connected(&self) -> bool {
         // 70.4：显式状态单源——无 socket 即 false（N9：close 后旧实现
         // 仍以陈旧 id 读栈返回真值）。

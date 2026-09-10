@@ -48,6 +48,10 @@ eneros-event-store = { path = "../../runtime/event-store" }
 # 40 服务循环模式（分块 EIPC + 心跳）。
 eneros-control-services = { path = "../control-services" }
 heapless = { version = "0.8", default-features = false }
+# 70.5（WP-70.5.6）：签名管理 principal 验签面（ECDSA P-256 + SHA-256
+# ——与目标 TLS 域同域；OTA 域 SM2 分域不动）。
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8"] }
+sha2 = { version = "0.10", default-features = false }
 
 [features]
 default = []

@@ -316,6 +316,11 @@ fn real_main() -> DynResult<()> {
         "flash" => flasher::command_flash(&root, &rest),
         "factory" => factory::command_factory(&root, &rest),
         "qa" => qa::command_qa(&root, &rest),
+        // 70.5（WP-70.5.2）：OTA 信任锚生成（pubkey hex 单行 stdout）。
+        "gen-ota-anchor" => {
+            ensure_empty(&rest, "gen-ota-anchor")?;
+            keys::gen_ota_anchor(&root)
+        }
         "release" => sbom::command_release(&root, &rest),
         "symbolize" => symbolize::command_symbolize(&root, &rest),
         other => Err(invalid(format!("unknown command '{other}'"))),

@@ -238,6 +238,12 @@ pub enum PeriodicTask {
     FaultInject,
     /// 分层看门狗状态检查（诊断打印；原 `tick % 100` 块按职责命名）。
     WatchdogCheck,
+    /// 蓝图 70.5（WP-70.5.1/70.5.4）：可信身份推送（一次性）——root 读
+    /// boot-manager 写入的 IdentityCapsule（BOOT-007 窗口尾页）并经 OTA1
+    /// 0x08 分发 svc-ota。capsule 缺失 → 发布装配不推送（OTA not-ready
+    /// fail-closed）；qemu-test 装配（qemu-test-synth feature）以显式
+    /// SYNTHETIC 标签构造测试身份。
+    IdentityPush,
     /// 蓝图 69 卷 69.5（WP-69.5.1）：降级/学习**只读**观测探针——向
     /// svc-ai-worker 连发 5 次 `AI_DEGRADE_OBSERVE(0x22)`，`DEGRADE-OBS`
     /// 串口行由 svc-ai-worker 侧落（root 零新词形）；五连读同刻读数
@@ -333,6 +339,14 @@ pub const PERIODIC_SCHEDULE: &[PeriodicEntry] = &[
         offset: 8,
         kind: ScheduleKind::Repeat,
         task: PeriodicTask::DegradeObserve,
+    },
+    // 70.5（WP-70.5.1）：身份推送 55/55——先于 StoragePersist(60) 与
+    // OtaDownload(70)（探针以身份在册为前提）。
+    PeriodicEntry {
+        period: 55,
+        offset: 55,
+        kind: ScheduleKind::OnceFrom,
+        task: PeriodicTask::IdentityPush,
     },
 ];
 
@@ -647,6 +661,8 @@ mod tests {
                 (100, 0, ScheduleKind::Repeat, PeriodicTask::WatchdogCheck),
                 // 69.5 新增（WP-69.5.1）：只读观测探针——非平移行，有意扩展。
                 (25, 8, ScheduleKind::Repeat, PeriodicTask::DegradeObserve),
+                // 70.5 新增（WP-70.5.1）：可信身份推送——非平移行，有意扩展。
+                (55, 55, ScheduleKind::OnceFrom, PeriodicTask::IdentityPush),
             ],
             "周期编排表绝对基线漂移（service.rs 平移值必须逐字节保持）"
         );

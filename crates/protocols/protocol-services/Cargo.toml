@@ -58,6 +58,11 @@ eneros-iec101 = { path = "../iec101", default-features = false }
 eneros-iec103 = { path = "../iec103", default-features = false }
 eneros-gbt27930 = { path = "../gbt27930", default-features = false }
 eneros-mqtt = { path = "../mqtt", default-features = false }
+# 70.5（WP-70.5.6）：目标 TLS 1.3 材料面（optional——mqtt-tls feature；
+# 材料文件由部署/gate 生成到 product/tls/，构建期嵌入，缺文件 = 空材料
+# = svc-mqtt 装配机检 fail-closed 能力壳）。
+eneros-tls = { path = "../../security/tls", optional = true, default-features = false, features = ["embedded"] }
+eneros-crypto = { path = "../../security/crypto", optional = true }
 # 39 收尾复验（WP-39.11）：MMS/GOOSE/SV plugin+service 补齐。
 # 43 修复（39/40 遗留构建断裂）：这三个 crate 的 `plugin` 模块被其
 # `net` feature 门控（svc-goose/mms/sv 引用 plugin 构造 descriptor），
@@ -101,6 +106,11 @@ default = []
 # 45.5（遥测通路）：EL0 target 构建启用 agent-sdk sel4 客户端（ipc_sel4）
 # ——xtask build_user_elf 对 eneros-protocol-services 特判传参（host 测试不启用）。
 sel4 = ["eneros-agent-sdk/sel4"]
+# 70.5（WP-70.5.5/70.5.6）：qemu-test 专属显式明文装配模式（closure gate
+# DENY_FEATURE_PATTERNS 强制不出现在 release 闭包）；mqtt-tls = 目标 TLS
+# 1.3（svc-mqtt 专用——release 装配无它则机检能力壳 fail-closed）。
+qemu-test-synth = []
+mqtt-tls = ["dep:eneros-tls", "dep:eneros-crypto", "eneros-mqtt/tls"]
 
 [dev-dependencies]
 # 46（WP-46.1）工厂测试：MockUartHw（host 仿真串口，mock feature 仅测试构建）。

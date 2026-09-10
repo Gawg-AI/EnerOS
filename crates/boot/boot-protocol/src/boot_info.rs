@@ -217,9 +217,14 @@ pub const ENEROS_DTB_MAX_LEN: u64 = 0x200_000;
 /// 长度**推导，否则 DTB 位置漂移——boot-manager 用验签后的
 /// `init.media_length` 并交叉校验 bundle header `total_len` 一致；
 /// root-task 用已解析的 bundle header `total_len`。
+///
+/// 70.5（WP-70.5.1）：窗口尾页为可信身份 capsule 预留
+/// （`IDENTITY_CAPSULE_RESERVE`）——DTB 永不触及 capsule 页，两端经本
+/// 函数单源推导自动一致。
 pub const fn dtb_window_for(bundle_len: u64) -> Option<(u64, u64)> {
     let start = (ENEROS_INIT_BUNDLE_PHYS + bundle_len + 0xFFF) & !0xFFF;
-    let end = ENEROS_INIT_BUNDLE_PHYS + ENEROS_MAPPED_WINDOW_LEN;
+    let end = ENEROS_INIT_BUNDLE_PHYS + ENEROS_MAPPED_WINDOW_LEN
+        - crate::identity::IDENTITY_CAPSULE_RESERVE;
     if start >= end {
         return None;
     }

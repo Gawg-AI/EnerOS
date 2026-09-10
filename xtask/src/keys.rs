@@ -127,6 +127,35 @@ pub fn test_keys_present(root: &Path) -> bool {
     root.join(DEV_SIGNING_KEY_REL).is_file()
 }
 
+fn getrandom_fill(buf: &mut [u8]) -> crate::DynResult<()> {
+    use std::io::Read;
+    let mut f = std::fs::File::open("/dev/urandom")?;
+    f.read_exact(buf)?;
+    Ok(())
+}
+
+/// 70.5（WP-70.5.2）：生成 OTA 信任锚（随机 SM2 标量 → 未压缩公钥的
+/// 64B 坐标 hex——`--root-key-hex` 注入形态）。私钥**不落盘不打印**
+/// （锚分发生成器：本命令只产出验签公钥；签名方（签发 station/发布
+/// 系统）另行持有对应私钥——产线注入面 71.2 承接）。stdout = 128 hex。
+pub fn gen_ota_anchor(root: &Path) -> crate::DynResult<()> {
+    let _ = root;
+    // 随机标量（平台熵；host 测试面失败即 Err——不回退固定值）。
+    let mut seed = [0u8; 32];
+    getrandom_fill(&mut seed)?;
+    if seed.iter().all(|b| *b == 0) {
+        return Err(crate::invalid("OTA 锚标量全零（熵不可用——fail-closed）"));
+    }
+    let sk = eneros_crypto::Sm2PrivateKey::from_bytes(&seed)
+        .map_err(|e| crate::invalid(format!("标量无效: {e:?}")))?;
+    let kp = eneros_crypto::Sm2KeyPair::from_private_key(&sk)
+        .map_err(|e| crate::invalid(format!("公钥派生失败: {e:?}")))?;
+    let bytes = kp.public_key.to_bytes_uncompressed();
+    let hex: String = bytes[1..65].iter().map(|b| format!("{b:02x}")).collect();
+    println!("{hex}");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

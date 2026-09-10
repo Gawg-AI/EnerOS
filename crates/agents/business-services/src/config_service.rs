@@ -377,23 +377,43 @@ impl TypedConfigConsumer for OtaConsumer {
         }
         let mut root_key = [0u8; 64];
         root_key.copy_from_slice(root_key_bytes);
+        // 70.5（WP-70.5.2）：参数 canonical 范围（消费侧通用界限；
+        // 几何等值与锚曲线点由 svc-ota 装配侧 validate_policy 复核——
+        // 配置域无 ota-ab 常量依赖，分层各守各的门）。
+        let partition_blocks = field_u64(
+            &fields,
+            &config,
+            ota::FIELD_PARTITION_BLOCKS,
+            "partition_blocks",
+        )?
+        .unwrap_or(0);
+        let chunk_size =
+            field_u32(&fields, &config, ota::FIELD_CHUNK_SIZE, "chunk_size")?.unwrap_or(0);
+        let max_boot_attempts = field_u32(
+            &fields,
+            &config,
+            ota::FIELD_MAX_BOOT_ATTEMPTS,
+            "max_boot_attempts",
+        )?
+        .unwrap_or(0);
+        let range_err = |field: &'static str| ConfigError::InvalidValue {
+            config: config.clone(),
+            field,
+            reason: "range".into(),
+        };
+        if partition_blocks == 0 || partition_blocks > 1_048_576 {
+            return Err(range_err("partition_blocks"));
+        }
+        if chunk_size == 0 || chunk_size > 1_048_576 {
+            return Err(range_err("chunk_size"));
+        }
+        if max_boot_attempts == 0 || max_boot_attempts > 7 {
+            return Err(range_err("max_boot_attempts"));
+        }
         Ok(OtaConsumer {
-            partition_blocks: field_u64(
-                &fields,
-                &config,
-                ota::FIELD_PARTITION_BLOCKS,
-                "partition_blocks",
-            )?
-            .unwrap_or(0),
-            chunk_size: field_u32(&fields, &config, ota::FIELD_CHUNK_SIZE, "chunk_size")?
-                .unwrap_or(0),
-            max_boot_attempts: field_u32(
-                &fields,
-                &config,
-                ota::FIELD_MAX_BOOT_ATTEMPTS,
-                "max_boot_attempts",
-            )?
-            .unwrap_or(0),
+            partition_blocks,
+            chunk_size,
+            max_boot_attempts,
             root_key,
         })
     }

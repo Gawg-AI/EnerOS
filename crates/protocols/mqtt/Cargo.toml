@@ -19,16 +19,22 @@ eneros-protocol-abstract = { path = "../protocol-abstract" }
 eneros-protocol-keys = { path = "../protocol-keys" }
 # v0.221.0（B2-04）：真实 TCP 传输（smoltcp，经真实 DMA 环）。
 eneros-net = { path = "../../drivers/net", optional = true }
+# 70.5（WP-70.5.6）：目标 TLS 1.3（embedded-tls + 本仓 PKI；no_std）——
+# `tls` feature 打开插件 start 的传输工厂原位包装（材料由装配方注入）。
+eneros-tls = { path = "../../security/tls", optional = true, default-features = false, features = ["embedded"] }
 
 [features]
 default = ["fs-persist"]
 mock = []
 # 真实传输层（默认关闭保持无外部依赖；启用后提供 NetTcpTransport）。
 net = ["dep:eneros-net"]
+# 目标 TLS 1.3（WP-70.5.6）。
+tls = ["dep:eneros-tls"]
 # QoS 落盘持久化（FsQosStore；依赖 eneros-fs）。
 fs-persist = ["dep:eneros-fs"]
-# tls 空壳 feature 已删（SPEC-SERIES-2026-08-27/F WP-F.4）：零实现零 cfg 引用，
-# 防误导「开 feature 即有 TLS」；真实传输层选型走 OQ-1（EXT-01 密码评审）。
+# 70.5（WP-70.5.6）：目标 TLS 1.3 真实现落地（embedded-tls + PKI 验证 +
+# 静态固定复用缓冲）——SPEC-F 曾删的"tls 空壳"由此转为真实现 feature；
+# 未启用时插件零 TLS 路径（诚实缺省）。
 
 [dev-dependencies]
 # 39：插件测试用 test_support（EchoTransport）。

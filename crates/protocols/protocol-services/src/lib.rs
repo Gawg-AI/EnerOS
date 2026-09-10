@@ -49,6 +49,10 @@ pub mod iec104_ingest;
 /// 蓝图 64 卷 64.2（WP-64.2.4）：svc-mqtt 中继面（写意图/AI 应答/管理
 /// 请求三转发环 + 双面分片重组）出 bin——`C: RawIpc` 泛化后 host 可测。
 pub mod mqtt_io;
+/// 70.5（WP-70.5.6）：目标 TLS 材料嵌入面（mqtt-tls feature；build.rs
+/// 嵌入 product/tls/ 部署材料——缺失 = 装配机检 fail-closed）。
+#[cfg(feature = "mqtt-tls")]
+pub mod tls_material;
 
 /// crate 内共享测试假件（cfg(test)）。
 #[cfg(test)]

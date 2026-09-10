@@ -18,10 +18,11 @@ use eneros_boot_protocol::boot_info::{
 use eneros_boot_protocol::{
     condition_boot_entropy, dtb_window_for, resolve_boot_control, BootControl, BootControlAnchor,
     BootControlTransaction, BootInfo, BootReason, BootSelection, BootSlot, Component,
-    ComponentRole, ManifestSlot, MeasurementKind, MeasurementLog, MemoryMapEntry, MemoryRegionKind,
-    ReleaseManifest, ResolvedBootControl, BOOT_CONTROL_ANCHOR_SIZE, BOOT_CONTROL_COPY_OFFSETS,
-    BOOT_CONTROL_FLAG_MANUAL_RECOVERY, BOOT_CONTROL_RECORD_SIZE, ENEROS_DTB_MAX_LEN,
-    ENEROS_INIT_BUNDLE_PHYS, MANIFEST_HEADER_LEN, MEASUREMENT_LOG_SIZE, RAW_BOOT_ENTROPY_SIZE,
+    ComponentRole, IdentityCapsule, ManifestSlot, MeasurementKind, MeasurementLog, MemoryMapEntry,
+    MemoryRegionKind, ReleaseManifest, ResolvedBootControl, BOOT_CONTROL_ANCHOR_SIZE,
+    BOOT_CONTROL_COPY_OFFSETS, BOOT_CONTROL_FLAG_MANUAL_RECOVERY, BOOT_CONTROL_RECORD_SIZE,
+    ENEROS_DTB_MAX_LEN, ENEROS_INIT_BUNDLE_PHYS, IDENTITY_CAPSULE_PHYS, MANIFEST_HEADER_LEN,
+    MEASUREMENT_LOG_SIZE, RAW_BOOT_ENTROPY_SIZE,
 };
 use eneros_image_format::{
     read_gpt, BlockDevice, BlockReadError, Gpt, Guid, ParsedPartition, PartitionReader,
@@ -380,6 +381,17 @@ fn prepare_boot() -> Result<LoadedBoot, BootFailure> {
             kernel_payload,
             init_payload,
         } = verified;
+        // 70.5（WP-70.5.1）：可信身份 capsule 页——BOOT-007 窗口尾页固定
+        // 地址（IDENTITY_CAPSULE_PHYS）显式锁定。必须在任何 AnyPages 分配
+        // （kernel/init/测量/映射/BootInfo）之前：UEFI 分配器自顶向下，
+        // 晚分配会被占页 Address 失败 → OTA 身份缺失。分配失败 = 诚实
+        // 降级（soft）：root 读不到 capsule → OTA not-ready，引导继续
+        //（不因 OTA 身份面阻断启动）。
+        let identity_capsule_page = boot::allocate_pages(
+            AllocateType::Address(IDENTITY_CAPSULE_PHYS),
+            MemoryType::LOADER_DATA,
+            1,
+        );
         // BOOT-002：kernel（elfloader）必须用 LOADER_CODE 分配——UEFI 对
         // LOADER_DATA 页设置 NX（不可执行），跳转进入会触发指令预取异常
         // （QEMU 实测 "Synchronous Exception at 0x41000000"）；LOADER_CODE
@@ -580,6 +592,51 @@ fn prepare_boot() -> Result<LoadedBoot, BootFailure> {
         // 不超过一页；写入为独占所有权（prepare_boot 内不再使用该指针）。
         unsafe {
             boot_info.write(info);
+        }
+        // 70.5（WP-70.5.1/70.5.4）：可信身份 capsule 写入——验签链的只读
+        // 投影（ReleaseManifest + anchor 匹配 BootControl），root-task 经
+        // 固定物理地址消费并分发 svc-ota。写失败 = OTA not-ready（诚实
+        // 降级，不阻断引导）。
+        match identity_capsule_page {
+            Ok(page) => {
+                let mut capsule = IdentityCapsule::new(
+                    selection.slot as u8,
+                    info.boot_id,
+                    manifest.header.release_id,
+                    manifest.header.platform_id,
+                    digest,
+                    active_control.sequence,
+                    manifest.header.security_version,
+                    active_control.security_floor,
+                    [
+                        manifest.header.product_version.major,
+                        manifest.header.product_version.minor,
+                        manifest.header.product_version.patch,
+                    ],
+                );
+                capsule.seal();
+                let bytes = capsule.to_bytes();
+                // SAFETY: `page` 为本函数以 Address 锁定的单页 LOADER_DATA
+                //（exit_boot_services 后保留）；写入范围 = capsule 编码
+                // 长度（136B < 4 KiB 页）。
+                let dst = page.as_ptr() as *mut u8;
+                unsafe {
+                    core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
+                }
+                println!(
+                    "ENEROS stage=identity-capsule slot={} gen={} secver={} floor={} ver={}.{}.{}",
+                    slot_name(selection.slot),
+                    active_control.sequence,
+                    manifest.header.security_version,
+                    active_control.security_floor,
+                    manifest.header.product_version.major,
+                    manifest.header.product_version.minor,
+                    manifest.header.product_version.patch,
+                );
+            }
+            Err(_) => {
+                println!("ENEROS stage=identity-capsule-alloc-fail — OTA not-ready (soft degrade)");
+            }
         }
         println!(
             "ENEROS stage=verified slot={} security_version={} bootctrl_generation={} media_reads={} media_writes={} kernel_bytes={} init_bytes={}",

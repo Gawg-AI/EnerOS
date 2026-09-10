@@ -39,6 +39,16 @@ fn main() {
     println!("cargo:rerun-if-changed={}", pubkey.display());
 
     let mut body = String::new();
+    // 70.5（WP-70.5.6）：station principal 公钥嵌入（SEC1 未压缩点 65B
+    // 原始字节——公钥非机密；轮换 = 重构建/换包）。缺文件 = 空常量 =
+    // 显式开发模式（旧 48B 无签会话保留；v2 签名面拒绝 NoStationKey）。
+    let station = root.join("product/station/station-pubkey.sec1");
+    println!("cargo:rerun-if-changed={}", station.display());
+    let station_bytes = fs::read(&station).unwrap_or_default();
+    body.push_str(&format!(
+        "pub const STATION_PUBKEY_SEC1: &[u8] = &{:?};\n",
+        station_bytes
+    ));
     if bundle.is_file() {
         let bytes = fs::read(&bundle).unwrap_or_default();
         body.push_str(&format!("pub const CONFIG_BUNDLE: &[u8] = &{:?};\n", bytes));

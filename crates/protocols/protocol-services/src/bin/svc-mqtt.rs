@@ -67,30 +67,84 @@ pub extern "C" fn _start(
         dma_phys,
     );
     // 39：协议插件在服务侧构造（descriptor 随 readiness 报告）。
-    let plugin = eneros_mqtt::plugin::MqttPlugin::new();
+    let mut plugin = eneros_mqtt::plugin::MqttPlugin::new();
     protocol_ladder::print_descriptor(parts.service, &plugin);
-    // 47（WP-47.5）：policy/实现一致机器校验——注册表（本装配无目标侧
-    // TLS 工厂；嵌定 first 实现 host 已验证）。qemu-test 装配允许显式明文
-    //（InsecureStream，永不冒充）；ReleaseTls 下声明 SecureProfile 而无
-    // 工厂 → assembly_allows=false → 能力壳（fail-closed）。
+    // 47（WP-47.5）：policy/实现一致机器校验——注册表。
+    // 70.5（WP-70.5.6）双臂装配：
+    // - qemu-test（feature qemu-test-synth）：AssemblyMode::QemuTest 显式
+    //   明文（InsecureStream 永不冒充；closure gate 强制 release 闭包
+    //   无此 feature）；
+    // - release（mqtt-tls）：AssemblyMode::ReleaseTls——构建期嵌入材料
+    //   在位 → 注入插件 TLS 材料 + 注册工厂（has=true → 装配允许，真实
+    //   TLS 1.3 握手）；材料缺失 → has=false → 能力壳 fail-closed
+    //   （不降级明文）。
     {
-        let registry = eneros_protocol_abstract::channel::SecureChannelRegistry::new();
-        let mode = eneros_protocol_abstract::channel::AssemblyMode::QemuTest;
-        let profile = plugin.descriptor().security_profile;
-        let has = registry.has(plugin.descriptor().id);
-        let policy = eneros_protocol_abstract::channel::ChannelPolicy::default_dev();
-        let ok = eneros_protocol_abstract::channel::assembly_allows(mode, profile, has, &policy);
-        eneros_runtime::println!(
-            "[svc-mqtt] SECURITY-CHECK mode=QemuTest profile={profile:?} factory={has} assembly={}",
-            if ok {
-                "allowed（显式明文）"
-            } else {
-                "REJECTED"
-            }
-        );
-        if !ok {
+        #[cfg(feature = "qemu-test-synth")]
+        {
+            let registry = eneros_protocol_abstract::channel::SecureChannelRegistry::new();
+            let mode = eneros_protocol_abstract::channel::AssemblyMode::QemuTest;
+            let profile = plugin.descriptor().security_profile;
+            let has = registry.has(plugin.descriptor().id);
+            let policy = eneros_protocol_abstract::channel::ChannelPolicy::default_dev();
+            let ok =
+                eneros_protocol_abstract::channel::assembly_allows(mode, profile, has, &policy);
             eneros_runtime::println!(
-                "[svc-mqtt] policy/实现不一致 —— capability 壳（fail-closed）"
+                "[svc-mqtt] SECURITY-CHECK mode=QemuTest profile={profile:?} factory={has} assembly={}",
+                if ok {
+                    "allowed（显式明文）"
+                } else {
+                    "REJECTED"
+                }
+            );
+            if !ok {
+                eneros_runtime::println!(
+                    "[svc-mqtt] policy/实现不一致 —— capability 壳（fail-closed）"
+                );
+                let mut shell = protocol_ladder::capability_shell();
+                eneros_drv_svc::runtime::driver_service_main(
+                    ep,
+                    "mqtt",
+                    ready_ntfn,
+                    eneros_protocol_services::now_ms,
+                    eneros_protocol_services::instance_epoch(),
+                    shell.as_mut(),
+                );
+            }
+        }
+        #[cfg(all(not(feature = "qemu-test-synth"), feature = "mqtt-tls"))]
+        {
+            // 时间 = X6 墙钟链派生（SPEC-B；单调 now_ms 会让证书域检
+            // 落在 1970 年——窗A 实弹 InvalidCertificate 教训）。
+            let material = eneros_protocol_services::tls_material::embedded_material(wall_epoch);
+            match material {
+                Some(mat) => {
+                    plugin.set_tls_material(mat);
+                    eneros_runtime::println!(
+                        "[svc-mqtt] SECURITY-CHECK mode=ReleaseTls profile=Tls13 factory=true assembly=allowed（材料嵌入在位，握手时验证）"
+                    );
+                }
+                None => {
+                    eneros_runtime::println!(
+                        "[svc-mqtt] SECURITY-CHECK mode=ReleaseTls: 材料缺失 —— capability 壳（fail-closed，不降级明文）"
+                    );
+                    let mut shell = protocol_ladder::capability_shell();
+                    eneros_drv_svc::runtime::driver_service_main(
+                        ep,
+                        "mqtt",
+                        ready_ntfn,
+                        eneros_protocol_services::now_ms,
+                        eneros_protocol_services::instance_epoch(),
+                        shell.as_mut(),
+                    );
+                }
+            }
+        }
+        #[cfg(all(not(feature = "qemu-test-synth"), not(feature = "mqtt-tls")))]
+        {
+            // 无 mqtt-tls 的 release 构建 = 装配面缺 TLS 支持——fail-closed
+            // （能力壳；70.5 起明文 broker 不允许出现在 release 闭包）。
+            eneros_runtime::println!(
+                "[svc-mqtt] SECURITY-CHECK mode=ReleaseTls: TLS 支持未编译 —— capability 壳（fail-closed）"
             );
             let mut shell = protocol_ladder::capability_shell();
             eneros_drv_svc::runtime::driver_service_main(

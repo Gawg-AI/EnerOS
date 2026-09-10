@@ -203,6 +203,13 @@ impl<C: RawIpc> MqttWriteIoService<C> {
     pub fn forward_mgmt_requests(&mut self) {
         let mut reqs: Vec<Vec<u8>> = Vec::new();
         self.io.plugin_mut().drain_mgmt_requests(&mut reqs);
+        if !reqs.is_empty() {
+            eneros_runtime::println!(
+                "[mqtt-io] MGT-FORWARD n={} len0={}",
+                reqs.len(),
+                reqs[0].len()
+            );
+        }
         self.forward_mgmt_batch(&reqs);
     }
 

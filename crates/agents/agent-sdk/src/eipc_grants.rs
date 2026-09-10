@@ -29,7 +29,12 @@ pub const EIPC_GRANTS: &[(&str, &str)] = &[
     // （块命令面 OP_EXECUTE + BLK_CMD_*）。
     ("svc-ledger", "svc-storage"),
     ("svc-market", "svc-storage"),
+    // 70.5（WP-70.5.2）：svc-ota 追加 config 边（OtaConsumer 真实取数——
+    // 信任锚/策略参数唯一生产来源）。追加于 storage 边之后：storage 保持
+    // 槽 EIPC_EP_BASE_SLOT+0（bit 0），config = 槽 +1（bit 1）；svc-ota
+    // _start 按名解析，不手数槽位。
     ("svc-ota", "svc-storage"),
+    ("svc-ota", "svc-config"),
     ("svc-observability", "svc-storage"),
     // 50（WP-50.1 exporter 真通道）：svc-observability 遥测批量帧经 EIPC
     // 分片 EXECUTE 送达 svc-mqtt。槽序：其表内第 2 条授予 = 槽 base+1（bit 1）。
@@ -312,6 +317,26 @@ mod tests {
         // 61 v0.314.27：telemetry 第 2 边 = svc-config（影子路径配置取数；
         // 追加序——既有边槽位不变）。
         assert_eq!(eipc_resolve("svc-telemetry", "svc-config"), Some((1, 4)));
+        // 70.5（WP-70.5.2）：svc-ota 双边——storage 槽位冻结 + config 追加。
+        assert_eq!(
+            eipc_resolve("svc-ota", "svc-storage"),
+            Some((0, EIPC_EP_BASE_SLOT)),
+            "既有 storage 边槽位冻结（config 边不得挤位）"
+        );
+        assert_eq!(
+            eipc_resolve("svc-ota", "svc-config"),
+            Some((1, EIPC_EP_BASE_SLOT + 1)),
+            "70.5 config 边 = 第 2 条授予"
+        );
+        let (mask, grants) = eipc_grants("svc-ota");
+        assert_eq!(mask, 0b11, "svc-ota 恰两条授予边");
+        assert_eq!(
+            grants,
+            alloc::vec![
+                (EIPC_EP_BASE_SLOT, "svc-storage"),
+                (EIPC_EP_BASE_SLOT + 1, "svc-config"),
+            ],
+        );
     }
 
     /// S1 WP-S1.1 C6（F-9/F-11）：七个协议客户端今日 `svc-config` 槽位冻结
