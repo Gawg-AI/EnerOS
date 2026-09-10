@@ -158,11 +158,11 @@ cargo xtask run qemu-prod \
   --reset-bootctrl --ready-marker product-ready --qmp-deadline-secs "$DL" >/dev/null 2>&1 &
 QEMU_JOB=$!
 
-# R6 负例：实时定时注入（QEMU 启动 +90s 墙钟触发——串口文件滞后约
+# R6 负例：实时定时注入（QEMU 启动 +75s 墙钟触发——串口文件滞后约
 # 250s，以文件为触发的注入会落进窗内串口静默段之后；+90s 时订阅已
 # 就绪且目标活跃）。
 (
-  sleep 90
+  sleep 75
   for ROUND in 1 2 3; do
     python3 "$ROOT/evidence/70/mgt_v2_forger.py" --broker 127.0.0.1:"$TLS_PORT" \
       --ca "$WORK/ca.pem" --client "$WORK/broker.pem" --client-key "$WORK/broker.key" \

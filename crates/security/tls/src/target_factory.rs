@@ -109,14 +109,33 @@ impl embedded_io::Read for TlsSessionIo {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         loop {
             match self.inner.0.recv(buf) {
-                Ok(n) => return Ok(n),
+                Ok(n) => {
+                    READ_DATA_COUNT.fetch_add(1, Ordering::Relaxed);
+                    if READ_DATA_COUNT.load(Ordering::Relaxed) % 50 == 1 {
+                        eneros_runtime::println!(
+                            "[tls-diag] session read data n={} len={n}",
+                            READ_DATA_COUNT.load(Ordering::Relaxed)
+                        );
+                    }
+                    return Ok(n);
+                }
                 Err(TransportError::Timeout) if self.take_retry() => continue,
-                Err(TransportError::Timeout) => return Err(embedded_io::ErrorKind::TimedOut),
+                Err(TransportError::Timeout) => {
+                    let t = READ_TIMEOUT_COUNT.fetch_add(1, Ordering::Relaxed);
+                    if t % 200 == 0 {
+                        eneros_runtime::println!("[tls-diag] session read timeout n={t}");
+                    }
+                    return Err(embedded_io::ErrorKind::TimedOut);
+                }
                 Err(_) => return Err(embedded_io::ErrorKind::ConnectionReset),
             }
         }
     }
 }
+
+/// 诊断计数（目标/宿主通用；观测面非判据）。
+static READ_DATA_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static READ_TIMEOUT_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 impl embedded_io::Write for TlsSessionIo {
     fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {

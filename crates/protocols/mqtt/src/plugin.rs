@@ -132,7 +132,6 @@ pub struct MqttPlugin {
     mgmt_inbox: alloc::vec::Vec<alloc::vec::Vec<u8>>,
     /// 50：mgmt inbox 满 / 超限丢弃计数（观测）。
     pub mgmt_dropped_count: u64,
-
     /// 49：待发布 app 消息（topic, payload, 入队时刻 ms）——服务层入队，
     /// poll 时 QoS1 发布；入队时刻 = 最近一次 poll 时刻（误差 ≤ 一个
     /// poll 周期，远小于 [`APP_OUTBOX_TTL_MS`] 量级）。
@@ -172,6 +171,11 @@ const CONNECT_BACKOFF_BASE_MS: u64 = 1_000;
 const CONNECT_BACKOFF_CAP_MS: u64 = 30_000;
 
 impl MqttPlugin {
+    /// 70.5 R6 诊断：待转发 mgmt 帧数（只读观测面）。
+    pub fn mgmt_inbox_len(&self) -> usize {
+        self.mgmt_inbox.len()
+    }
+
     /// 70.5（WP-70.5.6）：注入目标 TLS 材料（装配方 = svc-mqtt bin 从
     /// 构建期嵌入面构造；Some 后 broker 连接强制 TLS 1.3——明文路径
     /// 退出，断链后经 reconnect 完整重握手）。
