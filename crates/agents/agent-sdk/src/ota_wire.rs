@@ -463,7 +463,7 @@ mod tests {
         };
         let image = [0u8; 512];
         let req = encode_download_v2(&desc, &desc_sig, &image_sig, 512, &image);
-        // 布局钉扎：magic+sub+desc(142)+sig(64)+sig(64)+chunk(4)+len(4)+image
+        // 布局钉扎：magic+sub+desc(158)+sig(64)+sig(64)+chunk(4)+len(4)+image
         let fixed = 5 + 158 + 64 + 64 + 4 + 4;
         assert_eq!(req.len(), fixed + image.len());
         assert_eq!(&req[..5], b"OTA1\x02");

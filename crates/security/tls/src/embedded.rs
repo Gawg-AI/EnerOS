@@ -630,14 +630,23 @@ impl<'b, S: embedded_io::Read + embedded_io::Write + 'b> EmbeddedTlsStream<'b, S
         server_name: Option<&str>,
         read_buf: &'b mut [u8],
         write_buf: &'b mut [u8],
-    ) -> Result<Self, TlsError> {
+    ) -> Result<Self, (S, TlsError)> {
         let config = if let Some(name) = server_name {
             TlsConfig::new().with_server_name(name)
         } else {
             TlsConfig::new()
         };
         let mut conn = embedded_tls::blocking::TlsConnection::new(socket, read_buf, write_buf);
-        conn.open(TlsContext::new(&config, &mut provider))?;
+        if let Err(e) = conn.open(TlsContext::new(&config, &mut provider)) {
+            // 握手失败返还底层 socket（close 同约定）——连接对象不随错误
+            // 丢弃，重连恢复面需要保留 TCP 侧供下次重试（target_factory
+            // reconnect 重试语义）。
+            let socket = match conn.close() {
+                Ok(s) => s,
+                Err((s, _)) => s,
+            };
+            return Err((socket, e));
+        }
         Ok(Self {
             conn,
             _bufs: core::marker::PhantomData,
@@ -668,8 +677,11 @@ impl<'b, S: embedded_io::Read + embedded_io::Write + 'b> EmbeddedTlsStream<'b, S
 // ============================================================================
 // 测试：host 环回 TLS 1.3 握手（embedded-tls 客户端 + rustls 服务器）
 // 蓝图/20 R1-3 验收：握手+往返 ✓；伪造证书/错误 CN 握手必败 ✓
+// 门 = embedded + std（rustls 对端/std::net 仅随 std feature 存在——
+// `--no-default-features --features embedded` 下本模块不编译而非 38 处
+// 编译错误；target_factory 测试门同型）。
 // ============================================================================
-#[cfg(all(test, feature = "embedded"))]
+#[cfg(all(test, feature = "embedded", feature = "std"))]
 mod tests {
     use std::io::{Read as _, Write as _};
 
@@ -754,6 +766,7 @@ mod tests {
             &mut read_buf,
             &mut write_buf,
         )
+        .map_err(|(_, e)| e)
         .expect("TLS 1.3 握手 + 证书链验证必须成功（R1-3 验收）");
         drop(client_id);
 

@@ -3379,6 +3379,14 @@ const FEATURE_MATRIX: &[(&str, &str)] = &[
     ("eneros-modbus-tcp", "net"),
     ("eneros-mqtt", "net"),
     ("eneros-config-bundle", "compile"),
+    // 70.5 复查补口：target_factory（目标 TLS 1.3 工厂）测试面受
+    // `all(test, embedded, std)` 门控——workspace 默认面不编译（embedded
+    // 非成员依赖默认特征），唯一执行面 = 本矩阵项。70.5 卷内发现的
+    // reconnect 首败永久死亡 BUG 即从此口漏过全部门禁（回归锁
+    // reconnect_retries_after_failed_attempt_until_broker_recovers 随本
+    // 项常驻实跑；测试进程内经 FACTORY_TEST_LOCK 串行——静态记录缓冲
+    // 不容并行测试共享）。
+    ("eneros-tls", "embedded"),
 ];
 
 /// 完备性自检的守卫半径：被视为「测试面特征」的特征名。
@@ -3386,7 +3394,9 @@ const FEATURE_MATRIX: &[(&str, &str)] = &[
 /// 半径外特征面既有守卫（登记）：`mock` → mock-gate（pre-commit）；
 /// `std`/`loom`/`tpm2` → ci.yml 既有矩阵项；`sel4` → target-only
 /// （host 拉起即 compile_error 自守，target 面由 image raw + QEMU 门覆盖）。
-const TEST_FACE_FEATURES: &[&str] = &["net", "compile"];
+/// `embedded`（70.5 复查入半径）：目标 TLS 测试面门 `all(test, embedded,
+/// std)`——不入半径则未来任一 crate 新开 `embedded` 测试面自检漏报。
+const TEST_FACE_FEATURES: &[&str] = &["net", "compile", "embedded"];
 
 /// 豁免表（crate 包名 → 理由）：使用测试面特征但不入矩阵的 crate。
 const FEATURE_MATRIX_EXEMPT: &[(&str, &str)] = &[];

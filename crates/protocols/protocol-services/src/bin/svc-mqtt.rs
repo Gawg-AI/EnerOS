@@ -119,6 +119,14 @@ pub extern "C" fn _start(
             match material {
                 Some(mat) => {
                     plugin.set_tls_material(mat);
+                    if wall_epoch == 0 {
+                        // X6 墙钟缺失：证书有效期以 0 为基准 → 全部
+                        // CertNotYetValid，握手必败（fail-closed 方向正确）——
+                        // 诚实打印，不让下一行 "allowed" 误导观测（70.5 复查）。
+                        eneros_runtime::println!(
+                            "[svc-mqtt] SECURITY-CHECK mode=ReleaseTls: X6 wall epoch missing (0) —— TLS 握手将全部失败（证书 not-yet-valid）直至时间可得"
+                        );
+                    }
                     eneros_runtime::println!(
                         "[svc-mqtt] SECURITY-CHECK mode=ReleaseTls profile=Tls13 factory=true assembly=allowed（材料嵌入在位，握手时验证）"
                     );

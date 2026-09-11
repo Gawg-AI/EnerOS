@@ -31,6 +31,46 @@ pub const SIG_FIELD_LEN: usize = 74;
 pub const SESSION_V1_LEN: usize = 48;
 /// v2 会话长度 = v1 ‖ token ‖ sig 字段。
 pub const SESSION_V2_LEN: usize = SESSION_V1_LEN + TOKEN_LEN + SIG_FIELD_LEN;
+/// MGT1 wire 头长度（magic "MGT1" 4B ‖ 1B）。
+pub const MGT1_HEADER_LEN: usize = 5;
+/// v1 最短请求：头 ‖ 会话 48 ‖ request_id 8 ‖ action_len 1。
+pub const V1_MIN_REQ_LEN: usize = MGT1_HEADER_LEN + SESSION_V1_LEN + 8 + 1;
+/// v2 最短请求：头 ‖ 会话 48 ‖ token 64 ‖ sig 74 ‖ request_id 8 ‖ action_len 1。
+pub const V2_MIN_REQ_LEN: usize = MGT1_HEADER_LEN + SESSION_V2_LEN + 8 + 1;
+
+/// MGT1 请求会话形状（长度 + token 魔数位置判据——svc-mgmt v1/v2 判别
+/// 单源）。三臂必须互斥完备：带 token 魔数却尾段不足的帧**不得**落回
+/// v1 无签解析——70.5 复查 P0：station 部署面 62..199B 短尾帧曾三臂全不
+/// 命中（非 v2 形状拒绝臂/完整 v2 验签臂/`ERR:proto` 短帧臂）直落 v1
+/// 无签解析，伪造 48B 会话块里的 admin 角色直达 `rpc.handle`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionShape {
+    /// 连 48B 会话块 ‖ request_id ‖ action_len 都不够（`ERR:proto` 面）。
+    Short,
+    /// 旧 48B 无签形（仅 station 公钥未部署的开发模式合法）。
+    V1,
+    /// 带 token 魔数但不足完整 v2 长度——协议违例（任何模式都拒绝，
+    /// 不落回 v1）。
+    V2Truncated,
+    /// 完整 v2 形状（尾段之后至少含 request_id 8 ‖ action_len 1）。
+    V2,
+}
+
+/// 会话形状分类（判别 = v1 会话块之后的 token 魔数位置，与变长 action
+/// 无关；长度下界见 [`V1_MIN_REQ_LEN`]/[`V2_MIN_REQ_LEN`]）。
+pub fn classify_session(req: &[u8]) -> SessionShape {
+    if req.len() < V1_MIN_REQ_LEN {
+        return SessionShape::Short;
+    }
+    let magic_at = MGT1_HEADER_LEN + SESSION_V1_LEN;
+    if req[magic_at..magic_at + TOKEN_MAGIC.len()] != TOKEN_MAGIC {
+        return SessionShape::V1;
+    }
+    if req.len() < V2_MIN_REQ_LEN {
+        return SessionShape::V2Truncated;
+    }
+    SessionShape::V2
+}
 
 /// 验签拒绝类别（词形；只含类别，不含密钥材料）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,7 +240,11 @@ pub fn verify_v2_tail(
     let channel_binding = field_str(&token[32..48]).ok_or(PrincipalReject::Malformed)?;
     let expiry = u64::from_le_bytes(token[48..56].try_into().expect("u64"));
     let issued = u64::from_le_bytes(token[56..64].try_into().expect("u64"));
-    // 时序判据：签发 ≤ 过期（防倒挂 token）；当前 ≥ 签发（防未来签发）。
+    // 时序判据：签发 ≤ 过期（防倒挂 token）；当前 ≥ 过期（有效期未
+    // 结束才可用）。**未来签发不拒**（as-designed）：绝对判据只锚过期
+    // 时刻——station 与设备的墙钟偏差不构成拒绝面（签发时刻为记账
+    // 字段；若 70.6+ 裁决需要 not-before 语义，须连同 X6 偏差容忍度
+    // 一并立卷，不得只加裸比较）。
     if issued > expiry {
         return Err(PrincipalReject::Malformed);
     }
@@ -322,5 +366,52 @@ mod tests {
             verify_v2_tail(&tail[..60], &spki, 1_500_000),
             Err(PrincipalReject::Malformed)
         );
+    }
+
+    /// 70.5 复查 P0 回归锁：形状判别三臂互斥完备——带 token 魔数却尾段
+    /// 不足（62..199B）的帧 = `V2Truncated`（修复前三臂全不命中直落 v1
+    /// 无签解析：伪造 48B 会话块 admin 角色 ‖ 8B 魔数 ‖ 1B action_len ‖
+    /// action = 75B 攻击帧即达 `rpc.handle`）；完整 v2/旧 v1/短帧各归其位。
+    #[test]
+    fn classify_session_covers_truncated_v2_gap() {
+        let magic_at = MGT1_HEADER_LEN + SESSION_V1_LEN;
+        // 攻击帧：头 5 ‖ 伪造会话 48（roles[0]=2=admin）‖ 魔数 8 ‖ action_len ‖ action。
+        let mut forged = vec![0u8; magic_at];
+        forged[..4].copy_from_slice(b"MGT1");
+        forged[MGT1_HEADER_LEN + 16] = 2;
+        forged.extend_from_slice(&TOKEN_MAGIC);
+        forged.push(13);
+        forged.extend_from_slice(b"history-query");
+        assert_eq!(forged.len(), 75, "攻击帧长度落在 62..200 缝隙内");
+        assert_eq!(classify_session(&forged), SessionShape::V2Truncated);
+        // 缝隙全域：带魔数且 len ∈ [V1_MIN, V2_MIN) 一律截断 v2。
+        for len in V1_MIN_REQ_LEN..V2_MIN_REQ_LEN {
+            let mut req = vec![0u8; len];
+            req[magic_at..magic_at + 8].copy_from_slice(&TOKEN_MAGIC);
+            assert_eq!(
+                classify_session(&req),
+                SessionShape::V2Truncated,
+                "len={len}"
+            );
+        }
+        // 完整 v2（恰 200B 与更长）。
+        let mut full = vec![0u8; V2_MIN_REQ_LEN];
+        full[magic_at..magic_at + 8].copy_from_slice(&TOKEN_MAGIC);
+        assert_eq!(classify_session(&full), SessionShape::V2);
+        full.extend_from_slice(b"extra-action-bytes");
+        assert_eq!(classify_session(&full), SessionShape::V2);
+        // 旧 v1（无魔数，任意 ≥62B）与短帧（<62B）。
+        let v1 = vec![0u8; V1_MIN_REQ_LEN];
+        assert_eq!(classify_session(&v1), SessionShape::V1);
+        let v1_long = vec![0u8; V2_MIN_REQ_LEN + 7];
+        assert_eq!(classify_session(&v1_long), SessionShape::V1);
+        assert_eq!(
+            classify_session(&v1[..V1_MIN_REQ_LEN - 1]),
+            SessionShape::Short
+        );
+        assert_eq!(classify_session(&[]), SessionShape::Short);
+        // 长度常量锚（svc-mgmt 判别下界同源）。
+        assert_eq!(V1_MIN_REQ_LEN, 62);
+        assert_eq!(V2_MIN_REQ_LEN, 200);
     }
 }

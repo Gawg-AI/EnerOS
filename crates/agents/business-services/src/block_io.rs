@@ -274,6 +274,34 @@ mod tests {
         assert!(matches!(commit, OtaStep::Committed));
     }
 
+    /// 非对齐镜像（长度非 chunk 整数倍）全链下载：尾部块必须照常落盘并
+    /// Verified——total_chunks 口径 = div_ceil（与 kernel_ota/rollback 同源），
+    /// 地板除会让 AbPartitionOta 写状态机提前置 Written，尾块 WriteFailed。
+    #[test]
+    fn non_aligned_image_download_survives_tail_chunk() {
+        use eneros_ota_ab::ab_partition::{AbPartitionOta, PARTITION_BLOCKS, SLOT_A_BASE_BLOCK};
+
+        use self::ota_v2::{identity, keypair, policy, req02};
+        use crate::ota_service::{handle_ota_ab_command, OtaService};
+
+        let total_blocks = SLOT_A_BASE_BLOCK + 2 * PARTITION_BLOCKS + 1;
+        let storage = SimStorage::new((total_blocks * 512) as usize, 7);
+        let client = SimClient { storage };
+        let io = BlockIo::new(client, "svc-storage", 7, 1000);
+        let dev = EipcBlockDevice::new(io, 512, total_blocks);
+
+        let (sk, root_key, kp) = keypair(0x5A);
+        let ota = AbPartitionOta::new(dev, kp.public_key, 1_000);
+        let mut svc = OtaService::new(ota, policy(root_key), &identity());
+
+        // 1224B = 512+512+200（3 块；地板除 = 2 → 尾块必失败的对齐盲区）。
+        let image: Vec<u8> = (0..1224u32).map(|i| (i % 251) as u8).collect();
+        let req = req02(&sk, "0.123.0", &image);
+        let mut resp = Vec::new();
+        assert!(handle_ota_ab_command(Some(&mut svc), &req, &mut resp));
+        assert_eq!(resp, vec![2u8]); // Verified
+    }
+
     #[test]
     fn ota_ab_command_protocol_roundtrip() {
         use eneros_ota_ab::ab_partition::{AbPartitionOta, PARTITION_BLOCKS, SLOT_A_BASE_BLOCK};

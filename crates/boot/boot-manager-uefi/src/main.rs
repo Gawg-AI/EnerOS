@@ -382,11 +382,14 @@ fn prepare_boot() -> Result<LoadedBoot, BootFailure> {
             init_payload,
         } = verified;
         // 70.5（WP-70.5.1）：可信身份 capsule 页——BOOT-007 窗口尾页固定
-        // 地址（IDENTITY_CAPSULE_PHYS）显式锁定。必须在任何 AnyPages 分配
-        // （kernel/init/测量/映射/BootInfo）之前：UEFI 分配器自顶向下，
-        // 晚分配会被占页 Address 失败 → OTA 身份缺失。分配失败 = 诚实
-        // 降级（soft）：root 读不到 capsule → OTA not-ready，引导继续
-        //（不因 OTA 身份面阻断启动）。
+        // 地址（IDENTITY_CAPSULE_PHYS）显式锁定。置于本函数全部显式
+        // AllocateType 分配（kernel/init/测量/映射/BootInfo）之前：UEFI
+        // 分配器自顶向下，晚分配会被占页 Address 失败 → OTA 身份缺失
+        // （verify_slot 的堆分配在此之前已发生——池分配不落固定页，70.5
+        // 复查订正原"任何 AnyPages 之前"措辞）。分配失败 = 诚实降级
+        // （soft）：root 读不到 capsule → OTA not-ready，引导继续（不因
+        // OTA 身份面阻断启动）；失败页非本程序所有，不得写零——暖重启
+        // 残留旧 capsule 的新鲜性核验属 root 消费侧（70.6 登记）。
         let identity_capsule_page = boot::allocate_pages(
             AllocateType::Address(IDENTITY_CAPSULE_PHYS),
             MemoryType::LOADER_DATA,

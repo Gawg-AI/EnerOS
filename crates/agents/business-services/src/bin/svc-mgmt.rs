@@ -366,8 +366,10 @@ struct MgmtHandler {
 #[cfg(target_os = "none")]
 impl eneros_control_services::ControlServiceHandler for MgmtHandler {
     fn handle(&mut self, req: &[u8], resp: &mut alloc::vec::Vec<u8>, now_ms: u64) -> bool {
+        use eneros_business_services::mgmt_principal::{self, SessionShape};
         use eneros_business_services::mgmt_rpc::*;
-        const SESSION_LEN: usize = 16 + 4 + 4 + 16 + 8;
+        const SESSION_LEN: usize = mgmt_principal::SESSION_V1_LEN;
+        const V2_TAIL_LEN: usize = mgmt_principal::SESSION_V2_LEN - SESSION_LEN;
         // 70.5（WP-70.5.6）：station 公钥部署面——
         // 在位 → MGT1 v2（session 48B ‖ token 64B ‖ sig 字段 74B）强制：
         //   验签通过才构建会话（wire 角色/主字段不可信——签名绑定）；
@@ -376,24 +378,33 @@ impl eneros_control_services::ControlServiceHandler for MgmtHandler {
         // 已明示）。
         let station_key = eneros_business_services::STATION_PUBKEY_SEC1;
         let station_deployed = !station_key.is_empty();
-        // v2 判别 = v1 会话块之后的 token 魔数（位置固定，与变长 action
-        // 无关）；长度下界 = v1 会话 + v2 尾段 + request_id + 长度字节。
-        const V2_TAIL_LEN: usize =
-            eneros_business_services::mgmt_principal::SESSION_V2_LEN - SESSION_LEN;
-        let v2_shaped = req.len() >= 5 + SESSION_LEN + 8 + 1
-            && req[5 + SESSION_LEN..5 + SESSION_LEN + 8]
-                == eneros_business_services::mgmt_principal::TOKEN_MAGIC;
-        // station 部署面：非 v2 形状（旧 48B 无签/畸形）= 一律拒绝——
-        // 静默回退 v1 = 签名 principal 强制面开洞（70.5 实弹自咬修复）。
-        if station_deployed && !v2_shaped && req.len() >= 5 + SESSION_LEN + 8 + 1 {
-            eneros_runtime::println!(
-                "[svc-mgmt] MGT-PRINCIPAL rejected (unverified session shape) —— station 部署面 v2 强制"
-            );
-            resp.extend_from_slice(b"ERR:principal-unverified");
-            return false;
-        }
-        if station_deployed && v2_shaped && req.len() >= 5 + SESSION_LEN + V2_TAIL_LEN + 8 + 1 {
-            {
+        // 形状判别单源 `classify_session`（token 魔数位置 + 长度下界）：
+        // 三臂互斥完备——70.5 复查 P0：带魔数却尾段不足的 62..199B 帧曾
+        // 三臂全不命中直落 v1 无签解析（伪造 48B 会话块 admin 直达
+        // rpc.handle）；现任何模式下截断 v2 = 协议违例。
+        match mgmt_principal::classify_session(req) {
+            SessionShape::Short => {
+                resp.extend_from_slice(b"ERR:proto");
+                return false;
+            }
+            SessionShape::V2Truncated => {
+                eneros_runtime::println!(
+                    "[svc-mgmt] MGT-PRINCIPAL rejected (truncated v2 shape len={}) —— 不落回 v1 无签解析",
+                    req.len()
+                );
+                resp.extend_from_slice(b"ERR:proto");
+                return false;
+            }
+            // station 部署面：旧 48B 无签形 = 一律拒绝——静默回退 v1 =
+            // 签名 principal 强制面开洞（70.5 实弹自咬修复）。
+            SessionShape::V1 if station_deployed => {
+                eneros_runtime::println!(
+                    "[svc-mgmt] MGT-PRINCIPAL rejected (unverified session shape) —— station 部署面 v2 强制"
+                );
+                resp.extend_from_slice(b"ERR:principal-unverified");
+                return false;
+            }
+            SessionShape::V2 if station_deployed => {
                 let tail = &req[5 + SESSION_LEN..5 + SESSION_LEN + V2_TAIL_LEN];
                 let Some(offset) = self.unix_offset_ms else {
                     eneros_runtime::println!(
@@ -403,11 +414,7 @@ impl eneros_control_services::ControlServiceHandler for MgmtHandler {
                     return false;
                 };
                 let now_unix_ms = now_ms.saturating_add(offset);
-                match eneros_business_services::mgmt_principal::verify_v2_tail(
-                    tail,
-                    station_key,
-                    now_unix_ms,
-                ) {
+                match mgmt_principal::verify_v2_tail(tail, station_key, now_unix_ms) {
                     Ok(vp) => {
                         let request_id = u64::from_le_bytes(
                             req[5 + SESSION_LEN + V2_TAIL_LEN..5 + SESSION_LEN + V2_TAIL_LEN + 8]
@@ -454,16 +461,9 @@ impl eneros_control_services::ControlServiceHandler for MgmtHandler {
                     }
                 }
             }
-            // 尾段形态不符（含旧 48B 面）= 未签名/畸形——v2 强制面拒绝。
-            eneros_runtime::println!(
-                "[svc-mgmt] MGT-PRINCIPAL rejected (unverified session shape) —— station 部署面 v2 强制"
-            );
-            resp.extend_from_slice(b"ERR:principal-unverified");
-            return false;
-        }
-        if req.len() < 5 + SESSION_LEN + 8 + 1 {
-            resp.extend_from_slice(b"ERR:proto");
-            return false;
+            // 开发模式（station 公钥未部署）：旧 48B 无签面保留——完整 v2
+            // 帧亦按 v1 解析（既有语义；qemu-test 兼容探针同纪律）。
+            SessionShape::V1 | SessionShape::V2 => {}
         }
         let p = &req[5..];
         let mut principal = [0u8; 16];

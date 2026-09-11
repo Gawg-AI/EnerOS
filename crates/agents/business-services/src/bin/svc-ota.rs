@@ -1,6 +1,6 @@
 //! svc-ota — 系统 A/B OTA EL0（蓝图 41 WP-41.6；70.5 信任归真）。
 //! EIPC 协议：magic "OTA1" ‖ cmd ‖ payload。
-//! - 0x01 CHECK-DESC：描述 142B‖desc_sig 64B → verdict(1)（v2 签名描述）
+//! - 0x01 CHECK-DESC：描述 158B‖desc_sig 64B → verdict(1)（v2 签名描述）
 //! - 0x02 DOWNLOAD-DESC：描述‖desc_sig‖image_sig‖chunk‖len‖image → step(1)
 //! - 0x03 TRIAL：→ step(1)
 //! - 0x04 COMMIT / 0x05 REGRESSION：→ step(1)
@@ -329,6 +329,31 @@ impl eneros_control_services::ControlServiceHandler for OtaHandler {
                         "[svc-ota] OTA-IDENTITY stale floor {}<{} —— 拒绝",
                         identity.security_floor,
                         prev.security_floor
+                    );
+                    resp.extend_from_slice(b"ERR:identity-stale");
+                    return false;
+                }
+            }
+            // 已装配服务：二次身份只允许水位单调推进并**传播到在用准入**
+            // （`set_security_floor` 唯一生产调用点——WP-70.5.4 传播面；
+            // 70.5 复查：原实现只替换快照、装配冻结旧水位，"接受回 1"与
+            // "按旧水位准入"并存）；sku/版本/secver 变化 = 与在用装配分叉，
+            // 拒绝而非接受不生效。
+            if let (Some(ota), Some(prev)) = (self.ota.as_mut(), &self.identity) {
+                if identity.sku != prev.sku
+                    || identity.current_version != prev.current_version
+                    || identity.security_version != prev.security_version
+                {
+                    eneros_runtime::println!(
+                        "[svc-ota] OTA-IDENTITY conflicts with assembled identity —— 拒绝"
+                    );
+                    resp.extend_from_slice(b"ERR:identity-conflict");
+                    return false;
+                }
+                if let Err(e) = ota.set_security_floor(identity.security_floor) {
+                    // 上方单调检查已拦回退——不可达分支，诚实不吞。
+                    eneros_runtime::println!(
+                        "[svc-ota] OTA-IDENTITY floor propagate failed ({e}) —— 拒绝"
                     );
                     resp.extend_from_slice(b"ERR:identity-stale");
                     return false;

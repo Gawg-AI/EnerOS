@@ -50,7 +50,7 @@ def main():
 
     # session v1（48B）：principal/roles/tenant/channel/expiry
     principal = b"evil-admin" + b"\0" * 6  # 16B
-    roles = bytes([3, 0, 0, 0])  # admin 角色码（伪造目标）
+    roles = bytes([3, 0, 0, 0])  # 3 = superuser 角色码（rbac 表：2=admin，3=superuser；伪造目标——签名先拒，角色码值不影响 R6）
     tenant = struct.pack("<I", 1)
     channel = b"tls-relay" + b"\0" * 7
     expiry = struct.pack("<Q", 4_102_444_800_000)  # 2100 远期

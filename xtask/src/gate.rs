@@ -1080,6 +1080,9 @@ pub fn command_ota_anchor_gate(root: &Path, args: &[String]) -> DynResult<()> {
     let policy_path = root.join("product/security/key-policy.json");
     let policy: serde_json::Value = serde_json::from_str(&fs::read_to_string(&policy_path)?)
         .map_err(|error| invalid(format!("key-policy.json 解析失败: {error}")))?;
+    // 禁用面声明缺失/非数组 = fail-closed（与缺文件同径；70.5 复查：原
+    // `unwrap_or_default` 使缺字段静默等价"零禁用 profile"，qemu-prod
+    // 以 forbidden=no PASS 空转）。显式空数组 = 合法的"无禁用面"声明。
     let forbidden: Vec<String> = policy
         .get("test_trust_forbidden_profiles")
         .and_then(serde_json::Value::as_array)
@@ -1089,7 +1092,11 @@ pub fn command_ota_anchor_gate(root: &Path, args: &[String]) -> DynResult<()> {
                 .map(str::to_owned)
                 .collect()
         })
-        .unwrap_or_default();
+        .ok_or_else(|| {
+            invalid(
+                "key-policy.json 缺 test_trust_forbidden_profiles 数组——禁用面声明缺失（fail-closed，不视为零禁用）",
+            )
+        })?;
     let profile_is_forbidden = forbidden.iter().any(|p| p == profile);
 
     // 产物解码。

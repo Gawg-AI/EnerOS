@@ -140,7 +140,8 @@ impl eneros_durable_state::Decode for TrialState {
     }
 }
 
-/// 版本比较（语义版本串；前缀数字段比较）。
+/// 版本比较（语义版本串；前缀数字段比较）。操作数须为规范形（见
+/// [`is_canonical_version`]——非数字段在此被静默丢弃，准入前先域检）。
 pub fn version_cmp(a: &str, b: &str) -> core::cmp::Ordering {
     let pa: Vec<u64> = a.split('.').filter_map(|s| s.parse::<u64>().ok()).collect();
     let pb: Vec<u64> = b.split('.').filter_map(|s| s.parse::<u64>().ok()).collect();
@@ -151,6 +152,24 @@ pub fn version_cmp(a: &str, b: &str) -> core::cmp::Ordering {
         }
     }
     pa.len().cmp(&pb.len())
+}
+
+/// 版本串规范形：1..=3 个点分段、每段非空纯十进制且 u64 可解析——与
+/// capsule 投影 `major.minor.patch`（u16×3）同形。`version_cmp` 只对
+/// 规范形有意义。
+pub fn is_canonical_version(v: &str) -> bool {
+    let mut segments = 0usize;
+    for seg in v.split('.') {
+        segments += 1;
+        if segments > 3
+            || seg.is_empty()
+            || !seg.bytes().all(|b| b.is_ascii_digit())
+            || seg.parse::<u64>().is_err()
+        {
+            return false;
+        }
+    }
+    segments >= 1
 }
 
 /// CheckPolicy：monotonic version / SKU / **目标**安全版本 ≥ 水位 /
@@ -237,6 +256,12 @@ pub fn admit_description(
     }
     if desc.baseline_version != current_version {
         return DescVerdict::Rejected("baseline-mismatch");
+    }
+    // 目标版本串规范形（70.5 复查）：`version_cmp` 对非数字段静默丢弃
+    // （"2.x.0" 与 "2.0" 同序）+ 段数决胜——单调判据的操作数必须与 capsule
+    // 投影 `major.minor.patch` 同形，否则怪形版本可越过严格 Greater。
+    if !is_canonical_version(&desc.target_version) {
+        return DescVerdict::Rejected("desc-version-malformed");
     }
     // 策略判据单源（check_policy：版本单调/SKU/目标 secver≥水位/签名强制
     // /零锚/零代次）。
@@ -395,6 +420,13 @@ impl<M: OtaManager> OtaService<M> {
         if desc.image_len != image.len() as u64 {
             return Ok(OtaStep::Rejected("image-size-mismatch"));
         }
+        // chunk 单点守卫（70.5 复查）：装配侧 validate_policy 已拦 0，此处
+        // 是写路径唯一除数/步长——不留"total_chunks 有守卫、chunks(0) panic"
+        // 的自相矛盾半守卫。
+        let chunk = self.policy.chunk_size as usize;
+        if chunk == 0 {
+            return Ok(OtaStep::Rejected("policy-chunk-zero"));
+        }
         let meta = UpgradeMeta {
             target_version: heapless::String::try_from(desc.target_version.as_str())
                 .unwrap_or_default(),
@@ -403,11 +435,9 @@ impl<M: OtaManager> OtaService<M> {
             image_sig: *image_sig,
             download_url: heapless::String::new(),
             chunk_size: self.policy.chunk_size,
-            total_chunks: if self.policy.chunk_size == 0 {
-                0
-            } else {
-                (image.len() / self.policy.chunk_size as usize) as u32
-            },
+            // 口径 = div_ceil（与 kernel_ota/rollback/ab_partition 同源）：
+            // 地板除使非对齐镜像尾块落在 Written 之后 WriteFailed。
+            total_chunks: image.len().div_ceil(chunk) as u32,
             downloaded_chunks: 0,
         };
         // 下载（真实字节；分块写盘）。69.5：容量不足区分产出双数字
@@ -422,7 +452,6 @@ impl<M: OtaManager> OtaService<M> {
             }
             other => alloc::format!("prepare-failed:{other:?}"),
         })?;
-        let chunk = self.policy.chunk_size as usize;
         let mut offset = 0u64;
         for chunk_bytes in image.chunks(chunk) {
             self.ota
@@ -1126,6 +1155,17 @@ mod tests {
         req.extend_from_slice(&[0u8; 64 + 64 + 4 + 4 + 64]);
         // 非 canonical 描述在 wire 解析层即拒（parse→decode 严格域检）。
         assert_eq!(run(&req), "ERR:len");
+        // ⑩ 怪形目标版本（非数字段 / 超 3 段）：version_cmp 静默丢段会让
+        // "2.x.0" 与 "2.0" 同序越过严格 Greater——规范形域检拒（70.5 复查）。
+        let d = desc("2.x.0", hash, 64);
+        assert_eq!(run(&build(&d)), "ERR:rejected:desc-version-malformed");
+        let d = desc("1.2.3.4", hash, 64);
+        assert_eq!(run(&build(&d)), "ERR:rejected:desc-version-malformed");
+        assert!(
+            is_canonical_version("1.1.0")
+                && is_canonical_version("0")
+                && !is_canonical_version("1..0")
+        );
     }
 
     /// 旧 v1 无描述 DOWNLOAD（52B 定长头）失败关闭（WP-70.5.3 回滚

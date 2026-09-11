@@ -225,6 +225,26 @@ mod tests {
         }
     }
 
+    /// 70.5 复查（P2 登记转锁）：svc-ota 的 OTA1 命令面（含 0x08 身份
+    /// 分发——设定 current_version/security_floor/sku，capsule CRC 非认证）
+    /// 无 sender 判据，"root 独占"完全依赖拓扑：授予表中不得出现任何
+    /// `(*, "svc-ota")` 边。svc-mgmt 已登记 `ota-channel-unbound:mgmt→ota-
+    /// grant-missing` 等待该边——落地前必须先给 0x08 加 sender 白名单或
+    /// 独立 root 专用端点，否则 MGT1 认证对端可自造合法 capsule 压低水位
+    /// （撤销绕过）。本锁把该前置从注释变成红灯。
+    #[test]
+    fn svc_ota_has_no_service_callers_until_identity_push_gets_sender_gate() {
+        let callers: alloc::vec::Vec<&str> = EIPC_GRANTS
+            .iter()
+            .filter(|(_, target)| *target == "svc-ota")
+            .map(|(client, _)| *client)
+            .collect();
+        assert!(
+            callers.is_empty(),
+            "svc-ota 出现服务侧调用方 {callers:?}——0x08 IDENTITY 无 sender 判据，先加 root 专用门再开边"
+        );
+    }
+
     /// fail-closed：不存在的授予边返回 None（不伪造可达）。
     #[test]
     fn wp544_unknown_pair_is_none() {

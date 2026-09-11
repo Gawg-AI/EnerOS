@@ -285,6 +285,9 @@ struct Orchestration {
     chain_rounds: u64,
     /// 50（WP-50.1）：可观测遥测上报 epoch。
     obs_epoch: u64,
+    /// 70.5 复查：身份推送连续传输错误计数（有界重试——见
+    /// `identity_push_step`；成功/not-ready 回执归零）。
+    identity_push_errs: u8,
 }
 
 #[cfg_attr(not(target_os = "none"), allow(dead_code))] // host 面死码（66.5.2 收窄）
@@ -306,6 +309,7 @@ impl Orchestration {
             chain_epoch: 0,
             chain_rounds: 0,
             obs_epoch: 0,
+            identity_push_errs: 0,
         }
     }
 
@@ -322,6 +326,12 @@ impl Orchestration {
 // 一次性周期的 seL4 触点步（cfg 门——host 仅测 OnceFlags 状态机本体）。
 #[cfg(target_os = "none")]
 impl Orchestration {
+    /// 身份推送传输错误有界重试上限（连续计）：超时/NACK 是可恢复态
+    /// （svc-ota 忙于 config 取数 / TCG 慢速），首败即立旗 = 一次瞬时超时
+    /// 换整 boot 期 OTA 身份缺失；无界重试则每 10 tick 一次 5s 同步 call
+    /// 超时拖慢根环（同步 Call 卡死教训）——3 次后诚实放弃。
+    const IDENTITY_PUSH_ERR_LIMIT: u8 = 3;
+
     /// hang 注入步（原主循环 hang 块整体迁移；旗与到期判定进 OnceFlags，
     /// 词形 HEARTBEAT-TEST 行逐字节不变）。
     fn hang_inject_step(
@@ -433,6 +443,7 @@ impl Orchestration {
             }
             Ok(resp) if resp.starts_with(b"ERR:not-ready") => {
                 // 可恢复（config 取数未完成）——不立旗，限频重试。
+                self.identity_push_errs = 0;
                 if self.tick % 50 == 0 {
                     eneros_runtime::println!(
                         "[eneros-root-task] IDENTITY-PUSH: deferred (svc-ota not-ready — retrying)"
@@ -447,10 +458,24 @@ impl Orchestration {
                 );
             }
             Err(e) => {
-                self.once.mark_identity();
-                eneros_runtime::println!(
-                    "[eneros-root-task] IDENTITY-PUSH: FAILED ({e:?}) — OTA not-ready（诚实）"
-                );
+                // 传输错误（超时/NACK）= 可恢复态——与 not-ready 同径限频
+                // 重试，连续 IDENTITY_PUSH_ERR_LIMIT 次后才立旗诚实放弃
+                // （70.5 复查：原首败即立旗，与上方"成功/永久拒绝才立旗"
+                // 承诺矛盾——一次瞬时超时 = 整 boot 期 OTA 身份缺失）。
+                self.identity_push_errs = self.identity_push_errs.saturating_add(1);
+                if self.identity_push_errs >= Self::IDENTITY_PUSH_ERR_LIMIT {
+                    self.once.mark_identity();
+                    eneros_runtime::println!(
+                        "[eneros-root-task] IDENTITY-PUSH: FAILED ({e:?}) after {} transport errors — OTA not-ready（诚实）",
+                        self.identity_push_errs
+                    );
+                } else {
+                    eneros_runtime::println!(
+                        "[eneros-root-task] IDENTITY-PUSH: transport error ({e:?}) — retrying ({}/{})",
+                        self.identity_push_errs,
+                        Self::IDENTITY_PUSH_ERR_LIMIT
+                    );
+                }
             }
         }
     }

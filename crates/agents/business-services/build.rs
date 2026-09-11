@@ -44,7 +44,30 @@ fn main() {
     // 显式开发模式（旧 48B 无签会话保留；v2 签名面拒绝 NoStationKey）。
     let station = root.join("product/station/station-pubkey.sec1");
     println!("cargo:rerun-if-changed={}", station.display());
-    let station_bytes = fs::read(&station).unwrap_or_default();
+    // 缺文件 = 开发模式（合法）；**在位但不可读 / 形态不合** = 构建失败
+    // （70.5 复查：静默同化为"未部署"会让生产镜像放行 48B 无签会话——
+    // fail-open 方向；形态错误留到握手期才炸 = 管理面整体瘫痪且词形与
+    // "未部署"不可分。openssl `ec -pubout` 产物是 SPKI 91B 非裸点——本卷
+    // 施工自咬项，构建期即拦）。
+    let station_bytes = match fs::read(&station) {
+        Ok(bytes) => {
+            assert!(
+                bytes.len() == 65 && bytes[0] == 0x04,
+                "station-pubkey.sec1 须为 SEC1 未压缩点 65B（04‖X‖Y），实际 {}B 首字节 {:#04x}",
+                bytes.len(),
+                bytes.first().copied().unwrap_or(0)
+            );
+            bytes
+        }
+        Err(e) => {
+            // 缺文件 = 开发模式（合法）；在位但不可读 = 构建失败。
+            assert!(
+                e.kind() == std::io::ErrorKind::NotFound,
+                "station-pubkey.sec1 在位但不可读（{e}）——不得静默降级为开发模式"
+            );
+            Vec::new()
+        }
+    };
     body.push_str(&format!(
         "pub const STATION_PUBKEY_SEC1: &[u8] = &{:?};\n",
         station_bytes

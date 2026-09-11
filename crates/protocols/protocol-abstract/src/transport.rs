@@ -84,9 +84,11 @@ pub trait TransportHandle {
     fn reconnect(&mut self, _peer: &str) -> Result<(), TransportError> {
         Err(TransportError::Unsupported)
     }
-    /// 70.5（WP-70.5.6）：会话收包超时切换（毫秒）。TLS 握手飞行等待
-    /// 远超数据面 200ms 预算——工厂在握手完成后把会话句柄切回数据面
-    /// 超时。默认空实现（不支持该面的传输按原值工作，无害）。
+    /// 70.5（WP-70.5.6）预留 seam：会话收包超时切换（毫秒）。目标 TLS
+    /// 工厂实际以握手/会话**重试预算**（target_factory
+    /// `HANDSHAKE_ATTEMPT_ROUNDS`）替代超时值切换，本方法当前零调用方
+    /// （70.5 复查订正原"工厂在握手后切回数据面超时"措辞——该机制不存在）。
+    /// 默认空实现（不支持该面的传输按原值工作，无害）。
     fn set_recv_timeout_ms(&mut self, _ms: u64) {}
     /// 向下转型（具体工厂恢复具体类型——mqtt `as_any_mut` 先例）。
     fn as_any_mut(&mut self) -> &mut dyn core::any::Any;
