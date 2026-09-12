@@ -2218,22 +2218,24 @@ fn configure_service(
                 );
             }
         }
-        // b) DMA 池（9 页连续物理帧）——单 untyped 连续切，映射到服务
-        //    VSpace 连续虚拟地址。失败 → 打印 + 降级（storage 无后端显式
-        //    Unavailable；**不** fail-closed——设备缺失不阻断其他服务）。
-        if let Some((untyped, _byte_off, phys_base)) =
-            ctx.untyped.alloc_contiguous_pages(STORAGE_DMA_PAGES)
+        // b) DMA 池（70.7 起一次分配 数据9+启动9=18 页连续物理帧）——
+        //    单 untyped 连续切，映射到服务 VSpace 1:1 虚拟地址。失败 →
+        //    打印 + 降级（storage 无后端显式 Unavailable；不 fail-closed
+        //    ——设备缺失不阻断其他服务）。
+        //    70.7（WP-70.7.2）：启动盘（slot 0）DMA 池 = 紧随数据盘池的
+        //    9 页（构造性连续——两次独立分配的 second-9 可能 NoUntyped）。
+        //    mailbox：数据池第 9 页 offset 0 写 "ENRBOOT2"+启动池基址
+        //    （svc-storage 启动读同址判定启动后端可用性）。
+        if let Some((untyped, _byte_off, phys_base)) = ctx
+            .untyped
+            .alloc_contiguous_pages(STORAGE_DMA_PAGES + eneros_handover_abi::SVC_BOOT_DMA_PAGES)
         {
             let mut dma_ok = true;
-            // 41 修复（virtio-blk 超时根因）：**先连续 retype 全部 DMA 帧，
-            // 再逐页映射**。旧实现每轮 retype 一帧后立即 map，而 map 可能
-            // 从同一 untyped 分配页表（retype_one → alloc），与尚未 retype
-            // 的 DMA 帧交错，导致后续帧物理地址整体后移；QEMU 按
-            // base_pa+0x1000 写 used ring 时落到被页表占用的页，服务侧
-            // 读到的却是另一物理页 → used.idx 永远 0。两趟保证 9 页 DMA
-            // 池在 reserved 区间内物理连续，页表分配发生在池之后。
+            // 先连续 retype 全部 18 帧，再逐页映射（41 virtio 超时根因
+            // 修复的两趟纪律——页表分配不得与 DMA 帧交错）。
+            let total_pages = STORAGE_DMA_PAGES + eneros_handover_abi::SVC_BOOT_DMA_PAGES;
             let mut dma_frames: Vec<u64> = Vec::new();
-            for _k in 0..STORAGE_DMA_PAGES {
+            for _k in 0..total_pages {
                 let frame = match ctx.caps.alloc(1) {
                     Some(f) => f,
                     None => {
@@ -2241,9 +2243,6 @@ fn configure_service(
                         break;
                     }
                 };
-                // 每页独立 retype（同一 untyped 连续区域，物理连续——
-                // 内核 freeIndex 从 Rust 记账推进处顺序切，未跨 untyped；
-                // `_byte_off` 仅用于记账一致性，retype 从 freeIndex 自动分配）。
                 if retype(
                     untyped,
                     types.arm_frame,
@@ -2262,10 +2261,18 @@ fn configure_service(
                 dma_frames.push(frame);
             }
             if dma_ok {
-                // SAFETY: 各 frame 刚 retype（全零）；vaddr 页对齐。
-                // 41 修复：DMA 池 **1:1 映射**（虚拟 = 物理基址 + 偏移）——
-                // virtio legacy 的 Q_PFN/desc 地址写 guest 物理，服务 CPU
-                // 侧访问必须命中同一物理。
+                // mailbox：数据池第 9 页 offset 0 = "ENRBOOT2"+启动池基址
+                // （该页仅 slot4 status 首字节在用——驱动串行请求不触及）。
+                let boot_dma_phys = phys_base + (STORAGE_DMA_PAGES as u64) * PAGE_SIZE;
+                let mut mb: Vec<u8> = Vec::new();
+                mb.extend_from_slice(b"ENRBOOT2");
+                mb.extend_from_slice(&boot_dma_phys.to_le_bytes());
+                if copy_window_bytes(ctx, dma_frames[STORAGE_DMA_PAGES - 1], &mb, rights).is_err() {
+                    crate::println!(
+                        "[eneros-root-task] BOOT-STORAGE-HANDOVER: mailbox write FAILED"
+                    );
+                }
+                // 1:1 映射：数据池页 [0..9)，启动盘池页 [9..18)。
                 let perm = VmPermissions::RW_NX;
                 for (k, frame) in dma_frames.into_iter().enumerate() {
                     if map_frame_with_pagetables(
@@ -2290,77 +2297,18 @@ fn configure_service(
                     phys_base,
                     STORAGE_DMA_PAGES
                 );
-                // MMIO 虚拟基址 = 帧基（映射 0x0a000000 起 4K 页）+ 槽
-                // 偏移（retype 从 untyped freeIndex 0 分配 → 物理 =
-                // untyped.paddr = 0x0a000000 槽 0；服务侧基址须加槽
-                // 2×0x200 才能命中 0x0a000400 数据盘，否则读到槽 0
-                // 系统盘——QEMU 实测 health=128MB）。
                 let mmio_vaddr = STORAGE_MMIO_VADDR + STORAGE_MMIO_SLOT * STORAGE_MMIO_SLOT_STRIDE;
+                let boot_dma_phys = phys_base + (STORAGE_DMA_PAGES as u64) * PAGE_SIZE;
                 storage_handover = Some(StorageHandover {
                     mmio_vaddr,
                     dma_vaddr: phys_base, // 1:1（虚拟 = 物理）
                     dma_phys: phys_base,
-                    boot_dma_vaddr: None,
+                    boot_dma_vaddr: Some(boot_dma_phys),
                 });
-                // 70.7（WP-70.7.2）：启动盘（slot 0）DMA 池——背靠背连续
-                // 分配（连续性契约见 handover-abi SVC_BOOT_DMA_PAGES）。
-                let boot_phys = phys_base + STORAGE_DMA_PAGES as u64 * PAGE_SIZE;
-                let boot_dma_ok = (|| -> Result<(), SpawnError> {
-                    let (untyped, _off, bphys) = ctx
-                        .untyped
-                        .alloc_contiguous_pages(eneros_handover_abi::SVC_BOOT_DMA_PAGES)
-                        .ok_or(SpawnError::NoUntyped)?;
-                    if bphys != boot_phys {
-                        // 分配器跳槽（第一 untyped 容量尽）→ 连续性契约破裂
-                        // → 诚实降级（svc-storage 按同一推导会写错物理）。
-                        return Err(SpawnError::NoUntyped);
-                    }
-                    let mut frames: Vec<u64> = Vec::new();
-                    for _k in 0..eneros_handover_abi::SVC_BOOT_DMA_PAGES {
-                        let frame = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
-                        retype(
-                            untyped,
-                            types.arm_frame,
-                            OBJ_BITS_SMALL_PAGE,
-                            1,
-                            ctx.root_cnode,
-                            frame,
-                            0,
-                            frame,
-                        )
-                        .map_err(SpawnError::Sel4)?;
-                        frames.push(frame);
-                    }
-                    let perm = VmPermissions::RW_NX;
-                    for (k, frame) in frames.into_iter().enumerate() {
-                        map_frame_with_pagetables(
-                            ctx,
-                            vspace,
-                            frame,
-                            boot_phys + (k as u64) * (1u64 << OBJ_BITS_SMALL_PAGE),
-                            perm.cap_rights(rights),
-                            perm.vm_attributes(),
-                        )?;
-                    }
-                    Ok(())
-                })();
-                match boot_dma_ok {
-                    Ok(()) => {
-                        if let Some(h) = storage_handover.as_mut() {
-                            h.boot_dma_vaddr = Some(boot_phys);
-                        }
-                        crate::println!(
-                            "[eneros-root-task] BOOT-STORAGE-HANDOVER: dma vaddr=0x{boot_phys:x} (1:1) pages={}"
-                            ,
-                            eneros_handover_abi::SVC_BOOT_DMA_PAGES
-                        );
-                    }
-                    Err(e) => {
-                        crate::println!(
-                            "[eneros-root-task] BOOT-STORAGE-HANDOVER: FAILED {e:?} —— 启动盘后端不可用（诚实降级）"
-                        );
-                    }
-                }
+                crate::println!(
+                    "[eneros-root-task] BOOT-STORAGE-HANDOVER: dma vaddr=0x{boot_dma_phys:x} (1:1) pages={}",
+                    eneros_handover_abi::SVC_BOOT_DMA_PAGES
+                );
             } else {
                 crate::println!(
                     "[eneros-root-task] STORAGE-HANDOVER: dma map FAILED —— storage 无后端（显式 Unavailable）"
@@ -2372,7 +2320,6 @@ fn configure_service(
             );
         }
     }
-
     // 43（L2 协议互操作面）+ 46（WP-46.2 句柄移交 ×6）：协议服务设备
     // 移交——virtio-net 槽 `proto_net_slot`（QEMU `virtio-mmio-bus.<slot>`，
     // phys 0x0a000000 + slot*0x200）+ 9 页连续 DMA 帧。每协议独占一槽
