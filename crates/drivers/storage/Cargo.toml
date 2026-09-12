@@ -9,13 +9,15 @@ license = "MIT OR Apache-2.0"
 eneros-ipc-wire = { path = "../../abi/ipc-wire" }
 # 39 WP-39.5/39.7：virtio-mmio 原语共享 crate（寄存器偏移/ring/DMA 池）。
 eneros-virtio-core = { path = "../virtio-core" }
-eneros-runtime = { path = "../../runtime/runtime", optional = true }
+eneros-runtime = { path = "../../runtime/runtime" }
+# 70.7：wait_used 轮询环周期性 yield_cpu（seL4 单 vCPU 轮询驱动标准模式）。
+eneros-sel4-sys = { path = "../../runtime/sel4-sys" }
 # 39 WP-39.2：GPT 读取/校验（双份头 + CRC）复用，禁止重复实现 GPT 解析。
 eneros-image-format = { path = "../../boot/image-format" }
 
 [features]
 mock = []
-diag = ["dep:eneros-runtime"]
+diag = []
 default = []
 # RAM 模拟 eMMC 控制器（RamEmmcMmio）——仅测试/仿真；release 下启用即编译失败（蓝图/20 R1-7）。
 emmc-ram-sim = []

@@ -473,7 +473,7 @@ mod tests {
             regs[0] = 0x7472_6976; // VIRTIO_MMIO_MAGIC
             regs[1] = 1; // version
             regs[0x008 / 4] = 2; // VIRTIO_BLK_DEVICE_ID
-            regs[0x034 / 4] = 32; // QUEUE_NUM_MAX
+            regs[0x034 / 4] = 128; // QUEUE_NUM_MAX
             regs[0x100 / 4] = (blocks & 0xFFFF_FFFF) as u32; // capacity lo
             regs[0x104 / 4] = (blocks >> 32) as u32; // capacity hi
             SimMmio {

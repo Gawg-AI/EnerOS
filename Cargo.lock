@@ -1922,6 +1922,7 @@ dependencies = [
  "eneros-image-format",
  "eneros-ipc-wire",
  "eneros-runtime",
+ "eneros-sel4-sys",
  "eneros-virtio-core",
 ]
 

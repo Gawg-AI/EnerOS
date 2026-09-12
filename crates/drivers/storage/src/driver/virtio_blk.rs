@@ -562,7 +562,9 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
     /// 元素（此前缺失，真机 cache 一致性缺口）。
     fn wait_used(&self) -> Result<u32, StorageError> {
         let used_va = self.va_of(0x1000);
-        for _spin in 0..200_000_000u32 {
+        // 70.7：上限 20M spins（≈2-20s）——挂死请求快速干净失败，
+        // 避免单次读垄断 vCPU 数百秒拖垮整窗（run44-49 实弹）。
+        for _spin in 0..20_000_000u32 {
             // 70.7（REG-70.7-BOOT-DEV-IO-HANG）：周期性补打门铃——notify
             // 丢失竞态下重触发设备取环。**只写 NOTIFY（0x50），绝不写
             // QUEUE_SEL（0x30 = legacy QueueNum！）**——写 QueueNum 即
@@ -571,7 +573,10 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
                 let mut mmio = self.mmio.borrow_mut();
                 mmio.write_reg(VMMIO_QUEUE_NOTIFY, 0);
             }
-            compiler_fence(Ordering::SeqCst);
+            // 70.7（REG-70.7 run48 实弹）：**禁止 yield**——seL4_Yield 在
+            // 「无可运行线程 + timer 未 ACK」时进入 idle，且 root 阻塞于
+            // chunked Call 无法 ACK timer → 永久 idle（比忙等更糟）。纯
+            // 自旋保证本读超时后系统必然恢复（run32/36/37 实证）。
             // 设备写 used ring（DMA）：轮询前使缓存失效。
             self.cache
                 .invalidate(used_va, core::mem::size_of::<VirtqUsed>());
@@ -619,7 +624,7 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
         }
         #[cfg(target_os = "none")]
         eneros_runtime::println!(
-            "[blk-wait] TIMEOUT device never completed (200M spins) last_used={}",
+            "[blk-wait] TIMEOUT device never completed (20M spins) last_used={}",
             self.last_used.get()
         );
         #[cfg(feature = "diag")]
@@ -853,7 +858,7 @@ impl RamMmio {
         regs[VMMIO_MAGIC_VALUE / 4] = VIRTIO_MMIO_MAGIC;
         regs[VMMIO_VERSION / 4] = VIRTIO_MMIO_VERSION_1;
         regs[VMMIO_DEVICE_ID / 4] = VIRTIO_BLK_DEVICE_ID;
-        regs[VMMIO_QUEUE_NUM_MAX / 4] = 32; // > QUEUE_MAX
+        regs[VMMIO_QUEUE_NUM_MAX / 4] = 128; // > QUEUE_MAX（70.7：QUEUE_MAX 16→64）
         let blocks = (disk.len() / SECTOR_SIZE) as u64;
         // config space offset 0：capacity（512B 扇区数，8 字节 LE）。
         regs[0x100 / 4] = (blocks & 0xFFFF_FFFF) as u32;
@@ -874,7 +879,7 @@ impl RamMmio {
         regs[VMMIO_MAGIC_VALUE / 4] = VIRTIO_MMIO_MAGIC;
         regs[VMMIO_VERSION / 4] = VIRTIO_MMIO_VERSION_1;
         regs[VMMIO_DEVICE_ID / 4] = VIRTIO_BLK_DEVICE_ID;
-        regs[VMMIO_QUEUE_NUM_MAX / 4] = 32; // > QUEUE_MAX
+        regs[VMMIO_QUEUE_NUM_MAX / 4] = 128; // > QUEUE_MAX（70.7：QUEUE_MAX 16→64）
         let blocks = (disk.borrow().len() / SECTOR_SIZE) as u64;
         regs[0x100 / 4] = (blocks & 0xFFFF_FFFF) as u32;
         regs[0x104 / 4] = (blocks >> 32) as u32;

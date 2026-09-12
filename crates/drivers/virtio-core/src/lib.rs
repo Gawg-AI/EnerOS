@@ -95,6 +95,8 @@ pub const VIRTQ_DESC_F_NEXT: u16 = 1;
 pub const VIRTQ_DESC_F_WRITE: u16 = 2;
 
 /// Queue capacity (16 descriptors, matching C reference).
+/// 70.7 登记：QUEUE_MAX=64 实验曾尝试绕开 #16 读挂死——伴随 stress
+/// 测试 sim 索引越界与布局连锁，未采纳（回归）。
 pub const QUEUE_MAX: usize = 16;
 pub const QUEUE_MASK: usize = QUEUE_MAX - 1;
 
