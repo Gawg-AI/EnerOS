@@ -284,3 +284,15 @@
 | REG-70.5-MGMT-EXPIRES-UNIT | `crates/agents/business-services/src/mgmt_rpc.rs::is_valid_at`（now_ms 单调毫秒）vs `AuthenticatedSession::expires_at_ms`（v2 = unix 毫秒） | **Open（70.5 复查，登记不修）**：单位错配使 is_valid_at 对 v2 恒真——真过期判据在 `verify_v2_tail`（无活洞），但 `AuthenticatedSession` 作为公共合同藏着单位陷阱（v1 面同样经它）；`tenant_scope`/`channel_binding` 全链无授权消费点（签名绑定但未强制——70.5 卡面自认，授权消费设计归 70.6+ 管理面卷） | 本表（70.5 复查） |
 | REG-70.5-TLS-DROP-SOCKET | `crates/security/tls/src/target_factory.rs::TlsTransportHandle::drop`（只还缓冲守卫，内层 socket 无显式 abort/归还） | **Open（70.5 复查，登记不修）**：Drop 不经 close() = smoltcp socket 槽位无显式归还/对端无 FIN——当前唯一析构路径 `plugin.stop() → client.disconnect() → transport.close()` 显式（Drop 不可达）；若未来出现 handle 被丢弃的恢复路径须先补此语义 | 本表（70.5 复查） |
 | REG-70.5-SVC-MGMT-HEADER-MAGIC | `crates/agents/business-services/src/bin/svc-mgmt.rs::handle`（req[0..5] "MGT1" 魔数从不校验） | **Open（70.5 复查，观察项）**：分发器（control-services）按服务路由已隔离异协议流量；本面零当前攻击者，登记防误接通（若有 bin 直连 svc-mgmt 端点的新装配，先补头部校验） | 本表（70.5 复查） |
+
+## F-70-6. 蓝图 70.6 登记（2026-09-12，v0.336.0 会话）
+
+| ID | 锚点 | 状态 | 登记处 |
+|---|---|---|---|
+| REG-70.6-MGMT-DOWNLINK | `crates/protocols/mqtt/src/client.rs::poll`（recv 单次消费）+ `crates/protocols/protocol-services/src/mqtt_io.rs::forward_mgmt_requests`（驱动轮触发）+ evidence/70/tls_mqtt_broker.py（路由单测正确） | **Open（70.6 实弹）**：外部 station→MQTT→设备 下行投递失效——TLS/明文同症；上行 176 帧 TELFRAME 正常；broker 路由宿主复现正确；设备自检 `errs=126 last_err=ReadFailed`（每驱动轮 recv 失败）。70.6 门禁以 root 探针直驱 MGT1 替代取证；修复后可切回外注式判据 | 本表（70.6） |
+| REG-70.6-OPS-RESTORE-N0 | `crates/agents/business-services/src/mgmt_ops.rs`（Encode/Decode 129B 行）+ `bin/svc-mgmt.rs::persist_ops/restore` | **Open（P2）**：账本持久化写成功（persisted gen=2 n=15 串口词形）而跨重启恢复 n=0——编码/加载/介质三者之一的记录内容丢失点待查；恢复机制本身已通（CONFIG-DISK 同径恢复正常） | 本表（70.6） |
+| REG-70.6-DISPATCH-HEAP-870R | `crates/agents/control-services/src/dispatch_assembly.rs`（堆顶 2656B EnvelopeIngress 分配） | **Open（P2 预存）**：qemu-prod 长窗 >900s dispatch 堆顶分配失败 PANIC（~870 Committed 轮；70.1 预算顶格 fail-fast 语义按设计触发）——70.1 门窗内不触顶，70.6 长窗实弹暴露；归预算复核（DEC-70-11）非缺陷 | 本表（70.6） |
+| REG-MGT1-V2-INTEROP | `crates/agents/business-services/src/mgmt_principal.rs::verify_signature`（PrehashVerifier） | **Done（70.6 修复）**：p256 Verifier 对入参再哈希 → openssl 形态（dgst -sha256 -sign 摘要直签）全部误拒；70.5 v2 验签从未与 openssl 签发正例互操作。改 PrehashVerifier（已哈希语义）+ 测试夹具 sign_prehash 同步 + 探针正例 QEMU 实弹（R21） | 本表（70.6） |
+| REG-MGT1-V2-ROLE-CHAIN | `crates/agents/business-services/src/mgmt_principal.rs`（role_chain 展开） | **Done（70.6 修复）**：v2 角色解出单名（admin）过不了 operator 判据（has_role 精确匹配 × 50 卷全继承链约定）；展开 viewer⊂operator⊂admin 全链 + 测试同步 | 本表（70.6） |
+| REG-70.5-MGT-GATE-NO-POSITIVE | `tools/run70-vol6-gate.sh`（R19/R20/R21） | **Done（70.6 收口）**：合法 v2 签名正例（探针 maintenance-enter rid=100 → Completed 维护生效）+ 短尾 v2 负例（truncated v2 shape 词形）+ 伪 principal 回归三项 QEMU 实弹 | 本表（70.6） |
+| REG-70.6-READINESS-WINDOW | `crates/runtime/root-task/src/service.rs::READINESS_DEADLINE_MS`（3_000→15_000） | **Done（70.6 裁决）**：dispatch 装配（catalog/binding/chain-key + durable 打开块 IO）ready 信号 TCG 抖动下晚至 8-10s，3s 窗两轮实弹误降级 required 服务；15s 保底永不发信号有界判定 | 本表（70.6） |
