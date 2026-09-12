@@ -149,8 +149,32 @@ pub(crate) fn log_ai_decision(audit: &mut DecisionAudit, intent: &str, lp: &str,
 /// 单点——`degrade_observe` 只负责装配快照与落盘输出；t30b 饱和语义
 /// 锁的测试锚：`expires_in_ms` 用 saturating 减，到期后必须为 0 而非
 /// 回绕巨大值——观测行的数字供词形基线脚本解析，负数/巨大值即假证）。
-fn degrade_obs_line(obs: &DegradeObservation, now_ms: u64) -> alloc::string::String {
-    alloc::format!(
+/// 观测行写入定长缓冲（**零堆**——run24-26 实弹：每 tick 5 次观测 ×
+/// format 分配在 64KiB 服务堆上碎片化，~478KB 串口输出后 OOM 挂起
+/// （fail-closed 设计）并级联阻塞 root 的 EIPC Call → 全系统静默冻结）。
+/// 返回写入字节数；缓冲不足时截断到安全前缀。
+fn write_degrade_obs_line(
+    obs: &DegradeObservation,
+    now_ms: u64,
+    buf: &mut [u8],
+) -> usize {
+    use core::fmt::Write as _;
+    struct W<'a> {
+        buf: &'a mut [u8],
+        n: usize,
+    }
+    impl core::fmt::Write for W<'_> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let b = s.as_bytes();
+            let take = core::cmp::min(b.len(), self.buf.len() - self.n);
+            self.buf[self.n..self.n + take].copy_from_slice(&b[..take]);
+            self.n += take;
+            Ok(())
+        }
+    }
+    let mut w = W { buf, n: 0 };
+    let _ = write!(
+        w,
         "[svc-ai-worker] DEGRADE-OBS armed={} expired={} level={} lease={} uses={}/{} expires_in_ms={} deadband=({:.6},{:.6}) applies={} frozen_skips={}",
         if obs.armed { "true" } else { "false" },
         if obs.expired { "true" } else { "false" },
@@ -163,7 +187,8 @@ fn degrade_obs_line(obs: &DegradeObservation, now_ms: u64) -> alloc::string::Str
         obs.discharge_soc,
         obs.deadband_applies,
         obs.deadband_frozen_skips,
-    )
+    );
+    w.n
 }
 
 /// 纯启发式路径留痕（固定 sys1 标记——词形保留自旧 bin）。
@@ -483,7 +508,12 @@ where
         let mut obs = self.worker.backend_mut().degrade_observation(now_ms);
         obs.deadband_applies = self.deadband_applies;
         obs.deadband_frozen_skips = self.deadband_frozen_skips;
-        eneros_runtime::println!("{}", degrade_obs_line(&obs, now_ms));
+        let mut line_buf = [0u8; 256];
+        let n = write_degrade_obs_line(&obs, now_ms, &mut line_buf);
+        eneros_runtime::println!(
+            "{}",
+            core::str::from_utf8(&line_buf[..n]).unwrap_or("[svc-ai-worker] DEGRADE-OBS")
+        );
         resp.clear();
         resp.push(learn_wire::AI_DEGRADE_OBSERVE);
         resp.push(u8::from(obs.armed));
@@ -1228,7 +1258,9 @@ mod tests {
             deadband_applies: 1,
             deadband_frozen_skips: 0,
         };
-        let line = degrade_obs_line(&obs, 9_000);
+        let mut line_buf = [0u8; 256];
+        let n = write_degrade_obs_line(&obs, 9_000, &mut line_buf);
+        let line = core::str::from_utf8(&line_buf[..n]).unwrap();
         assert!(line.contains("expired=true"), "{line}");
         assert!(line.contains("expires_in_ms=0"), "过期须饱和为 0: {line}");
         assert!(
@@ -1251,7 +1283,9 @@ mod tests {
             deadband_applies: 0,
             deadband_frozen_skips: 0,
         };
-        let line = degrade_obs_line(&unarmed, 1_000);
+        let mut line_buf = [0u8; 256];
+        let n = write_degrade_obs_line(&unarmed, 1_000, &mut line_buf);
+        let line = core::str::from_utf8(&line_buf[..n]).unwrap();
         assert!(line.contains("lease=0000000000000000"), "{line}");
         assert!(line.contains("uses=0/0"), "{line}");
         assert!(line.contains("level=0"), "{line}");

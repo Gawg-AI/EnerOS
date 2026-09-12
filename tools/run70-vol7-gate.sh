@@ -145,7 +145,7 @@ cargo xtask run qemu-test \
     --expect PASS --evidence-dir "$DIR" \
     --data-disk "$DATADISK" \
     --net-mode present --net-user --net-protocols present \
-    --reset-bootctrl --ready-marker probe-complete --qmp-deadline-secs "$DL" &
+    --reset-bootctrl --qmp-shutdown --ready-marker probe-complete --qmp-deadline-secs "$DL" &
 HPID=$!
 
 S="$DIR/qemu-serial.log"
@@ -188,7 +188,7 @@ cargo xtask run qemu-test \
     --expect PASS --evidence-dir "$DIR2" \
     --data-disk "$DATADISK" \
     --net-mode present --net-user --net-protocols present \
-    --ready-marker probe-complete --qmp-deadline-secs "$DL_T2" &
+    --qmp-shutdown --ready-marker probe-complete --qmp-deadline-secs "$DL_T2" &
 HPID2=$!
 S2="$DIR2/qemu-serial.log"
 for i in $(seq 1 300); do

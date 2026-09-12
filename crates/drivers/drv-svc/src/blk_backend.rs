@@ -458,6 +458,9 @@ mod tests {
     /// 模拟 MMIO 的 process_queues 需要驱动 pool 指针（QEMU 角色）。
     /// 测试用全局静态（与 storage crate host 测试同模式）。
     static TEST_POOL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+    /// TEST_POOL 为进程级单槽：并行测试互踩（boot_face × roundtrip 的
+    /// 间歇性假失败）——测试级互斥串行化。
+    static TEST_SEQ: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     struct SimMmio {
         regs: [u32; 68],
@@ -596,6 +599,7 @@ mod tests {
     #[test]
     #[allow(clippy::disallowed_macros)] // 测试内判定 panic（clippy.toml 测试模块豁免）
     fn virtio_backend_read_write_roundtrip() {
+        let _seq = TEST_SEQ.lock().unwrap();
         let blocks = 64u64;
         let mmio = SimMmio::new(blocks);
         let pool = TestPool::new();
@@ -656,6 +660,7 @@ mod tests {
     /// 非活动槽/BOOTCTRL 之外零写（活跃槽写拒绝）。
     #[test]
     fn boot_face_uses_sector_lba_and_guard_writes() {
+        let _seq = TEST_SEQ.lock().unwrap();
         // 40000 块 ≈ 20.5MB——须覆盖非活动槽 BOOT_B 首块（lba 36864）。
         let blocks = 40000u64;
         let mmio = SimMmio::new(blocks);

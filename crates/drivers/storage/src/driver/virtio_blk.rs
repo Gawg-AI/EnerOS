@@ -251,6 +251,18 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
         };
         drv.device_init()?;
         drv.queue_setup()?;
+        // 70.7（REG-70.7-BOOT-DEV-IO-HANG 终局修复）：设备 reset 后其
+        // last_avail/used 计数器 = 0——池内环计数器（avail.idx@0x102、
+        // used.idx@0x1002）必须同步归零。supervisor 重启后池页**不清零**
+        //（映射保留、前实例状态残留）：不归零则新实例 last_used=0 对
+        // 池内 used.idx=15 → 首次 wait_used 误判完成 → I/O 全死
+        //（run36-40 重启后 I/O 实弹）。
+        {
+            let mut pool = drv.pool.borrow_mut();
+            let bytes = pool.as_bytes_mut();
+            bytes[0x0102..0x0104].copy_from_slice(&0u16.to_le_bytes());
+            bytes[0x1002..0x1004].copy_from_slice(&0u16.to_le_bytes());
+        }
         // Wire the device model (RAM simulation) to the pool after queue setup.
         let pool_ptr = drv.pool_ptr();
         drv.mmio.borrow().post_init(pool_ptr);
@@ -390,6 +402,13 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
                 detail: "virtqueue full",
             });
         }
+        #[cfg(target_os = "none")]
+        if self.desc_used.get() + ndesc > QUEUE_MAX {
+            eneros_runtime::println!(
+                "[blk] issue VIRTQUEUE FULL desc_used={} ndesc={ndesc}",
+                self.desc_used.get()
+            );
+        }
         let slot = self.req_slot.get() % REQ_SLOTS;
         self.req_slot.set(self.req_slot.get() + 1);
         // Layout: +0x2000 req header, +0x3000 data slots, +0x4000 status slots.
@@ -521,6 +540,8 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
             let bytes = pool.as_bytes();
             let status = bytes[status_off];
             if status != VIRTIO_BLK_S_OK {
+                #[cfg(target_os = "none")]
+                eneros_runtime::println!("[blk-wait] device IOERR status={status}");
                 return Err(StorageError::HardwareFault {
                     detail: "virtio-blk device reported I/O error",
                 });
@@ -542,13 +563,12 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
     fn wait_used(&self) -> Result<u32, StorageError> {
         let used_va = self.va_of(0x1000);
         for _spin in 0..200_000_000u32 {
-            // 70.7（REG-70.7-BOOT-BACKEND run16-24 实弹）：周期性重打
-            // 门铃——notify 丢失类竞态（回读/写请求设备端从未完成，点位
-            // 随批内进度漂移）下兜底重触发设备取环；对已完成的请求是
-            // 幂等空操作。
+            // 70.7（REG-70.7-BOOT-DEV-IO-HANG）：周期性补打门铃——notify
+            // 丢失竞态下重触发设备取环。**只写 NOTIFY（0x50），绝不写
+            // QUEUE_SEL（0x30 = legacy QueueNum！）**——写 QueueNum 即
+            // 清空队列大小（自毁队列）。
             if _spin != 0 && _spin % 1_000_000 == 0 {
                 let mut mmio = self.mmio.borrow_mut();
-                mmio.write_reg(VMMIO_QUEUE_SEL, 0);
                 mmio.write_reg(VMMIO_QUEUE_NOTIFY, 0);
             }
             compiler_fence(Ordering::SeqCst);
@@ -585,6 +605,11 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
                 // 落地**范围防御**（id 越界 = 设备行为异常，fail-closed）；
                 // 精确 head 一致性校验登记为真机项（33 §真机填空）。
                 if (elem.id as usize) >= QUEUE_MAX {
+                    #[cfg(target_os = "none")]
+                    eneros_runtime::println!(
+                        "[blk-wait] used id OUT OF RANGE id={}",
+                        elem.id
+                    );
                     return Err(StorageError::HardwareFault {
                         detail: "virtio-blk used ring id out of range",
                     });
@@ -592,6 +617,11 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
                 return Ok(elem.len);
             }
         }
+        #[cfg(target_os = "none")]
+        eneros_runtime::println!(
+            "[blk-wait] TIMEOUT device never completed (200M spins) last_used={}",
+            self.last_used.get()
+        );
         #[cfg(feature = "diag")]
         {
             let b = self.pool.borrow();
@@ -651,12 +681,24 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> BlockDevice for VirtioBlkDriver<M, 
             return Err(StorageError::NotInitialized);
         }
         if block_idx >= self.block_count.get() {
+            #[cfg(target_os = "none")]
+            eneros_runtime::println!(
+                "[blk] read OutOfRange block={} max={}",
+                block_idx,
+                self.block_count.get()
+            );
             return Err(StorageError::OutOfRange {
                 block_idx,
                 max: self.block_count.get(),
             });
         }
         if buf.len() != self.config.block_size {
+            #[cfg(target_os = "none")]
+            eneros_runtime::println!(
+                "[blk] read buf-len {} != bs {}",
+                buf.len(),
+                self.config.block_size
+            );
             return Err(StorageError::HardwareFault {
                 detail: "read buffer size != block size",
             });
