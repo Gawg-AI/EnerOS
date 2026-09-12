@@ -44,12 +44,13 @@ impl<'a> BootInstall<'a> {
         let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
             eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
         );
-        let mut c0 = [0u8; BC_RECORD];
-        let mut c1 = [0u8; BC_RECORD];
-        self.face.read(bc_lba, &mut c0).map_err(|_| "read0")?;
-        self.face.read(bc_lba + 8, &mut c1).map_err(|_| "read1")?;
-        let d0 = BootControl::decode(&c0);
-        let d1 = BootControl::decode(&c1);
+        // 单缓冲复用（栈峰值 -4KB；REG-70.7 排查：IPC 处理链栈深贴线，
+        // 双 4KiB 记录缓冲 + 驱动 4KiB 块缓冲叠加曾致静默冻结形态）。
+        let mut rec = [0u8; BC_RECORD];
+        self.face.read(bc_lba, &mut rec).map_err(|_| "read0")?;
+        let d0 = BootControl::decode(&rec);
+        self.face.read(bc_lba + 8, &mut rec).map_err(|_| "read1")?;
+        let d1 = BootControl::decode(&rec);
         match (d0, d1) {
             (Ok(a), Ok(b)) => {
                 if a.sequence >= b.sequence {
