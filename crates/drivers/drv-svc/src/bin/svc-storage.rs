@@ -81,7 +81,9 @@ pub extern "C" fn _start(
             // 启动盘 = slot 0（页基址 0x40000000）；X3 = slot 2 页内偏移
             // +0x400（数据盘）——boot MMIO = X3 − 0x400。
             match eneros_drv_svc::blk_backend::BootSlotBackend::try_new_boot(
-                mmio_vaddr - 0x400, boot_dma, boot_dma,
+                mmio_vaddr - 0x400,
+                boot_dma,
+                boot_dma,
             ) {
                 Ok(boot) => {
                     use eneros_drv_svc::block_cmd::InstallBackend as _;

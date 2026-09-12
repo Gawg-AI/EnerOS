@@ -255,7 +255,9 @@ impl BootSlotBackend {
         {
             let dump = |tag: &str, regs: [(usize, &str); 4]| {
                 for (off, name) in regs {
-                    let v = unsafe { core::ptr::read_volatile((boot_mmio_vaddr + off as u64) as *const u32) };
+                    let v = unsafe {
+                        core::ptr::read_volatile((boot_mmio_vaddr + off as u64) as *const u32)
+                    };
                     eneros_runtime::println!(
                         "[svc-storage] BOOT-MMIO-DUMP {tag} {name}(0x{off:03x})=0x{v:08x}"
                     );
@@ -274,9 +276,12 @@ impl BootSlotBackend {
         let mut inner = VirtioBlkBackend::try_new(boot_mmio_vaddr, boot_dma_vaddr, boot_dma_phys)?;
         // REG-70.7 排查：init 后 status/capacity 复核（对照 dump）。
         {
-            let status = unsafe { core::ptr::read_volatile((boot_mmio_vaddr + 0x070) as *const u32) };
-            let cap_lo = unsafe { core::ptr::read_volatile((boot_mmio_vaddr + 0x100) as *const u32) };
-            let cap_hi = unsafe { core::ptr::read_volatile((boot_mmio_vaddr + 0x104) as *const u32) };
+            let status =
+                unsafe { core::ptr::read_volatile((boot_mmio_vaddr + 0x070) as *const u32) };
+            let cap_lo =
+                unsafe { core::ptr::read_volatile((boot_mmio_vaddr + 0x100) as *const u32) };
+            let cap_hi =
+                unsafe { core::ptr::read_volatile((boot_mmio_vaddr + 0x104) as *const u32) };
             eneros_runtime::println!(
                 "[svc-storage] BOOT-MMIO-DUMP post-init status=0x{status:08x} cap=0x{cap_hi:08x}{cap_lo:08x}"
             );
