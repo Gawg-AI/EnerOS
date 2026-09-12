@@ -2218,24 +2218,18 @@ fn configure_service(
                 );
             }
         }
-        // b) DMA 池（70.7 起一次分配 数据9+启动9=18 页连续物理帧）——
-        //    单 untyped 连续切，映射到服务 VSpace 1:1 虚拟地址。失败 →
-        //    打印 + 降级（storage 无后端显式 Unavailable；不 fail-closed
-        //    ——设备缺失不阻断其他服务）。
-        //    70.7（WP-70.7.2）：启动盘（slot 0）DMA 池 = 紧随数据盘池的
-        //    9 页（构造性连续——两次独立分配的 second-9 可能 NoUntyped）。
-        //    mailbox：数据池第 9 页 offset 0 写 "ENRBOOT2"+启动池基址
-        //    （svc-storage 启动读同址判定启动后端可用性）。
-        if let Some((untyped, _byte_off, phys_base)) = ctx
-            .untyped
-            .alloc_contiguous_pages(STORAGE_DMA_PAGES + eneros_handover_abi::SVC_BOOT_DMA_PAGES)
+        // b) DMA 池：数据盘 9 页 + 启动盘 9 页（70.7 WP-70.7.2）——
+        //    各自独立连续分配（first-fit；物理位置互不要求）。启动池基址
+        //    经 **mailbox**（数据池第 9 页 offset 0 = "ENRBOOT2"+boot 基址
+        //    ——该页仅 slot4 status 首字节在用）传递给 svc-storage；
+        //    失败 → 打印 + 降级（无后端显式 Unavailable，不阻断其他服务）。
+        if let Some((untyped, _byte_off, phys_base)) =
+            ctx.untyped.alloc_contiguous_pages(STORAGE_DMA_PAGES)
         {
             let mut dma_ok = true;
-            // 先连续 retype 全部 18 帧，再逐页映射（41 virtio 超时根因
-            // 修复的两趟纪律——页表分配不得与 DMA 帧交错）。
-            let total_pages = STORAGE_DMA_PAGES + eneros_handover_abi::SVC_BOOT_DMA_PAGES;
+            // 先连续 retype 全部帧，再逐页映射（41 virtio 超时根因两趟纪律）。
             let mut dma_frames: Vec<u64> = Vec::new();
-            for _k in 0..total_pages {
+            for _k in 0..STORAGE_DMA_PAGES {
                 let frame = match ctx.caps.alloc(1) {
                     Some(f) => f,
                     None => {
@@ -2261,18 +2255,17 @@ fn configure_service(
                 dma_frames.push(frame);
             }
             if dma_ok {
-                // mailbox：数据池第 9 页 offset 0 = "ENRBOOT2"+启动池基址
-                // （该页仅 slot4 status 首字节在用——驱动串行请求不触及）。
-                let boot_dma_phys = phys_base + (STORAGE_DMA_PAGES as u64) * PAGE_SIZE;
+                // mailbox：启动盘池 1:1 基址写入数据池第 9 页 offset 0
+                //（该页仅 slot4 status 首字节在用——串行请求不触及）。
                 let mut mb: Vec<u8> = Vec::new();
                 mb.extend_from_slice(b"ENRBOOT2");
-                mb.extend_from_slice(&boot_dma_phys.to_le_bytes());
+                mb.extend_from_slice(&0u64.to_le_bytes()); // phys 由下行回填
                 if copy_window_bytes(ctx, dma_frames[STORAGE_DMA_PAGES - 1], &mb, rights).is_err() {
                     crate::println!(
                         "[eneros-root-task] BOOT-STORAGE-HANDOVER: mailbox write FAILED"
                     );
                 }
-                // 1:1 映射：数据池页 [0..9)，启动盘池页 [9..18)。
+                // 1:1 映射数据池。
                 let perm = VmPermissions::RW_NX;
                 for (k, frame) in dma_frames.into_iter().enumerate() {
                     if map_frame_with_pagetables(
@@ -2298,17 +2291,79 @@ fn configure_service(
                     STORAGE_DMA_PAGES
                 );
                 let mmio_vaddr = STORAGE_MMIO_VADDR + STORAGE_MMIO_SLOT * STORAGE_MMIO_SLOT_STRIDE;
-                let boot_dma_phys = phys_base + (STORAGE_DMA_PAGES as u64) * PAGE_SIZE;
+                // 70.7：启动盘池独立分配（任意物理位置——mailbox 传基址）。
+                let mut boot_dma_vaddr: Option<u64> = None;
+                if let Some((untyped_b, _off_b, boot_phys_base)) = ctx
+                    .untyped
+                    .alloc_contiguous_pages(eneros_handover_abi::SVC_BOOT_DMA_PAGES)
+                {
+                    let mut boot_ok = true;
+                    let mut boot_frames: Vec<u64> = Vec::new();
+                    for _k in 0..eneros_handover_abi::SVC_BOOT_DMA_PAGES {
+                        let frame = match ctx.caps.alloc(1) {
+                            Some(f) => f,
+                            None => {
+                                boot_ok = false;
+                                break;
+                            }
+                        };
+                        if retype(
+                            untyped_b,
+                            types.arm_frame,
+                            OBJ_BITS_SMALL_PAGE,
+                            1,
+                            ctx.root_cnode,
+                            frame,
+                            0,
+                            frame,
+                        )
+                        .is_err()
+                        {
+                            boot_ok = false;
+                            break;
+                        }
+                        boot_frames.push(frame);
+                    }
+                    if boot_ok {
+                        let perm = VmPermissions::RW_NX;
+                        for (k, frame) in boot_frames.into_iter().enumerate() {
+                            if map_frame_with_pagetables(
+                                ctx,
+                                vspace,
+                                frame,
+                                boot_phys_base + (k as u64) * (1u64 << OBJ_BITS_SMALL_PAGE),
+                                perm.cap_rights(rights),
+                                perm.vm_attributes(),
+                            )
+                            .is_err()
+                            {
+                                boot_ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if boot_ok {
+                        boot_dma_vaddr = Some(boot_phys_base);
+                        crate::println!(
+                            "[eneros-root-task] BOOT-STORAGE-HANDOVER: dma vaddr=0x{boot_phys_base:x} (1:1) pages={}",
+                            eneros_handover_abi::SVC_BOOT_DMA_PAGES
+                        );
+                    } else {
+                        crate::println!(
+                            "[eneros-root-task] BOOT-STORAGE-HANDOVER: map FAILED —— 启动后端不可用"
+                        );
+                    }
+                } else {
+                    crate::println!(
+                        "[eneros-root-task] BOOT-STORAGE-HANDOVER: alloc FAILED —— 启动后端不可用"
+                    );
+                }
                 storage_handover = Some(StorageHandover {
                     mmio_vaddr,
                     dma_vaddr: phys_base, // 1:1（虚拟 = 物理）
                     dma_phys: phys_base,
-                    boot_dma_vaddr: Some(boot_dma_phys),
+                    boot_dma_vaddr,
                 });
-                crate::println!(
-                    "[eneros-root-task] BOOT-STORAGE-HANDOVER: dma vaddr=0x{boot_dma_phys:x} (1:1) pages={}",
-                    eneros_handover_abi::SVC_BOOT_DMA_PAGES
-                );
             } else {
                 crate::println!(
                     "[eneros-root-task] STORAGE-HANDOVER: dma map FAILED —— storage 无后端（显式 Unavailable）"
