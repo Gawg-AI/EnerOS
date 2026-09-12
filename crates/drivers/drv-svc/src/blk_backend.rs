@@ -250,6 +250,27 @@ impl BootSlotBackend {
         boot_dma_vaddr: u64,
         boot_dma_phys: u64,
     ) -> Result<Self, &'static str> {
+        // REG-70.7-BOOT-BACKEND-ZEROSIZE 排查：init 前寄存器 dump
+        //（magic@0x000 / deviceID@0x008 / vendor@0x00c / status@0x070）。
+        {
+            let dump = |tag: &str, regs: [(usize, &str); 4]| {
+                for (off, name) in regs {
+                    let v = unsafe { core::ptr::read_volatile((boot_mmio_vaddr + off as u64) as *const u32) };
+                    eneros_runtime::println!(
+                        "[svc-storage] BOOT-MMIO-DUMP {tag} {name}(0x{off:03x})=0x{v:08x}"
+                    );
+                }
+            };
+            dump(
+                "pre-init",
+                [
+                    (0x000, "magic"),
+                    (0x008, "devid"),
+                    (0x00c, "vendor"),
+                    (0x070, "status"),
+                ],
+            );
+        }
         let mut inner = VirtioBlkBackend::try_new(boot_mmio_vaddr, boot_dma_vaddr, boot_dma_phys)?;
         // BOOTCTRL 双副本读取（qemu-v1：分区基 lba 18432；副本 0/+8 lba）。
         let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
