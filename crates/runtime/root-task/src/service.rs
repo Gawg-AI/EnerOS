@@ -639,6 +639,15 @@ impl Orchestration {
         else {
             return;
         };
+        let Some(svc_ota_ep) = handles.iter().find(|h| h.name == "svc-ota").map(|h| h.ep) else {
+            return;
+        };
+        let capsule = read_identity_capsule();
+        let boot_slot = capsule.as_ref().map(|c| c.selected_slot);
+        let capsule_secver = capsule
+            .as_ref()
+            .map(|c| c.security_version as u64)
+            .unwrap_or(0);
         let settled = self.readiness.all_decided();
         let restart_done = || {
             handles
@@ -654,8 +663,11 @@ impl Orchestration {
             &mut entered,
             svc_mgmt_ep,
             svc_config_ep,
+            svc_ota_ep,
             self.tick,
             settled,
+            boot_slot,
+            capsule_secver,
             &restart_done,
         );
         self.probe_state = st;

@@ -221,6 +221,92 @@ where
     }
 }
 
+// ============================================================================
+// 70.7（WP-70.7.2）：启动盘（virtio slot 0）受限安装后端
+// ============================================================================
+
+/// 启动盘后端：第二 VirtioBlkDriver 实例（slot 0 GPT 产品盘）+ 非活动槽
+/// 写守卫。MMIO = 数据盘移交页 + slot 0 偏移 0（页覆盖 slot 0-7，零新增
+/// 映射）；DMA 池 = 数据盘池紧后连续 9 页（svc-storage 按 X5+9×4096 推导，
+/// spawn 侧连续性契约见 handover-abi）。
+pub struct BootSlotBackend {
+    inner:
+        VirtioBlkBackend<VolatileMmio, SvcDmaPool, eneros_storage::driver::virtio_blk::NoopCache>,
+    guard: crate::boot_guard::BootWriteGuard,
+    /// 启动盘 DMA 池基址（svc VSpace 1:1 虚拟 = 物理）。
+    boot_dma_vaddr: u64,
+}
+
+impl BootSlotBackend {
+    /// 初始化（svc-storage 启动时一次）：
+    ///
+    /// - `boot_mmio_vaddr` = 数据盘移交页基址（slot 0 偏移 0）；
+    /// - `boot_dma_vaddr/phys` = 数据盘 phys + 9×4096（spawn 连续性契约）。
+    ///
+    /// BOOTCTRL 双副本解析失败 → Err（守卫不可得 = 写面整体禁用；
+    /// 每次安装会话由 svc-ota 经 BLK_BOOT_GUARD 重查）。
+    pub fn try_new_boot(
+        boot_mmio_vaddr: u64,
+        boot_dma_vaddr: u64,
+        boot_dma_phys: u64,
+    ) -> Result<Self, &'static str> {
+        let mut inner = VirtioBlkBackend::try_new(boot_mmio_vaddr, boot_dma_vaddr, boot_dma_phys)?;
+        // BOOTCTRL 双副本读取（qemu-v1：分区基 lba 18432；副本 0/+8 lba）。
+        let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
+            eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
+        );
+        let mut first = [0u8; 4096];
+        let mut second = [0u8; 4096];
+        use BlockBackend as _;
+        inner
+            .read(bc_lba, &mut first)
+            .map_err(|_| "bootctrl-read")?;
+        inner
+            .read(bc_lba + 8, &mut second)
+            .map_err(|_| "bootctrl-read")?;
+        let guard = crate::boot_guard::BootWriteGuard::resolve(&first, &second)?;
+        Ok(BootSlotBackend {
+            inner,
+            guard,
+            boot_dma_vaddr,
+        })
+    }
+
+    pub fn guard(&self) -> &crate::boot_guard::BootWriteGuard {
+        &self.guard
+    }
+
+    pub fn boot_dma_vaddr(&self) -> u64 {
+        self.boot_dma_vaddr
+    }
+}
+
+impl crate::block_cmd::InstallBackend for BootSlotBackend {
+    fn install_ranges(&self) -> (u64, u64, u64, u64) {
+        let g = &self.guard;
+        let (bc_lba, bc_lbas) = eneros_ota_ab::boot_disk::lba_range_of(
+            eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
+        );
+        (g.inactive_start_lba, g.inactive_lbas, bc_lba, bc_lbas)
+    }
+}
+
+impl crate::block_cmd::BlockBackend for BootSlotBackend {
+    fn read(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
+        crate::block_cmd::BlockBackend::read(&mut self.inner, lba, buf)
+    }
+    fn write(&mut self, _lba: u64, _data: &[u8]) -> Result<(), ()> {
+        // 启动盘**无裸写**——一切写经 BLK_BOOT_INSTALL_WRITE 的守卫范围强制。
+        Err(())
+    }
+    fn flush(&mut self) -> Result<(), ()> {
+        Ok(())
+    }
+    fn health(&self) -> (u64, u32, u8) {
+        crate::block_cmd::BlockBackend::health(&self.inner)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate alloc;

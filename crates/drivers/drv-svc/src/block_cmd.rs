@@ -15,6 +15,9 @@
 //! fail-closed：无 backend → `ST_UNAVAILABLE`；坏命令/越界 → `ST_INVALID`；
 //! 写失败 → `ST_UNAVAILABLE`（不伪装成功）。
 
+extern crate alloc;
+use alloc::boxed::Box;
+
 use super::runtime::{DriverRequest, DriverResponse, ST_INVALID, ST_OK, ST_UNAVAILABLE};
 
 /// 子操作码：读（lba 8B + count 4B → data）。
@@ -25,6 +28,13 @@ pub const BLK_CMD_WRITE: u8 = 0x02;
 pub const BLK_CMD_FLUSH: u8 = 0x03;
 /// 子操作码：健康/容量（只读元数据）。
 pub const BLK_CMD_HEALTH: u8 = 0x04;
+/// 70.7（WP-70.7.2）：启动盘受限安装面子码（0x05-0x08；`install` 面缺席
+/// → ST_UNAVAILABLE）。0x05 读全域放行；0x06 安装写（守卫强制：仅非活动
+/// BOOT 槽 ∪ BOOTCTRL）；0x07 flush；0x08 守卫范围查询。
+pub const BLK_BOOT_READ: u8 = 0x05;
+pub const BLK_BOOT_INSTALL_WRITE: u8 = 0x06;
+pub const BLK_BOOT_FLUSH: u8 = 0x07;
+pub const BLK_BOOT_GUARD: u8 = 0x08;
 
 /// 读命令单次数据上限（响应载荷 = PAYLOAD_CAP；68.3 WP-68.3.1
 /// 52→461——旧调用方 ≤52B 行为不变，上限只放宽）。
@@ -42,6 +52,84 @@ pub trait BlockBackend {
     fn flush(&mut self) -> Result<(), ()>;
     /// (block_count, block_size, health_code)——health 0=healthy。
     fn health(&self) -> (u64, u32, u8);
+}
+
+/// 70.7（WP-70.7.2）：启动盘受限安装命令（`install` 面守卫强制）。
+///
+/// | 子码 | 请求 payload | 响应 payload |
+/// |---|---|---|
+/// | `BLK_BOOT_READ` | lba(8) + count(4) | data(≤[`BLK_READ_MAX`]) |
+/// | `BLK_BOOT_INSTALL_WRITE` | lba(8) + data(≤[`BLK_WRITE_MAX`]) | — |
+/// | `BLK_BOOT_FLUSH` | — | — |
+/// | `BLK_BOOT_GUARD` | — | inact_start(8) + inact_lbas(8) + bc_start(8) + bc_lbas(8) + active_is_a(1) |
+///
+/// fail-closed：无安装面 → ST_UNAVAILABLE；越界/跨域写 → ST_INVALID
+/// （守卫强制：仅非活动 BOOT 槽 ∪ BOOTCTRL；活跃槽/其他分区零写）。
+pub fn handle_boot_cmd(
+    cmd: u8,
+    req: &DriverRequest,
+    install: &mut dyn InstallBackend,
+    resp: &mut DriverResponse,
+) {
+    match cmd {
+        BLK_BOOT_READ => {
+            if req.payload_len < 13 {
+                resp.status = ST_INVALID;
+                return;
+            }
+            let lba = u64::from_le_bytes(req.payload[1..9].try_into().unwrap());
+            let count = u32::from_le_bytes(req.payload[9..13].try_into().unwrap()) as usize;
+            let n = count.min(BLK_READ_MAX);
+            let mut buf = [0u8; BLK_READ_MAX];
+            match install.read(lba, &mut buf[..n]) {
+                Ok(()) => {
+                    resp.payload[..n].copy_from_slice(&buf[..n]);
+                    resp.payload_len = n as u16;
+                    resp.status = ST_OK;
+                }
+                Err(_) => resp.status = ST_UNAVAILABLE,
+            }
+        }
+        BLK_BOOT_INSTALL_WRITE => {
+            if req.payload_len < 9 {
+                resp.status = ST_INVALID;
+                return;
+            }
+            let lba = u64::from_le_bytes(req.payload[1..9].try_into().unwrap());
+            let data = &req.payload[9..req.payload_len as usize];
+            // 守卫强制（WP-70.7.2 核心不变量）：非活动槽 ∪ BOOTCTRL 之外
+            // 零写——活跃槽/数据盘/其他分区写请求在存储服务侧拒绝。
+            let (is, il, bs, bl) = install.install_ranges();
+            let end = lba.saturating_add(data.len() as u64);
+            let ok = (lba >= is && end <= is + il) || (lba >= bs && end <= bs + bl);
+            if !ok {
+                resp.status = ST_INVALID;
+                return;
+            }
+            match install.write(lba, data) {
+                Ok(()) => resp.status = ST_OK,
+                Err(_) => resp.status = ST_UNAVAILABLE,
+            }
+        }
+        BLK_BOOT_FLUSH => match install.flush() {
+            Ok(()) => resp.status = ST_OK,
+            Err(_) => resp.status = ST_UNAVAILABLE,
+        },
+        BLK_BOOT_GUARD => {
+            let (is, il, bs, bl) = install.install_ranges();
+            resp.payload[..40].copy_from_slice(&{
+                let mut b = [0u8; 40];
+                b[..8].copy_from_slice(&is.to_le_bytes());
+                b[8..16].copy_from_slice(&il.to_le_bytes());
+                b[16..24].copy_from_slice(&bs.to_le_bytes());
+                b[24..32].copy_from_slice(&bl.to_le_bytes());
+                b
+            });
+            resp.payload_len = 40;
+            resp.status = ST_OK;
+        }
+        _ => resp.status = ST_INVALID,
+    }
 }
 
 /// 处理一个块命令（子码在 `req.payload[0]`）。
@@ -113,14 +201,27 @@ pub fn handle_block_cmd(
     }
 }
 
+/// 70.7（WP-70.7.2）：启动盘受限安装面（读全域 + 写守卫范围强制）。
+/// 宿主测试以 mock 实现；target 实现 = `blk_backend::BootSlotBackend`。
+pub trait InstallBackend: BlockBackend {
+    /// (非活动槽起始 lba, 非活动槽 lbas, BOOTCTRL 起始 lba, BOOTCTRL lbas)。
+    fn install_ranges(&self) -> (u64, u64, u64, u64);
+}
+
 /// 存储服务（svc-storage 用）：持有可选 backend。
 pub struct StorageService<B: BlockBackend> {
     backend: Option<B>,
+    /// 70.7.2：启动盘受限安装面（None = 未移交 → BLK_BOOT_* 显式
+    /// ST_UNAVAILABLE）。
+    install: Option<Box<dyn InstallBackend>>,
 }
 
 impl<B: BlockBackend> StorageService<B> {
     pub const fn new() -> Self {
-        Self { backend: None }
+        Self {
+            backend: None,
+            install: None,
+        }
     }
 
     /// 装配 backend（设备句柄移交时调用；39 host 测试直接注入）。
@@ -128,8 +229,17 @@ impl<B: BlockBackend> StorageService<B> {
         self.backend = Some(backend);
     }
 
+    /// 70.7.2：装配启动盘受限安装面。
+    pub fn attach_install(&mut self, install: Box<dyn InstallBackend>) {
+        self.install = Some(install);
+    }
+
     pub fn is_attached(&self) -> bool {
         self.backend.is_some()
+    }
+
+    pub fn install_attached(&self) -> bool {
+        self.install.is_some()
     }
 }
 
@@ -148,6 +258,21 @@ impl<B: BlockBackend> super::runtime::DriverService for StorageService<B> {
         }
     }
     fn handle(&mut self, req: &DriverRequest, resp: &mut DriverResponse) {
+        // 70.7.2：启动盘受限安装面子码（在数据面之前判别——子码空间
+        // 0x05-0x08 为 boot 专属，数据面子码 0x01-0x04 不受影响）。
+        if req.payload_len >= 1
+            && matches!(
+                req.payload[0],
+                BLK_BOOT_READ | BLK_BOOT_INSTALL_WRITE | BLK_BOOT_FLUSH | BLK_BOOT_GUARD
+            )
+        {
+            let Some(install) = self.install.as_mut() else {
+                resp.status = ST_UNAVAILABLE;
+                return;
+            };
+            handle_boot_cmd(req.payload[0], req, install.as_mut(), resp);
+            return;
+        }
         let Some(backend) = self.backend.as_mut() else {
             // capability() 已拦 None；防御性兜底（不伪装）。
             resp.status = ST_UNAVAILABLE;

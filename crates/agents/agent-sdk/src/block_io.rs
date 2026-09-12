@@ -11,6 +11,11 @@
 //! fail-closed：存储能力未授予（EIPC mask 对应位为 0）→ `Unavailable`；
 //! 信封响应 status != ST_OK → 对应 `StoreError`（不伪造成功）。
 
+/// 70.7（WP-70.7.2）：BLK_BOOT_* 安装面子码 re-export（svc-ota 安装
+/// 控制器消费；常量单源 = drv-svc::block_cmd）。
+pub use eneros_drv_svc::block_cmd::{
+    BLK_BOOT_FLUSH, BLK_BOOT_GUARD, BLK_BOOT_INSTALL_WRITE, BLK_BOOT_READ,
+};
 use eneros_drv_svc::block_cmd::{
     BLK_CMD_FLUSH, BLK_CMD_READ, BLK_CMD_WRITE, BLK_READ_MAX, BLK_WRITE_MAX,
 };
@@ -109,6 +114,21 @@ impl<C: EipcSend> BlockIo<C> {
 
     /// 读 `offset` 起 `buf.len()` 字节（分块 = [`BLK_READ_CHUNK`]；lba =
     /// 字节偏移，与 39 命令面 RamBackend 语义一致）。
+    /// 70.7（WP-70.7.2）：原始子码命令（BLK_BOOT_* 安装面；svc-ota
+    /// 安装控制器消费）。payload = 子码后的请求体；返回 ST_OK 时的
+    /// 响应数据段。非 ST_OK → 显式错误（fail-closed 不伪装）。
+    pub fn raw_command(
+        &mut self,
+        sub: u8,
+        payload: &[u8],
+    ) -> Result<alloc::vec::Vec<u8>, StoreError> {
+        let resp = self.cmd(sub, payload)?;
+        if resp.status != 0 {
+            return Err(StoreError::Other("boot-cmd-status"));
+        }
+        Ok(resp.payload[..resp.payload_len as usize].to_vec())
+    }
+
     fn read_into(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), StoreError> {
         let mut off = offset;
         let mut out = buf;

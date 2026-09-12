@@ -19,6 +19,8 @@
 use core::panic::PanicInfo;
 
 #[cfg(target_os = "none")]
+extern crate alloc;
+#[cfg(target_os = "none")]
 extern crate eneros_drv_svc;
 
 #[cfg(target_os = "none")]
@@ -73,6 +75,26 @@ pub extern "C" fn _start(
             }
             let mut s = eneros_drv_svc::block_cmd::StorageService::new();
             s.attach(backend);
+            // 70.7（WP-70.7.2）：启动盘（slot 0）受限安装面——DMA 池紧随
+            // 数据盘池（连续性契约，spawn 校验连续）；MMIO = 同页 slot 0。
+            let boot_dma = dma_phys + eneros_handover_abi::SVC_BOOT_DMA_PAGES as u64 * 4096;
+            match eneros_drv_svc::blk_backend::BootSlotBackend::try_new_boot(
+                mmio_vaddr, boot_dma, boot_dma,
+            ) {
+                Ok(boot) => {
+                    use eneros_drv_svc::block_cmd::InstallBackend as _;
+                    let (is, il, bs, bl) = boot.install_ranges();
+                    s.attach_install(alloc::boxed::Box::new(boot));
+                    eneros_runtime::println!(
+                        "[svc-storage] BOOT-INSTALL attached: inactive_lba={is} lbas={il} bootctrl_lba={bs}"
+                    );
+                }
+                Err(e) => {
+                    eneros_runtime::println!(
+                        "[svc-storage] BOOT-INSTALL unavailable ({e}) —— 安装面禁用（诚实降级）"
+                    );
+                }
+            }
             eneros_runtime::println!(
                 "[svc-storage] real block backend attached (mmio=0x{:x} dma=0x{:x} phys=0x{:x})",
                 mmio_vaddr,

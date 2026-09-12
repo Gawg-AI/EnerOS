@@ -101,12 +101,30 @@ pub const fn placements() -> [(BootPartition, BootDiskRange); 11] {
     while i < PARTITION_SIZE_BYTES.len() {
         let (role, size) = PARTITION_SIZE_BYTES[i];
         // 对齐向上取整（1 MiB 粒度）。
-        let aligned = (next + ALIGN_BYTES - 1) / ALIGN_BYTES * ALIGN_BYTES;
+        let aligned = next.div_ceil(ALIGN_BYTES) * ALIGN_BYTES;
         out[i] = (role, BootDiskRange::new(aligned, size));
         next = aligned + size;
         i += 1;
     }
     out
+}
+
+/// 按角色取 LBA 区间（(start_lba, lbas)；512B 扇区）。
+pub const fn lba_range_of(role: BootPartition) -> (u64, u64) {
+    let (b, l) = match role {
+        BootPartition::PlatformBoot => (lba(2048), 8 * 1024 * 1024),
+        BootPartition::BootCtrl => (lba(18432), 1024 * 1024),
+        BootPartition::BootA => (lba(20480), 8 * 1024 * 1024),
+        BootPartition::BootB => (lba(36864), 8 * 1024 * 1024),
+        BootPartition::SysA => (lba(53248), 12 * 1024 * 1024),
+        BootPartition::SysB => (lba(77824), 12 * 1024 * 1024),
+        BootPartition::Recovery => (lba(102400), 16 * 1024 * 1024),
+        BootPartition::Config => (lba(135168), 4 * 1024 * 1024),
+        BootPartition::Data => (lba(143360), 16 * 1024 * 1024),
+        BootPartition::Logs => (lba(176128), 8 * 1024 * 1024),
+        BootPartition::Models => (lba(192512), 16 * 1024 * 1024),
+    };
+    (b / 512, l / 512)
 }
 
 /// 按角色取区间。
@@ -165,7 +183,10 @@ pub fn verify_boot_disk_map() -> Result<(), &'static str> {
         return Err("bootctrl-too-small");
     }
     // 更新槽与活跃槽互斥（BOOT_A/B 等容量）。
-    let (a, b) = (range_of(BootPartition::BootA), range_of(BootPartition::BootB));
+    let (a, b) = (
+        range_of(BootPartition::BootA),
+        range_of(BootPartition::BootB),
+    );
     if a.len_bytes() != b.len_bytes() {
         return Err("boot-slot-asymmetric");
     }

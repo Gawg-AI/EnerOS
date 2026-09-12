@@ -36,6 +36,7 @@ pub mod block_cmd;
 /// 41（WP-41 存储句柄移交）：svc-storage 真块后端——VirtioBlkBackend
 /// （storage VirtioBlkDriver 适配 BlockBackend）+ 服务侧 SvcDmaPool。
 pub mod blk_backend;
+pub mod boot_guard;
 
 /// 服务进程全局分配器（linked_list_allocator；runtime 本体无 alloc）。
 pub mod allocator;

@@ -797,6 +797,11 @@ pub struct StorageHandover {
     pub dma_vaddr: u64,
     /// DMA 池物理基址（X5；Q_PFN/描述符 addr 写此值）。
     pub dma_phys: u64,
+    /// 70.7（WP-70.7.2）：启动盘（slot 0）DMA 池 1:1 基址——紧随数据盘
+    /// 池连续分配（连续性契约）。None = 启动后端不可用（诚实降级）。
+    /// svc-storage 零新寄存器：基址 = dma_phys + STORAGE_DMA_PAGES×4096
+    /// 推导 + boot MMIO = X3 + 0（数据盘页已覆盖 slot 0）。
+    pub boot_dma_vaddr: Option<u64>,
 }
 
 /// 计算 svc-storage 的 MMIO 物理地址（QEMU virt 数据盘槽位）。
@@ -2295,7 +2300,67 @@ fn configure_service(
                     mmio_vaddr,
                     dma_vaddr: phys_base, // 1:1（虚拟 = 物理）
                     dma_phys: phys_base,
+                    boot_dma_vaddr: None,
                 });
+                // 70.7（WP-70.7.2）：启动盘（slot 0）DMA 池——背靠背连续
+                // 分配（连续性契约见 handover-abi SVC_BOOT_DMA_PAGES）。
+                let boot_phys = phys_base + STORAGE_DMA_PAGES as u64 * PAGE_SIZE;
+                let boot_dma_ok = (|| -> Result<(), SpawnError> {
+                    let (untyped, _off, bphys) = ctx
+                        .untyped
+                        .alloc_contiguous_pages(eneros_handover_abi::SVC_BOOT_DMA_PAGES)
+                        .ok_or(SpawnError::NoUntyped)?;
+                    if bphys != boot_phys {
+                        // 分配器跳槽（第一 untyped 容量尽）→ 连续性契约破裂
+                        // → 诚实降级（svc-storage 按同一推导会写错物理）。
+                        return Err(SpawnError::NoUntyped);
+                    }
+                    let mut frames: Vec<u64> = Vec::new();
+                    for _k in 0..eneros_handover_abi::SVC_BOOT_DMA_PAGES {
+                        let frame = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
+                        retype(
+                            untyped,
+                            types.arm_frame,
+                            OBJ_BITS_SMALL_PAGE,
+                            1,
+                            ctx.root_cnode,
+                            frame,
+                            0,
+                            frame,
+                        )
+                        .map_err(SpawnError::Sel4)?;
+                        frames.push(frame);
+                    }
+                    let perm = VmPermissions::RW_NX;
+                    for (k, frame) in frames.into_iter().enumerate() {
+                        map_frame_with_pagetables(
+                            ctx,
+                            vspace,
+                            frame,
+                            boot_phys + (k as u64) * (1u64 << OBJ_BITS_SMALL_PAGE),
+                            perm.cap_rights(rights),
+                            perm.vm_attributes(),
+                        )?;
+                    }
+                    Ok(())
+                })();
+                match boot_dma_ok {
+                    Ok(()) => {
+                        if let Some(h) = storage_handover.as_mut() {
+                            h.boot_dma_vaddr = Some(boot_phys);
+                        }
+                        crate::println!(
+                            "[eneros-root-task] BOOT-STORAGE-HANDOVER: dma vaddr=0x{boot_phys:x} (1:1) pages={}"
+                            ,
+                            eneros_handover_abi::SVC_BOOT_DMA_PAGES
+                        );
+                    }
+                    Err(e) => {
+                        crate::println!(
+                            "[eneros-root-task] BOOT-STORAGE-HANDOVER: FAILED {e:?} —— 启动盘后端不可用（诚实降级）"
+                        );
+                    }
+                }
             } else {
                 crate::println!(
                     "[eneros-root-task] STORAGE-HANDOVER: dma map FAILED —— storage 无后端（显式 Unavailable）"
@@ -2451,6 +2516,19 @@ fn configure_service(
                 dma_frames.push(frame);
             }
             if dma_ok {
+                // 70.7（WP-70.7.2）：启动盘 mailbox——magic + 启动盘池 1:1
+                // 基址写入数据池第 9 页（驱动串行请求下仅 slot0 链在用，
+                // 第 9 页除 slot4 status 首字节外全空——offset 16 起安全）。
+                // svc-storage 启动读同址判定启动后端可用性。
+                let boot_dma_phys_mb = phys_base + (STORAGE_DMA_PAGES as u64) * 4096;
+                let mut mb: Vec<u8> = Vec::new();
+                mb.extend_from_slice(b"ENRBOOT2");
+                mb.extend_from_slice(&boot_dma_phys_mb.to_le_bytes());
+                if copy_window_bytes(ctx, dma_frames[8], &mb, rights).is_err() {
+                    crate::println!(
+                        "[eneros-root-task] BOOT-STORAGE-HANDOVER: mailbox write FAILED —— 启动后端不可用"
+                    );
+                }
                 let perm = VmPermissions::RW_NX;
                 for (k, frame) in dma_frames.into_iter().enumerate() {
                     if map_frame_with_pagetables(

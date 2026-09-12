@@ -171,7 +171,6 @@ pub extern "C" fn _start(
             ops_region_len: MGMT_OPS_LEN,
             root,
             snapshot: None,
-            snapshot_seq: 0,
         }),
     };
     // 恢复账本注入（ManagementRpc 拥有状态；装配侧注入持久化前态）。
@@ -217,7 +216,6 @@ struct TargetExecutor {
     /// 70.6（WP-70.6.2）：支持包快照分页缓存（仅最新快照；旧 seq 显式
     /// 过期）。pages 各 ≤512B。
     snapshot: Option<(u32, alloc::vec::Vec<alloc::vec::Vec<u8>>)>,
-    snapshot_seq: u32,
 }
 
 /// 支持包单页大小（响应 = 详情 + 载荷经 chunked 分页；512B 页 × ≤8 页）。
@@ -290,7 +288,7 @@ impl TargetExecutor {
         use alloc::format;
         use alloc::string::String;
         let mut out: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(1024);
-        let mut section = |name: &str, body: &str, out: &mut alloc::vec::Vec<u8>| {
+        let section = |name: &str, body: &str, out: &mut alloc::vec::Vec<u8>| {
             let d = eneros_crypto::sm3_hash(body.as_bytes());
             let line = format!(
                 "{name}|digest={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}|{body}\n",

@@ -49,6 +49,19 @@ pub const UART_MMIO_VADDR: u64 = 0x4003_0000;
 /// / driver_probe `VIRTIO_REGION_BASE` / crypto entropy 默认值）。
 pub const VIRTIO_MMIO_REGION_BASE: u64 = 0x0a00_0000;
 
+/// 70.7（WP-70.7.2）：svc-storage 启动盘（virtio **slot 0**，GPT 产品盘）
+/// DMA 池页数——与数据盘同规格（virtio-blk 9 页布局）。
+///
+/// **连续性契约**：启动盘池由 spawn 在数据盘池分配之后**背靠背**连续
+/// 分配（同一 untyped 顺序切，物理连续）——svc-storage 侧启动盘 DMA
+/// 基址 = 数据盘 dma_phys + STORAGE_DMA_PAGES×4096（X5 推导，零新寄存器）。
+/// spawn 侧分配后校验连续性，断裂 → 启动后端诚实降级。
+pub const SVC_BOOT_DMA_PAGES: usize = 9;
+
+/// 启动盘 = virtio slot 0（MMIO = STORAGE_MMIO_VADDR + 0×0x200——数据盘
+/// 移交页已覆盖 slot 0-7，启动盘寄存器**零新增映射**）。
+pub const BOOT_MMIO_SLOT: u64 = 0;
+
 /// virtio-mmio 槽步长（legacy 传输）。
 pub const VIRTIO_MMIO_SLOT_STRIDE: u64 = 0x200;
 

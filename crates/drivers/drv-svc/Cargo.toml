@@ -29,6 +29,10 @@ eneros-hal = { path = "../../hal/hal" }
 # diag 维持保留（摘除无收益、徒增变量）；31× 税 + 间歇冻结的根治
 # （virtio 等待语义/驱动时序）归调度·驱动层卷。
 eneros-storage = { path = "../../drivers/storage", features = ["diag"] }
+# 70.7（WP-70.7.2/3）：启动盘受限安装面——BOOTCTRL 双副本解析（boot-protocol
+# BootControl/事务）+ 非活动槽区间（ota-ab::boot_disk 启动盘介质图单源）。
+eneros-boot-protocol = { path = "../../boot/boot-protocol" }
+eneros-ota-ab = { path = "../../security/ota-ab" }
 linked_list_allocator = "0.10"
 
 [[bin]]

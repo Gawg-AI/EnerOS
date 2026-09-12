@@ -1637,3 +1637,299 @@ mod svc_ota_source_guard {
         );
     }
 }
+
+// ============================================================================
+// 70.7（WP-70.7.2/70.7.3）：启动槽安装控制器——bootctrl 事务核心
+// ============================================================================
+
+/// 启动槽安装控制器（svc-ota 持有；boot-disk 访问经 `BootBlockFace`
+/// 注入——target 实现 = svc-storage BLK_BOOT_* 受限面，宿主 = mock）。
+///
+/// 事务（boot-protocol::BootControlTransaction 单源）：
+/// 1. `begin`：消费 70.5 验签链（admit_description 已由调用方完成），
+///    读 BOOTCTRL 双副本 → resolve 活跃 → 目标 = 非活动槽；
+/// 2. `write_bootctrl_trial`：非活动槽 = trial（优先级 = 活跃+1 封顶
+///    15，tries=3），序列 +1，双副本写入（BLK_BOOT_INSTALL_WRITE——
+///    守卫范围 = 非活动槽 ∪ BOOTCTRL）+ flush；
+/// 3. `confirm`：启动确认（健康观察窗满足后由管理面驱动）——目标槽
+///    successful=true，序列 +1 双副本再写。
+pub struct BootInstall<C> {
+    /// boot 块访问面（读/受限写/flush）。
+    pub face: C,
+}
+
+impl<T: BootBlockFace + ?Sized> BootBlockFace for &mut T {
+    fn read(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
+        T::read(self, lba, buf)
+    }
+    fn write(&mut self, lba: u64, data: &[u8]) -> Result<(), ()> {
+        T::write(self, lba, data)
+    }
+    fn flush(&mut self) -> Result<(), ()> {
+        T::flush(self)
+    }
+    fn install_ranges(&self) -> (u64, u64, u64, u64) {
+        T::install_ranges(self)
+    }
+}
+
+/// 安装面抽象（svc-storage BLK_BOOT_* 的宿主可测投影）。
+pub trait BootBlockFace {
+    /// 读启动盘 lba 起 `buf.len()` 字节。
+    // 各方法错误面 = ()（协议常量型，MgmtAction::parse 先例）。
+    #[allow(clippy::result_unit_err)]
+    fn read(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()>;
+    #[allow(clippy::result_unit_err)]
+    fn write(&mut self, lba: u64, data: &[u8]) -> Result<(), ()>;
+    #[allow(clippy::result_unit_err)]
+    fn flush(&mut self) -> Result<(), ()>;
+    #[allow(clippy::result_unit_err)]
+    fn install_ranges(&self) -> (u64, u64, u64, u64);
+}
+
+/// BOOTCTRL 记录长度（boot-protocol 单源）。
+const BC_RECORD: usize = eneros_boot_protocol::boot_control::BOOT_CONTROL_RECORD_SIZE;
+
+impl<C: BootBlockFace> BootInstall<C> {
+    pub fn new(face: C) -> Self {
+        BootInstall { face }
+    }
+
+    /// 读 BOOTCTRL 双副本（副本 0 = 分区基址，副本 1 = +4096B = +8 lba）。
+    /// 返回 (解析后的当前控制块, 高序列副本下标)。
+    pub fn read_current(
+        &mut self,
+    ) -> Result<(eneros_boot_protocol::BootControl, usize), &'static str> {
+        let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
+            eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
+        );
+        let mut c0 = [0u8; BC_RECORD];
+        let mut c1 = [0u8; BC_RECORD];
+        self.face.read(bc_lba, &mut c0).map_err(|_| "read0")?;
+        self.face.read(bc_lba + 8, &mut c1).map_err(|_| "read1")?;
+        let d0 = eneros_boot_protocol::BootControl::decode(&c0);
+        let d1 = eneros_boot_protocol::BootControl::decode(&c1);
+        match (d0, d1) {
+            (Ok(a), Ok(b)) => {
+                if a.sequence >= b.sequence {
+                    Ok((a, 0))
+                } else {
+                    Ok((b, 1))
+                }
+            }
+            (Ok(a), Err(_)) => Ok((a, 0)),
+            (Err(_), Ok(b)) => Ok((b, 1)),
+            _ => Err("bootctrl-both-invalid"),
+        }
+    }
+
+    /// 写 bootctrl trial 事务（WP-70.7.3）：目标 = 非活动槽 trial
+    /// （优先级 = 活跃+1 封顶 15；tries=3；security_version = 目标值），
+    /// 序列 +1；双副本写（高序列副本先写，低序列后写——掉电窗口任一
+    /// 时刻 resolve 均取更高有效序列）+ flush。
+    /// `target_image_id`/`target_security_version` 来自 70.5 验签描述。
+    /// 返回新序列号。
+    pub fn write_bootctrl_trial(
+        &mut self,
+        target_security_version: u64,
+        target_image_id: [u8; 16],
+    ) -> Result<u64, &'static str> {
+        use eneros_boot_protocol::boot_control::BOOT_CONTROL_COPY_OFFSETS;
+        let (current, high_copy) = self.read_current()?;
+        let active_is_a = current.slot_a.priority >= current.slot_b.priority;
+        let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
+            eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
+        );
+        // 下一控制块：非活动槽 = trial，**严格高于**活跃槽（平局规则
+        // "successful 胜 trial" 会使平局永远回旧槽——trial 永不启动）。
+        // 策略 = 降活跃 1（≥1 保留回退资格）+ 非活动 = 15 封顶。
+        let mut next = current; // BootControl: Copy
+        if active_is_a {
+            next.slot_a.priority = next.slot_a.priority.saturating_sub(1).max(1);
+            next.slot_b = eneros_boot_protocol::SlotState::trial(
+                15,
+                3,
+                target_security_version,
+                target_image_id,
+            );
+        } else {
+            next.slot_b.priority = next.slot_b.priority.saturating_sub(1).max(1);
+            next.slot_a = eneros_boot_protocol::SlotState::trial(
+                15,
+                3,
+                target_security_version,
+                target_image_id,
+            );
+        }
+        next.sequence = current.sequence + 1;
+        let rec = next.encode().map_err(|_| "encode")?;
+        // 写序：高序列副本先写（掉电后 resolve 仍取新块）；再写低副本。
+        let (first, second) = if high_copy == 0 {
+            ((bc_lba, &rec), (bc_lba + 8, &rec))
+        } else {
+            ((bc_lba + 8, &rec), (bc_lba, &rec))
+        };
+        self.face.write(first.0, first.1).map_err(|_| "write0")?;
+        self.face.write(second.0, second.1).map_err(|_| "write1")?;
+        self.face.flush().map_err(|_| "flush")?;
+        let _ = BOOT_CONTROL_COPY_OFFSETS;
+        Ok(next.sequence)
+    }
+
+    /// 启动确认（WP-70.7.4）：目标槽 successful=true（不再消耗 tries），
+    /// 序列 +1 双副本写 + flush。`slot_is_a` = 当前启动槽（IdentityCapsule
+    /// 投影）；`security_version` = 已验证运行版本。
+    pub fn confirm_running(
+        &mut self,
+        slot_is_a: bool,
+        security_version: u64,
+        image_id: [u8; 16],
+    ) -> Result<u64, &'static str> {
+        let (current, _) = self.read_current()?;
+        let mut next = current; // BootControl: Copy
+        if slot_is_a {
+            next.slot_a = eneros_boot_protocol::SlotState::successful(
+                next.slot_a.priority.max(1),
+                security_version,
+                image_id,
+            );
+        } else {
+            next.slot_b = eneros_boot_protocol::SlotState::successful(
+                next.slot_b.priority.max(1),
+                security_version,
+                image_id,
+            );
+        }
+        next.sequence = current.sequence + 1;
+        let rec = next.encode().map_err(|_| "encode")?;
+        let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
+            eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
+        );
+        self.face.write(bc_lba, &rec).map_err(|_| "write0")?;
+        self.face.write(bc_lba + 8, &rec).map_err(|_| "write1")?;
+        self.face.flush().map_err(|_| "flush")?;
+        Ok(next.sequence)
+    }
+}
+
+/// 70.7 安装控制器宿主测试（mock boot 面）。
+#[cfg(test)]
+mod boot_install_tests {
+    use eneros_boot_protocol::boot_control::BOOT_CONTROL_RECORD_SIZE;
+    use eneros_boot_protocol::{BootControl, BootSlot};
+
+    use super::*;
+
+    /// mock boot 面：内存介质（BOOTCTRL 分区在 lba 0 起——测试域）。
+    struct MockFace {
+        media: alloc::vec::Vec<u8>,
+        writes: u32,
+    }
+
+    const LBA: usize = 512;
+
+    impl MockFace {
+        fn new() -> Self {
+            // 覆盖真实 BOOTCTRL lba（18432..18448，qemu-v1 布局）。
+            MockFace {
+                media: alloc::vec![0u8; 18480 * LBA],
+                writes: 0,
+            }
+        }
+        fn seed_bootctrl(&mut self, rec: &[u8; BOOT_CONTROL_RECORD_SIZE], copy: usize) {
+            let off = (18432 + copy * 8) * LBA;
+            self.media[off..off + BOOT_CONTROL_RECORD_SIZE].copy_from_slice(rec);
+        }
+    }
+
+    impl BootBlockFace for MockFace {
+        fn read(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
+            let off = lba as usize * LBA;
+            let end = off + buf.len();
+            if end > self.media.len() {
+                return Err(());
+            }
+            buf.copy_from_slice(&self.media[off..end]);
+            Ok(())
+        }
+        fn write(&mut self, lba: u64, data: &[u8]) -> Result<(), ()> {
+            let off = lba as usize * LBA;
+            let end = off + data.len();
+            if end > self.media.len() {
+                return Err(());
+            }
+            self.media[off..end].copy_from_slice(data);
+            self.writes += 1;
+            Ok(())
+        }
+        fn flush(&mut self) -> Result<(), ()> {
+            Ok(())
+        }
+        fn install_ranges(&self) -> (u64, u64, u64, u64) {
+            (16384, 16384, 0, 8)
+        }
+    }
+
+    fn factory_a_trial3() -> [u8; BOOT_CONTROL_RECORD_SIZE] {
+        let id = [9u8; 16];
+        let mut c = BootControl::factory(id, 1, id);
+        c.slot_a = eneros_boot_protocol::SlotState::trial(15, 3, 1, id);
+        c.sequence = 1;
+        c.encode().unwrap()
+    }
+
+    #[test]
+    fn trial_transaction_promotes_inactive_strictly_higher() {
+        let mut face = MockFace::new();
+        face.seed_bootctrl(&factory_a_trial3(), 0);
+        face.seed_bootctrl(&factory_a_trial3(), 1);
+        let mut inst = BootInstall::new(face);
+        let seq = inst.write_bootctrl_trial(2, [3u8; 16]).expect("trial");
+        assert_eq!(seq, 2, "序列 +1");
+        // 新控制块：B = trial(15, tries=3, secver=2) 严格高于 A（14）。
+        let c = inst.read_current().expect("read").0;
+        assert_eq!(c.slot_a.priority, 14, "活跃降 1（≥1 保留回退）");
+        assert_eq!(c.slot_b.priority, 15);
+        assert_eq!(c.slot_b.tries_remaining, 3);
+        assert_eq!(c.slot_b.security_version, 2);
+        assert_eq!(c.slot_b.image_id, [3u8; 16]);
+        // select → B（trial 严格高）。
+        let sel = c.select().expect("select");
+        assert_eq!(sel.slot, BootSlot::B);
+        assert!(sel.trial);
+        let _ = inst.face.writes;
+    }
+
+    #[test]
+    fn confirm_marks_successful_and_sequence_advances() {
+        let mut face = MockFace::new();
+        face.seed_bootctrl(&factory_a_trial3(), 0);
+        face.seed_bootctrl(&factory_a_trial3(), 1);
+        let mut inst = BootInstall::new(face);
+        let seq0 = inst.write_bootctrl_trial(2, [3u8; 16]).expect("trial");
+        let seq1 = inst.confirm_running(false, 2, [3u8; 16]).expect("confirm");
+        assert_eq!(seq1, seq0 + 1);
+        let (c, _) = inst.read_current().expect("read");
+        assert!(c.slot_b.successful, "确认后 B = successful");
+        assert_eq!(c.slot_b.tries_remaining, 0, "successful ⇒ tries 0");
+        // 再次启动选择保持 B（successful 优先级 15 > A 14）。
+        let sel = c.select().expect("select");
+        assert_eq!(sel.slot, BootSlot::B);
+        assert!(!sel.trial);
+    }
+
+    #[test]
+    fn sequence_monotonic_across_repeated_transactions() {
+        let mut face = MockFace::new();
+        face.seed_bootctrl(&factory_a_trial3(), 0);
+        face.seed_bootctrl(&factory_a_trial3(), 1);
+        let mut inst = BootInstall::new(face);
+        let mut last = inst.write_bootctrl_trial(2, [3u8; 16]).unwrap();
+        for _ in 0..3 {
+            let s = inst.write_bootctrl_trial(3, [4u8; 16]).unwrap();
+            assert_eq!(s, last + 1, "序列严格 +1");
+            last = s;
+        }
+        assert_eq!(last, 5);
+    }
+}

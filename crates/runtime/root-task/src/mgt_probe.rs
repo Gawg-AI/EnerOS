@@ -66,13 +66,18 @@ pub enum ProbeState {
     /// 受控重启 svc-observability（rid 300）。
     Restart,
     /// 等待重启完成（root 侧代次/ready 观察）。
-    RestartWait { since: u64 },
+    RestartWait {
+        since: u64,
+    },
     /// 维护退出（rid 500）。
     MaintExit,
     /// 负例：保护服务重启（rid 400）。
     NegRestartDenied,
     /// 负例：幂等冲突（rid 100 异参）。
     NegConflict,
+    /// 70.7（WP-70.7.2/3）：BOOT 安装链（守卫查询 → trial 事务）。
+    BootGuard,
+    BootTrial,
     /// 负例：维护外激活（宿主测试覆盖；占位步）。
     NegMaintRequired,
     /// 负例 v2 帧批（短尾 + 伪造）。
@@ -158,6 +163,35 @@ pub fn build_truncated_frame(request_id: u64, action: &[u8]) -> alloc::vec::Vec<
     out
 }
 
+/// BOOT 守卫查询帧（OTA1 0x0A；无 arg）。
+pub fn boot_guard_frame() -> alloc::vec::Vec<u8> {
+    let mut f = alloc::vec::Vec::new();
+    f.extend_from_slice(b"OTA1");
+    f.push(0x0A);
+    f
+}
+
+/// BOOT 确认帧（OTA1 0x0C + slot_is_a + secver + image_id）。
+pub fn boot_confirm_frame(slot_is_a: bool, secver: u64, image_id: [u8; 16]) -> alloc::vec::Vec<u8> {
+    let mut f = alloc::vec::Vec::new();
+    f.extend_from_slice(b"OTA1");
+    f.push(0x0C);
+    f.push(u8::from(slot_is_a));
+    f.extend_from_slice(&secver.to_le_bytes());
+    f.extend_from_slice(&image_id);
+    f
+}
+
+/// BOOT trial 事务帧（OTA1 0x0B + target_secver + image_id）。
+pub fn boot_trial_frame(secver: u64, image_id: [u8; 16]) -> alloc::vec::Vec<u8> {
+    let mut f = alloc::vec::Vec::new();
+    f.extend_from_slice(b"OTA1");
+    f.push(0x0B);
+    f.extend_from_slice(&secver.to_le_bytes());
+    f.extend_from_slice(&image_id);
+    f
+}
+
 #[cfg(target_os = "none")]
 pub mod driver {
     use alloc::format;
@@ -197,8 +231,11 @@ pub mod driver {
         step_entered: &mut u64,
         svc_mgmt_ep: u64,
         svc_config_ep: u64,
+        svc_ota_ep: u64,
         tick: u64,
         settled: bool,
+        boot_slot: Option<u8>,
+        capsule_secver: u64,
         restart_done: &dyn Fn() -> bool,
     ) -> ProbeDirective {
         if *state == ProbeState::Idle {
@@ -391,6 +428,37 @@ pub mod driver {
                 eneros_runtime::println!(
                     "[eneros-root-task] MGT-PROBE: negative v2 frames sent (step 13/13)"
                 );
+                advance!(ProbeState::BootGuard);
+                ProbeDirective::None
+            }
+            ProbeState::BootGuard => {
+                // 70.7（WP-70.7.2）：BOOT 守卫查询（CHECK-DESC 已由 OTA
+                // 下载探针武装——0x01 判定=1 置 install_armed）。
+                let f = boot_guard_frame();
+                let _ = call_chunked(svc_ota_ep, &f, &mut epoch);
+                eneros_runtime::println!(
+                    "[eneros-root-task] MGT-PROBE: boot guard queried (step 14/13)"
+                );
+                advance!(ProbeState::BootTrial);
+                ProbeDirective::None
+            }
+            ProbeState::BootTrial => {
+                // 自适应：首启（capsule slot=A）→ trial 事务（bootctrl B
+                // trial 严格高于 A，序列+1 双副本+flush）；复启（slot=B，
+                // 即 trial 目标已启动）→ 启动确认（successful=true）。
+                if boot_slot == Some(2) {
+                    let f = boot_confirm_frame(false, capsule_secver, [3u8; 16]);
+                    let _ = call_chunked(svc_ota_ep, &f, &mut epoch);
+                    eneros_runtime::println!(
+                        "[eneros-root-task] MGT-PROBE: boot confirm sent (B successful) (step 14b/13)"
+                    );
+                } else {
+                    let f = boot_trial_frame(2, [3u8; 16]);
+                    let _ = call_chunked(svc_ota_ep, &f, &mut epoch);
+                    eneros_runtime::println!(
+                        "[eneros-root-task] MGT-PROBE: boot trial tx sent (step 14b/13)"
+                    );
+                }
                 advance!(ProbeState::Done);
                 ProbeDirective::None
             }
