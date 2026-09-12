@@ -475,28 +475,42 @@ impl BootControl {
         Ok(next)
     }
 
-    pub fn encode(&self) -> Result<[u8; BOOT_CONTROL_RECORD_SIZE], BootControlError> {
+    /// 编码到调用方缓冲（REG-70.7-BOOT-DEV-IO-HANG 栈预算修复：4 KiB 记录
+    /// 的**按值返回**版本会在调用方帧里再复制一份，目标侧 32 KiB 栈的
+    /// boot 事务链（4 KiB 缓冲 + 按值临时 + 解码帧）曾叠加出 12–16 KiB
+    /// 单帧 → 栈溢出。目标侧一律经本方法复用单缓冲）。
+    pub fn encode_into(
+        &self,
+        out: &mut [u8; BOOT_CONTROL_RECORD_SIZE],
+    ) -> Result<(), BootControlError> {
         self.validate()?;
-        let mut bytes = [0u8; BOOT_CONTROL_RECORD_SIZE];
-        bytes[0..8].copy_from_slice(&BOOT_CONTROL_MAGIC);
-        put_u16(&mut bytes, 8, BOOT_CONTROL_VERSION);
-        put_u16(&mut bytes, 10, BOOT_CONTROL_HEADER_SIZE);
-        put_u32(&mut bytes, 12, BOOT_CONTROL_RECORD_SIZE as u32);
-        put_u64(&mut bytes, 16, self.sequence);
-        put_u64(&mut bytes, 24, self.security_floor);
-        put_u64(&mut bytes, 32, self.recovery_security_version);
-        bytes[40..56].copy_from_slice(&self.recovery_image_id);
-        put_u32(&mut bytes, 56, self.flags);
+        out.fill(0);
+        out[0..8].copy_from_slice(&BOOT_CONTROL_MAGIC);
+        put_u16(out, 8, BOOT_CONTROL_VERSION);
+        put_u16(out, 10, BOOT_CONTROL_HEADER_SIZE);
+        put_u32(out, 12, BOOT_CONTROL_RECORD_SIZE as u32);
+        put_u64(out, 16, self.sequence);
+        put_u64(out, 24, self.security_floor);
+        put_u64(out, 32, self.recovery_security_version);
+        out[40..56].copy_from_slice(&self.recovery_image_id);
+        put_u32(out, 56, self.flags);
         encode_slot(
             &self.slot_a,
-            &mut bytes[SLOT_A_OFFSET..SLOT_A_OFFSET + SLOT_SIZE],
+            &mut out[SLOT_A_OFFSET..SLOT_A_OFFSET + SLOT_SIZE],
         );
         encode_slot(
             &self.slot_b,
-            &mut bytes[SLOT_B_OFFSET..SLOT_B_OFFSET + SLOT_SIZE],
+            &mut out[SLOT_B_OFFSET..SLOT_B_OFFSET + SLOT_SIZE],
         );
-        let crc = crc32(&bytes[..CRC_OFFSET]);
-        put_u32(&mut bytes, CRC_OFFSET, crc);
+        let crc = crc32(&out[..CRC_OFFSET]);
+        put_u32(out, CRC_OFFSET, crc);
+        Ok(())
+    }
+
+    /// 按值编码（宿主/UEFI 面便利 API；目标侧严禁——见 [`Self::encode_into`]）。
+    pub fn encode(&self) -> Result<[u8; BOOT_CONTROL_RECORD_SIZE], BootControlError> {
+        let mut bytes = [0u8; BOOT_CONTROL_RECORD_SIZE];
+        self.encode_into(&mut bytes)?;
         Ok(bytes)
     }
 
@@ -532,10 +546,38 @@ impl BootControl {
             slot_b: decode_slot(&bytes[SLOT_B_OFFSET..SLOT_B_OFFSET + SLOT_SIZE])?,
         };
         control.validate()?;
-        if control.encode()?.as_slice() != bytes {
+        if !control.is_canonical(bytes) {
             return Err(BootControlError::Reserved);
         }
         Ok(control)
+    }
+
+    /// 规范化复核——等价于旧 `encode()`-roundtrip，但**零 4 KiB 缓冲**
+    ///（旧版在解码帧里物化第二份记录 → 12 KiB 帧，REG-70.7-BOOT-DEV-IO-HANG
+    /// 栈溢出实弹）。
+    ///
+    /// 等价性：`decode` 已单独校验 magic[0..8)/version[8..12)/size[12..16)/
+    /// CRC[CRC_OFFSET..) 与两段保留零区 [60..64)、[HEADER..CRC_OFFSET)；
+    /// 槽内未编码字节 [3..8)、[36..40)、[48..64) 与标志位由 `decode_slot`
+    /// 校验为零/合法。故只需逐字段复核**由字段派生**的字节：头部六字段
+    /// + 两槽位重编码——与整记录 roundtrip 完全同判。
+    fn is_canonical(&self, bytes: &[u8]) -> bool {
+        if get_u64(bytes, 16) != self.sequence
+            || get_u64(bytes, 24) != self.security_floor
+            || get_u64(bytes, 32) != self.recovery_security_version
+            || get_array_16(bytes, 40) != self.recovery_image_id
+            || get_u32(bytes, 56) != self.flags
+        {
+            return false;
+        }
+        let mut scratch = [0u8; SLOT_SIZE];
+        for (slot, off) in [(&self.slot_a, SLOT_A_OFFSET), (&self.slot_b, SLOT_B_OFFSET)] {
+            encode_slot(slot, &mut scratch);
+            if bytes[off..off + SLOT_SIZE] != scratch {
+                return false;
+            }
+        }
+        true
     }
 
     pub fn digest(record: &[u8; BOOT_CONTROL_RECORD_SIZE]) -> [u8; 32] {
@@ -670,6 +712,49 @@ mod tests {
             slot_a: a,
             slot_b: b,
         }
+    }
+
+    /// REG-70.7-BOOT-DEV-IO-HANG 回归锁：解码必须在**小栈**内完成。
+    ///
+    /// 目标侧 svc-storage 栈 = 32 KiB（wiring 默认 8 页）；本测试用
+    /// **16 KiB** 线程栈加严。旧实现（解码内 `encode()` roundtrip 物化
+    /// 第二份 4 KiB 记录）解码帧 ≈12 KiB + 编码帧叠加 → 越界（真实故障
+    /// 形态 = seL4 guard 页 data abort `addr=0x225930`，guard 页
+    /// `0x225000..0x226000`）→ 服务被 supervisor 重启。小栈下溢出即
+    /// 线程 abort（红，无优雅断言——帧预算回归一律红）。
+    #[test]
+    fn decode_fits_service_stack_budget() {
+        let record: &'static [u8; BOOT_CONTROL_RECORD_SIZE] =
+            std::boxed::Box::leak(std::boxed::Box::new(
+                BootControl::factory(id(1), 1, id(3)).encode().unwrap(),
+            ));
+        let h = std::thread::Builder::new()
+            .stack_size(16 * 1024)
+            .spawn(move || {
+                // 预占 8 KiB（black_box 防优化）——解码可用预算压到 ≈8 KiB；
+                // 目标侧实弹峰值 = 解码帧 + boot 路径其余 8–16 KiB 帧叠加。
+                let pad: [u8; 8192] = [0u8; 8192];
+                core::hint::black_box(&pad);
+                let control = BootControl::decode(record).expect("decode");
+                assert_eq!(control.sequence, 0);
+                core::hint::black_box(&pad);
+            })
+            .expect("spawn");
+        h.join()
+            .expect("16 KiB 栈内解码必须存活（REG-70.7 帧预算）");
+    }
+
+    /// `encode_into` 与 `encode` 逐字节等价（目标侧栈预算路径 = 前者）。
+    #[test]
+    fn encode_into_matches_by_value_encode() {
+        let control = control(
+            state(15, 3, false, id(5)),
+            state(1, 0, true, id(6)),
+        );
+        let mut into = [0u8; BOOT_CONTROL_RECORD_SIZE];
+        control.encode_into(&mut into).unwrap();
+        assert_eq!(into, control.encode().unwrap());
+        assert_eq!(BootControl::decode(&into).unwrap(), control);
     }
 
     #[test]

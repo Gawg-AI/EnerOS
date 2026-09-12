@@ -678,6 +678,10 @@ impl Orchestration {
             .as_ref()
             .map(|c| c.security_version as u64)
             .unwrap_or(0);
+        // 70.7（REG-70.7-BOOT-TRIAL-BIND）：确认记录运行载荷自身身份——
+        // capsule.release_id = 已验签 manifest 投影（trial 后的确认必须
+        // 与该槽 manifest 逐字段一致，boot-manager 下一轮绑定判据）。
+        let capsule_release_id = capsule.as_ref().map(|c| c.release_id).unwrap_or([0u8; 16]);
         let settled = self.readiness.all_decided();
         let restart_done = || {
             handles
@@ -698,6 +702,7 @@ impl Orchestration {
             settled,
             boot_slot,
             capsule_secver,
+            capsule_release_id,
             &restart_done,
         );
         self.probe_state = st;

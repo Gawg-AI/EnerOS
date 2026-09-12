@@ -48,12 +48,8 @@ impl<'a> BootInstall<'a> {
         // 双 4KiB 记录缓冲 + 驱动 4KiB 块缓冲叠加曾致静默冻结形态）。
         let mut rec = [0u8; BC_RECORD];
         self.face.read(bc_lba, &mut rec).map_err(|_| "read0")?;
-        #[cfg(target_os = "none")]
-        eneros_runtime::println!("[svc-storage] boot_install read0 ok");
         let d0 = BootControl::decode(&rec);
         self.face.read(bc_lba + 8, &mut rec).map_err(|_| "read1")?;
-        #[cfg(target_os = "none")]
-        eneros_runtime::println!("[svc-storage] boot_install read1 ok");
         let d1 = BootControl::decode(&rec);
         match (d0, d1) {
             (Ok(a), Ok(b)) => {
@@ -107,7 +103,10 @@ impl<'a> BootInstall<'a> {
             );
         }
         next.sequence = current.sequence + 1;
-        let rec = next.encode().map_err(|_| "encode")?;
+        // 单缓冲编码（栈预算：复用一棵 4 KiB 缓冲；`encode()` 按值返回会在
+        // 本帧再叠一份 4 KiB 临时——70.7 目标侧 32 KiB 栈实弹 16 KiB 帧）。
+        let mut rec = [0u8; BC_RECORD];
+        next.encode_into(&mut rec).map_err(|_| "encode")?;
         // 写序：高序列副本先写（掉电后 resolve 仍取新块）；再写低副本。
         let (first, second) = if high_copy == 0 {
             ((bc_lba, &rec), (bc_lba + 8, &rec))
@@ -148,7 +147,10 @@ impl<'a> BootInstall<'a> {
         }
         next.security_floor = next.security_floor.max(security_version);
         next.sequence = current.sequence + 1;
-        let rec = next.encode().map_err(|_| "encode")?;
+        // 单缓冲编码（栈预算：复用一棵 4 KiB 缓冲；`encode()` 按值返回会在
+        // 本帧再叠一份 4 KiB 临时——70.7 目标侧 32 KiB 栈实弹 16 KiB 帧）。
+        let mut rec = [0u8; BC_RECORD];
+        next.encode_into(&mut rec).map_err(|_| "encode")?;
         let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
             eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
         );
@@ -194,7 +196,10 @@ impl<'a> BootInstall<'a> {
             _ => return Err("no-pending-trial"),
         }
         next.sequence = current.sequence + 1;
-        let rec = next.encode().map_err(|_| "encode")?;
+        // 单缓冲编码（栈预算：复用一棵 4 KiB 缓冲；`encode()` 按值返回会在
+        // 本帧再叠一份 4 KiB 临时——70.7 目标侧 32 KiB 栈实弹 16 KiB 帧）。
+        let mut rec = [0u8; BC_RECORD];
+        next.encode_into(&mut rec).map_err(|_| "encode")?;
         let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
             eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
         );

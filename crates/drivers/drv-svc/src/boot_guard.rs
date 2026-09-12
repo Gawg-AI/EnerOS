@@ -40,11 +40,9 @@ pub struct BootWriteGuard {
 
 impl BootWriteGuard {
     /// 从双副本记录解析守卫（`Ok` = 解析成功；`Err` = 双副本均无效/
-    /// 校验失败 → 写面整体禁用，读面不受限）。
-    pub fn resolve(
-        first: &[u8; BOOT_CONTROL_RECORD_SIZE],
-        second: &[u8; BOOT_CONTROL_RECORD_SIZE],
-    ) -> Result<Self, &'static str> {
+    /// 校验失败 → 写面整体禁用，读面不受限）。形参为**切片**——调用方
+    /// 可直接把双副本读入一棵缓冲的两半（REG-70.7 栈预算修复）。
+    pub fn resolve(first: &[u8], second: &[u8]) -> Result<Self, &'static str> {
         let a = BootControl::decode(first).ok();
         let b = BootControl::decode(second).ok();
         let control = match (a, b) {
@@ -76,17 +74,43 @@ impl BootWriteGuard {
     }
 
     /// 安装写越界判定：`[lba, lba+count)` 必须**完整落**在非活动槽或
-    /// BOOTCTRL 分区之一（跨域/出界/活跃槽 = 拒绝）。
+    /// BOOTCTRL 分区之一（跨域/出界/活跃槽 = 拒绝）。`count` = **512B
+    /// 扇区数**（单源判定见 [`install_write_allowed`]）。
     pub fn install_write_allowed(&self, lba: u64, count: u64) -> bool {
-        if count == 0 {
-            return false;
-        }
-        let end = lba.saturating_add(count);
-        let in_inactive =
-            lba >= self.inactive_start_lba && end <= self.inactive_start_lba + self.inactive_lbas;
-        let in_bootctrl = lba >= BOOTCTRL_START_LBA && end <= BOOTCTRL_START_LBA + BOOTCTRL_LBAS;
-        in_inactive || in_bootctrl
+        install_write_allowed(
+            (
+                self.inactive_start_lba,
+                self.inactive_lbas,
+                BOOTCTRL_START_LBA,
+                BOOTCTRL_LBAS,
+            ),
+            lba,
+            count,
+        )
     }
+}
+
+/// 安装写范围判定的**单源**（扇区单位：`count` = 512B 扇区数）。
+///
+/// REG-70.7-BOOT-TRIAL-IO（run54 实弹）：判定式曾在 `handle_boot_cmd`
+/// 与 `BootSlotBackend::write` 各抄一份，且把**字节**长度直接当扇区
+/// 相加——4096B 的 BOOTCTRL 记录写（lba 18432）被算成 `18432+4096`
+/// 越出 16 扇区的 BOOTCTRL 区间 → 安装事务恒 ST_UNAVAILABLE
+///（`BOOT-TRIAL: rejected (io)`）。单位换算（字节 → 扇区上取整）只许
+/// 发生在本模块的 [`crate::block_cmd::InstallBackend::write_allowed`]。
+pub fn install_write_allowed(
+    ranges: (u64, u64, u64, u64),
+    lba: u64,
+    count: u64,
+) -> bool {
+    let (inactive_start_lba, inactive_lbas, bootctrl_start_lba, bootctrl_lbas) = ranges;
+    if count == 0 {
+        return false;
+    }
+    let end = lba.saturating_add(count);
+    let in_inactive = lba >= inactive_start_lba && end <= inactive_start_lba + inactive_lbas;
+    let in_bootctrl = lba >= bootctrl_start_lba && end <= bootctrl_start_lba + bootctrl_lbas;
+    in_inactive || in_bootctrl
 }
 
 /// BOOTCTRL 双副本读取辅助：分区基址 + 副本偏移（0 / 4096）。

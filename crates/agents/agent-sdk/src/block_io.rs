@@ -35,6 +35,43 @@ pub const BLK_WRITE_CHUNK: usize = BLK_WRITE_MAX;
 const _: () = assert!(BLK_WRITE_CHUNK + 9 <= eneros_drv_svc::runtime::PAYLOAD_CAP);
 const _: () = assert!(BLK_READ_CHUNK <= eneros_drv_svc::runtime::PAYLOAD_CAP);
 
+/// BOOT 安装事务请求体构造（70.7；**body only**——子码由 [`BlockIo::cmd`]
+/// 前置，调用方永不再带子码字节）。
+///
+/// REG-70.7-OTA1-DOUBLE-SUB（run56 实弹）：旧 svc-ota 臂把子码一并放进载荷
+/// → 服务端解析全体右移 1B（读面 lba 串位 → `[blk] read OutOfRange`；
+/// trial/confirm 的 secver/image_id 变噪声）。三构造器与 svc-storage
+/// `handle_boot_cmd` 解析布局逐字段对齐，长度即判据（多带子码 = 长 1B，
+/// 宿主测试锁死）。
+pub mod boot_body {
+    use alloc::vec::Vec;
+
+    /// `BLK_BOOT_TRIAL` body = secver(8) + image_id(16)（共 24B）。
+    pub fn trial(secver: u64, image_id: &[u8; 16]) -> Vec<u8> {
+        let mut p = Vec::with_capacity(24);
+        p.extend_from_slice(&secver.to_le_bytes());
+        p.extend_from_slice(image_id);
+        p
+    }
+
+    /// `BLK_BOOT_CONFIRM` body = slot_is_a(1) + secver(8) + image_id(16)（25B）。
+    pub fn confirm(slot_is_a: bool, secver: u64, image_id: &[u8; 16]) -> Vec<u8> {
+        let mut p = Vec::with_capacity(25);
+        p.push(u8::from(slot_is_a));
+        p.extend_from_slice(&secver.to_le_bytes());
+        p.extend_from_slice(image_id);
+        p
+    }
+
+    /// `BLK_BOOT_READ` body = lba(8) + count_bytes(4)（12B）。
+    pub fn read(lba: u64, count_bytes: u32) -> Vec<u8> {
+        let mut p = Vec::with_capacity(12);
+        p.extend_from_slice(&lba.to_le_bytes());
+        p.extend_from_slice(&count_bytes.to_le_bytes());
+        p
+    }
+}
+
 /// 块客户端：经 EIPC 调 svc-storage（X3 授予表槽位）。
 #[derive(Clone)]
 pub struct BlockIo<C> {
@@ -296,6 +333,68 @@ mod tests {
     use eneros_drv_svc::runtime::{wire, DriverResponse, ST_OK};
 
     use super::*;
+
+    /// REG-70.7-OTA1-DOUBLE-SUB 回归锁：BOOT 安装请求体 = **body only**
+    /// （子码由 [`BlockIo::cmd`] 前置）。旧 svc-ota 臂把子码也放进 body →
+    /// 服务端解析全体右移 1B（读面 lba 串位实弹 `[blk] read OutOfRange`；
+    /// trial/confirm 的 secver/image_id 变噪声）。长度 + 逐字段位置 +
+    /// 组帧后端到端解析三重锁。
+    #[test]
+    fn boot_install_bodies_are_body_only() {
+        use eneros_drv_svc::block_cmd::{BLK_BOOT_CONFIRM, BLK_BOOT_READ, BLK_BOOT_TRIAL};
+        use eneros_drv_svc::runtime::DriverRequest;
+
+        let id = [0x5Au8; 16];
+        // body 形态。
+        let trial = boot_body::trial(2, &id);
+        assert_eq!(trial.len(), 24, "多带子码即 25B = 解析位移");
+        assert_eq!(&trial[..8], &2u64.to_le_bytes());
+        assert_eq!(&trial[8..], &id);
+
+        let confirm = boot_body::confirm(false, 7, &id);
+        assert_eq!(confirm.len(), 25);
+        assert_eq!(confirm[0], 0);
+        assert_eq!(&confirm[1..9], &7u64.to_le_bytes());
+        assert_eq!(&confirm[9..], &id);
+
+        let read = boot_body::read(36_864, BLK_READ_CHUNK as u32);
+        assert_eq!(read.len(), 12);
+        assert_eq!(&read[..8], &36_864u64.to_le_bytes());
+
+        // 组帧 → 服务端判据/解析（`cmd` 置 payload[0]=子码；body 紧随）。
+        let framed = |sub: u8, body: &[u8]| {
+            let mut req = DriverRequest::new(0xB10C, 0x10);
+            req.payload[0] = sub;
+            req.payload[1..1 + body.len()].copy_from_slice(body);
+            req.payload_len = 1 + body.len() as u16;
+            req
+        };
+        let t = framed(BLK_BOOT_TRIAL, &trial);
+        assert!(t.payload_len >= 25, "svc-storage BLK_BOOT_TRIAL 判据");
+        assert_eq!(
+            u64::from_le_bytes(t.payload[1..9].try_into().unwrap()),
+            2,
+            "trial secver 逐位对齐（位移即红）"
+        );
+        assert_eq!(&t.payload[9..25], &id);
+
+        let c = framed(BLK_BOOT_CONFIRM, &confirm);
+        assert!(c.payload_len >= 26, "svc-storage BLK_BOOT_CONFIRM 判据");
+        assert_eq!(c.payload[1], 0);
+        assert_eq!(u64::from_le_bytes(c.payload[2..10].try_into().unwrap()), 7);
+        assert_eq!(&c.payload[10..26], &id);
+
+        let r = framed(BLK_BOOT_READ, &read);
+        assert!(r.payload_len >= 13, "svc-storage BLK_BOOT_READ 判据");
+        assert_eq!(
+            u64::from_le_bytes(r.payload[1..9].try_into().unwrap()),
+            36_864
+        );
+        assert_eq!(
+            u32::from_le_bytes(r.payload[9..13].try_into().unwrap()) as usize,
+            BLK_READ_CHUNK
+        );
+    }
 
     /// 内存仿真后端（host；模拟 svc-storage 块命令面）。
     #[derive(Clone)]

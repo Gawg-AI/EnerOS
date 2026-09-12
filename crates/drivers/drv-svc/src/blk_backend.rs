@@ -304,66 +304,36 @@ impl BootSlotBackend<
         boot_dma_phys: u64,
         attempt: u8,
     ) -> Result<Self, &'static str> {
-        // REG-70.7-BOOT-BACKEND-ZEROSIZE 排查：init 前寄存器 dump
-        //（magic@0x000 / deviceID@0x008 / vendor@0x00c / status@0x070）。
-        {
-            let dump = |tag: &str, regs: [(usize, &str); 4]| {
-                for (off, name) in regs {
-                    let v = unsafe {
-                        core::ptr::read_volatile((boot_mmio_vaddr + off as u64) as *const u32)
-                    };
-                    eneros_runtime::println!(
-                        "[svc-storage] BOOT-MMIO-DUMP {tag} {name}(0x{off:03x})=0x{v:08x}"
-                    );
-                }
-            };
-            dump(
-                "pre-init",
-                [
-                    (0x000, "magic"),
-                    (0x008, "devid"),
-                    (0x00c, "vendor"),
-                    (0x070, "status"),
-                ],
-            );
-        }
         let _ = attempt;
         let mut inner = VirtioBlkBackend::try_new(boot_mmio_vaddr, boot_dma_vaddr, boot_dma_phys)?;
-        // REG-70.7 排查：init 后 status/capacity 复核（对照 dump）。
-        {
-            let status =
-                unsafe { core::ptr::read_volatile((boot_mmio_vaddr + 0x070) as *const u32) };
-            let cap_lo =
-                unsafe { core::ptr::read_volatile((boot_mmio_vaddr + 0x100) as *const u32) };
-            let cap_hi =
-                unsafe { core::ptr::read_volatile((boot_mmio_vaddr + 0x104) as *const u32) };
-            eneros_runtime::println!(
-                "[svc-storage] BOOT-MMIO-DUMP post-init status=0x{status:08x} cap=0x{cap_hi:08x}{cap_lo:08x}"
-            );
-        }
         // BOOTCTRL 双副本读取（qemu-v1：分区基 lba 18432；副本 0/+8 lba）。
         let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
             eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
         );
-        let mut first = [0u8; 4096];
-        let mut second = [0u8; 4096];
         use BlockBackend as _;
         // inner 的 read 形参是**字节偏移**（数据盘历史契约——run15 实弹：
         // 扇区 LBA 直传被 /512 换算成块 36，读回 GPT 区垃圾 → 双副本
         // decode 失败 "bootctrl-both-invalid"）。boot 面单位契约 = 512B
         // 扇区 LBA，此处与 BlockBackend::read（下方）为仅有的两个换算点。
-        inner
-            .read(bc_lba * 512, &mut first)
-            .map_err(|_| "bootctrl-read")?;
-        inner
-            .read((bc_lba + 8) * 512, &mut second)
-            .map_err(|_| "bootctrl-read")?;
-        let guard = crate::boot_guard::BootWriteGuard::resolve(&first, &second)?;
-        // 影子副本：init 期双副本（8 KiB）入 RAM——运行期 bootctrl 读
-        // 零驱动 I/O。
+        //
+        // 70.7（REG-70.7-BOOT-DEV-IO-HANG 栈预算修复）：双副本**直接读入
+        // 影子缓冲原地**（8 KiB 单缓冲）——旧版栈上 first+second 2×4 KiB
+        // 再拷入影子，`try_new_boot` 帧 16 KiB，叠加 BootControl::decode
+        // 解码帧后越过 svc-storage 32 KiB 栈 → guard 页 FAULT → 重启
+        // （实弹：0x225930 = guard 页内）。
         let mut shadow = [0u8; 8192];
-        shadow[..4096].copy_from_slice(&first);
-        shadow[4096..].copy_from_slice(&second);
+        {
+            let (first, second) = shadow.split_at_mut(4096);
+            inner
+                .read(bc_lba * 512, first)
+                .map_err(|_| "bootctrl-read")?;
+            inner
+                .read((bc_lba + 8) * 512, second)
+                .map_err(|_| "bootctrl-read")?;
+        }
+        let guard =
+            crate::boot_guard::BootWriteGuard::resolve(&shadow[..4096], &shadow[4096..])?;
+        // 影子副本 = 上述双副本本身（运行期 bootctrl 读零驱动 I/O）。
         Ok(BootSlotBackend {
             inner,
             guard,
@@ -390,8 +360,6 @@ impl<M: eneros_storage::driver::virtio_blk::VirtioMmio, P: DmaPool, C: eneros_st
     for BootSlotBackend<M, P, C>
 {
     fn read(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
-        #[cfg(target_os = "none")]
-        eneros_runtime::println!("[svc-storage] boot read enter lba={lba} n={}", buf.len());
         // boot 面单位契约 = **512B 扇区 LBA**（boot_disk::lba_range_of 同
         // 口径）；inner read 形参 = 字节偏移——本处单点换算（try_new_boot
         // 内部读为另一点，见上）。
@@ -416,11 +384,9 @@ impl<M: eneros_storage::driver::virtio_blk::VirtioMmio, P: DmaPool, C: eneros_st
     fn write(&mut self, lba: u64, data: &[u8]) -> Result<(), ()> {
         // 受限安装写：范围守卫在 handle_boot_cmd 已强制，此处**复核同一
         // 不变量**（深度防御）——非活动槽 ∪ BOOTCTRL 之外零写。扇区→字节
-        // 换算后落 inner。
-        let (is, il, bs, bl) = crate::block_cmd::InstallBackend::install_ranges(self);
-        let end = lba.saturating_add(data.len() as u64);
-        let ok = (lba >= is && end <= is + il) || (lba >= bs && end <= bs + bl);
-        if !ok {
+        // 换算后落 inner。单位换算单源 = `InstallBackend::write_allowed`
+        // （run54 实弹：旧内联式把字节当扇区 → BOOTCTRL 记录写恒拒）。
+        if !crate::block_cmd::InstallBackend::write_allowed(self, lba, data.len()) {
             return Err(());
         }
         let off = lba.checked_mul(512).ok_or(())?;
@@ -711,5 +677,38 @@ mod tests {
         assert!(boot.write(is, b"g").is_ok(), "非活动槽内写放行");
         assert!(boot.write(0, b"x").is_err(), "活跃槽零写");
         assert!(boot.write(bs_ + bl_, b"x").is_err(), "越 BOOTCTRL 尾零写");
+
+        // REG-70.7-BOOT-TRIAL-IO 回归锁（run54 实弹）：守卫判定是**扇区**
+        // 单位——4096B 记录写（8 扇区）必须放行。旧实现在此按字节与 lba
+        // 相加（18432+4096 越出 16 扇区 BOOTCTRL 区间）→ 安装事务恒
+        // ST_UNAVAILABLE（`BOOT-TRIAL: rejected (io)`）。
+        use crate::block_cmd::InstallBackend as _;
+        assert!(
+            boot.write_allowed(bs_, 4096),
+            "4096B BOOTCTRL 记录写必须放行（扇区换算）"
+        );
+        assert!(
+            boot.write_allowed(bs_ + 8, 4096),
+            "副本 1 区间 [bs+8, bs+16) 内的记录写必须放行"
+        );
+        assert!(
+            boot.write_allowed(bs_, 4096 * 2),
+            "整分区写（双副本 8192B = 16 扇区）放行"
+        );
+        assert!(
+            !boot.write_allowed(bs_ + bl_ - 4, 4096),
+            "跨界写拒绝（尾前 4 扇区 + 8 扇区 > BOOTCTRL 分区）"
+        );
+        assert!(
+            !boot.write_allowed(bs_ + bl_, 1),
+            "BOOTCTRL 尾后一字节仍拒绝"
+        );
+        // 端到端：二副本记录写真实落盘（run54 曾 Err）。
+        let rec = [0xA5u8; 4096];
+        boot.write(bs_, &rec).expect("BOOTCTRL 副本 0 记录写");
+        boot.write(bs_ + 8, &rec).expect("BOOTCTRL 副本 1 记录写");
+        let mut back = [0u8; 4096];
+        boot.read(bs_ + 8, &mut back).expect("读回副本 1");
+        assert_eq!(back, rec, "记录写→影子/介质读回一致");
     }
 }

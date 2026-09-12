@@ -110,10 +110,8 @@ pub fn handle_boot_cmd(
             let data = &req.payload[9..req.payload_len as usize];
             // 守卫强制（WP-70.7.2 核心不变量）：非活动槽 ∪ BOOTCTRL 之外
             // 零写——活跃槽/数据盘/其他分区写请求在存储服务侧拒绝。
-            let (is, il, bs, bl) = install.install_ranges();
-            let end = lba.saturating_add(data.len() as u64);
-            let ok = (lba >= is && end <= is + il) || (lba >= bs && end <= bs + bl);
-            if !ok {
+            //（单位换算 = `write_allowed` 单源；见其文档。）
+            if !install.write_allowed(lba, data.len()) {
                 resp.status = ST_INVALID;
                 return;
             }
@@ -295,6 +293,16 @@ pub fn handle_block_cmd(
 pub trait InstallBackend: BlockBackend {
     /// (非活动槽起始 lba, 非活动槽 lbas, BOOTCTRL 起始 lba, BOOTCTRL lbas)。
     fn install_ranges(&self) -> (u64, u64, u64, u64);
+
+    /// 安装写范围守卫（WP-70.7.2 核心不变量：非活动槽 ∪ BOOTCTRL 之外
+    /// 零写）。**单位契约**：`lba` = 512B 扇区；`len_bytes` = 写入字节数
+    /// ——字节→扇区上取整的换算**只在此处**发生（旧实现在两处调用点各
+    /// 抄一份判定式且按字节相加 → 4096B 记录写被误判越界，安装事务恒
+    /// ST_UNAVAILABLE；run54 实弹 REG-70.7-BOOT-TRIAL-IO）。
+    fn write_allowed(&self, lba: u64, len_bytes: usize) -> bool {
+        let sectors = (len_bytes as u64).div_ceil(512);
+        crate::boot_guard::install_write_allowed(self.install_ranges(), lba, sectors)
+    }
 }
 
 /// 存储服务（svc-storage 用）：持有可选 backend。
@@ -366,11 +374,7 @@ impl<B: BlockBackend> super::runtime::DriverService for StorageService<B> {
                 resp.status = ST_UNAVAILABLE;
                 return;
             };
-            #[cfg(target_os = "none")]
-            eneros_runtime::println!("[svc-storage] handle boot sub=0x{:02x} enter", req.payload[0]);
             handle_boot_cmd(req.payload[0], req, install.as_mut(), resp);
-            #[cfg(target_os = "none")]
-            eneros_runtime::println!("[svc-storage] handle boot sub=0x{:02x} done", req.payload[0]);
             return;
         }
         let Some(backend) = self.backend.as_mut() else {

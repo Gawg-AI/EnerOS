@@ -125,10 +125,16 @@ gate_image_raw qemu-test "$RUN/image-b.log" || { say "镜像 B 构建失败"; ex
 unset SOURCE_DATE_EPOCH
 RAW_B="target/eneros/artifacts/qemu-test/eneros-qemu-test.raw"
 
-# COMBINED：A 的全盘 + B 的 BOOT_A 载荷注入 BOOT_B 分区（8 MiB @ lba 36864）。
+# COMBINED：A 的全盘 + B 的 **BOOT_B** 载荷注入 BOOT_B 分区（8 MiB @ lba 36864）。
+#
+# REG-70.7-BOOT-TRIAL-BIND（run55 实弹）：注入必须取 B 镜像的 **BOOT_B**
+# 分区（skip=36864）——两槽 manifest 由镜像工厂按槽绑定
+#（write_boot_partition(…, ManifestSlot::B)）。旧式取 B 的 BOOT_A 载荷
+# 使 BOOT_B 分区内躺一份 slot=A 的 manifest，boot-manager 选槽校验以
+# SECURITY_BINDING 拒绝并回退槽 A（R7/R9/R10 全挂）。
 COMBINED="$RUN/eneros-combined.raw"
 cp "$RAW_A" "$COMBINED"
-dd if="$RAW_B" of="$COMBINED" bs=512 skip=20480 seek=36864 count=16384 conv=notrunc status=none \
+dd if="$RAW_B" of="$COMBINED" bs=512 skip=36864 seek=36864 count=16384 conv=notrunc status=none \
     || { say "BOOT_B 注入失败"; exit 3; }
 sha256sum "$COMBINED" | awk '{print $1}' > "$EVROOT/combined.sha256"
 say "COMBINED 就绪（BOOT_A=A 载荷 / BOOT_B=B 载荷）"
@@ -213,7 +219,7 @@ cp "$S2" "$EVROOT/t2.qemu-serial.log" 2>/dev/null || true
 say "=== 段3 判据（窗T-2）==="
 check R5 "零 PANIC / 零分配失败" bash -c "! grep -aqcE 'PANIC|memory allocation of' '$EVROOT/t2.qemu-serial.log'"
 check R6 "PRODUCT-READY 达成" bash -c "grep -aq 'PRODUCT-READY: true' '$EVROOT/t2.qemu-serial.log'"
-check R7 "boot-evidence slot=B（boot-manager 选择非活动槽）" bash -c "grep -aq 'boot-evidence.v1..result...PASS..slot...B' '$EVROOT/t2.qemu-serial.log'"
+check R7 "boot-evidence slot=B（boot-manager 选择非活动槽）" bash -c "grep -aq '\"schema\":\"eneros.boot-evidence.v1\",\"result\":\"PASS\",\"slot\":\"B\"' '$EVROOT/t2.qemu-serial.log'"
 check R8 "boot_reason=UPDATE_TRIAL（跨重启试启动语义）" bash -c "grep -aq 'UPDATE_TRIAL' '$EVROOT/t2.qemu-serial.log'"
 check R9 "BOOT-CONFIRM 自适应确认（slot=B → successful）" bash -c "grep -aq 'BOOT-CONFIRM: slot=B' '$EVROOT/t2.qemu-serial.log'"
 check R10 "确认持久化（序列推进）" bash -c "grep -aq 'BOOT-CONFIRM: slot=B secver=' '$EVROOT/t2.qemu-serial.log'"

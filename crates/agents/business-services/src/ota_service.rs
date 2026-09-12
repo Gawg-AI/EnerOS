@@ -340,6 +340,46 @@ pub fn identity_from_capsule(
     })
 }
 
+/// 候选载荷身份提取（70.7 REG-70.7-BOOT-TRIAL-BIND 实弹修复）。
+///
+/// 试启动事务记录的目标身份（`security_version` / `image_id`）必须与候选
+/// 载荷 manifest **逐字段一致**：boot-manager 选槽验证用
+/// `TrustPolicy.expected_security_version/expected_release_id` 绑定
+/// （[`eneros_boot_protocol::manifest`] header），不一致即
+/// `SECURITY_BINDING`/`ImageId` 拒绝并回退旧槽（run55 实弹：trial 硬编码
+/// secver=2/[3;16] vs 候选 manifest secver=1/内容派生 release_id → 试启动
+/// 槽被拒 → R7/R9/R10 全挂）。
+///
+/// 生产来源 = 已验签下行包 manifest；门内下行缺席
+/// （REG-70.6-MGMT-DOWNLINK Open）→ 探针经只读读面取候选槽**载荷自身**
+/// 身份供给 trial（本函数 = 该字节流的解析单源）。绑定判据不放松：
+/// 记录值仍取自 wire，仅取值来源在门内换为候选介质本身。
+///
+/// `manifest_bytes` = 启动槽首部读回的 manifest 字节（首 112B 头 + 组件
+/// 表 + 尾；头内 `total_len` 自描述）。返回 `(security_version, release_id)`。
+pub fn candidate_identity(manifest_bytes: &[u8]) -> Result<(u64, [u8; 16]), &'static str> {
+    use eneros_boot_protocol::manifest::{ReleaseManifest, MANIFEST_HEADER_LEN};
+    if manifest_bytes.len() < MANIFEST_HEADER_LEN {
+        return Err("candidate-short");
+    }
+    let total = u32::from_le_bytes(
+        manifest_bytes[12..16]
+            .try_into()
+            .map_err(|_| "candidate-short")?,
+    ) as usize;
+    if total < MANIFEST_HEADER_LEN || total > manifest_bytes.len() {
+        return Err("candidate-len");
+    }
+    let manifest = ReleaseManifest::decode(&manifest_bytes[..total]).map_err(|_| "candidate-decode")?;
+    if manifest.header.security_version == 0 {
+        return Err("candidate-secver-zero");
+    }
+    Ok((
+        manifest.header.security_version,
+        manifest.header.release_id,
+    ))
+}
+
 /// OTA 服务（包装 OtaManager 实现；注入真实存储/验签）。
 pub struct OtaService<M: OtaManager> {
     pub ota: M,
@@ -1572,6 +1612,75 @@ mod tests {
         c.security_floor = 2;
         c.security_version = u64::MAX;
         assert_eq!(identity_from_capsule(&c), Err("identity-secver-bounds"));
+    }
+
+    /// 70.7（REG-70.7-BOOT-TRIAL-BIND）：候选载荷身份提取——真实 manifest
+    /// 编码器产出的字节流必须解出 (secver, release_id)；长度/魔数/域畸形
+    /// 一律拒绝（fail-closed，不猜身份）。
+    #[test]
+    fn candidate_identity_from_manifest_bytes() {
+        use eneros_boot_protocol::manifest::{
+            Component, ManifestHeader, ManifestSlot, ProductVersion, ReleaseManifest,
+            COMPONENT_ENCODED_LEN,
+        };
+        let header = ManifestHeader {
+            flags: 0,
+            platform_id: [0x11; 16],
+            product_version: ProductVersion {
+                major: 0,
+                minor: 337,
+                patch: 0,
+            },
+            security_version: 2,
+            source_date_epoch: 1_755_523_200,
+            key_id: [0x22; 16],
+            release_id: [0x33; 16],
+        };
+        let component = Component {
+            role: eneros_boot_protocol::manifest::ComponentRole::Kernel,
+            slot: ManifestSlot::B,
+            permissions: eneros_boot_protocol::manifest::PERMISSION_READ
+                | eneros_boot_protocol::manifest::PERMISSION_EXECUTE,
+            flags: 0,
+            media_offset: 65_536,
+            media_length: 512,
+            load_address: eneros_boot_protocol::ENEROS_INIT_BUNDLE_PHYS,
+            memory_length: 512,
+            entry_address: eneros_boot_protocol::ENEROS_INIT_BUNDLE_PHYS,
+            security_version: 2,
+            alignment: 512,
+            digest: [0x44; 32],
+            content_id: [0x55; 16],
+            version: ProductVersion {
+                major: 0,
+                minor: 337,
+                patch: 0,
+            },
+        };
+        let manifest = ReleaseManifest::new(header, alloc::vec![component])
+            .with_signature([0x66; eneros_boot_protocol::manifest::MANIFEST_SIGNATURE_LEN]);
+        let bytes = manifest.encode_signed().expect("encode");
+        assert!(bytes.len() >= COMPONENT_ENCODED_LEN);
+        assert_eq!(
+            candidate_identity(&bytes).expect("identity"),
+            (2, [0x33; 16])
+        );
+        // 截断（短于头）→ 拒绝。
+        assert_eq!(candidate_identity(&bytes[..100]), Err("candidate-short"));
+        // 无尾（仅签名区）→ 拒绝：镜像内 manifest 恒含尾（fail-closed 不猜）。
+        assert_eq!(
+            candidate_identity(&bytes[..manifest.signed_len().unwrap()]),
+            Err("candidate-len")
+        );
+        // 头内 total 越界（声明长于可用字节）→ 拒绝。
+        let mut bad = bytes.clone();
+        let over = bad.len() as u32 + 64;
+        bad[12..16].copy_from_slice(&over.to_le_bytes());
+        assert_eq!(candidate_identity(&bad), Err("candidate-len"));
+        // 魔数损坏 → 解码拒绝（不吞错成身份）。
+        let mut bad = bytes.clone();
+        bad[0] ^= 0xFF;
+        assert_eq!(candidate_identity(&bad), Err("candidate-decode"));
     }
 
     #[test]

@@ -1,6 +1,10 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+// 测试 harness 需要 std（crate 本体保持 no_std；栈预算回归锁用线程栈）。
+#[cfg(test)]
+extern crate std;
+
 #[cfg(feature = "alloc")]
 extern crate alloc;
 

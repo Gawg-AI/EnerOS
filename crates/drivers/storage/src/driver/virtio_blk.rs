@@ -272,12 +272,23 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
 
     /// Performs virtio-mmio device discovery, feature negotiation, and
     /// DRIVER_OK handshake (mirrors `vmmio_device_init`).
+    ///
+    /// REG-70.7-BOOT-DEV-IO-HANG（终局修复）：标识寄存器读完后**显式
+    /// 写 STATUS=0 复位设备**，再走 ACK/DRIVER…。virtio 规范 2.4.2：
+    /// 写 0 到 Status 复位设备——复位清空设备侧队列内部态
+    ///（`last_avail_idx`/vring 地址/broken 标志）。服务重启（supervisor
+    /// 重启 svc-storage）后 guest 侧环归零，而设备侧 last_avail_idx
+    /// 停留在旧值：新请求使 `avail.idx - last_avail_idx` 下溢 → QEMU
+    /// `virtio_error("Virtqueue size exceeded")` → 设备置 broken，此后
+    /// **所有**请求静默丢弃（实弹：run51 时间线 `BOOT-MMIO-DUMP` 后
+    /// 8 次 TIMEOUT last_used=0 + 双副本读全灭）。
+    ///
+    /// 顺序约束（WP-27.3 D4 遗留观察）：DEVICE_ID 在复位**之后**读会
+    /// 返回 0（QEMU 9.2.4 legacy 实测），故复位点放在 magic → version →
+    /// device_id 三读**之后**、ACK 之前——首启（本就处于复位态）重复
+    /// 复位为幂等空操作。
     fn device_init(&self) -> Result<(), StorageError> {
         let mut mmio = self.mmio.borrow_mut();
-        // WP-27.3 D4 修复（QEMU 9.2.4 virtio-mmio legacy 实测）：写 STATUS=0
-        // 复位后 DEVICE_ID 读 0（C 参考 `root_task.c vmmio_device_init` 不
-        // 复位直接读 device id，QEMU 9.2 验证通过）——删除显式复位，按
-        // C 参考顺序：magic → version → device_id → ACK/DRIVER。
         if mmio.read_reg(VMMIO_MAGIC_VALUE) != VIRTIO_MMIO_MAGIC {
             return Err(StorageError::HardwareFault {
                 detail: "virtio-mmio magic mismatch",
@@ -295,6 +306,7 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
                 detail: "not a virtio-blk device",
             });
         }
+        mmio.write_reg(VMMIO_STATUS, 0);
         mmio.write_reg(VMMIO_STATUS, VIRTIO_STATUS_ACKNOWLEDGE);
         mmio.write_reg(
             VMMIO_STATUS,
@@ -492,25 +504,6 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
             compiler_fence(Ordering::SeqCst);
             avail.idx = avail.idx.wrapping_add(1);
         }
-        #[cfg(feature = "diag")]
-        {
-            let b = self.pool.borrow();
-            let bytes = b.as_bytes();
-            // SAFETY: diag-only read of the pre-validated MMIO pool; fixed offsets and bounds.
-            let avail = unsafe { &*(bytes[0x0100..0x1100].as_ptr() as *const VirtqAvail) };
-            // SAFETY: diag-only read of the pre-validated MMIO pool; fixed offsets and bounds.
-            let used = unsafe { &*(bytes[0x1000..0x2000].as_ptr() as *const VirtqUsed) };
-            eneros_runtime::println!(
-                "[diag] issue kind={} sector={} head={} slot={} avail.idx={} used.idx={} desc0.addr=0x{:x}",
-                kind,
-                sector,
-                head,
-                slot,
-                avail.idx,
-                used.idx,
-                base_pa + req_off as u64,
-            );
-        }
         self.desc_head
             .set((self.desc_head.get() + ndesc) & QUEUE_MASK);
         self.desc_used.set(self.desc_used.get() + ndesc);
@@ -565,10 +558,17 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
         // 70.7：上限 20M spins（≈2-20s）——挂死请求快速干净失败，
         // 避免单次读垄断 vCPU 数百秒拖垮整窗（run44-49 实弹）。
         for _spin in 0..20_000_000u32 {
-            // 70.7（REG-70.7-BOOT-DEV-IO-HANG）：周期性补打门铃——notify
-            // 丢失竞态下重触发设备取环。**只写 NOTIFY（0x50），绝不写
-            // QUEUE_SEL（0x30 = legacy QueueNum！）**——写 QueueNum 即
-            // 清空队列大小（自毁队列）。
+            // 70.7（兜底，非真因）：周期性 **MMIO 读**（STATUS，只读无副作用）
+            // ——单线程 TCG 下纯 RAM 自旋不产生退出、主循环（AIO 完成处理）
+            // 可能被饿死的防御性踢。**本卷终局实证：本案"永不完成"的真因
+            // 是设备被 QEMU 置 broken**（svc-storage 栈溢出 → 重启 → 设备侧
+            // last_avail_idx 残留 → `virtio_error`；见 `device_init` 文档），
+            // 那种状态下任何踢都无效——真修复 = 栈帧收窄 + STATUS=0 复位。
+            // 保留踢为对真机无害的防御（普通 MMIO 读）。
+            if _spin % 1024 == 0 {
+                let _ = self.mmio.borrow().read_reg(VMMIO_STATUS);
+            }
+            // 周期性补打门铃（notify 丢失竞态兜底；只写 NOTIFY 0x50）。
             if _spin != 0 && _spin % 1_000_000 == 0 {
                 let mut mmio = self.mmio.borrow_mut();
                 mmio.write_reg(VMMIO_QUEUE_NOTIFY, 0);
@@ -586,20 +586,6 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
             // 布局与 VirtqUsed 匹配；仅读取（cache invalidate 已刷新）。
             let used = unsafe { &*(bytes[0x1000..0x2000].as_ptr() as *const VirtqUsed) };
             let used_idx = used.idx;
-            #[cfg(feature = "diag")]
-            if _spin % 1_000_000 == 0 {
-                let b2 = self.pool.borrow();
-                let by = b2.as_bytes();
-                let av = unsafe { &*(by[0x0100..0x1100].as_ptr() as *const VirtqAvail) };
-                eneros_runtime::println!(
-                    "[diag] poll spin={} used.idx={} avail.idx={} used.ring0=({:#x},{:#x})",
-                    _spin,
-                    used_idx,
-                    av.idx,
-                    used.ring[0].id,
-                    used.ring[0].len,
-                );
-            }
             if used_idx != self.last_used.get() {
                 let idx = self.last_used.get() as usize & QUEUE_MASK;
                 let elem = used.ring[idx];
@@ -627,30 +613,6 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
             "[blk-wait] TIMEOUT device never completed (20M spins) last_used={}",
             self.last_used.get()
         );
-        #[cfg(feature = "diag")]
-        {
-            let b = self.pool.borrow();
-            let bytes = b.as_bytes();
-            // SAFETY: diag-only read of the pre-validated MMIO pool; fixed offsets and bounds.
-            let avail = unsafe { &*(bytes[0x0100..0x1100].as_ptr() as *const VirtqAvail) };
-            // SAFETY: diag-only read of the pre-validated MMIO pool; fixed offsets and bounds.
-            let used = unsafe { &*(bytes[0x1000..0x2000].as_ptr() as *const VirtqUsed) };
-            eneros_runtime::println!(
-                "[diag] TIMEOUT used.idx={} avail.idx={} last_used={} used.ring0.id=0x{:x} len=0x{:x}",
-                used.idx,
-                avail.idx,
-                self.last_used.get(),
-                used.ring[0].id,
-                used.ring[0].len,
-            );
-            eneros_runtime::println!(
-                "[diag] TIMEOUT desc0={:02x?} avail16={:02x?} used16={:02x?} mark@1010={:02x?}",
-                &bytes[0x0000..0x0010],
-                &bytes[0x0100..0x0110],
-                &bytes[0x1000..0x1010],
-                &bytes[0x1010..0x1014],
-            );
-        }
         Err(StorageError::Timeout {
             operation: "virtio-blk request",
             ms: 2000,

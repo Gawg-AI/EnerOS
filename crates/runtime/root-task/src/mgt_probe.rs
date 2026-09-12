@@ -194,6 +194,18 @@ pub fn boot_trial_frame(secver: u64, image_id: [u8; 16]) -> alloc::vec::Vec<u8> 
     f
 }
 
+/// 70.7（REG-70.7-BOOT-TRIAL-BIND 实弹修复）：候选载荷身份读取帧
+/// （OTA1 0x0F 只读）。响应 = secver(8) ‖ release_id(16)——试启动事务的
+/// 目标身份必须与候选载荷 manifest 逐字段一致（boot-manager 选槽绑定
+/// 判据），生产来源 = 已验签下行包；门内下行缺席 → 探针以本帧取候选槽
+/// 载荷自身身份（svc-ota 侧读非活动槽首部 manifest 解析）。
+pub fn boot_candidate_frame() -> alloc::vec::Vec<u8> {
+    let mut f = alloc::vec::Vec::new();
+    f.extend_from_slice(b"OTA1");
+    f.push(0x0F);
+    f
+}
+
 /// 70.7.5：更新状态投影帧（OTA1 0x0E 只读；MGT2 0x06 中继载荷）。
 pub fn update_status_frame() -> alloc::vec::Vec<u8> {
     let mut f = alloc::vec::Vec::new();
@@ -270,6 +282,7 @@ pub mod driver {
         settled: bool,
         boot_slot: Option<u8>,
         capsule_secver: u64,
+        capsule_release_id: [u8; 16],
         restart_done: &dyn Fn() -> bool,
     ) -> ProbeDirective {
         if *state == ProbeState::Idle {
@@ -492,13 +505,45 @@ pub mod driver {
                 // trial 严格高于 A，序列+1 双副本+flush）；复启（slot=B，
                 // 即 trial 目标已启动）→ 启动确认（successful=true）。
                 if boot_slot == Some(2) {
-                    let f = boot_confirm_frame(false, capsule_secver, [3u8; 16]);
+                    // 复启（trial 目标已启动）：确认记录运行载荷**自身**身份
+                    //（capsule 投影 = 已验签 manifest 的 release_id/secver）。
+                    let f = boot_confirm_frame(false, capsule_secver, capsule_release_id);
                     let r = call_chunked(svc_ota_ep, &f, &mut epoch);
                     eneros_runtime::println!(
                         "[eneros-root-task] MGT-PROBE: boot confirm sent ok={r} (step 14b/13)"
                     );
                 } else {
-                    let f = boot_trial_frame(2, [3u8; 16]);
+                    // 首启：候选身份读取（0x0F 只读）——trial 记录的目标
+                    // 身份 = 候选载荷 manifest 身份（与 boot-manager 选槽
+                    // 绑定判据同源；硬编码身份必被 SECURITY_BINDING 拒）。
+                    let f = boot_candidate_frame();
+                    let id = call_chunked_resp(svc_ota_ep, &f, &mut epoch);
+                    let Some(id) = id else {
+                        eneros_runtime::println!(
+                            "[eneros-root-task] MGT-PROBE: boot candidate read failed — trial skipped (honest)"
+                        );
+                        advance!(ProbeState::Done);
+                        return ProbeDirective::None;
+                    };
+                    if id.len() < 24 {
+                        eneros_runtime::println!(
+                            "[eneros-root-task] MGT-PROBE: boot candidate short ({}B) — trial skipped",
+                            id.len()
+                        );
+                        advance!(ProbeState::Done);
+                        return ProbeDirective::None;
+                    }
+                    let secver = u64::from_le_bytes(id[..8].try_into().unwrap());
+                    let mut release_id = [0u8; 16];
+                    release_id.copy_from_slice(&id[8..24]);
+                    eneros_runtime::println!(
+                        "[eneros-root-task] MGT-PROBE: boot candidate secver={secver} release_id={:02x}{:02x}{:02x}{:02x}…",
+                        release_id[0],
+                        release_id[1],
+                        release_id[2],
+                        release_id[3]
+                    );
+                    let f = boot_trial_frame(secver, release_id);
                     eneros_runtime::println!(
                         "[eneros-root-task] MGT-PROBE: boot trial sending (slot={boot_slot:?})"
                     );

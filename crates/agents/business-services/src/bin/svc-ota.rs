@@ -481,12 +481,13 @@ impl eneros_control_services::ControlServiceHandler for OtaHandler {
             }
             _ => {
                 // 70.7（WP-70.7.2/3/5）：BOOT 安装事务（0x0A 守卫/0x0B
-                // trial/0x0C 确认/0x0D 取消 trial/0x0E 状态投影；root 为
-                // 唯一调用方——无 (*, svc-ota) 授予边）——要求 CHECK-DESC
-                // 验签链先行武装（0x0E 只读除外）。
-                if (0x0A..=0x0E).contains(&req[4]) {
-                    // 0x0E = 只读状态投影（无安装面写权，不要求武装门）。
-                    if req[4] != 0x0E && !self.install_armed {
+                // trial/0x0C 确认/0x0D 取消 trial/0x0E 状态投影/0x0F 候选
+                // 身份读取；root 为唯一调用方——无 (*, svc-ota) 授予边）
+                // ——要求 CHECK-DESC 验签链先行武装（0x0E/0x0F 只读除外）。
+                if (0x0A..=0x0F).contains(&req[4]) {
+                    // 只读面（0x0E 状态投影 / 0x0F 候选身份读）无安装面写权，
+                    // 不要求武装门。
+                    if req[4] != 0x0E && req[4] != 0x0F && !self.install_armed {
                         resp.extend_from_slice(b"ERR:not-armed");
                         return false;
                     }
@@ -516,7 +517,7 @@ fn handle_boot_install(
         BLK_BOOT_CANCEL, BLK_BOOT_CONFIRM, BLK_BOOT_FLUSH, BLK_BOOT_GUARD,
         BLK_BOOT_INSTALL_WRITE, BLK_BOOT_READ, BLK_BOOT_STATUS, BLK_BOOT_TRIAL,
     };
-    let _ = (BLK_BOOT_READ, BLK_BOOT_INSTALL_WRITE, BLK_BOOT_FLUSH);
+    let _ = (BLK_BOOT_INSTALL_WRITE, BLK_BOOT_FLUSH);
     // 70.7.5（事务下沉）：事务臂 = **单次** guard 式 IPC 到 svc-storage
     // 新子码（BLK_BOOT_TRIAL/CONFIRM/CANCEL/STATUS）——bootctrl 记录零
     // IPC 搬运（run16-22 实弹：多调用拆分模式稳定挂死于第二次 seL4 Call）。
@@ -551,9 +552,18 @@ fn handle_boot_install(
                 return false;
             }
             // 单次中继：svc-storage 侧事务（bootctrl 零 IPC 搬运）。
-            let mut p = alloc::vec![BLK_BOOT_TRIAL];
-            p.extend_from_slice(&req[5..13]);
-            p.extend_from_slice(&req[13..29]);
+            // 载荷 = **body only**（子码由 `BlockIo::cmd` 前置；构造器
+            // `boot_body::trial` 单源——旧手拼实现多带 1B 子码 → 全体
+            // 右移 → 记录内 secver/image_id 变噪声，REG-70.7-OTA1-
+            // DOUBLE-SUB run56 实弹）。
+            let mut secver_bytes = [0u8; 8];
+            secver_bytes.copy_from_slice(&req[5..13]);
+            let mut image_id = [0u8; 16];
+            image_id.copy_from_slice(&req[13..29]);
+            let p = eneros_agent_sdk::block_io::boot_body::trial(
+                u64::from_le_bytes(secver_bytes),
+                &image_id,
+            );
             match io.raw_command(BLK_BOOT_TRIAL, &p) {
                 Ok(r) if r.len() == 8 => {
                     let seq = u64::from_le_bytes(r[..8].try_into().unwrap());
@@ -582,10 +592,16 @@ fn handle_boot_install(
                 return false;
             }
             let slot_is_a = req[5] == 1;
-            let mut p = alloc::vec![BLK_BOOT_CONFIRM];
-            p.push(req[5]);
-            p.extend_from_slice(&req[6..14]);
-            p.extend_from_slice(&req[14..30]);
+            // body only（构造器单源；见 0x0B 注）。
+            let mut secver_bytes = [0u8; 8];
+            secver_bytes.copy_from_slice(&req[6..14]);
+            let mut image_id = [0u8; 16];
+            image_id.copy_from_slice(&req[14..30]);
+            let p = eneros_agent_sdk::block_io::boot_body::confirm(
+                slot_is_a,
+                u64::from_le_bytes(secver_bytes),
+                &image_id,
+            );
             match io.raw_command(BLK_BOOT_CONFIRM, &p) {
                 Ok(r) if r.len() == 8 => {
                     let seq = u64::from_le_bytes(r[..8].try_into().unwrap());
@@ -643,6 +659,63 @@ fn handle_boot_install(
                 false
             }
         },
+        // 候选载荷身份读取（只读，同 0x0E 豁免武装门）：守卫取非活动槽基址
+        // → BLK_BOOT_READ 读候选槽首部 manifest → 解 (secver, release_id)。
+        //
+        // REG-70.7-BOOT-TRIAL-BIND（run55 实弹）：试启动事务记录的目标
+        // 身份必须与候选载荷 manifest **逐字段一致**——boot-manager 选槽
+        // 以 `expected_security_version/expected_release_id` 绑定校验
+        //（不符 = SECURITY_BINDING/ImageId 拒绝 + 回退旧槽）。生产来源 =
+        // 已验签下行包 manifest（REG-70.6-MGMT-DOWNLINK Open）；门内下行
+        // 缺席 → 探针经本读面取候选槽载荷**自身**身份供给 trial——记录值
+        // 仍走 wire，绑定判据不放松（槽内容事后被改 = 记录与载荷不再一致
+        // → 校验失败 fail-closed）。
+        0x0F => {
+            let guard = match io.raw_command(BLK_BOOT_GUARD, &[]) {
+                Ok(r) if r.len() == 40 => r,
+                Ok(_) => {
+                    resp.extend_from_slice(b"ERR:guard-len");
+                    return false;
+                }
+                Err(_) => {
+                    eneros_runtime::println!("[svc-ota] BOOT-CANDIDATE: guard io error");
+                    resp.extend_from_slice(b"ERR:guard-io");
+                    return false;
+                }
+            };
+            let inactive_lba = u64::from_le_bytes(guard[..8].try_into().unwrap());
+            // body only（构造器单源；见 0x0B 注）。
+            let p = eneros_agent_sdk::block_io::boot_body::read(
+                inactive_lba,
+                eneros_agent_sdk::block_io::BLK_READ_CHUNK as u32,
+            );
+            match io.raw_command(BLK_BOOT_READ, &p) {
+                Ok(d) => match eneros_business_services::ota_service::candidate_identity(&d) {
+                    Ok((secver, release_id)) => {
+                        eneros_runtime::println!(
+                            "[svc-ota] BOOT-CANDIDATE: secver={secver} release_id={:02x}{:02x}{:02x}{:02x}…",
+                            release_id[0],
+                            release_id[1],
+                            release_id[2],
+                            release_id[3]
+                        );
+                        resp.extend_from_slice(&secver.to_le_bytes());
+                        resp.extend_from_slice(&release_id);
+                        true
+                    }
+                    Err(e) => {
+                        eneros_runtime::println!("[svc-ota] BOOT-CANDIDATE: rejected ({e})");
+                        resp.extend_from_slice(b"ERR:candidate");
+                        false
+                    }
+                },
+                Err(_) => {
+                    eneros_runtime::println!("[svc-ota] BOOT-CANDIDATE: read io error");
+                    resp.extend_from_slice(b"ERR:read-io");
+                    false
+                }
+            }
+        }
         _ => {
             resp.extend_from_slice(b"ERR:cmd");
             false
