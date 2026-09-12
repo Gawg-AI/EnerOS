@@ -29,6 +29,7 @@ eneros-durable-state = { path = "../../runtime/durable-state" }
 eneros-market-types = { path = "../../agents/market-types" }
 # 系统 OTA 组件（真实 SM3/SM2 验签 + A/B 状态机）。
 eneros-ota-ab = { path = "../../security/ota-ab" }
+eneros-ipc-wire = { path = "../../abi/ipc-wire" }
 eneros-boot-protocol = { path = "../../boot/boot-protocol" }
 # 可观测队列策略（drop policy 局部修复复用）。
 eneros-telemetry-queue = { path = "../../observability/telemetry-queue" }

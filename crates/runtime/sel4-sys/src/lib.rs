@@ -133,4 +133,10 @@ pub mod ffi {
     /// # Safety
     /// Host stub：无实际能力操作，调用方负责目标构建下传参合法。
     pub unsafe fn eneros_sel4_send(_dest_cap: u64, _msg_info: u64) {}
+
+    /// Standalone reply (host stub: no-op).
+    ///
+    /// # Safety
+    /// Host stub：无实际能力操作，调用方负责目标构建下传参合法。
+    pub unsafe fn eneros_sel4_reply(_msg_info: u64) {}
 }

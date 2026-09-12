@@ -105,6 +105,7 @@ pub mod obs_batch_wire;
 pub mod obs_wire;
 pub mod ota_wire;
 pub mod relay_face;
+pub mod root_mgmt;
 pub mod tel_wire;
 
 // sel4 feature 仅限目标构建（seL4 userland）：host 上显式拒绝。

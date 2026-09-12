@@ -1063,6 +1063,41 @@
         "svc-control-dispatch",
         "svc-device-agent"
       ]
+    },
+    {
+      "id": "catalog",
+      "path": "configs/catalog.toml",
+      "consumer": [
+        "svc-config"
+      ]
+    },
+    {
+      "id": "protocol-dlt645",
+      "path": "configs/protocol-dlt645.toml",
+      "consumer": [
+        "svc-config"
+      ]
+    },
+    {
+      "id": "protocol-iec101",
+      "path": "configs/protocol-iec101.toml",
+      "consumer": [
+        "svc-config"
+      ]
+    },
+    {
+      "id": "protocol-iec103",
+      "path": "configs/protocol-iec103.toml",
+      "consumer": [
+        "svc-config"
+      ]
+    },
+    {
+      "id": "protocol-gbt27930",
+      "path": "configs/protocol-gbt27930.toml",
+      "consumer": [
+        "svc-config"
+      ]
     }
   ],
   "security_policy_ref": {

@@ -119,8 +119,13 @@ pub fn check_readiness(
 /// 41：1_000 → 3_000——svc-config 启动含 1 次 SM2 bundle 验签（QEMU
 /// TCG 实测 ~2s 虚拟），1s 窗口在验签期间耗尽 → required 误降级
 /// （bundle 已装载、服务正常服务，仅 readiness 计数错过）。
+/// 70.6：3_000 → 15_000——(a) svc-config 启动可含 2 次 SM2（嵌入束 + 盘上
+/// ConfigActive 载荷启动级验签，WP-70.6.4）；(b) qemu-prod 实弹两轮：dispatch
+/// 装配（catalog/binding/chain-key 拉取 + durable intent/audit 块 IO 打开）
+/// 的 ready 信号在 TCG 抖动下晚至 ~8-10s，3s/6s 窗均误降级 required 服务
+///（PRODUCT-READY false 级联）。15s 仍保底"永不发信号"的有界判定。
 #[allow(dead_code)] // 44.2：readiness 超时上限，当前路径未用（44.4 冻结登记）
-const READINESS_DEADLINE_MS: u64 = 3_000;
+const READINESS_DEADLINE_MS: u64 = 15_000;
 
 // ============================================================================
 // 蓝图 64 卷 64.2（WP-64.2.5）：root 编排状态单源——run_ipc_loop 循环捕获
@@ -288,6 +293,15 @@ struct Orchestration {
     /// 70.5 复查：身份推送连续传输错误计数（有界重试——见
     /// `identity_push_step`；成功/not-ready 回执归零）。
     identity_push_errs: u8,
+    /// 70.6（WP-70.6.3）：root 管理状态机（维护/实例代次/受控重启裁决
+    /// 单源；seL4 触点在 mgmt_poll_step/apply_manual_restart）。
+    mgmt: crate::mgmt::RootMgmtState,
+    /// 70.6（WP-70.6.5）：MGT1 探针状态机（qemu-test-synth 装配驱动；
+    /// release 构建字段恒 Idle 且 step 体 cfg 隔离）。
+    probe_state: crate::mgt_probe::ProbeState,
+    probe_entered: u64,
+    probe_neg_sent: bool,
+    probe_done: bool,
 }
 
 #[cfg_attr(not(target_os = "none"), allow(dead_code))] // host 面死码（66.5.2 收窄）
@@ -310,6 +324,11 @@ impl Orchestration {
             chain_rounds: 0,
             obs_epoch: 0,
             identity_push_errs: 0,
+            mgmt: crate::mgmt::RootMgmtState::new(service_count),
+            probe_state: crate::mgt_probe::ProbeState::Idle,
+            probe_entered: 0,
+            probe_neg_sent: false,
+            probe_done: false,
         }
     }
 
@@ -496,6 +515,232 @@ impl Orchestration {
             return;
         };
         ota_probe_body(h.ep, &mut self.chain_epoch);
+    }
+
+    /// 70.6（WP-70.6.3）：root 管理端点轮询步——非阻塞 Poll（暗装
+    /// reply cap）→ 状态机裁决 → 先 Reply 再执行动作，主循环不阻塞等
+    /// 待下一请求。授权面：唯一发起方 svc-mgmt（EIPC 单边授予；MGT1
+    /// 认证/RBAC 已在 svc-mgmt 完成，root 只做目标/时序/健康裁决）。
+    fn mgmt_poll_step(
+        &mut self,
+        supervisor: &mut crate::supervisor::Supervisor,
+        handles: &[crate::spawn::SpawnedHandle],
+        service_names: &[&str],
+    ) {
+        use eneros_sel4_sys::safe::{get_mr, ipc_poll, ipc_reply, message_info_new, set_mr};
+        let ep = crate::spawn::ROOT_MGMT_EP.load(core::sync::atomic::Ordering::Acquire);
+        if ep == 0 {
+            return;
+        }
+        let mut sender = 0u64;
+        let Ok(mi) = ipc_poll(ep, Some(&mut sender)) else {
+            return;
+        };
+        if sender == 0 {
+            return; // 无消息（Poll 空转）。
+        }
+        let len = eneros_sel4_sys::types::message_info_length(mi);
+        let mut words = alloc::vec::Vec::with_capacity(len as usize);
+        for i in 0..len {
+            match get_mr(i) {
+                Ok(w) => words.push(w),
+                Err(_) => {
+                    eneros_runtime::println!("[eneros-root-task] MGMT-EP: MR read failed");
+                    return;
+                }
+            }
+        }
+        let Ok(req) = eneros_ipc_wire::mr::frame_from_mrs(&words) else {
+            eneros_runtime::println!("[eneros-root-task] MGMT-EP: bad frame (sender={sender})");
+            return;
+        };
+        // ready 投影：boot readiness Ready 且不在重验等待。先取快照
+        //（readiness/awaiting 均拷出——下方 &mut self.mgmt 借用互斥）。
+        let ready_boot: alloc::vec::Vec<bool> = self
+            .readiness
+            .state
+            .iter()
+            .map(|v| *v == Some(ReadinessVerdict::Ready))
+            .collect();
+        let awaiting = self.mgmt.awaiting_indices();
+        let ready_of =
+            |idx: usize| ready_boot.get(idx).copied().unwrap_or(false) && !awaiting.contains(&idx);
+        // 维护退出健康门：全部 required 服务 lifecycle Ready。
+        let required_ready = handles.iter().enumerate().all(|(i, h)| {
+            h.requirement != crate::bundle::Requirement::Required
+                || supervisor
+                    .services
+                    .get(i)
+                    .map(|s| s.lifecycle_state() == crate::supervisor::LifecycleState::Ready)
+                    .unwrap_or(false)
+        });
+        let verdict = self
+            .mgmt
+            .handle(&req, self.tick, service_names, required_ready, &ready_of);
+        if let Some(word) = &verdict.word {
+            eneros_runtime::println!("[eneros-root-task] {word}");
+        }
+        // 先回复（Reply 消费 Poll 暗装 cap；失败不阻断动作侧审计）。
+        if let Ok(mrs) = eneros_ipc_wire::mr::frame_into_mrs(&verdict.resp) {
+            for (i, v) in mrs.iter().enumerate() {
+                let _ = set_mr(i as u64, *v);
+            }
+            if let Ok(mi2) = message_info_new(0, 0, 0, mrs.len() as u64) {
+                let _ = ipc_reply(mi2);
+            }
+        }
+        // 动作（重启在回复之后执行——请求方先拿到 ack）。
+        if let Some(crate::mgmt::MgmtAction::Restart(idx)) = verdict.action {
+            apply_manual_restart(self, supervisor, handles, idx, self.tick);
+        }
+    }
+
+    /// 70.6：手动重启后 ready 重验步——poll 目标就绪通知，Signal 到达
+    /// 即解除等待（实例查询 ready 位自此为真）。
+    fn mgmt_ready_reverify_step(&mut self, handles: &[crate::spawn::SpawnedHandle]) {
+        use eneros_sel4_sys::safe::ipc_poll;
+        for idx in self.mgmt.awaiting_indices() {
+            let Some(h) = handles.get(idx) else {
+                continue;
+            };
+            let mut sender = 0u64;
+            if let Ok(_mi) = ipc_poll(h.ready_ntfn, Some(&mut sender)) {
+                if sender != 0 && self.mgmt.note_ready(idx) {
+                    eneros_runtime::println!(
+                        "[eneros-root-task] MGMT-RESTART: {} ready re-verified",
+                        h.name
+                    );
+                }
+            }
+        }
+    }
+
+    /// 70.6（WP-70.6.5）：MGT1 探针步（仅 qemu-test-synth 装配编译）。
+    /// chunked 直驱 svc-mgmt 非环形动作；维护/重启经 root 状态机直驱
+    ///（环形动作免 IPC）；激活直驱 svc-config。
+    #[cfg(feature = "qemu-test-synth")]
+    fn mgt_probe_step(
+        &mut self,
+        supervisor: &mut crate::supervisor::Supervisor,
+        handles: &[crate::spawn::SpawnedHandle],
+        service_names: &[&str],
+    ) {
+        use crate::mgt_probe::driver::{self, ProbeDirective};
+        if self.probe_done {
+            return;
+        }
+        let Some(svc_mgmt_ep) = handles.iter().find(|h| h.name == "svc-mgmt").map(|h| h.ep) else {
+            return;
+        };
+        let Some(svc_config_ep) = handles
+            .iter()
+            .find(|h| h.name == "svc-config")
+            .map(|h| h.ep)
+        else {
+            return;
+        };
+        let settled = self.readiness.all_decided();
+        let restart_done = || {
+            handles
+                .iter()
+                .position(|h| h.name == "svc-observability")
+                .map(|i| self.mgmt.generation_of(i) > 0 && !self.mgmt.is_awaiting_ready(i))
+                .unwrap_or(false)
+        };
+        let mut st = self.probe_state;
+        let mut entered = self.probe_entered;
+        let directive = driver::step(
+            &mut st,
+            &mut entered,
+            svc_mgmt_ep,
+            svc_config_ep,
+            self.tick,
+            settled,
+            &restart_done,
+        );
+        self.probe_state = st;
+        self.probe_entered = entered;
+        match directive {
+            ProbeDirective::None => {}
+            ProbeDirective::DriveMgt2(req) => {
+                // root 状态机直驱（与 mgmt_poll_step 同裁决/词形/动作路径）。
+                let ready_boot: alloc::vec::Vec<bool> = self
+                    .readiness
+                    .state
+                    .iter()
+                    .map(|v| *v == Some(ReadinessVerdict::Ready))
+                    .collect();
+                let awaiting = self.mgmt.awaiting_indices();
+                let ready_of = |idx: usize| {
+                    ready_boot.get(idx).copied().unwrap_or(false) && !awaiting.contains(&idx)
+                };
+                let required_ready = handles.iter().enumerate().all(|(i, h)| {
+                    h.requirement != crate::bundle::Requirement::Required
+                        || supervisor
+                            .services
+                            .get(i)
+                            .map(|s| {
+                                s.lifecycle_state() == crate::supervisor::LifecycleState::Ready
+                            })
+                            .unwrap_or(false)
+                });
+                let verdict =
+                    self.mgmt
+                        .handle(&req, self.tick, service_names, required_ready, &ready_of);
+                if let Some(word) = &verdict.word {
+                    eneros_runtime::println!("[eneros-root-task] {word}");
+                }
+                if let Some(crate::mgmt::MgmtAction::Restart(idx)) = verdict.action {
+                    apply_manual_restart(self, supervisor, handles, idx, self.tick);
+                }
+            }
+            ProbeDirective::ConfigActivate => {
+                // 激活直驱 svc-config（CFG1 0x06；svc-config 侧打印
+                // CONFIG-ACTIVATED 词形并落盘提交）。
+                // CFG1 wire 常量与 business-services::config_service 同值
+                //（root-task 不依赖该 crate——本地字面 + 布局注释互认）。
+                // 激活帧携带真实束长 u32 LE（分片缓冲尾部零填充截断）。
+                let mut req = alloc::vec::Vec::new();
+                req.extend_from_slice(b"CFG1");
+                req.push(0x06); // CMD_ACTIVATE
+                let nb = crate::mgt_probe::mgt_probe_data::PROBE_BUNDLE.len() as u32;
+                req.extend_from_slice(&nb.to_le_bytes());
+                let mut epoch = 0u64;
+                let mut session = eneros_agent_sdk::endpoint::ChunkedSession::bind_shared_const(
+                    "root-mgt-probe-cfg",
+                    svc_config_ep,
+                    &mut epoch,
+                );
+                match session.call("svc-config", &req) {
+                    Ok(r) if r.len() == 8 => {
+                        let gen = u64::from_le_bytes(r[..8].try_into().unwrap());
+                        eneros_runtime::println!(
+                            "[eneros-root-task] MGT-PROBE: config-activated gen={gen} (via svc-config CFG1)"
+                        );
+                    }
+                    Ok(r) => {
+                        eneros_runtime::println!(
+                            "[eneros-root-task] MGT-PROBE: activate rejected: {:?}",
+                            &r[..r.len().min(24)]
+                        );
+                    }
+                    Err(e) => {
+                        eneros_runtime::println!(
+                            "[eneros-root-task] MGT-PROBE: activate transport error {e:?}"
+                        );
+                    }
+                }
+            }
+            ProbeDirective::Mgt1(_) => {
+                // 预留（当前探针帧均由 step 内部 chunked 发送）。
+            }
+            ProbeDirective::Done => {
+                self.probe_done = true;
+                eneros_runtime::println!(
+                    "[eneros-root-task] MGT-PROBE: sequence complete (probe finished)"
+                );
+            }
+        }
     }
 }
 
@@ -823,13 +1068,26 @@ pub fn run_ipc_loop(
             orch.readiness.summarize(&rows);
         }
 
+        // 70.6（WP-70.6.3）：管理端点轮询（MGT2：重启/维护/实例查询——
+        // 非阻塞；先 Reply 再执行重启动作）+ 手动重启后 ready 重验。
+        orch.mgmt_poll_step(&mut supervisor, handles, &service_names);
+        orch.mgmt_ready_reverify_step(handles);
+
         // 蓝图 40 收尾：控制链驱动（采集代理 INGEST → 编排 TICK）。
         // 诚实边界：39 采集链设备句柄移交（CVR-39-02，41 Entry 前置）未
         // 完成——root 作为**采集链代理**注入样本（source=1 与 svc-telemetry
         // 覆盖声明一致）；样本经 svc-telemetry evaluator 全量校验
         // （coverage/freshness/quality/integrity），不绕过信任评估。
+        // 70.6（WP-70.6.3）：维护窗口内停止新的控制写（在途意图由
+        // dispatch 自行收敛；恢复写 = 维护退出健康门放行后）。
         if crate::wiring::periodic_due(crate::wiring::PeriodicTask::ControlChain, orch.tick) {
-            if let (Some(t), Some(e)) = (&telemetry_handle, &energy_handle) {
+            if orch.mgmt.maintenance_active() {
+                if orch.tick % 50 == 0 {
+                    eneros_runtime::println!(
+                        "[eneros-root-task] MGMT-MAINT: control write paused (maintenance active)"
+                    );
+                }
+            } else if let (Some(t), Some(e)) = (&telemetry_handle, &energy_handle) {
                 if let Some(i) = handles.iter().position(|h| h.name == "svc-telemetry") {
                     orch.hang_monitor.note_request(i, orch.tick as i64);
                 }
@@ -925,6 +1183,11 @@ pub fn run_ipc_loop(
         // 70.5（WP-70.5.1/70.5.4）：可信身份推送（一次性；先于 OTA 探针）。
         orch.identity_push_step(&ota_handle);
 
+        // 70.6（WP-70.6.5）：MGT1 管理动作链探针（qemu-test-synth 专属）。
+        if crate::wiring::periodic_due(crate::wiring::PeriodicTask::MgtProbe, orch.tick) {
+            orch.mgt_probe_step(&mut supervisor, handles, &service_names);
+        }
+
         // 蓝图 40 收尾：心跳监控（WP-40.4）——poll 受监控服务心跳 ntfn；
         // "发过请求却无进展超限" → suspend + restart（无 fault 卡死也终止，
         // 不拖垮控制服务）。kill 后清 probe 记录（重启即翻篇）。
@@ -956,6 +1219,8 @@ pub fn run_ipc_loop(
                 supervisor.advance(now_ms());
                 apply_restart_action(
                     &mut supervisor,
+                    &mut orch.mgmt,
+                    orch.tick,
                     idx,
                     handles,
                     &hello,
@@ -1002,6 +1267,8 @@ pub fn run_ipc_loop(
                     );
                         apply_restart_action(
                             &mut supervisor,
+                            &mut orch.mgmt,
+                            orch.tick,
                             idx,
                             handles,
                             &hello,
@@ -1082,6 +1349,8 @@ enum RestartReason {
 #[cfg(target_os = "none")]
 fn apply_restart_action(
     supervisor: &mut crate::supervisor::Supervisor,
+    mgmt: &mut crate::mgmt::RootMgmtState,
+    tick: u64,
     idx: usize,
     handles: &[crate::spawn::SpawnedHandle],
     hello: &Option<crate::spawn::SpawnedHandle>,
@@ -1111,6 +1380,9 @@ fn apply_restart_action(
                 }
             }
             supervisor.on_restart_done(idx);
+            // 70.6：实例代次/计数 bump（故障/心跳重启同径；非 manual，
+            // 不挂 ready 重验——服务 init 重跑即恢复）。
+            mgmt.note_restarted(idx, false, tick);
             match reason {
                 RestartReason::Heartbeat => {
                     eneros_runtime::println!(
@@ -1167,6 +1439,34 @@ fn apply_restart_action(
         }
         None => {}
     }
+}
+
+/// 70.6（WP-70.6.3）：管理面受控重启（人工授权路径——与 supervisor 自动
+/// 重启分径：跳过故障决策/计数，直接复用真实生命周期执行序列
+/// `restart_service`）。执行后 `note_restarted(manual=true)`：实例代次
+/// bump + ready 重验挂起（调用方轮询就绪通知）。
+#[cfg(target_os = "none")]
+fn apply_manual_restart(
+    orch: &mut Orchestration,
+    supervisor: &mut crate::supervisor::Supervisor,
+    handles: &[crate::spawn::SpawnedHandle],
+    idx: usize,
+    tick: u64,
+) {
+    let name = handles[idx].name.as_str();
+    let next_gen = orch.mgmt.generation_of(idx).wrapping_add(1);
+    supervisor.advance(now_ms());
+    // 受控退避（短——管理重启非故障路径；20ms 让目标消息排空）。
+    busy_wait_ms(20);
+    if let Err(e) = restart_service(&handles[idx]) {
+        ipc_fail_closed("mgmt restart", e);
+    }
+    supervisor.on_restart_done(idx);
+    orch.mgmt.note_restarted(idx, true, tick);
+    eneros_runtime::println!(
+        "[eneros-root-task] MGMT-RESTART: {} restarted (gen={next_gen}) — awaiting ready re-verify",
+        name
+    );
 }
 
 /// 当前毫秒时间（supervisor 退避/窗口用；无墙钟，用单调时钟折算）。

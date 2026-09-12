@@ -173,16 +173,33 @@ fn verify_signature(
     token: &[u8; TOKEN_LEN],
     sig_der: &[u8],
 ) -> Result<(), PrincipalReject> {
-    use p256::ecdsa::signature::Verifier;
+    use p256::ecdsa::signature::hazmat::PrehashVerifier;
     use sha2::Digest;
     let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(station_pubkey_der)
         .map_err(|_| PrincipalReject::NoStationKey)?;
     let fixed = der_decode_signature(sig_der).ok_or(PrincipalReject::BadSignature)?;
     let sig =
         p256::ecdsa::Signature::from_slice(&fixed).map_err(|_| PrincipalReject::BadSignature)?;
+    // 70.6 实弹修复（REG-MGT1-V2-INTEROP）：openssl 形态 = 签名对象为
+    // SHA-256(token) 摘要本身（`dgst -sha256 -sign`）；p256 `Verifier`
+    // 会对入参**再哈希一次**——双重哈希使所有合法 openssl 签名误拒
+    // （门禁探针 18/18 BadSignature 实锤）。改用 PrehashVerifier 按
+    // "已哈希消息"语义验证，与 gate/station 端签发完全互操作。
     let digest = sha2::Sha256::digest(token);
-    vk.verify(&digest, &sig)
+    vk.verify_prehash(&digest, &sig)
         .map_err(|_| PrincipalReject::BadSignature)
+}
+
+/// 角色继承链（下标 = Role::to_u8；与 mgmt-api/rbac 层次一致——
+/// v2 会话角色解出为全链列表，`has_role` 精确匹配即可判定继承资格）。
+fn role_chain(code: u8) -> Option<&'static [&'static str]> {
+    match code {
+        0 => Some(&["viewer"]),
+        1 => Some(&["viewer", "operator"]),
+        2 => Some(&["viewer", "operator", "admin"]),
+        3 => Some(&["superuser"]),
+        _ => None,
+    }
 }
 
 /// 验证 v2 会话尾段（token 64B ‖ sig 字段 72B），解出可信 principal。
@@ -228,8 +245,19 @@ pub fn verify_v2_tail(
         if *code == 0 {
             break;
         }
-        match eneros_mgmt_api::Role::from_u8(*code) {
-            Some(r) => roles.push(String::from(r.name())),
+        // 70.6 实弹修复（REG-MGT1-V2-ROLE-CHAIN）：RBAC 会话角色 = **全
+        // 继承链**（mgmt-api 层次：viewer⊂operator⊂admin；v1 dev 面/
+        // 50 卷测试夹具同约定）。v2 首实现只推单角色名 → admin 会话
+        // 过不了 operator 判据（门禁探针 config-get insufficient-role
+        // 实锤）。角色码非法仍 Malformed。
+        match eneros_mgmt_api::Role::from_u8(*code).and_then(|r| role_chain(r.to_u8())) {
+            Some(chain) => {
+                for name in chain {
+                    if !roles.iter().any(|x| x == name) {
+                        roles.push(String::from(*name));
+                    }
+                }
+            }
             None => return Err(PrincipalReject::Malformed),
         }
     }
@@ -262,7 +290,6 @@ pub fn verify_v2_tail(
 
 #[cfg(test)]
 mod tests {
-    use p256::ecdsa::signature::Signer;
     use sha2::Digest;
 
     use super::*;
@@ -285,8 +312,14 @@ mod tests {
     }
 
     fn sign_tail(sk: &p256::ecdsa::SigningKey, t: &[u8; TOKEN_LEN]) -> Vec<u8> {
+        // 70.6 互操作修复同步：openssl 形态 = 对摘要直接签名（prehash
+        // 语义）——与 verify_signature 的 PrehashVerifier 同径。
         let digest: [u8; 32] = sha2::Sha256::digest(t).into();
-        let sig = <p256::ecdsa::SigningKey as Signer<p256::ecdsa::Signature>>::sign(sk, &digest);
+        use p256::ecdsa::signature::hazmat::PrehashSigner;
+        let sig = <p256::ecdsa::SigningKey as PrehashSigner<p256::ecdsa::Signature>>::sign_prehash(
+            sk, &digest,
+        )
+        .unwrap();
         let repr: [u8; 64] = sig.to_bytes().into();
         let der = der_encode_signature(&repr);
         let mut out = vec![(der.len() & 0xFF) as u8, (der.len() >> 8) as u8];
@@ -306,8 +339,8 @@ mod tests {
         assert_eq!(v.principal, "scada-a");
         assert_eq!(
             v.roles,
-            alloc::vec![String::from("admin")],
-            "角色码 2 = admin（rbac 表）"
+            alloc::vec!["viewer", "operator", "admin"],
+            "角色码 2 = admin 全继承链（70.6 role-chain）"
         );
     }
 

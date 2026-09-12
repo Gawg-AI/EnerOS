@@ -377,6 +377,7 @@ fn command_config(root: &Path, args: &[String]) -> DynResult<()> {
         args.to_vec()
     };
     let mut i = 0;
+    let mut generation: u64 = 1;
     while i < args.len() {
         match args[i].as_str() {
             "--profile" => {
@@ -418,6 +419,17 @@ fn command_config(root: &Path, args: &[String]) -> DynResult<()> {
                         .clone(),
                 );
             }
+            // 70.6：换包候选代次（缺省 1；候选必须严格高于在役代次才可
+            // stage/activate——svc-config 侧域检）。
+            "--generation" => {
+                i += 1;
+                let v = args.get(i).ok_or_else(|| invalid("--generation 需要值"))?;
+                generation = v
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|g| *g > 0)
+                    .ok_or_else(|| invalid("--generation 必须为正整数"))?;
+            }
             other => return Err(invalid(format!("config: 未知参数 {other}"))),
         }
         i += 1;
@@ -430,6 +442,7 @@ fn command_config(root: &Path, args: &[String]) -> DynResult<()> {
         root_key_hex.as_deref(),
         control_chain_key_hex.as_deref(),
         degrade_lease_key_hex.as_deref(),
+        generation,
     )?;
     Ok(())
 }

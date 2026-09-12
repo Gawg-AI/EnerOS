@@ -708,6 +708,11 @@ impl SpawnCtx {
 /// 提前拒绝（fail-closed 挂起而非越界）。
 pub const ROOT_CNODE_SLOTS: u64 = 1 << 13;
 
+/// 70.6（WP-70.6.3）：root 管理端点（root 侧 poll cap；sel4_spawn_services
+/// 阶段 1.5 装配）。0 = 未装配（主循环跳过管理轮询）。
+#[cfg(target_os = "none")]
+pub static ROOT_MGMT_EP: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 /// seL4 对象大小（aarch64 14.0.0，单位：log2 字节）。
 ///
 /// 与 `libsel4/sel4_arch_include/aarch64/sel4/sel4_arch/constants.h` 对齐：
@@ -1749,8 +1754,17 @@ pub fn sel4_spawn_services(
             eneros_agent_sdk::EIPC_GRANTS.len(),
             eneros_agent_sdk::EIPC_EP_BASE_SLOT,
         );
-        let eps: Vec<(alloc::string::String, u64)> =
+        // 70.6（WP-70.6.3）：root 管理端点——retype endpoint 对象，root 侧
+        // 持 poll cap（主循环非阻塞轮询 + Poll 暗装 reply cap 处理后
+        // Reply），并注入按名解析表：`("svc-mgmt","root-mgmt")` 授予边经
+        // 下方标准 mint 循环照常发放（badge=客户端索引+1）。
+        let root_mgmt_ep = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
+        retype_one(ctx, types.endpoint, OBJ_BITS_ENDPOINT, root_mgmt_ep)?;
+        ROOT_MGMT_EP.store(root_mgmt_ep, core::sync::atomic::Ordering::Release);
+        crate::println!("[eneros-root-task] MGMT-EP: root management endpoint cap={root_mgmt_ep}");
+        let mut eps: Vec<(alloc::string::String, u64)> =
             handles.iter().map(|h| (h.name.clone(), h.ep)).collect();
+        eps.push((alloc::string::String::from("root-mgmt"), root_mgmt_ep));
         for (idx, handle) in handles.iter_mut().enumerate() {
             let (_, grants) = eipc_grants_for(&handle.name);
             for (slot, target) in &grants {

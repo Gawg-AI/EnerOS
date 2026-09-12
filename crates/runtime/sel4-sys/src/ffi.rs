@@ -142,6 +142,9 @@ extern "C" {
         msg_info: MessageInfo,
         sender: *mut Word,
     ) -> MessageInfo;
+    /// `seL4_Reply` — standalone reply consuming the implicit reply cap
+    /// from the last Recv/Poll（70.6 WP-70.6.3 root 管理端点）。
+    pub fn eneros_sel4_reply(msg_info: MessageInfo);
 
     pub fn eneros_sel4_message_info_new(
         label: Word,

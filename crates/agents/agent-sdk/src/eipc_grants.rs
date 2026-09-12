@@ -46,6 +46,13 @@ pub const EIPC_GRANTS: &[(&str, &str)] = &[
     // SPEC-C（WP-C.2）：history-query 执行器经 EIPC 向 svc-telemetry 取
     // 历史页（TELR 帧；分块通道承载）。
     ("svc-mgmt", "svc-telemetry"),
+    // 70.6（WP-70.6.1）：操作账本经 svc-storage 块命令面持久化
+    //（DataRegion::MgmtOps；存储不可得 ⇒ 副作用动作背压拒绝，只读诊断
+    // 不受限——见 mgmt_ops）。
+    ("svc-mgmt", "svc-storage"),
+    // 70.6（WP-70.6.3）：受控维护/重启/实例查询——root 管理端点
+    //（MGT2；svc-mgmt 是唯一服务侧发起方，root 侧另有 allow/deny 裁决）。
+    ("svc-mgmt", "root-mgmt"),
     // 46（WP-46.3 配置驱动装配）：协议服务经 svc-config 取协议配置
     // （GET_ENTRY "protocol-<proto>"）——消灭源码 peer 硬编码。
     ("svc-iec104", "svc-config"),
@@ -101,6 +108,9 @@ pub const EIPC_GRANTS: &[(&str, &str)] = &[
     // points 配置（来源注册表/映射世代——影子评估器与授权来源单源）。
     // 追加于本客户端既有边之后（WP-54.4 槽位冻结：既有边序不受影响）。
     ("svc-telemetry", "svc-config"),
+    // 70.6（WP-70.6.4）：svc-config 的盘上配置载体（ConfigActive/
+    // ConfigStage 读写 + 启动裁决）经块命令面——持久源唯一写入者。
+    ("svc-config", "svc-storage"),
 ];
 
 /// 在给定表上按名解析：返回 `(X3 掩码位, CSpace 槽位)`；无此授予边 →

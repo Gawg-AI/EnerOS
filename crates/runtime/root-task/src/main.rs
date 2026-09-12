@@ -41,6 +41,8 @@ pub mod bundle;
 pub mod driver_probe;
 pub mod irq;
 pub mod irq_timer;
+pub mod mgmt;
+pub mod mgt_probe;
 pub mod panic;
 pub mod platform;
 pub mod runtime_spec;
@@ -48,6 +50,10 @@ pub mod service;
 pub mod spawn;
 pub mod supervisor;
 pub mod wiring;
+
+/// 70.6（WP-70.6.3）：MGT2 wire 单源 = agent-sdk::root_mgmt（svc-mgmt 与
+/// root 共享同一编解码；本 crate 内经 `root_mgmt_wire::` 别名引用）。
+pub use eneros_agent_sdk::root_mgmt as root_mgmt_wire;
 
 // 全局分配器（no_std aarch64：spawn/IPC 路径使用 alloc，见 allocator.rs）。
 #[cfg(target_os = "none")]

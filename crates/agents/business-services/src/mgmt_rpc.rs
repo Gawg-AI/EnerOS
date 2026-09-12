@@ -182,6 +182,22 @@ pub trait ActionExecutor {
         arg: &[u8],
         now_ms: u64,
     ) -> ActionResult;
+
+    /// 70.6（WP-70.6.1）：在途操作观测步——StatusQuery("op:<id>") 轮询
+    /// 异步操作时调用；返回 `Some((终态, detail))` = 账本写回终态；
+    /// `None` = 仍在途。默认无观测（同步操作不产生 Running 记录）。
+    fn observe_operation(
+        &mut self,
+        _record: &crate::mgmt_ops::OperationRecord,
+        _now_ms: u64,
+    ) -> Option<(crate::mgmt_ops::OpStatus, String)> {
+        None
+    }
+
+    /// 70.6：当前生效配置代次（副作用记录绑定；不可得 = 0 如实）。
+    fn current_config_generation(&mut self) -> u64 {
+        0
+    }
 }
 
 /// 管理 RPC 处理器。
@@ -196,6 +212,9 @@ pub struct ManagementRpc<E: ActionExecutor> {
     pub executor: E,
     pub audit: Vec<AuditRecord>,
     pub replay_seen: Vec<u64>,
+    /// 70.6（WP-70.6.1）：可信操作账本（副作用幂等事实源；持久化由
+    /// svc-mgmt 装配侧承担——本结构只拥有状态与规则）。
+    pub ops: crate::mgmt_ops::OperationLedger,
     /// 因容量到顶被丢弃的审计记录数.
     audit_dropped: u64,
     /// 因容量到顶被挤出的重放缓存条目数.
@@ -214,6 +233,7 @@ impl<E: ActionExecutor> ManagementRpc<E> {
             executor,
             audit: Vec::new(),
             replay_seen: Vec::new(),
+            ops: crate::mgmt_ops::OperationLedger::new(),
             audit_dropped: 0,
             replay_dropped: 0,
         }
@@ -248,8 +268,15 @@ impl<E: ActionExecutor> ManagementRpc<E> {
     }
 
     /// 处理请求：认证会话（transport 层已产生）→ parse action（未知 →
-    /// Failed，不默认）→ 授权（角色不足 → Failed）→ 执行 → 审计。
-    /// `request_id` 用于重放防护（重复请求 id → Failed）。
+    /// Failed，不默认）→ 授权（角色不足 → Failed）→ **能力表分派**
+    ///（70.6：副作用动作经操作账本幂等门；只读/流式走易失重放窗口）→
+    /// 执行 → 账本/审计。
+    ///
+    /// `request_id` 幂等语义（WP-70.6.1）：
+    /// - 副作用动作：持久账本单源——同 (principal, request_id, arg_digest)
+    ///   回放已记录终态（不二次执行）；同 request_id 异参数 = 冲突拒绝；
+    ///   表满且有在途 = 背压拒绝。
+    /// - 只读/未知动作：易失 replay 窗口（不变）。
     pub fn handle(
         &mut self,
         session: &AuthenticatedSession,
@@ -265,14 +292,6 @@ impl<E: ActionExecutor> ManagementRpc<E> {
                 payload: None,
             };
         }
-        if self.replay_seen.contains(&request_id) {
-            return ActionResult {
-                status: RpcStatus::Failed,
-                detail: "replay-request".into(),
-                payload: None,
-            };
-        }
-        self.push_replay_seen(request_id);
         let action = match MgmtAction::parse(action_raw) {
             Ok(a) => a,
             Err(()) => {
@@ -281,6 +300,14 @@ impl<E: ActionExecutor> ManagementRpc<E> {
                     detail: format!("unknown-action:{action_raw}"),
                     payload: None,
                 };
+                if self.replay_seen.contains(&request_id) {
+                    return ActionResult {
+                        status: RpcStatus::Failed,
+                        detail: "replay-request".into(),
+                        payload: None,
+                    };
+                }
+                self.push_replay_seen(request_id);
                 self.push_audit(AuditRecord {
                     principal: session.principal.clone(),
                     channel: session.channel_binding.clone(),
@@ -308,6 +335,128 @@ impl<E: ActionExecutor> ManagementRpc<E> {
             });
             return r;
         }
+        // ===== 70.6：StatusQuery 扩展面（操作回查在授权之后、执行之前）=====
+        if matches!(action, MgmtAction::StatusQuery) && !arg.is_empty() {
+            return self.handle_status_arg(session, arg, now_ms);
+        }
+        let capability = crate::mgmt_ops::action_capability(&action).capability;
+        if capability == crate::mgmt_ops::ActionCapability::SideEffect {
+            // 副作用动作：持久账本幂等门（不经易失重放窗口——窗口判重
+            // 会把合法回放误判为 replay-request，回放必须返回记录终态）。
+            let digest = crate::mgmt_ops::arg_digest(arg);
+            let config_generation = self.executor.current_config_generation();
+            match self.ops.begin(
+                request_id,
+                &session.principal,
+                action_raw,
+                digest,
+                config_generation,
+                now_ms,
+            ) {
+                crate::mgmt_ops::OpGate::New(op_id) => {
+                    let mut result = self.executor.execute(&action, session, arg, now_ms);
+                    match result.status {
+                        RpcStatus::Accepted => {
+                            // 在途：账本保持 Running（observe_operation 轮询收口）。
+                        }
+                        RpcStatus::Completed => {
+                            let d = result.detail.clone();
+                            self.ops.finish(
+                                op_id,
+                                crate::mgmt_ops::OpStatus::Completed,
+                                &d,
+                                now_ms,
+                            );
+                        }
+                        RpcStatus::Failed => {
+                            let d = result.detail.clone();
+                            self.ops
+                                .finish(op_id, crate::mgmt_ops::OpStatus::Failed, &d, now_ms);
+                        }
+                    }
+                    result.detail = alloc::format!("op={op_id} {}", result.detail);
+                    self.push_audit(AuditRecord {
+                        principal: session.principal.clone(),
+                        channel: session.channel_binding.clone(),
+                        action: action_raw.into(),
+                        result: format!("{:?}#{}", result.status, op_id),
+                        at_ms: now_ms,
+                    });
+                    return result;
+                }
+                crate::mgmt_ops::OpGate::Replayed(op_id) => {
+                    // 幂等回放：同一操作只执行一次——返回已记录状态。
+                    let record = self.ops.get(op_id).expect("Replayed 必有记录");
+                    let r = match record.status {
+                        crate::mgmt_ops::OpStatus::Running => ActionResult {
+                            status: RpcStatus::Accepted,
+                            detail: alloc::format!("op={op_id} in-progress (idempotent-replay)"),
+                            payload: None,
+                        },
+                        crate::mgmt_ops::OpStatus::Completed => ActionResult {
+                            status: RpcStatus::Completed,
+                            detail: alloc::format!("op={op_id} replay: {}", record.detail),
+                            payload: None,
+                        },
+                        crate::mgmt_ops::OpStatus::Failed => ActionResult {
+                            status: RpcStatus::Failed,
+                            detail: alloc::format!("op={op_id} replay: {}", record.detail),
+                            payload: None,
+                        },
+                        crate::mgmt_ops::OpStatus::Unknown => ActionResult {
+                            status: RpcStatus::Failed,
+                            detail: alloc::format!("op={op_id} replay: {}", record.detail),
+                            payload: None,
+                        },
+                    };
+                    self.push_audit(AuditRecord {
+                        principal: session.principal.clone(),
+                        channel: session.channel_binding.clone(),
+                        action: action_raw.into(),
+                        result: alloc::format!("replayed#{}", op_id),
+                        at_ms: now_ms,
+                    });
+                    return r;
+                }
+                crate::mgmt_ops::OpGate::Conflict => {
+                    self.push_audit(AuditRecord {
+                        principal: session.principal.clone(),
+                        channel: session.channel_binding.clone(),
+                        action: action_raw.into(),
+                        result: "idempotency-conflict".into(),
+                        at_ms: now_ms,
+                    });
+                    return ActionResult {
+                        status: RpcStatus::Failed,
+                        detail: "idempotency-conflict:same-request-id-different-arg".into(),
+                        payload: None,
+                    };
+                }
+                crate::mgmt_ops::OpGate::Full => {
+                    self.push_audit(AuditRecord {
+                        principal: session.principal.clone(),
+                        channel: session.channel_binding.clone(),
+                        action: action_raw.into(),
+                        result: "ops-backpressure".into(),
+                        at_ms: now_ms,
+                    });
+                    return ActionResult {
+                        status: RpcStatus::Failed,
+                        detail: "ops-backpressure:ledger-full-with-inflight".into(),
+                        payload: None,
+                    };
+                }
+            }
+        }
+        // 只读/流式：易失重放窗口（既有语义不变）。
+        if self.replay_seen.contains(&request_id) {
+            return ActionResult {
+                status: RpcStatus::Failed,
+                detail: "replay-request".into(),
+                payload: None,
+            };
+        }
+        self.push_replay_seen(request_id);
         let result = self.executor.execute(&action, session, arg, now_ms);
         self.push_audit(AuditRecord {
             principal: session.principal.clone(),
@@ -317,6 +466,138 @@ impl<E: ActionExecutor> ManagementRpc<E> {
             at_ms: now_ms,
         });
         result
+    }
+
+    /// StatusQuery 扩展参数（WP-70.6.1 操作回查面；viewer 只读。回查
+    /// 不判重放——轮询语义允同 id 重复查询）。
+    /// - `op:<id>`：单操作终态回查；在途 → observe_operation 驱动收口。
+    /// - `ops`：账本摘要。
+    fn handle_status_arg(
+        &mut self,
+        _session: &AuthenticatedSession,
+        arg: &[u8],
+        now_ms: u64,
+    ) -> ActionResult {
+        let text = core::str::from_utf8(arg).unwrap_or("");
+        if let Some(id_text) = text.strip_prefix("op:") {
+            let op_id: u64 = match id_text.parse() {
+                Ok(v) => v,
+                Err(_) => {
+                    return ActionResult {
+                        status: RpcStatus::Failed,
+                        detail: "op:bad-id".into(),
+                        payload: None,
+                    }
+                }
+            };
+            let unknown = {
+                let record = match self.ops.get(op_id) {
+                    Some(r) => r.clone(),
+                    None => {
+                        return ActionResult {
+                            status: RpcStatus::Failed,
+                            detail: alloc::format!("op={op_id} no-such-operation"),
+                            payload: None,
+                        }
+                    }
+                };
+                if record.status.is_terminal() {
+                    let line = alloc::format!(
+                        "op={} {} {} gen={} created={} updated={} {}",
+                        record.op_id,
+                        record.action,
+                        match record.status {
+                            crate::mgmt_ops::OpStatus::Completed => "completed",
+                            crate::mgmt_ops::OpStatus::Failed => "failed",
+                            crate::mgmt_ops::OpStatus::Unknown => "unknown",
+                            crate::mgmt_ops::OpStatus::Running => "running",
+                        },
+                        record.config_generation,
+                        record.created_ms,
+                        record.updated_ms,
+                        record.detail
+                    );
+                    let status = match record.status {
+                        crate::mgmt_ops::OpStatus::Completed => RpcStatus::Completed,
+                        _ => RpcStatus::Failed,
+                    };
+                    return ActionResult {
+                        status,
+                        detail: line,
+                        payload: None,
+                    };
+                }
+                // 在途：执行器观测步驱动收口（重启轮询路径）。
+                match self.executor.observe_operation(&record, now_ms) {
+                    Some((final_status, detail)) => {
+                        self.ops.finish(op_id, final_status, &detail, now_ms);
+                        None
+                    }
+                    None => Some(record.clone()),
+                }
+            };
+            return match unknown {
+                None => {
+                    let record = self.ops.get(op_id).expect("刚写回");
+                    let line = alloc::format!(
+                        "op={} {} {} gen={} {}",
+                        record.op_id,
+                        record.action,
+                        match record.status {
+                            crate::mgmt_ops::OpStatus::Completed => "completed",
+                            crate::mgmt_ops::OpStatus::Failed => "failed",
+                            crate::mgmt_ops::OpStatus::Unknown => "unknown",
+                            crate::mgmt_ops::OpStatus::Running => "running",
+                        },
+                        record.config_generation,
+                        record.detail
+                    );
+                    ActionResult {
+                        status: match record.status {
+                            crate::mgmt_ops::OpStatus::Completed => RpcStatus::Completed,
+                            _ => RpcStatus::Failed,
+                        },
+                        detail: line,
+                        payload: None,
+                    }
+                }
+                Some(record) => ActionResult {
+                    status: RpcStatus::Accepted,
+                    detail: alloc::format!(
+                        "op={} running since={} ({}); poll again",
+                        record.op_id,
+                        record.created_ms,
+                        record.action
+                    ),
+                    payload: None,
+                },
+            };
+        }
+        if text == "ops" {
+            let (mut n_run, mut n_done, mut n_fail, mut n_unk) = (0u8, 0u8, 0u8, 0u8);
+            for r in self.ops.records() {
+                match r.status {
+                    crate::mgmt_ops::OpStatus::Running => n_run += 1,
+                    crate::mgmt_ops::OpStatus::Completed => n_done += 1,
+                    crate::mgmt_ops::OpStatus::Failed => n_fail += 1,
+                    crate::mgmt_ops::OpStatus::Unknown => n_unk += 1,
+                }
+            }
+            return ActionResult {
+                status: RpcStatus::Completed,
+                detail: alloc::format!(
+                    "ops:total={} running={n_run} completed={n_done} failed={n_fail} unknown={n_unk} dropped={}",
+                    self.ops.records().len(),
+                    self.ops.dropped_count()
+                ),
+                payload: None,
+            };
+        }
+        ActionResult {
+            status: RpcStatus::Failed,
+            detail: alloc::format!("status:bad-arg ({text:?})"),
+            payload: None,
+        }
     }
 }
 
@@ -531,7 +812,8 @@ mod tests {
         assert!(rpc.executor.executed.is_empty());
     }
 
-    /// 50：正例——admin 可受控重启（审计入链）。
+    /// 50：正例——admin 可受控重启（审计入链；70.6 起副作用动作入账本，
+    /// 审计词形 `Completed#<op_id>`，操作可回查）。
     #[test]
     fn positive_agent_restart_admin_allowed() {
         let mut rpc = ManagementRpc::new(TestExecutor {
@@ -540,9 +822,23 @@ mod tests {
         });
         let r = rpc.handle(&admin(1000), 1, "agent-restart", b"svc-ota", 1000);
         assert_eq!(r.status, RpcStatus::Completed);
+        assert!(r.detail.starts_with("op=1 "), "{}", r.detail);
         assert_eq!(rpc.executor.executed.len(), 1);
         assert_eq!(rpc.audit.len(), 1);
-        assert_eq!(rpc.audit[0].result, "Completed");
+        assert_eq!(rpc.audit[0].result, "Completed#1");
+        assert_eq!(
+            rpc.ops.get(1).unwrap().status,
+            crate::mgmt_ops::OpStatus::Completed
+        );
+        // 幂等回放：同 request_id 同参数重发 = 记录终态，不二次执行。
+        let r2 = rpc.handle(&admin(1000), 1, "agent-restart", b"svc-ota", 1100);
+        assert_eq!(r2.status, RpcStatus::Completed);
+        assert!(r2.detail.contains("replay:"), "{}", r2.detail);
+        assert_eq!(rpc.executor.executed.len(), 1, "回放不得二次执行");
+        // 幂等冲突：同 request_id 异参数拒绝。
+        let r3 = rpc.handle(&admin(1000), 1, "agent-restart", b"svc-mqtt", 1200);
+        assert_eq!(r3.status, RpcStatus::Failed);
+        assert!(r3.detail.starts_with("idempotency-conflict"));
     }
     // ================= 蓝图 70.1 WP-70.1.3：有界账本 =================
 

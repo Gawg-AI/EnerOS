@@ -772,6 +772,23 @@ impl ConfigRegistry {
         expected_manifest_digest: Option<&Digest>,
     ) -> Result<(), ConfigError> {
         verify_bundle(bundle, pk, expected_manifest_digest)?;
+        self.apply_bundle_unverified(bundle)
+    }
+
+    /// 70.6（WP-70.6.4）：免重验应用——**调用方必须已完成 bundle 级验签**
+    /// （`verify_bundle_startup`：bundle 签名覆盖 canonical 全部条目；
+    /// 条目级签名在 GET_ENTRY 按需验证——与启动路径同纪律）。余下面与
+    /// [`Self::apply_bundle`] 完全一致（双向完备 + decode 预检 + 两阶段
+    /// apply）。存在的理由：TCG 下逐条目 SM2 验签 ~2s/次 × 20 条目，
+    /// stage/activate 事务单次全量验证即拖垮管理 EIPC 超时预算。
+    ///
+    /// # Safety（合同面）
+    /// 跳过的是 verify_bundle；调用点必须可指认同字节的 verify 结论
+    /// （启动路径 = verify_bundle_startup；换包事务 = 同径）。
+    pub fn apply_bundle_unverified(
+        &mut self,
+        bundle: &RuntimeConfigBundle,
+    ) -> Result<(), ConfigError> {
         self.check_bundle(bundle)?;
         // 阶段 1：全部条目 decode 预检（只读，不改变任何状态）。
         for entry in &bundle.entries {

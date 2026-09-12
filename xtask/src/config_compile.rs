@@ -23,6 +23,7 @@ use super::{invalid, read_json, DynResult};
 /// `sign_key_hex`：SM2 私钥（32B hex）；`accept_test_signing_key`：显式
 /// 接受仓库测试钥（`--accept-test-signing-key`，测试链专用）；`root_key_hex`：
 /// ota root_key（64B hex，可空=从 ota.toml 读取）。
+#[allow(clippy::too_many_arguments)] // 注入面参数表（configure_service 先例）
 pub fn config_compile(
     root: &Path,
     profile_id: &str,
@@ -31,6 +32,7 @@ pub fn config_compile(
     root_key_hex: Option<&str>,
     control_chain_key_hex: Option<&str>,
     degrade_lease_key_hex: Option<&str>,
+    generation: u64,
 ) -> DynResult<std::path::PathBuf> {
     // 1. 读取 registry 与 release profile 的 configs 链接。
     let registry_path = root.join("configs/registry.toml");
@@ -70,9 +72,11 @@ pub fn config_compile(
     }
 
     // 2. 编译每个 ACTIVE 配置。
+    // 70.6（WP-70.6.4）：`--generation` 支持换包候选编译（缺省 1 = 既有
+    // 基线行为；盘上 active 代次门槛 = 候选必须严格高于在役代次）。
     let mut bundle = eneros_config_bundle::RuntimeConfigBundle::new(
         eneros_config_bundle::Digest(manifest_digest_bytes),
-        1,
+        generation,
         eneros_config_bundle::TrustedTime(now_unix_ms()),
     );
     let mut compiled_ids: Vec<String> = Vec::new();
@@ -139,7 +143,7 @@ pub fn config_compile(
             .push(eneros_config_bundle::SignedConfigEntry {
                 config_id: compiled.config_id,
                 schema: eneros_config_bundle::SchemaVersion(1),
-                generation: 1,
+                generation,
                 payload: compiled.payload,
                 payload_digest: digest,
                 signature: Vec::new(),

@@ -886,6 +886,29 @@ pub fn ipc_reply_recv(
     }
 }
 
+/// 独立回复封装（`seL4_Reply`，70.6 WP-70.6.3）。
+///
+/// 消费最近一次 Recv/**Poll** 暗装的 reply cap 回复当前请求——root 主循环
+/// 非阻塞轮询管理端点后"先处理再回复"，不阻塞等待下一请求（区别于
+/// [`ipc_reply_recv`] 的 reply+阻塞 recv 复合语义）。
+///
+/// # Safety
+/// - 仅在 Poll/Recv 收到 Call 消息后调用（reply cap 在位）；
+/// - 无阻塞。
+pub fn ipc_reply(msg_info: MessageInfo) -> Sel4Result<()> {
+    #[cfg(sel4_target)]
+    {
+        // SAFETY: 无指针参数；reply cap 有效性由调用序保证（见函数文档）。
+        unsafe { crate::ffi::eneros_sel4_reply(msg_info) };
+        Ok(())
+    }
+    #[cfg(host_build)]
+    {
+        let _ = msg_info;
+        Err(Sel4Error::HostUnsupported)
+    }
+}
+
 // ============================================================================
 // BootInfo 解析（P0-1：untyped 列表 / 空闲 cap 区间 offset 访问器）
 // ============================================================================

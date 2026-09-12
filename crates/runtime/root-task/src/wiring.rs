@@ -249,6 +249,9 @@ pub enum PeriodicTask {
     /// 串口行由 svc-ai-worker 侧落（root 零新词形）；五连读同刻读数
     /// 逐字节一致 = 观测只读性实弹（Q5）。探针零决策面状态接触。
     DegradeObserve,
+    /// 70.6（WP-70.6.5）：MGT1 管理动作链探针（qemu-test-synth 专属；
+    /// Send 语义直驱 svc-mgmt，动作实效经串口词形取证）。
+    MgtProbe,
 }
 
 /// 到期语义（一次性任务首达即到期；fired 防重由分派侧既有 done 标志
@@ -294,6 +297,12 @@ pub const PERIODIC_SCHEDULE: &[PeriodicEntry] = &[
         offset: 0,
         kind: ScheduleKind::Repeat,
         task: PeriodicTask::ControlChain,
+    },
+    PeriodicEntry {
+        period: 90,
+        offset: 90,
+        kind: ScheduleKind::OnceFrom,
+        task: PeriodicTask::MgtProbe,
     },
     PeriodicEntry {
         period: 25,
@@ -653,6 +662,9 @@ mod tests {
             rows,
             vec![
                 (5, 0, ScheduleKind::Repeat, PeriodicTask::ControlChain),
+                // 70.6 新增（WP-70.6.5）：MGT1 探针（qemu-test-synth 装配
+                // 专属；release 闭包 step 体 cfg 隔离零路径）——非平移行。
+                (90, 90, ScheduleKind::OnceFrom, PeriodicTask::MgtProbe),
                 (25, 20, ScheduleKind::Repeat, PeriodicTask::ObsReport),
                 (200, 200, ScheduleKind::OnceAt, PeriodicTask::HangInject),
                 (60, 60, ScheduleKind::OnceFrom, PeriodicTask::StoragePersist),

@@ -300,6 +300,13 @@ seL4_MessageInfo_t eneros_sel4_message_info_new(seL4_Word label,
     return seL4_MessageInfo_new(label, caps_unwrapped, extra_caps, length);
 }
 
+/* 70.6（WP-70.6.3）：独立回复（seL4_Reply）——root 轮询（Poll/nbRecv 已
+ * 暗装 reply cap）处理完管理请求后先回复再回主循环，不阻塞等下一请求。 */
+void eneros_sel4_reply(seL4_MessageInfo_t msg_info)
+{
+    seL4_Reply(msg_info);
+}
+
 /* ================================================================== */
 /* TCB operations.                                                     */
 /* ================================================================== */

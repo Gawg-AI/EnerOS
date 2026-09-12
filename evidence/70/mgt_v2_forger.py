@@ -46,6 +46,11 @@ def main():
     ap.add_argument("--client-key", required=True)
     ap.add_argument("--topic", default="eneros/mgmt/request")
     ap.add_argument("--transcript", default=None)
+    ap.add_argument("--plain", action="store_true", help="明文 TCP（qemu-test 窗）")
+    ap.add_argument("--truncated", action="store_true",
+                    help="70.6（REG-70.5-MGT-GATE-NO-POSITIVE 收口）：发送 62..199B "
+                         "短尾 v2 攻击帧（带 token 魔数却尾段不足——70.5 复查 P0 "
+                         "形态；svc-mgmt 必须 'truncated v2 shape' 拒绝不落回 v1）")
     args = ap.parse_args()
 
     # session v1（48B）：principal/roles/tenant/channel/expiry
@@ -80,17 +85,29 @@ def main():
 
     request_id = struct.pack("<Q", 0xBEEF)
     action = b"reboot"
-    # [4] = 保留字节（svc-mgmt handler 自 offset 5 起 parse session）。
-    payload = b"\x00" + session_v2 + request_id + bytes([len(action)]) + action
-    frame = MAGIC + payload
+    if args.truncated:
+        # 短尾 v2 攻击帧：伪造会话（admin）‖ 魔数 8B ‖ 8B request_id ‖
+        # 1B action_len —— 总长 < V2_MIN(200B)，缺签名段。
+        stub = session_v1 + TOKEN_MAGIC + request_id + bytes([len(action)]) + action
+        payload = b"\x00" + stub
+        frame = MAGIC + payload
+        assert 62 + 8 <= len(frame) < 200, f"短尾帧长度 {len(frame)} 不在 62..199 缝隙"
+    else:
+        # [4] = 保留字节（svc-mgmt handler 自 offset 5 起 parse session）。
+        payload = b"\x00" + session_v2 + request_id + bytes([len(action)]) + action
+        frame = MAGIC + payload
 
     host, port = args.broker.rsplit(":", 1)
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.load_verify_locations(args.ca)
-    ctx.load_cert_chain(args.client, args.client_key)
-    raw = socket.create_connection((host, int(port)), timeout=10)
-    sock = ctx.wrap_socket(raw, server_hostname="eneros-broker")
-    print("TLS-CONNECTED", sock.version(), sock.cipher()[0])
+    if args.plain:
+        sock = socket.create_connection((host, int(port)), timeout=10)
+        print("PLAIN-CONNECTED")
+    else:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.load_verify_locations(args.ca)
+        ctx.load_cert_chain(args.client, args.client_key)
+        raw = socket.create_connection((host, int(port)), timeout=10)
+        sock = ctx.wrap_socket(raw, server_hostname="eneros-broker")
+        print("TLS-CONNECTED", sock.version(), sock.cipher()[0])
 
     # MQTT CONNECT（accept 简版）+ PUBLISH MGT 帧（QoS0）
     vhost = "10.0.2.2"

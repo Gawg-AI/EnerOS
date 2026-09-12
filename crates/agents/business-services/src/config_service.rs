@@ -30,6 +30,11 @@ use eneros_crypto::{sm3_hash, Sm2PublicKey};
 pub const CMD_GET_ENTRY: u8 = 0x01;
 pub const CMD_GET_DIGEST: u8 = 0x02;
 pub const CMD_GET_GENERATION: u8 = 0x03;
+/// 70.6（WP-70.6.4）：换包事务写面。
+pub const CMD_STAGE_PART: u8 = 0x04;
+pub const CMD_STAGE_COMMIT: u8 = 0x05;
+pub const CMD_ACTIVATE: u8 = 0x06;
+pub const CMD_SOURCE_INFO: u8 = 0x07;
 /// 协议 magic。
 pub const PROTO_MAGIC: &[u8; 4] = b"CFG1";
 
@@ -151,6 +156,10 @@ pub struct ConfigService {
     pub load_error: Option<String>,
     /// 验签公钥（64B SM2 未压缩点；空 = 未注入 → fail-closed）。
     pub verify_pubkey: Option<Sm2PublicKey>,
+    /// 70.6：启动期嵌入束代次（disk 束代次门槛基线）。
+    pub embedded_generation: u64,
+    /// 70.6：active 生效来源（嵌入基线 / 盘上持久载体）。
+    pub active_source: ConfigSource,
 }
 
 /// 云同步配置（canonical 解码面；消费者 svc-cloud-sync）。
@@ -561,6 +570,8 @@ impl ConfigService {
             bundle: None,
             load_error: None,
             verify_pubkey: None,
+            embedded_generation: 0,
+            active_source: ConfigSource::Embedded,
         }
     }
 
@@ -606,6 +617,7 @@ impl ConfigService {
             self.load_error = Some(format!("decode:{e}"));
             e
         })?;
+        self.embedded_generation = bundle.generation;
         self.load_bundle(bundle, None).map_err(|e| {
             self.load_error = Some(format!("verify:{e}"));
             e
@@ -683,8 +695,234 @@ pub fn bundle_digest(bundle: &RuntimeConfigBundle) -> Digest {
     )))
 }
 
+// ============================================================================
+// 70.6（WP-70.6.4）：盘上签名配置载体——信封包络 + stage/activate 事务
+// ============================================================================
+
+/// 盘上配置信封 magic（"CNF2"；DataRegion::ConfigActive/ConfigStage）。
+pub const CFG_ENVELOPE_MAGIC: &[u8; 4] = b"CNF2";
+/// 信封开销：magic(4) ‖ len(4) ‖ crc32(4)。
+pub const CFG_ENVELOPE_OVERHEAD: usize = 12;
+
+/// 配置载体字节上限（区段几何 − 信封开销；现行编译束 ~7 KiB）。
+pub const CONFIG_BUNDLE_MAX: usize =
+    eneros_ota_ab::ab_partition::CONFIG_REGION_BYTES as usize - CFG_ENVELOPE_OVERHEAD;
+
+/// 信封编码（整段布局：包络 + bundle + 零填充至区段长——读端按 len 截断；
+/// 撕裂写 = magic/CRC 失配 → fail-safe 回退嵌入束）。
+pub fn envelope_encode(bundle: &[u8]) -> Result<alloc::vec::Vec<u8>, &'static str> {
+    if bundle.is_empty() || bundle.len() > CONFIG_BUNDLE_MAX {
+        return Err("bundle-size");
+    }
+    let mut out = alloc::vec![0u8; eneros_ota_ab::ab_partition::CONFIG_REGION_BYTES as usize];
+    out[..4].copy_from_slice(CFG_ENVELOPE_MAGIC);
+    out[4..8].copy_from_slice(&(bundle.len() as u32).to_le_bytes());
+    out[8..12].copy_from_slice(&eneros_ipc_wire::crc32(bundle).to_le_bytes());
+    out[12..12 + bundle.len()].copy_from_slice(bundle);
+    Ok(out)
+}
+
+/// 信封解码（`Ok(None)` = 空区段（全零/未写）；`Err` = 撕裂/损坏）。
+pub fn envelope_decode(region: &[u8]) -> Result<Option<alloc::vec::Vec<u8>>, &'static str> {
+    if region.len() != eneros_ota_ab::ab_partition::CONFIG_REGION_BYTES as usize {
+        return Err("region-len");
+    }
+    if region.iter().all(|&b| b == 0) {
+        return Ok(None);
+    }
+    if &region[..4] != CFG_ENVELOPE_MAGIC {
+        return Err("envelope-magic");
+    }
+    let len = u32::from_le_bytes(region[4..8].try_into().expect("u32")) as usize;
+    if len == 0 || len > CONFIG_BUNDLE_MAX || 12 + len > region.len() {
+        return Err("envelope-len");
+    }
+    let bundle = &region[12..12 + len];
+    let crc = u32::from_le_bytes(region[8..12].try_into().expect("u32"));
+    if eneros_ipc_wire::crc32(bundle) != crc {
+        return Err("envelope-crc");
+    }
+    Ok(Some(bundle.to_vec()))
+}
+
+/// 配置生效来源（启动装配裁决面）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigSource {
+    /// 固件嵌入束（编译期；基线）。
+    Embedded,
+    /// 盘上持久载体（ConfigActive；换包事务提交后的持久源）。
+    Disk,
+}
+
+/// 分片暂存缓冲（ConfigSet 多段传输；总长上限 = 载体几何）。
+#[derive(Debug, Default)]
+pub struct ConfigStaging {
+    buf: alloc::vec::Vec<u8>,
+    total: Option<usize>,
+    received_mask: u32,
+}
+
+impl ConfigStaging {
+    pub fn new() -> Self {
+        ConfigStaging::default()
+    }
+
+    pub fn reset(&mut self) {
+        *self = ConfigStaging::default();
+    }
+
+    /// 追加分片（`seq` 1 基；单片 ≤ 512B——mqtt 插件 APP_MSG_MAX_LEN=1024
+    /// 扣 MGT1 会话帧开销后的安全分段；16×512B = 8192B 恰合载体区段）。
+    /// 返回已到齐分片数。重复分片幂等接受；total/越界不一致 → Err。
+    pub fn push_part(&mut self, seq: u8, total: u8, bytes: &[u8]) -> Result<u32, &'static str> {
+        if seq == 0 || total == 0 || seq > total || total > 16 {
+            return Err("part-index");
+        }
+        let total_len = total as usize;
+        match self.total {
+            Some(t) if t != total_len => return Err("part-total-changed"),
+            Some(_) => {}
+            None => {
+                self.total = Some(total_len);
+                self.buf = alloc::vec![0u8; total_len * 512];
+            }
+        }
+        if bytes.len() > 512 {
+            return Err("part-too-large");
+        }
+        let off = (seq as usize - 1) * 512;
+        if off + bytes.len() > self.buf.len() {
+            return Err("part-overflow");
+        }
+        self.buf[off..off + bytes.len()].copy_from_slice(bytes);
+        self.received_mask |= 1 << (seq - 1);
+        Ok(self.received_mask.count_ones())
+    }
+
+    /// 全部分片到齐 → 完整暂存字节。
+    pub fn complete(&self) -> Option<&[u8]> {
+        let total = self.total?;
+        if self.received_mask.count_ones() == total as u32 {
+            Some(&self.buf)
+        } else {
+            None
+        }
+    }
+
+    pub fn received(&self) -> u32 {
+        self.received_mask.count_ones()
+    }
+
+    pub fn expected(&self) -> usize {
+        self.total.unwrap_or(0)
+    }
+}
+
+impl ConfigService {
+    /// 启动装配：盘上 active 载荷裁决（WP-70.6.4 持久来源）。
+    ///
+    /// - 空区段/信封损坏 → 保持嵌入束（fail-safe；损坏如实上报词形）。
+    /// - 有效已签束：验签 + 消费者兼容全检通过 → **替换 active**（盘上
+    ///   代次必须 ≥ 嵌入束——防旧包回流降级）。
+    ///
+    /// 返回 (生效来源, 失败词形)。
+    pub fn load_disk_active(&mut self, region: &[u8]) -> (ConfigSource, Option<&'static str>) {
+        let bundle_bytes = match envelope_decode(region) {
+            Ok(Some(b)) => b,
+            Ok(None) => return (ConfigSource::Embedded, None),
+            Err(e) => return (ConfigSource::Embedded, Some(e)),
+        };
+        let Some(pk) = self.verify_pubkey else {
+            return (ConfigSource::Embedded, Some("no-verify-pubkey"));
+        };
+        let bundle = match eneros_config_bundle::decode_bundle_full(&bundle_bytes) {
+            Ok(b) => b,
+            Err(_) => return (ConfigSource::Embedded, Some("disk-decode")),
+        };
+        let disk_gen = bundle.generation;
+        // 代次门槛：盘上必须 ≥ 嵌入束（同代 = 嵌入束等值重包允许；跨
+        // 重启幂等）；更低代次 = 回流降级，拒绝。
+        if disk_gen < self.generation() {
+            return (ConfigSource::Embedded, Some("disk-generation-stale"));
+        }
+        // 启动级验签（bundle 签名覆盖 canonical 全部条目；条目级签名
+        // GET_ENTRY 按需验证——与固件嵌入束启动路径同纪律；TCG 全量
+        // 逐条目 SM2 ~40s 不可入启动窗）。
+        if eneros_config_bundle::verify_bundle_startup(&bundle, &pk, None).is_err() {
+            return (ConfigSource::Embedded, Some("disk-verify"));
+        }
+        // 消费者兼容 + 应用（免重验——上方同字节已验）。
+        if self.registry.apply_bundle_unverified(&bundle).is_err() {
+            return (ConfigSource::Embedded, Some("disk-apply"));
+        }
+        self.bundle = Some(bundle);
+        self.load_error = None;
+        self.active_source = ConfigSource::Disk;
+        (ConfigSource::Disk, None)
+    }
+
+    /// stage 提交校验（不改 active）：完整验签 + 消费者兼容 + 代次推进。
+    /// 返回候选摘要。
+    pub fn stage_commit(&mut self, staged: &[u8]) -> Result<Digest, &'static str> {
+        if staged.len() > CONFIG_BUNDLE_MAX {
+            return Err("bundle-size");
+        }
+        let pk = self.verify_pubkey.as_ref().ok_or("no-verify-pubkey")?;
+        let bundle = eneros_config_bundle::decode_bundle_full(staged).map_err(|_| "decode")?;
+        // 代次规则：严格高于当前 active（同代重复 stage = 冲突——换包
+        // 事务的一次性；回滚业务值 = 新签名更高代次，见卷册 §5 回滚行）。
+        if bundle.generation <= self.generation() {
+            return Err("generation-not-advancing");
+        }
+        // 完整验签 + 消费者兼容（scratch registry 全量应用）。
+        let mut scratch = ConfigService::new();
+        scratch.verify_pubkey = Some(*pk);
+        scratch
+            .load_bundle(bundle, None)
+            .map_err(|_| "verify-or-consumer")?;
+        Ok(bundle_digest(
+            &eneros_config_bundle::decode_bundle_full(staged).map_err(|_| "decode")?,
+        ))
+    }
+
+    /// 提交激活（调用方先把信封写入盘上 active 区段——提交点=盘写成功，
+    /// 再应用内存；顺序对调则崩溃窗内出现"内存新/盘旧"漂移）。
+    /// 验签 = 启动级单次（bundle 签名；TCG 纪律），随后免重验应用。
+    pub fn activate_staged(&mut self, staged: &[u8]) -> Result<(u64, Digest), &'static str> {
+        let pk = self.verify_pubkey.as_ref().ok_or("no-verify-pubkey")?;
+        let bundle = eneros_config_bundle::decode_bundle_full(staged).map_err(|_| "decode")?;
+        if bundle.generation <= self.generation() {
+            return Err("generation-not-advancing");
+        }
+        eneros_config_bundle::verify_bundle_startup(&bundle, pk, None).map_err(|_| "verify")?;
+        let gen = bundle.generation;
+        self.registry
+            .apply_bundle_unverified(&bundle)
+            .map_err(|_| "apply")?;
+        self.bundle = Some(bundle);
+        self.load_error = None;
+        self.active_source = ConfigSource::Disk;
+        let digest = self.active_digest().ok_or("apply")?;
+        Ok((gen, digest))
+    }
+
+    /// 配置来源信息（CFG1 0x07 SOURCE-INFO 响应体）：
+    /// (active_source_is_disk, disk_gen_or_0, embedded_gen, active_gen)。
+    pub fn source_info(&self) -> (bool, u64, u64, u64) {
+        (
+            self.active_source == ConfigSource::Disk,
+            match self.active_source {
+                ConfigSource::Disk => self.generation(),
+                ConfigSource::Embedded => 0,
+            },
+            self.embedded_generation,
+            self.generation(),
+        )
+    }
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use eneros_config_bundle::{
         ConfigBundleVersion, Digest as CbDigest, SignedConfigEntry, TrustedTime,
     };
@@ -711,7 +949,7 @@ mod tests {
     }
 
     /// 全量 ACTIVE 条目（registry 双向完备：含 45 点表 + WP-A.1 security）。
-    fn make_all_entries(control_write_payload: Vec<u8>) -> Vec<SignedConfigEntry> {
+    pub(crate) fn make_all_entries(control_write_payload: Vec<u8>) -> Vec<SignedConfigEntry> {
         use eneros_config_bundle::schema::{cloud_sync, logging, metrics, ota, points, security};
         let mut entries = vec![make_entry(control_write_payload, 3)];
         let root_key = [0x5Au8; 64];
@@ -968,5 +1206,216 @@ mod tests {
         let mut rng = CsRng::new();
         eneros_config_bundle::sign_bundle(&mut bundle, &sk, &pk, &mut rng).unwrap();
         eneros_config_bundle::verify_bundle(&bundle, &pk, None).unwrap();
+    }
+}
+
+/// 70.6（WP-70.6.4）：盘上配置载体与 stage/activate 事务测试。
+#[cfg(test)]
+mod config_lifecycle_tests {
+    use eneros_config_bundle::{
+        ConfigBundleVersion, Digest as CbDigest, SignedConfigEntry, TrustedTime,
+    };
+    use eneros_crypto::{CsRng, Sm2KeyPair, Sm2PrivateKey};
+
+    use super::*;
+
+    fn sign_helpers() -> (Sm2PrivateKey, Sm2PublicKey) {
+        let sk = Sm2PrivateKey::from_bytes(&[0x41; 32]).unwrap();
+        let kp = Sm2KeyPair::from_private_key(&sk).unwrap();
+        (sk, kp.public_key)
+    }
+
+    /// 代次参数化的全量束夹具（复用上方 make_all_entries——条目代次
+    /// 同步改写后整体重签）。
+    fn make_bundle_gen(payload: Vec<u8>, generation: u64) -> RuntimeConfigBundle {
+        let mut bundle = RuntimeConfigBundle {
+            schema: ConfigBundleVersion::V1,
+            product_manifest_digest: CbDigest([0x41; 32]),
+            generation,
+            created_at: TrustedTime(1_700_000_000_000),
+            entries: Vec::new(),
+            signature: Vec::new(),
+        };
+        // 借用上方 tests 模块的条目构造（同 crate 内测试互访需要 pub——
+        // 这里直接重建：全部条目代次 = generation）。
+        let entries = make_all_entries_at(payload, generation);
+        bundle.entries = entries;
+        bundle
+    }
+
+    /// make_all_entries 的代次参数化版（条目级 generation 同步）。
+    fn make_all_entries_at(
+        control_write_payload: Vec<u8>,
+        generation: u64,
+    ) -> Vec<SignedConfigEntry> {
+        let mut entries = super::tests::make_all_entries(control_write_payload);
+        for e in entries.iter_mut() {
+            e.generation = generation;
+        }
+        entries
+    }
+
+    fn signed_bundle(payload: Vec<u8>, generation: u64) -> RuntimeConfigBundle {
+        let (sk, pk) = sign_helpers();
+        let mut rng = CsRng::new();
+        let mut bundle = make_bundle_gen(payload, generation);
+        eneros_config_bundle::sign_bundle(&mut bundle, &sk, &pk, &mut rng).unwrap();
+        bundle
+    }
+
+    /// 介质 wire = canonical + 全部签名（encode_bundle_full）。
+    fn encode(bundle: &RuntimeConfigBundle) -> Vec<u8> {
+        eneros_config_bundle::encode_bundle_full(bundle)
+    }
+
+    fn control_write_payload(retries: u8) -> Vec<u8> {
+        use eneros_config_bundle::schema::control_write;
+        eneros_config_bundle::payload::encode_payload(&[
+            (control_write::FIELD_LEASE_ID, vec![0x33; 16]),
+            (control_write::FIELD_LEGACY_INPUT, vec![1]),
+            (control_write::FIELD_HANDSHAKE_RETRIES, vec![retries]),
+        ])
+    }
+
+    fn loaded_service() -> ConfigService {
+        let (sk, pk) = sign_helpers();
+        let mut rng = CsRng::new();
+        let mut bundle = make_bundle_gen(control_write_payload(4), 3);
+        eneros_config_bundle::sign_bundle(&mut bundle, &sk, &pk, &mut rng).unwrap();
+        let mut svc = ConfigService::new();
+        svc.verify_pubkey = Some(pk);
+        svc.embedded_generation = bundle.generation;
+        svc.load_bundle(bundle, Some(&CbDigest([0x41; 32])))
+            .unwrap();
+        svc
+    }
+
+    #[test]
+    fn envelope_roundtrip_and_torn_detection() {
+        let bundle = [0xABu8; 100];
+        let env = envelope_encode(&bundle).unwrap();
+        assert_eq!(
+            env.len(),
+            eneros_ota_ab::ab_partition::CONFIG_REGION_BYTES as usize
+        );
+        assert_eq!(envelope_decode(&env).unwrap().as_deref(), Some(&bundle[..]));
+        // 空区段。
+        assert_eq!(envelope_decode(&vec![0u8; env.len()]).unwrap(), None);
+        // 撕裂：翻转 bundle 字节（CRC 失配）。
+        let mut torn = env.clone();
+        torn[20] ^= 0xFF;
+        assert!(envelope_decode(&torn).is_err());
+        // 魔数破坏。
+        let mut bad = env.clone();
+        bad[0] = b'X';
+        assert!(envelope_decode(&bad).is_err());
+        // 超尺寸拒绝。
+        assert_eq!(
+            envelope_encode(&vec![0u8; CONFIG_BUNDLE_MAX + 1]),
+            Err("bundle-size")
+        );
+    }
+
+    #[test]
+    fn staging_parts_complete_and_reject() {
+        let mut st = ConfigStaging::new();
+        // 乱序 + 重复幂等。
+        assert_eq!(st.push_part(2, 3, &[0x22; 100]).unwrap(), 1);
+        assert_eq!(st.push_part(2, 3, &[0x22; 100]).unwrap(), 1, "重复分片幂等");
+        assert_eq!(st.push_part(1, 3, &[0x11; 512]).unwrap(), 2);
+        assert!(st.complete().is_none(), "未到齐不可读");
+        assert_eq!(st.push_part(3, 3, &[0x33; 10]).unwrap(), 3);
+        let full = st.complete().unwrap();
+        assert_eq!(full.len(), 3 * 512);
+        assert_eq!(&full[..512], &[0x11; 512]);
+        // total 变化冲突。
+        assert_eq!(st.push_part(1, 4, &[0; 8]), Err("part-total-changed"));
+        // 索引非法。
+        assert_eq!(st.push_part(0, 3, &[0; 8]), Err("part-index"));
+        assert_eq!(st.push_part(4, 3, &[0; 8]), Err("part-index"));
+        // 单片超限。
+        assert_eq!(st.push_part(3, 3, &[0; 1025]), Err("part-too-large"));
+    }
+
+    #[test]
+    fn stage_commit_requires_advancing_generation_and_valid_signature() {
+        let mut svc = loaded_service();
+        assert_eq!(svc.generation(), 3);
+        // 同代候选 → 拒绝（换包一次性）。
+        let same = encode(&signed_bundle(control_write_payload(4), 3));
+        assert_eq!(svc.stage_commit(&same), Err("generation-not-advancing"));
+        // 更高代次 + 正确签名 → 通过（未激活：active 不变）。
+        let cand = encode(&signed_bundle(control_write_payload(5), 4));
+        let digest = svc.stage_commit(&cand).expect("stage commit");
+        assert_eq!(svc.generation(), 3, "stage 不改 active");
+        assert_eq!(
+            digest,
+            bundle_digest(&eneros_config_bundle::decode_bundle_full(&cand).unwrap())
+        );
+        // 错钥签名 → 拒绝。
+        let (sk2, _pk2) = {
+            let sk2 = Sm2PrivateKey::from_bytes(&[0x99; 32]).unwrap();
+            let kp2 = Sm2KeyPair::from_private_key(&sk2).unwrap();
+            (sk2, kp2.public_key)
+        };
+        let mut bad = make_bundle_gen(control_write_payload(5), 5);
+        let mut rng = CsRng::new();
+        eneros_config_bundle::sign_bundle(&mut bad, &sk2, &_pk2, &mut rng).unwrap();
+        assert_eq!(
+            svc.stage_commit(&encode(&bad)),
+            Err("verify-or-consumer"),
+            "错钥候选必须拒绝"
+        );
+    }
+
+    #[test]
+    fn activate_switches_source_and_generation() {
+        let mut svc = loaded_service();
+        let cand = encode(&signed_bundle(control_write_payload(5), 4));
+        let (gen, digest) = svc.activate_staged(&cand).expect("activate");
+        assert_eq!(gen, 4);
+        assert_eq!(svc.generation(), 4);
+        assert_eq!(svc.active_source, ConfigSource::Disk);
+        assert_eq!(svc.active_digest().unwrap(), digest);
+        // 消费者真拿到新值（control_write consumer 应用）。
+        assert_eq!(svc.control_write().unwrap().handshake_retries, 5);
+        let (is_disk, disk_gen, embedded_gen, active_gen) = svc.source_info();
+        assert!(is_disk);
+        assert_eq!((disk_gen, embedded_gen, active_gen), (4, 3, 4));
+        // 激活后再 stage 同代 → 冲突；更高代次 → 通过。
+        assert_eq!(svc.stage_commit(&cand), Err("generation-not-advancing"));
+        let cand5 = encode(&signed_bundle(control_write_payload(2), 5));
+        assert!(svc.stage_commit(&cand5).is_ok());
+    }
+
+    #[test]
+    fn disk_load_activate_and_fail_safe_paths() {
+        // 有效盘上束（gen 4）→ 启动替换 active。
+        let mut svc = loaded_service();
+        let region = envelope_encode(&encode(&signed_bundle(control_write_payload(2), 4))).unwrap();
+        let (source, err) = svc.load_disk_active(&region);
+        assert_eq!(source, ConfigSource::Disk);
+        assert_eq!(err, None);
+        assert_eq!(svc.generation(), 4);
+        assert_eq!(svc.control_write().unwrap().handshake_retries, 2);
+        // 撕裂盘区 → 保持嵌入束 + 损坏词形。
+        let mut svc2 = loaded_service();
+        let mut torn =
+            envelope_encode(&encode(&signed_bundle(control_write_payload(2), 4))).unwrap();
+        torn[30] ^= 0xFF;
+        let (source2, err2) = svc2.load_disk_active(&torn);
+        assert_eq!(source2, ConfigSource::Embedded);
+        assert_eq!(err2, Some("envelope-crc"));
+        assert_eq!(svc2.generation(), 3, "fail-safe 保持嵌入束");
+        // 空区段 → 嵌入束，零错误词形。
+        let mut svc3 = loaded_service();
+        let (source3, err3) = svc3.load_disk_active(&vec![0u8; region.len()]);
+        assert_eq!((source3, err3), (ConfigSource::Embedded, None));
+        // 旧代次回流 → 拒绝。
+        let mut svc4 = loaded_service();
+        let stale = envelope_encode(&encode(&signed_bundle(control_write_payload(1), 2))).unwrap();
+        let (source4, err4) = svc4.load_disk_active(&stale);
+        assert_eq!(source4, ConfigSource::Embedded);
+        assert_eq!(err4, Some("disk-generation-stale"));
     }
 }

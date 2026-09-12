@@ -96,6 +96,7 @@ class Broker:
                 return out
 
     def route(self, topic, payload, pub_qos):
+        delivered = []
         for conn, filters in list(self.subs.items()):
             for filt, gqos in filters:
                 if filt == "#" or filt == topic or (
@@ -115,11 +116,14 @@ class Broker:
                     pkt = bytes([hdr]) + self.remaining_len(len(pkt_body)) + pkt_body
                     try:
                         conn.sendall(pkt)
+                        delivered.append(topic)
                         if q > 0:
                             self.inflight.setdefault(conn, []).append((pid, pkt))
                     except OSError:
                         pass
                     break
+        if delivered:
+            self.log("MGT-DELIVERED", topic=topic, conns=len(delivered))
 
     _pid = [0]
 
@@ -171,6 +175,10 @@ class Broker:
                 if qos > 0:
                     conn.sendall(bytes([0x40, 0x02]) + pid.to_bytes(2, "big"))
                     self.log("PUBACK->publisher", conn=cid, pid=pid)
+            elif kind == 12:  # PINGREQ → PINGRESP（70.6 实弹：keepalive=15s
+                # 而无应答 = 设备每 15s 判死重连，下行投递全落死连接）。
+                conn.sendall(bytes([0xD0, 0x00]))
+                self.log("PINGRESP", conn=cid)
             elif kind == 4:  # PUBACK（订阅方确认）
                 pid = int.from_bytes(body[:2], "big")
                 self.inflight[conn] = [

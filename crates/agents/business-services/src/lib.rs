@@ -38,6 +38,7 @@ pub mod store_fact_sink;
 pub mod mgmt_history;
 /// 70.5（WP-70.5.6）：签名管理 principal 绑定（MGT1 v2——station 端
 /// 签发 token + ECDSA P-256 验签；wire 角色字节验签后才进授权）。
+pub mod mgmt_ops;
 pub mod mgmt_principal;
 pub mod mgmt_rpc;
 pub mod observability;

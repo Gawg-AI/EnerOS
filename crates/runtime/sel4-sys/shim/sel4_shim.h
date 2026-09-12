@@ -152,6 +152,7 @@ void eneros_sel4_send(seL4_CPtr dest, seL4_MessageInfo_t msg_info);
 seL4_MessageInfo_t eneros_sel4_recv(seL4_CPtr src, seL4_Word *sender);
 seL4_MessageInfo_t eneros_sel4_call(seL4_CPtr dest, seL4_MessageInfo_t msg_info);
 seL4_MessageInfo_t eneros_sel4_reply_recv(seL4_CPtr dest, seL4_MessageInfo_t msg_info, seL4_Word *sender);
+void eneros_sel4_reply(seL4_MessageInfo_t msg_info);
 
 /* MessageInfo packing (seL4_MessageInfo_new). */
 seL4_MessageInfo_t eneros_sel4_message_info_new(seL4_Word label,

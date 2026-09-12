@@ -121,6 +121,15 @@ pub enum DataRegion {
     AgentBusState,
     /// svc-observability 观测 outbox（64B tail + 1024B×16 槽）。
     ObsOutbox,
+    /// 70.6（WP-70.6.1）：svc-mgmt 持久操作账本（RegionStateStore，
+    /// [`MGMT_OPS_REGION_BYTES`]；幂等记录跨重启回查）。
+    MgmtOps,
+    /// 70.6（WP-70.6.4）：svc-config 盘上**active** 签名配置载体
+    ///（CRC 信封包络，[`CONFIG_REGION_BYTES`]；固件嵌入束的持久替代源）。
+    ConfigActive,
+    /// 70.6（WP-70.6.4）：svc-config **staged** 候选配置载体（同包络；
+    /// stage 不改 active——提交点 = ConfigActive 单区段写入）。
+    ConfigStage,
     /// OTA 数据槽 A（试验探针；[`SLOT_A_BASE_BLOCK`]）。
     OtaSlotA,
     /// OTA 数据槽 B（试验探针；[`SLOT_B_BASE_BLOCK`]）。
@@ -144,6 +153,12 @@ pub enum DataRegion {
 /// 节距排布——容量远超实际需求，节距即未来的扩容余量。
 pub const BUSINESS_BAND_BASE_BLOCK: u64 = 264;
 
+/// 70.6：svc-mgmt 操作账本区段长度（字节；[`DataRegion::MgmtOps`]）。
+pub const MGMT_OPS_REGION_BYTES: u64 = 8 * 512;
+/// 70.6：svc-config 配置载体区段长度（字节；active/stage 同长）。
+/// 现行编译签名束 ~7 KiB，上限 8 KiB；超限 = 编译产物超几何（阻断）。
+pub const CONFIG_REGION_BYTES: u64 = 16 * 512;
+
 impl DataRegion {
     /// 区段基址（512B 块号，ota-ab 常量口径）。
     pub const fn base_block_512(self) -> u64 {
@@ -156,6 +171,9 @@ impl DataRegion {
             DataRegion::CloudOutbox => BUSINESS_BAND_BASE_BLOCK + 32,
             DataRegion::AgentBusState => BUSINESS_BAND_BASE_BLOCK + 48,
             DataRegion::ObsOutbox => BUSINESS_BAND_BASE_BLOCK + 64,
+            DataRegion::MgmtOps => BUSINESS_BAND_BASE_BLOCK + 104,
+            DataRegion::ConfigActive => BUSINESS_BAND_BASE_BLOCK + 112,
+            DataRegion::ConfigStage => BUSINESS_BAND_BASE_BLOCK + 128,
             DataRegion::OtaSlotA => SLOT_A_BASE_BLOCK,
             DataRegion::OtaSlotB => SLOT_B_BASE_BLOCK,
             DataRegion::Tsdb => DATA_TSDB_BASE_BLOCK,
@@ -179,6 +197,8 @@ impl DataRegion {
             DataRegion::AgentBusState => 8,
             // 64B tail + 16×1024B 槽 = 16448B ≤ 40 块（20480B）。
             DataRegion::ObsOutbox => 40,
+            DataRegion::MgmtOps => MGMT_OPS_REGION_BYTES / 512,
+            DataRegion::ConfigActive | DataRegion::ConfigStage => CONFIG_REGION_BYTES / 512,
             DataRegion::OtaSlotA | DataRegion::OtaSlotB => PARTITION_BLOCKS,
             DataRegion::Tsdb => DATA_TSDB_BLOCKS,
             DataRegion::AuditChain => AUDIT_CHAIN_BLOCKS,
@@ -201,7 +221,7 @@ impl DataRegion {
         self.base_byte() + self.len_bytes()
     }
     /// 全部区段（媒体字节图遍历序——按基址升序；机器不重叠守卫的消费点）。
-    pub const ALL: [DataRegion; 16] = [
+    pub const ALL: [DataRegion; 19] = [
         DataRegion::Meta,
         DataRegion::IntentLog,
         DataRegion::TrialState,
@@ -210,6 +230,9 @@ impl DataRegion {
         DataRegion::CloudOutbox,
         DataRegion::AgentBusState,
         DataRegion::ObsOutbox,
+        DataRegion::MgmtOps,
+        DataRegion::ConfigActive,
+        DataRegion::ConfigStage,
         DataRegion::OtaSlotA,
         DataRegion::OtaSlotB,
         DataRegion::Tsdb,
@@ -1031,7 +1054,7 @@ mod spec_c_region_tests {
         use super::DataRegion;
         const DATA_DISK_BYTES: u64 = 32768 * 512; // 16 MiB
         let rs = DataRegion::ALL;
-        assert_eq!(rs.len(), 16, "新增区段必须入图并同步本测试");
+        assert_eq!(rs.len(), 19, "新增区段必须入图并同步本测试");
         for (i, a) in rs.iter().enumerate() {
             assert!(
                 a.end_byte() <= DATA_DISK_BYTES,
@@ -1057,7 +1080,7 @@ mod spec_c_region_tests {
     #[test]
     fn media_region_map_coordinates_locked() {
         use super::{DataRegion, DATA_DISK_BLOCKS, PARTITION_BLOCKS};
-        let expect: [(DataRegion, u64, u64); 16] = [
+        let expect: [(DataRegion, u64, u64); 19] = [
             (DataRegion::Meta, 4704 * 512, 512),
             (DataRegion::IntentLog, 0, 131_584),
             (DataRegion::TrialState, 135_168, 4_096),
@@ -1066,6 +1089,9 @@ mod spec_c_region_tests {
             (DataRegion::CloudOutbox, 151_552, 8_192),
             (DataRegion::AgentBusState, 159_744, 4_096),
             (DataRegion::ObsOutbox, 328 * 512, 20_480),
+            (DataRegion::MgmtOps, 368 * 512, 8 * 512),
+            (DataRegion::ConfigActive, 376 * 512, 16 * 512),
+            (DataRegion::ConfigStage, 392 * 512, 16 * 512),
             (DataRegion::OtaSlotA, 512 * 512, PARTITION_BLOCKS * 512),
             (DataRegion::OtaSlotB, 2560 * 512, PARTITION_BLOCKS * 512),
             (DataRegion::Tsdb, 8192 * 512, 16384 * 512),
@@ -1118,9 +1144,22 @@ mod spec_c_region_tests {
             DataRegion::CloudOutbox,
             DataRegion::AgentBusState,
             DataRegion::ObsOutbox,
+            DataRegion::MgmtOps,
+            DataRegion::ConfigActive,
+            DataRegion::ConfigStage,
         ] {
             assert_eq!(r.base_byte() % 4096, 0, "{r:?} 基址非 4KiB 对齐");
         }
+        // 70.6：业务区带新增区段承载核验——配置载体整段 = 区段全长（信封
+        // 写入按整段布局），账本区同径。
+        assert_eq!(
+            DataRegion::ConfigActive.len_bytes(),
+            super::CONFIG_REGION_BYTES
+        );
+        assert_eq!(
+            DataRegion::MgmtOps.len_bytes(),
+            super::MGMT_OPS_REGION_BYTES
+        );
         // A/B 槽恰落在意图日志/业务区带之后的保护带内，TSDB 之前。
         assert!(DataRegion::ObsOutbox.end_byte() <= DataRegion::OtaSlotA.base_byte());
         assert!(DataRegion::OtaSlotB.end_byte() <= DataRegion::Tsdb.base_byte());
