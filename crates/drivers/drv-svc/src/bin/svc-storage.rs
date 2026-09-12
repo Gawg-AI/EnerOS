@@ -78,8 +78,10 @@ pub extern "C" fn _start(
             // 70.7（WP-70.7.2）：启动盘（slot 0）受限安装面——DMA 池紧随
             // 数据盘池（连续性契约，spawn 校验连续）；MMIO = 同页 slot 0。
             let boot_dma = dma_phys + eneros_handover_abi::SVC_BOOT_DMA_PAGES as u64 * 4096;
+            // 启动盘 = slot 0（页基址 0x40000000）；X3 = slot 2 页内偏移
+            // +0x400（数据盘）——boot MMIO = X3 − 0x400。
             match eneros_drv_svc::blk_backend::BootSlotBackend::try_new_boot(
-                mmio_vaddr, boot_dma, boot_dma,
+                mmio_vaddr - 0x400, boot_dma, boot_dma,
             ) {
                 Ok(boot) => {
                     use eneros_drv_svc::block_cmd::InstallBackend as _;

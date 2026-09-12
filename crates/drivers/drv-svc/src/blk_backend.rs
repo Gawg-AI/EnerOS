@@ -272,6 +272,15 @@ impl BootSlotBackend {
             );
         }
         let mut inner = VirtioBlkBackend::try_new(boot_mmio_vaddr, boot_dma_vaddr, boot_dma_phys)?;
+        // REG-70.7 排查：init 后 status/capacity 复核（对照 dump）。
+        {
+            let status = unsafe { core::ptr::read_volatile((boot_mmio_vaddr + 0x070) as *const u32) };
+            let cap_lo = unsafe { core::ptr::read_volatile((boot_mmio_vaddr + 0x100) as *const u32) };
+            let cap_hi = unsafe { core::ptr::read_volatile((boot_mmio_vaddr + 0x104) as *const u32) };
+            eneros_runtime::println!(
+                "[svc-storage] BOOT-MMIO-DUMP post-init status=0x{status:08x} cap=0x{cap_hi:08x}{cap_lo:08x}"
+            );
+        }
         // BOOTCTRL 双副本读取（qemu-v1：分区基 lba 18432；副本 0/+8 lba）。
         let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
             eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
