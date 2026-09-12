@@ -18,6 +18,8 @@
 //!   NoopCache 合法（38 门禁：coherent → NoopCache；非一致拒绝——EL0
 //!   无 cache 维护指令权限，CVR-38-01）。
 
+extern crate alloc;
+
 use core::cell::RefCell;
 
 // SPEC-B/C（2026-08-28）：移交 vaddr 常量单一事实源 = abi/handover-abi
@@ -227,24 +229,49 @@ where
 
 /// 启动盘后端：第二 VirtioBlkDriver 实例（slot 0 GPT 产品盘）+ 非活动槽
 /// 写守卫。MMIO = 数据盘移交页 + slot 0 偏移 0（页覆盖 slot 0-7，零新增
-/// 映射）；DMA 池 = 数据盘池紧后连续 9 页（svc-storage 按 X5+9×4096 推导，
-/// spawn 侧连续性契约见 handover-abi）。
-pub struct BootSlotBackend {
-    inner:
-        VirtioBlkBackend<VolatileMmio, SvcDmaPool, eneros_storage::driver::virtio_blk::NoopCache>,
+/// 映射）；DMA 池 = spawn 独立连续分配的 9 页，基址经 **X8** 直传（root
+/// `initial_registers` 单源；禁止 "+N 页" 派生——REG-70.7-BOOT-BACKEND-
+/// ZEROSIZE 根因：first-fit 落位不保证紧邻，派生地址写 ghost 页 FAULT）。
+/// 泛型参数供宿主仿真测试注入（SimMmio/TestPool）；生产装配 =
+/// `BootSlotBackend<VolatileMmio, SvcDmaPool, NoopCache>`。
+pub struct BootSlotBackend<M: eneros_storage::driver::virtio_blk::VirtioMmio, P: DmaPool, C: eneros_storage::driver::virtio_blk::ArmCache>
+{
+    inner: VirtioBlkBackend<M, P, C>,
     guard: crate::boot_guard::BootWriteGuard,
     /// 启动盘 DMA 池基址（svc VSpace 1:1 虚拟 = 物理）。
     boot_dma_vaddr: u64,
+    /// 70.7（REG-70.7 run24/25 实弹）：BOOTCTRL 双副本**影子副本**——
+    /// init 期读取填充（init 期驱动 I/O 正常），运行期 bootctrl 读全走
+    /// 影子（运行期 boot 队列请求设备端不完成——挂死根因待 QEMU trace
+    /// 定位）；事务写成功后同步更新影子。
+    shadow: core::cell::RefCell<alloc::vec::Vec<u8>>,
 }
 
-impl BootSlotBackend {
+impl<M: eneros_storage::driver::virtio_blk::VirtioMmio, P: DmaPool, C: eneros_storage::driver::virtio_blk::ArmCache>
+    BootSlotBackend<M, P, C>
+{
     /// 初始化（svc-storage 启动时一次）：
     ///
     /// - `boot_mmio_vaddr` = 数据盘移交页基址（slot 0 偏移 0）；
-    /// - `boot_dma_vaddr/phys` = 数据盘 phys + 9×4096（spawn 连续性契约）。
+    /// - `boot_dma_vaddr/phys` = boot 池 1:1 基址（spawn X8 直传）。
     ///
     /// BOOTCTRL 双副本解析失败 → Err（守卫不可得 = 写面整体禁用；
     /// 每次安装会话由 svc-ota 经 BLK_BOOT_GUARD 重查）。
+    pub fn guard(&self) -> &crate::boot_guard::BootWriteGuard {
+        &self.guard
+    }
+
+    pub fn boot_dma_vaddr(&self) -> u64 {
+        self.boot_dma_vaddr
+    }
+}
+
+/// 生产装配专用构造（具体 Mmio/Pool 类型；宿主测试经泛型直接构造结构体）。
+impl BootSlotBackend<
+    VolatileMmio,
+    SvcDmaPool,
+    eneros_storage::driver::virtio_blk::NoopCache,
+> {
     pub fn try_new_boot(
         boot_mmio_vaddr: u64,
         boot_dma_vaddr: u64,
@@ -293,30 +320,35 @@ impl BootSlotBackend {
         let mut first = [0u8; 4096];
         let mut second = [0u8; 4096];
         use BlockBackend as _;
+        // inner 的 read 形参是**字节偏移**（数据盘历史契约——run15 实弹：
+        // 扇区 LBA 直传被 /512 换算成块 36，读回 GPT 区垃圾 → 双副本
+        // decode 失败 "bootctrl-both-invalid"）。boot 面单位契约 = 512B
+        // 扇区 LBA，此处与 BlockBackend::read（下方）为仅有的两个换算点。
         inner
-            .read(bc_lba, &mut first)
+            .read(bc_lba * 512, &mut first)
             .map_err(|_| "bootctrl-read")?;
         inner
-            .read(bc_lba + 8, &mut second)
+            .read((bc_lba + 8) * 512, &mut second)
             .map_err(|_| "bootctrl-read")?;
         let guard = crate::boot_guard::BootWriteGuard::resolve(&first, &second)?;
+        // 影子副本：init 期双副本（8 KiB）入 RAM——运行期 bootctrl 读
+        // 零驱动 I/O。
+        let mut shadow = alloc::vec![0u8; 8192];
+        shadow[..4096].copy_from_slice(&first);
+        shadow[4096..].copy_from_slice(&second);
         Ok(BootSlotBackend {
             inner,
             guard,
             boot_dma_vaddr,
+            shadow: core::cell::RefCell::new(shadow),
         })
     }
 
-    pub fn guard(&self) -> &crate::boot_guard::BootWriteGuard {
-        &self.guard
-    }
-
-    pub fn boot_dma_vaddr(&self) -> u64 {
-        self.boot_dma_vaddr
-    }
 }
 
-impl crate::block_cmd::InstallBackend for BootSlotBackend {
+impl<M: eneros_storage::driver::virtio_blk::VirtioMmio, P: DmaPool, C: eneros_storage::driver::virtio_blk::ArmCache> crate::block_cmd::InstallBackend
+    for BootSlotBackend<M, P, C>
+{
     fn install_ranges(&self) -> (u64, u64, u64, u64) {
         let g = &self.guard;
         let (bc_lba, bc_lbas) = eneros_ota_ab::boot_disk::lba_range_of(
@@ -326,13 +358,57 @@ impl crate::block_cmd::InstallBackend for BootSlotBackend {
     }
 }
 
-impl crate::block_cmd::BlockBackend for BootSlotBackend {
+impl<M: eneros_storage::driver::virtio_blk::VirtioMmio, P: DmaPool, C: eneros_storage::driver::virtio_blk::ArmCache> crate::block_cmd::BlockBackend
+    for BootSlotBackend<M, P, C>
+{
     fn read(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
-        crate::block_cmd::BlockBackend::read(&mut self.inner, lba, buf)
+        #[cfg(target_os = "none")]
+        eneros_runtime::println!("[svc-storage] boot read enter lba={lba} n={}", buf.len());
+        // boot 面单位契约 = **512B 扇区 LBA**（boot_disk::lba_range_of 同
+        // 口径）；inner read 形参 = 字节偏移——本处单点换算（try_new_boot
+        // 内部读为另一点，见上）。
+        let off = lba.checked_mul(512).ok_or(())?;
+        // BOOTCTRL 双副本区间 → 影子副本（运行期零驱动 I/O）。
+        let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
+            eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
+        );
+        let rec0 = bc_lba * 512;
+        let rec1 = (bc_lba + 8) * 512;
+        let shadow = self.shadow.borrow();
+        if off == rec0 && buf.len() == 4096 {
+            buf.copy_from_slice(&shadow[..4096]);
+            return Ok(());
+        }
+        if off == rec1 && buf.len() == 4096 {
+            buf.copy_from_slice(&shadow[4096..8192]);
+            return Ok(());
+        }
+        crate::block_cmd::BlockBackend::read(&mut self.inner, off, buf)
     }
-    fn write(&mut self, _lba: u64, _data: &[u8]) -> Result<(), ()> {
-        // 启动盘**无裸写**——一切写经 BLK_BOOT_INSTALL_WRITE 的守卫范围强制。
-        Err(())
+    fn write(&mut self, lba: u64, data: &[u8]) -> Result<(), ()> {
+        // 受限安装写：范围守卫在 handle_boot_cmd 已强制，此处**复核同一
+        // 不变量**（深度防御）——非活动槽 ∪ BOOTCTRL 之外零写。扇区→字节
+        // 换算后落 inner。
+        let (is, il, bs, bl) = crate::block_cmd::InstallBackend::install_ranges(self);
+        let end = lba.saturating_add(data.len() as u64);
+        let ok = (lba >= is && end <= is + il) || (lba >= bs && end <= bs + bl);
+        if !ok {
+            return Err(());
+        }
+        let off = lba.checked_mul(512).ok_or(())?;
+        crate::block_cmd::BlockBackend::write(&mut self.inner, off, data)?;
+        // 影子同步（仅 BOOTCTRL 双副本区间；写守卫已限定范围）。
+        let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
+            eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
+        );
+        let mut shadow = self.shadow.borrow_mut();
+        for (rec, base) in [(0usize, bc_lba * 512), (1usize, (bc_lba + 8) * 512)] {
+            if off == base && data.len() == 4096 {
+                let dst = if rec == 0 { 0 } else { 4096 };
+                shadow[dst..dst + 4096].copy_from_slice(data);
+            }
+        }
+        Ok(())
     }
     fn flush(&mut self) -> Result<(), ()> {
         Ok(())
@@ -544,5 +620,63 @@ mod tests {
     fn handover_missing_rejected() {
         assert!(VirtioBlkBackend::try_new(0, 0, 0).is_err());
         assert!(VirtioBlkBackend::try_new(0x4000_0000, 0x4001_0000, 0).is_err());
+    }
+
+    /// run15 实弹回归锁：boot 面以 **512B 扇区 LBA** 寻址（boot_disk
+    /// 同口径），inner 字节偏移换算只在 BootSlotBackend 边界。直传扇区
+    /// 值曾读回 GPT 区垃圾（"bootctrl-both-invalid"）。同时锁写守卫：
+    /// 非活动槽/BOOTCTRL 之外零写（活跃槽写拒绝）。
+    #[test]
+    fn boot_face_uses_sector_lba_and_guard_writes() {
+        // 40000 块 ≈ 20.5MB——须覆盖非活动槽 BOOT_B 首块（lba 36864）。
+        let blocks = 40000u64;
+        let mmio = SimMmio::new(blocks);
+        let pool = TestPool::new();
+        TEST_POOL.store(
+            pool.arena.as_ptr() as u64,
+            core::sync::atomic::Ordering::Relaxed,
+        );
+        let driver = VirtioBlkDriver::new(
+            mmio,
+            pool,
+            eneros_storage::driver::virtio_blk::NoopCache,
+            eneros_storage::StorageConfig::default(),
+        )
+        .expect("驱动初始化（仿真设备）");
+        let mut inner: VirtioBlkBackend<SimMmio, TestPool, _> = VirtioBlkBackend {
+            driver: RefCell::new(driver),
+            block_size: 512,
+        };
+        // 字节语义直写扇区 100（字节 51200）作地标。
+        inner.write(100 * 512, b"SECTOR100!").unwrap();
+
+        let record = eneros_boot_protocol::BootControl::factory([7u8; 16], 1, [7u8; 16])
+            .encode()
+            .unwrap();
+        let guard = crate::boot_guard::BootWriteGuard::resolve(&record, &record)
+            .expect("factory 记录可解析");
+        let mut boot = BootSlotBackend {
+            inner,
+            guard,
+            boot_dma_vaddr: 0,
+            shadow: core::cell::RefCell::new(alloc::vec![0u8; 8192]),
+        };
+        use crate::block_cmd::BlockBackend as _;
+        // 扇区 LBA 100 → 字节 51200（换算生效）；扇区 0 保持零。
+        let mut buf = [0u8; 10];
+        boot.read(100, &mut buf).unwrap();
+        assert_eq!(&buf, b"SECTOR100!");
+        let mut z = [0u8; 4];
+        boot.read(0, &mut z).unwrap();
+        assert!(z == [0u8; 4], "扇区 0 不得读到字节 0 偏移的地标");
+
+        // 写守卫：factory A=trial(15) 活跃 → 非活动 = BOOT_B；BOOT_B 内
+        // 写放行，活跃槽/BOOTCTRL 区外写拒绝。
+        let (is, il, bs_, bl_) = crate::block_cmd::InstallBackend::install_ranges(&boot);
+        assert!(il > 0 && bl_ > 0);
+        assert!(boot.write(bs_, b"g").is_ok(), "BOOTCTRL 内写放行");
+        assert!(boot.write(is, b"g").is_ok(), "非活动槽内写放行");
+        assert!(boot.write(0, b"x").is_err(), "活跃槽零写");
+        assert!(boot.write(bs_ + bl_, b"x").is_err(), "越 BOOTCTRL 尾零写");
     }
 }

@@ -52,10 +52,12 @@ pub const VIRTIO_MMIO_REGION_BASE: u64 = 0x0a00_0000;
 /// 70.7（WP-70.7.2）：svc-storage 启动盘（virtio **slot 0**，GPT 产品盘）
 /// DMA 池页数——与数据盘同规格（virtio-blk 9 页布局）。
 ///
-/// **连续性契约**：启动盘池由 spawn 在数据盘池分配之后**背靠背**连续
-/// 分配（同一 untyped 顺序切，物理连续）——svc-storage 侧启动盘 DMA
-/// 基址 = 数据盘 dma_phys + STORAGE_DMA_PAGES×4096（X5 推导，零新寄存器）。
-/// spawn 侧分配后校验连续性，断裂 → 启动后端诚实降级。
+/// **传递契约（REG-70.7-BOOT-BACKEND-ZEROSIZE 修订）**：启动盘池由 spawn
+/// **独立连续分配**（first-fit，与数据盘池无位置耦合），基址经
+/// `initial_registers` **X8** 直传 svc-storage（root `spawn.rs` 单源；
+/// 0 = 启动后端不可用诚实降级）。禁止 "+N 页" 派生——first-fit 落位
+/// 不保证紧邻（实测数据池 0x40a0c000、boot 池 0x40a16000，派生
+/// 0x40a15000 落 ghost 页 → svc-storage FAULT 无限重启）。
 pub const SVC_BOOT_DMA_PAGES: usize = 9;
 
 /// 启动盘 = virtio slot 0（MMIO = STORAGE_MMIO_VADDR + 0×0x200——数据盘

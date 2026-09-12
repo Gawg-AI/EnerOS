@@ -480,10 +480,13 @@ impl eneros_control_services::ControlServiceHandler for OtaHandler {
                 }
             }
             _ => {
-                // 70.7（WP-70.7.2/3）：BOOT 安装事务（0x0A 守卫/0x0B trial
-                // /0x0C 确认）——要求 CHECK-DESC 验签链先行武装。
-                if (0x0A..=0x0C).contains(&req[4]) {
-                    if !self.install_armed {
+                // 70.7（WP-70.7.2/3/5）：BOOT 安装事务（0x0A 守卫/0x0B
+                // trial/0x0C 确认/0x0D 取消 trial/0x0E 状态投影；root 为
+                // 唯一调用方——无 (*, svc-ota) 授予边）——要求 CHECK-DESC
+                // 验签链先行武装（0x0E 只读除外）。
+                if (0x0A..=0x0E).contains(&req[4]) {
+                    // 0x0E = 只读状态投影（无安装面写权，不要求武装门）。
+                    if req[4] != 0x0E && !self.install_armed {
                         resp.extend_from_slice(b"ERR:not-armed");
                         return false;
                     }
@@ -500,51 +503,6 @@ impl eneros_control_services::ControlServiceHandler for OtaHandler {
     }
 }
 
-/// 70.7（WP-70.7.2）：svc-storage BLK_BOOT_* 受限面的 BootBlockFace 适配
-/// （svc-ota 的安装控制器经既有 storage 块通道驱动；守卫在 svc-storage
-/// 侧二次强制——客户端侧不做范围判断）。
-#[cfg(target_os = "none")]
-struct BootFaceIo<'a>(
-    &'a mut eneros_business_services::block_io::BlockIo<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
-);
-
-#[cfg(target_os = "none")]
-impl<'a> eneros_business_services::ota_service::BootBlockFace for BootFaceIo<'a> {
-    fn read(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
-        let mut p = alloc::vec::Vec::with_capacity(12);
-        p.extend_from_slice(&lba.to_le_bytes());
-        p.extend_from_slice(&(buf.len() as u32).to_le_bytes());
-        let r = self
-            .0
-            .raw_command(eneros_agent_sdk::block_io::BLK_BOOT_READ, &p)
-            .map_err(|_| ())?;
-        let n = core::cmp::min(r.len(), buf.len());
-        buf[..n].copy_from_slice(&r[..n]);
-        if n != buf.len() {
-            return Err(());
-        }
-        Ok(())
-    }
-    fn write(&mut self, lba: u64, data: &[u8]) -> Result<(), ()> {
-        let mut p = alloc::vec::Vec::with_capacity(8 + data.len());
-        p.extend_from_slice(&lba.to_le_bytes());
-        p.extend_from_slice(data);
-        self.0
-            .raw_command(eneros_agent_sdk::block_io::BLK_BOOT_INSTALL_WRITE, &p)
-            .map(|_| ())
-            .map_err(|_| ())
-    }
-    fn flush(&mut self) -> Result<(), ()> {
-        self.0
-            .raw_command(eneros_agent_sdk::block_io::BLK_BOOT_FLUSH, &[])
-            .map(|_| ())
-            .map_err(|_| ())
-    }
-    fn install_ranges(&self) -> (u64, u64, u64, u64) {
-        (0, 0, 0, 0) // 守卫范围由 svc-storage 侧持有；本面只承载 I/O。
-    }
-}
-
 /// 70.7（WP-70.7.3）：BOOT 安装事务命令（0x0A 守卫查询 / 0x0B trial
 /// 事务 / 0x0C 启动确认；均要求 CHECK-DESC 验签链先行武装）。
 #[cfg(target_os = "none")]
@@ -555,10 +513,13 @@ fn handle_boot_install(
     io: &mut eneros_business_services::block_io::BlockIo<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
 ) -> bool {
     use eneros_agent_sdk::block_io::{
-        BLK_BOOT_FLUSH, BLK_BOOT_GUARD, BLK_BOOT_INSTALL_WRITE, BLK_BOOT_READ,
+        BLK_BOOT_CANCEL, BLK_BOOT_CONFIRM, BLK_BOOT_FLUSH, BLK_BOOT_GUARD,
+        BLK_BOOT_INSTALL_WRITE, BLK_BOOT_READ, BLK_BOOT_STATUS, BLK_BOOT_TRIAL,
     };
-    use eneros_business_services::ota_service::{BootBlockFace, BootInstall};
     let _ = (BLK_BOOT_READ, BLK_BOOT_INSTALL_WRITE, BLK_BOOT_FLUSH);
+    // 70.7.5（事务下沉）：事务臂 = **单次** guard 式 IPC 到 svc-storage
+    // 新子码（BLK_BOOT_TRIAL/CONFIRM/CANCEL/STATUS）——bootctrl 记录零
+    // IPC 搬运（run16-22 实弹：多调用拆分模式稳定挂死于第二次 seL4 Call）。
     match cmd {
         0x0A => {
             let p = alloc::vec::Vec::new();
@@ -584,27 +545,33 @@ fn handle_boot_install(
             }
         }
         0x0B => {
+            eneros_runtime::println!("[svc-ota] BOOT-TRIAL: begin len={}", req.len());
             if req.len() < 5 + 8 + 16 {
                 resp.extend_from_slice(b"ERR:len");
                 return false;
             }
-            let secver = u64::from_le_bytes(req[5..13].try_into().unwrap());
-            let mut image_id = [0u8; 16];
-            image_id.copy_from_slice(&req[13..29]);
-            let mut face = BootFaceIo(io);
-            let mut inst = eneros_business_services::ota_service::BootInstall::new(&mut face);
-            match inst.write_bootctrl_trial(secver, image_id) {
-                Ok(seq) => {
+            // 单次中继：svc-storage 侧事务（bootctrl 零 IPC 搬运）。
+            let mut p = alloc::vec![BLK_BOOT_TRIAL];
+            p.extend_from_slice(&req[5..13]);
+            p.extend_from_slice(&req[13..29]);
+            match io.raw_command(BLK_BOOT_TRIAL, &p) {
+                Ok(r) if r.len() == 8 => {
+                    let seq = u64::from_le_bytes(r[..8].try_into().unwrap());
                     eneros_runtime::println!(
-                        "[svc-ota] BOOT-TRIAL: tx committed seq={seq} target_secver={secver}"
+                        "[svc-ota] BOOT-TRIAL: tx committed seq={seq} target_secver={}",
+                        u64::from_le_bytes(req[5..13].try_into().unwrap())
                     );
                     resp.extend_from_slice(&seq.to_le_bytes());
                     true
                 }
-                Err(word) => {
-                    eneros_runtime::println!("[svc-ota] BOOT-TRIAL: rejected ({word})");
-                    resp.extend_from_slice(b"ERR:");
-                    resp.extend_from_slice(word.as_bytes());
+                Ok(_) => {
+                    eneros_runtime::println!("[svc-ota] BOOT-TRIAL: rejected (len)");
+                    resp.extend_from_slice(b"ERR:len");
+                    false
+                }
+                Err(_) => {
+                    eneros_runtime::println!("[svc-ota] BOOT-TRIAL: rejected (io)");
+                    resp.extend_from_slice(b"ERR:trial-io");
                     false
                 }
             }
@@ -615,28 +582,67 @@ fn handle_boot_install(
                 return false;
             }
             let slot_is_a = req[5] == 1;
-            let secver = u64::from_le_bytes(req[6..14].try_into().unwrap());
-            let mut image_id = [0u8; 16];
-            image_id.copy_from_slice(&req[14..30]);
-            let mut face = BootFaceIo(io);
-            let mut inst = eneros_business_services::ota_service::BootInstall::new(&mut face);
-            match inst.confirm_running(slot_is_a, secver, image_id) {
-                Ok(seq) => {
+            let mut p = alloc::vec![BLK_BOOT_CONFIRM];
+            p.push(req[5]);
+            p.extend_from_slice(&req[6..14]);
+            p.extend_from_slice(&req[14..30]);
+            match io.raw_command(BLK_BOOT_CONFIRM, &p) {
+                Ok(r) if r.len() == 8 => {
+                    let seq = u64::from_le_bytes(r[..8].try_into().unwrap());
                     eneros_runtime::println!(
-                        "[svc-ota] BOOT-CONFIRM: slot={} secver={secver} seq={seq}",
-                        if slot_is_a { "A" } else { "B" }
+                        "[svc-ota] BOOT-CONFIRM: slot={} secver={} seq={seq}",
+                        if slot_is_a { "A" } else { "B" },
+                        u64::from_le_bytes(req[6..14].try_into().unwrap())
                     );
                     resp.extend_from_slice(&seq.to_le_bytes());
                     true
                 }
-                Err(word) => {
-                    eneros_runtime::println!("[svc-ota] BOOT-CONFIRM: rejected ({word})");
-                    resp.extend_from_slice(b"ERR:");
-                    resp.extend_from_slice(word.as_bytes());
+                Ok(_) => {
+                    eneros_runtime::println!("[svc-ota] BOOT-CONFIRM: rejected (len)");
+                    resp.extend_from_slice(b"ERR:len");
+                    false
+                }
+                Err(_) => {
+                    eneros_runtime::println!("[svc-ota] BOOT-CONFIRM: rejected (io)");
+                    resp.extend_from_slice(b"ERR:confirm-io");
                     false
                 }
             }
         }
+        // 70.7.5：取消未确认 trial（mgmt update-rollback 后端）——单次
+        // BLK_BOOT_CANCEL 中继。floor 不动（未确认 = 无不可逆提交）。
+        0x0D => match io.raw_command(BLK_BOOT_CANCEL, &[]) {
+            Ok(r) if r.len() == 8 => {
+                let seq = u64::from_le_bytes(r[..8].try_into().unwrap());
+                eneros_runtime::println!("[svc-ota] BOOT-CANCEL: trial canceled seq={seq}");
+                resp.extend_from_slice(&seq.to_le_bytes());
+                true
+            }
+            Ok(_) => {
+                eneros_runtime::println!("[svc-ota] BOOT-CANCEL: rejected (len)");
+                resp.extend_from_slice(b"ERR:len");
+                false
+            }
+            Err(_) => {
+                eneros_runtime::println!("[svc-ota] BOOT-CANCEL: rejected (io)");
+                resp.extend_from_slice(b"ERR:cancel-io");
+                false
+            }
+        },
+        // 状态投影（只读）：单次 BLK_BOOT_STATUS 中继。
+        0x0E => match io.raw_command(BLK_BOOT_STATUS, &[]) {
+            Ok(r) => {
+                let line = core::str::from_utf8(&r).unwrap_or("?");
+                eneros_runtime::println!("[svc-ota] BOOT-STATUS: {line}");
+                resp.extend_from_slice(r.as_slice());
+                true
+            }
+            Err(_) => {
+                eneros_runtime::println!("[svc-ota] BOOT-STATUS: rejected (io)");
+                resp.extend_from_slice(b"ERR:status-io");
+                false
+            }
+        },
         _ => {
             resp.extend_from_slice(b"ERR:cmd");
             false
@@ -646,7 +652,9 @@ fn handle_boot_install(
 
 #[cfg(target_os = "none")]
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
+fn panic(info: &PanicInfo) -> ! {
+    // REG-70.7 排查：静默黑洞有声化（E 卷教训——无声 spin 掩盖死因）。
+    eneros_runtime::println!("[svc-ota] PANIC: {}", info);
     loop {
         core::hint::spin_loop();
     }

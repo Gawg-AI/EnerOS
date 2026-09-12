@@ -77,6 +77,8 @@ pub enum ProbeState {
     NegConflict,
     /// 70.7（WP-70.7.2/3）：BOOT 安装链（守卫查询 → trial 事务）。
     BootGuard,
+    /// 70.7 诊断二分：0x0E 只读状态查询（同通道小帧）。
+    BootStatus,
     BootTrial,
     /// 负例：维护外激活（宿主测试覆盖；占位步）。
     NegMaintRequired,
@@ -192,6 +194,23 @@ pub fn boot_trial_frame(secver: u64, image_id: [u8; 16]) -> alloc::vec::Vec<u8> 
     f
 }
 
+/// 70.7.5：更新状态投影帧（OTA1 0x0E 只读；MGT2 0x06 中继载荷）。
+pub fn update_status_frame() -> alloc::vec::Vec<u8> {
+    let mut f = alloc::vec::Vec::new();
+    f.extend_from_slice(b"OTA1");
+    f.push(0x0E);
+    f
+}
+
+/// 70.7.5：取消 trial 帧（OTA1 0x0D；MGT2 0x07 中继载荷）。
+pub fn update_rollback_frame() -> alloc::vec::Vec<u8> {
+    let mut f = alloc::vec::Vec::new();
+    f.extend_from_slice(b"OTA1");
+    f.push(0x0D);
+    f
+}
+
+
 #[cfg(target_os = "none")]
 pub mod driver {
     use alloc::format;
@@ -223,6 +242,21 @@ pub mod driver {
             epoch,
         );
         session.call("svc-mgmt", frame).is_ok()
+    }
+
+    /// chunked Call 并返回响应字节（70.7.5 MGT2 OTA 中继；`call_chunked`
+    /// 只取成败，本函数供状态/回退的响应回填）。None = 传输失败。
+    pub(crate) fn call_chunked_resp(
+        ep: u64,
+        frame: &[u8],
+        epoch: &mut u64,
+    ) -> Option<Vec<u8>> {
+        let mut session = eneros_agent_sdk::endpoint::ChunkedSession::bind_shared_const(
+            "root-mgt-relay",
+            ep,
+            epoch,
+        );
+        session.call("svc-ota", frame).ok()
     }
 
     /// 步进（主循环每 tick 调用；按 PROBE_STEP_TICKS 节流）。
@@ -439,6 +473,17 @@ pub mod driver {
                 eneros_runtime::println!(
                     "[eneros-root-task] MGT-PROBE: boot guard queried (step 14/13)"
                 );
+                advance!(ProbeState::BootStatus);
+                ProbeDirective::None
+            }
+            ProbeState::BootStatus => {
+                // 70.7.5：状态投影（0x0E 只读，root 中继）——trial 前的
+                // bootctrl 基线取证。
+                let f = update_status_frame();
+                let r = call_chunked(svc_ota_ep, &f, &mut epoch);
+                eneros_runtime::println!(
+                    "[eneros-root-task] MGT-PROBE: boot status probed ok={r}"
+                );
                 advance!(ProbeState::BootTrial);
                 ProbeDirective::None
             }
@@ -448,15 +493,18 @@ pub mod driver {
                 // 即 trial 目标已启动）→ 启动确认（successful=true）。
                 if boot_slot == Some(2) {
                     let f = boot_confirm_frame(false, capsule_secver, [3u8; 16]);
-                    let _ = call_chunked(svc_ota_ep, &f, &mut epoch);
+                    let r = call_chunked(svc_ota_ep, &f, &mut epoch);
                     eneros_runtime::println!(
-                        "[eneros-root-task] MGT-PROBE: boot confirm sent (B successful) (step 14b/13)"
+                        "[eneros-root-task] MGT-PROBE: boot confirm sent ok={r} (step 14b/13)"
                     );
                 } else {
                     let f = boot_trial_frame(2, [3u8; 16]);
-                    let _ = call_chunked(svc_ota_ep, &f, &mut epoch);
                     eneros_runtime::println!(
-                        "[eneros-root-task] MGT-PROBE: boot trial tx sent (step 14b/13)"
+                        "[eneros-root-task] MGT-PROBE: boot trial sending (slot={boot_slot:?})"
+                    );
+                    let r = call_chunked(svc_ota_ep, &f, &mut epoch);
+                    eneros_runtime::println!(
+                        "[eneros-root-task] MGT-PROBE: boot trial tx sent ok={r} (step 14b/13)"
                     );
                 }
                 advance!(ProbeState::Done);

@@ -37,6 +37,9 @@ pub mod block_cmd;
 /// （storage VirtioBlkDriver 适配 BlockBackend）+ 服务侧 SvcDmaPool。
 pub mod blk_backend;
 pub mod boot_guard;
+/// 70.7.3/5：BootControl 事务内核（boot 面所有者侧单源；事务随
+/// 后端下沉——REG-70.7 run16-22 实弹修订）。
+pub mod boot_install;
 
 /// 服务进程全局分配器（linked_list_allocator；runtime 本体无 alloc）。
 pub mod allocator;

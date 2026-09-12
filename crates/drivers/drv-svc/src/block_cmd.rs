@@ -32,6 +32,14 @@ pub const BLK_CMD_HEALTH: u8 = 0x04;
 /// → ST_UNAVAILABLE）。0x05 读全域放行；0x06 安装写（守卫强制：仅非活动
 /// BOOT 槽 ∪ BOOTCTRL）；0x07 flush；0x08 守卫范围查询。
 pub const BLK_BOOT_READ: u8 = 0x05;
+/// 70.7.5（事务下沉）：trial 事务（secver 8 + image_id 16 → seq 8）。
+pub const BLK_BOOT_TRIAL: u8 = 0x09;
+/// 70.7.5：启动确认（slot_is_a 1 + secver 8 + image_id 16 → seq 8）。
+pub const BLK_BOOT_CONFIRM: u8 = 0x0a;
+/// 70.7.5：取消未确认 trial（→ seq 8 ‖ word 文本）。
+pub const BLK_BOOT_CANCEL: u8 = 0x0b;
+/// 70.7.5：状态投影（→ [`crate::boot_install::format_update_status`] 文本）。
+pub const BLK_BOOT_STATUS: u8 = 0x0c;
 pub const BLK_BOOT_INSTALL_WRITE: u8 = 0x06;
 pub const BLK_BOOT_FLUSH: u8 = 0x07;
 pub const BLK_BOOT_GUARD: u8 = 0x08;
@@ -65,6 +73,9 @@ pub trait BlockBackend {
 ///
 /// fail-closed：无安装面 → ST_UNAVAILABLE；越界/跨域写 → ST_INVALID
 /// （守卫强制：仅非活动 BOOT 槽 ∪ BOOTCTRL；活跃槽/其他分区零写）。
+///
+/// 70.7.5 事务臂（TRIAL/CONFIRM/CANCEL/STATUS）：每次事务 = **单次**
+/// guard 式 IPC——bootctrl 记录零 IPC 搬运（REG-70.7 run16-22 实弹）。
 pub fn handle_boot_cmd(
     cmd: u8,
     req: &DriverRequest,
@@ -128,8 +139,81 @@ pub fn handle_boot_cmd(
             resp.payload_len = 40;
             resp.status = ST_OK;
         }
+        // 70.7.5（事务下沉）：bootctrl 事务单次 IPC 完成——bootctrl 记录
+        // 零 IPC 搬运（run16-22 实弹：事务拆多次 BLK_BOOT_READ/WRITE 时
+        // 同客户端第二次调用稳定挂死于 seL4 Call）。
+        BLK_BOOT_TRIAL => {
+            if req.payload_len < 25 {
+                resp.status = ST_INVALID;
+                return;
+            }
+            let secver = u64::from_le_bytes(req.payload[1..9].try_into().unwrap());
+            let mut image_id = [0u8; 16];
+            image_id.copy_from_slice(&req.payload[9..25]);
+            let mut inst = crate::boot_install::BootInstall::new(install);
+            match inst.write_bootctrl_trial(secver, image_id) {
+                Ok(seq) => {
+                    resp.payload[..8].copy_from_slice(&seq.to_le_bytes());
+                    resp.payload_len = 8;
+                    resp.status = ST_OK;
+                }
+                Err(word) => boot_word_reject(word, resp),
+            }
+        }
+        BLK_BOOT_CONFIRM => {
+            if req.payload_len < 26 {
+                resp.status = ST_INVALID;
+                return;
+            }
+            let slot_is_a = req.payload[1] == 1;
+            let secver = u64::from_le_bytes(req.payload[2..10].try_into().unwrap());
+            let mut image_id = [0u8; 16];
+            image_id.copy_from_slice(&req.payload[10..26]);
+            let mut inst = crate::boot_install::BootInstall::new(install);
+            match inst.confirm_running(slot_is_a, secver, image_id) {
+                Ok(seq) => {
+                    resp.payload[..8].copy_from_slice(&seq.to_le_bytes());
+                    resp.payload_len = 8;
+                    resp.status = ST_OK;
+                }
+                Err(word) => boot_word_reject(word, resp),
+            }
+        }
+        BLK_BOOT_CANCEL => {
+            let mut inst = crate::boot_install::BootInstall::new(install);
+            match inst.cancel_trial() {
+                Ok(seq) => {
+                    resp.payload[..8].copy_from_slice(&seq.to_le_bytes());
+                    resp.payload_len = 8;
+                    resp.status = ST_OK;
+                }
+                Err(word) => boot_word_reject(word, resp),
+            }
+        }
+        BLK_BOOT_STATUS => {
+            let mut inst = crate::boot_install::BootInstall::new(install);
+            match inst.read_current() {
+                Ok((c, _)) => {
+                    let line = crate::boot_install::format_update_status(&c);
+                    let n = core::cmp::min(line.len(), crate::runtime::PAYLOAD_CAP);
+                    resp.payload[..n].copy_from_slice(&line.as_bytes()[..n]);
+                    resp.payload_len = n as u16;
+                    resp.status = ST_OK;
+                }
+                Err(word) => boot_word_reject(word, resp),
+            }
+        }
         _ => resp.status = ST_INVALID,
     }
+}
+
+/// 事务拒绝（ST_INVALID + payload = word 文本；调用方据词形取证）。
+fn boot_word_reject(word: &'static str, resp: &mut DriverResponse) {
+    let w = word.as_bytes();
+    let n = core::cmp::min(w.len(), resp.payload.len());
+    resp.payload[..n].copy_from_slice(&w[..n]);
+    resp.payload_len = n as u16;
+    resp.status = ST_INVALID;
 }
 
 /// 处理一个块命令（子码在 `req.payload[0]`）。
@@ -263,14 +347,25 @@ impl<B: BlockBackend> super::runtime::DriverService for StorageService<B> {
         if req.payload_len >= 1
             && matches!(
                 req.payload[0],
-                BLK_BOOT_READ | BLK_BOOT_INSTALL_WRITE | BLK_BOOT_FLUSH | BLK_BOOT_GUARD
+                BLK_BOOT_READ
+                    | BLK_BOOT_INSTALL_WRITE
+                    | BLK_BOOT_FLUSH
+                    | BLK_BOOT_GUARD
+                    | BLK_BOOT_TRIAL
+                    | BLK_BOOT_CONFIRM
+                    | BLK_BOOT_CANCEL
+                    | BLK_BOOT_STATUS
             )
         {
             let Some(install) = self.install.as_mut() else {
                 resp.status = ST_UNAVAILABLE;
                 return;
             };
+            #[cfg(target_os = "none")]
+            eneros_runtime::println!("[svc-storage] handle boot sub=0x{:02x} enter", req.payload[0]);
             handle_boot_cmd(req.payload[0], req, install.as_mut(), resp);
+            #[cfg(target_os = "none")]
+            eneros_runtime::println!("[svc-storage] handle boot sub=0x{:02x} done", req.payload[0]);
             return;
         }
         let Some(backend) = self.backend.as_mut() else {

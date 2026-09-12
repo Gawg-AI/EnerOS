@@ -542,6 +542,15 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
     fn wait_used(&self) -> Result<u32, StorageError> {
         let used_va = self.va_of(0x1000);
         for _spin in 0..200_000_000u32 {
+            // 70.7（REG-70.7-BOOT-BACKEND run16-24 实弹）：周期性重打
+            // 门铃——notify 丢失类竞态（回读/写请求设备端从未完成，点位
+            // 随批内进度漂移）下兜底重触发设备取环；对已完成的请求是
+            // 幂等空操作。
+            if _spin != 0 && _spin % 1_000_000 == 0 {
+                let mut mmio = self.mmio.borrow_mut();
+                mmio.write_reg(VMMIO_QUEUE_SEL, 0);
+                mmio.write_reg(VMMIO_QUEUE_NOTIFY, 0);
+            }
             compiler_fence(Ordering::SeqCst);
             // 设备写 used ring（DMA）：轮询前使缓存失效。
             self.cache

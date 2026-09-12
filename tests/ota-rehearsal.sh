@@ -85,14 +85,19 @@ if grep -q '"verdict": "FAIL"' "${REJECT_JSON}"; then
   exit 1
 fi
 
-if command -v qemu-system-aarch64 > /dev/null 2>&1 && [ "${1:-}" != "--skip-qemu" ]; then
-    echo "[ota] QEMU 可用 —— 执行 QEMU 侧演练"
-    # 接入点：cargo xtask image update --from ... --to ... （差分生成）
-    #        cargo xtask run qemu-install ... （安装演练）
-    #        cargo xtask qa boot-reset ... （回滚校验）
-    echo "[ota] QEMU 演练：占位（差分/安装/回滚命令就绪后执行）"
+# 70.7.5（实体化）：QEMU 侧安装/切槽/确认演练 = 蓝图 70.7 出口门
+#（T1 安装事务：BLK_BOOT 守卫 + bootctrl 双副本 trial 写；T2 同盘重启：
+# boot-manager 切 B + 运行时确认 successful + floor 推进）。
+if [ "${1:-}" != "--skip-qemu" ] && [ -f tools/run70-vol7-gate.sh ]; then
+    echo "[ota] QEMU 演练：run70-vol7-gate（70.7 安装/切槽/确认/回退链）"
+    if bash tools/run70-vol7-gate.sh; then
+        echo "[ota] 演练 PASS（VOL70.7-GATE）"
+    else
+        echo "[ota] 演练 FAIL（VOL70.7-GATE）——判据见 evidence/70/70.7"
+        exit 1
+    fi
 else
-    echo "[ota] QEMU 不可用 —— 产出演练预案（真机/QEMU 就绪后执行）"
+    echo "[ota] QEMU 演练跳过（--skip-qemu 或 gate 脚本缺失）——预案见 plan.json"
 fi
 
 echo "[ota] 演练预案：${OUT_DIR}/ota-rehearsal-plan.json"

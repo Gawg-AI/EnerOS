@@ -13,6 +13,8 @@
 //! | 0x03 MAINT-ENTER | — | `1` ‖ `ERR:<原因>` |
 //! | 0x04 MAINT-EXIT | — | `1` ‖ `ERR:<原因>` |
 //! | 0x05 MAINT-QUERY | — | active(1) ‖ entered_tick(8) |
+//! | 0x06 UPDATE-STATUS | — | OTA1 0x0E 投影文本 ‖ `ERR:<原因>` |
+//! | 0x07 UPDATE-ROLLBACK | — | seq(8) ‖ `ERR:<原因>`（no-pending-trial 等） |
 //!
 //! 编解码为纯函数（host 可测）；目标 FFI 仅 [`RootMgmtClient`]。
 
@@ -31,6 +33,10 @@ pub const CMD_MAINT_ENTER: u8 = 0x03;
 pub const CMD_MAINT_EXIT: u8 = 0x04;
 /// 维护状态查询。
 pub const CMD_MAINT_QUERY: u8 = 0x05;
+/// 70.7.5：更新状态查询（root 中继 svc-ota OTA1 0x0E 只读投影）。
+pub const CMD_UPDATE_STATUS: u8 = 0x06;
+/// 70.7.5：回退（取消未确认 trial；root 中继 OTA1 0x0D）。
+pub const CMD_UPDATE_ROLLBACK: u8 = 0x07;
 
 /// 目标名定长（零填充；覆盖最长服务名 `svc-control-dispatch` 20B）。
 pub const TARGET_LEN: usize = 24;
@@ -74,6 +80,16 @@ pub fn encode_maint_exit() -> Vec<u8> {
 
 pub fn encode_maint_query() -> Vec<u8> {
     encode_request(CMD_MAINT_QUERY, &[])
+}
+
+/// 70.7.5：更新状态查询帧（root 中继 OTA1 0x0E；只读，维护态可用）。
+pub fn encode_update_status() -> Vec<u8> {
+    encode_request(CMD_UPDATE_STATUS, &[])
+}
+
+/// 70.7.5：更新回退帧（取消未确认 trial；root 中继 OTA1 0x0D）。
+pub fn encode_update_rollback() -> Vec<u8> {
+    encode_request(CMD_UPDATE_ROLLBACK, &[])
 }
 
 /// 解析请求帧（root 侧；返回 (cmd, arg)）。

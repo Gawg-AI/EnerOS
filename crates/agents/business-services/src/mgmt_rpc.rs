@@ -140,6 +140,12 @@ impl MgmtAction {
                 | MgmtAction::LogQuery
                 | MgmtAction::SupportBundleExport
                 | MgmtAction::HistoryQuery
+                // 70.7.5：update-check（只读投影）/ update-rollback（取消
+                // 未确认 trial）/ update-apply（无暂存包诚实拒绝）经
+                // MGT2 root 中继接实——词形退役 ota-channel-unbound。
+                | MgmtAction::UpdateCheck
+                | MgmtAction::UpdateApply
+                | MgmtAction::UpdateRollback
         )
     }
 }
@@ -741,17 +747,19 @@ mod tests {
         assert_eq!(ConfigGet.role_for(), "operator");
         assert_eq!(SupportBundleExport.role_for(), "operator");
         assert_eq!(AgentRestart.role_for(), "admin");
-        // 白名单面。
+        // 白名单面（70.7.5 起 OTA 三动作接实入列）。
         for a in [
             StatusQuery,
             AgentRestart,
             ConfigGet,
             LogQuery,
             SupportBundleExport,
+            UpdateCheck,
+            UpdateApply,
+            UpdateRollback,
         ] {
             assert!(a.in_whitelist());
         }
-        assert!(!UpdateApply.in_whitelist(), "更新链非 50.2 白名单");
     }
 
     /// 50：正例——viewer 可查询服务状态（只读）。

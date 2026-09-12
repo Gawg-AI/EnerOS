@@ -75,7 +75,7 @@ pub fn action_capability(action: &MgmtAction) -> ActionCap {
         MgmtAction::CrashDumpSymbolize => {
             unsupported("crash-symbolize:action-not-wired（无 dump 源）")
         }
-        MgmtAction::UpdateCheck => unsupported("update-check:70.7 接实（ota-channel-unbound）"),
+        MgmtAction::UpdateCheck => ro("bootctrl 状态投影（seq/floor/槽位；MGT2 root 中继）"),
         // ===== 只读诊断（operator）=====
         MgmtAction::ConfigGet => ro("signed config entry payload + digest/generation"),
         MgmtAction::SupportBundleExport => ActionCap {
@@ -94,8 +94,12 @@ pub fn action_capability(action: &MgmtAction) -> ActionCap {
             unsupported("agent-start:action-not-wired（root 无 spawn-at-runtime 面）")
         }
         MgmtAction::AgentStop => unsupported("agent-stop:action-not-wired（无停机排空裁决）"),
-        MgmtAction::UpdateApply => unsupported("update-apply:70.7 接实（签名安装事务）"),
-        MgmtAction::UpdateRollback => unsupported("update-rollback:70.7 接实（BootControl 回退）"),
+        MgmtAction::UpdateApply => {
+            side_effect("update-apply:no-staged-package（外部包注入依赖 MGMT-DOWNLINK，登记 Open）")
+        }
+        MgmtAction::UpdateRollback => {
+            side_effect("取消未确认 trial（BootControl 双副本+flush；MGT2 root 中继）")
+        }
         MgmtAction::BackupCreate => unsupported("backup-create:action-not-wired（无备份介质裁决）"),
         MgmtAction::Restore => unsupported("restore:action-not-wired（恢复介质未冻结）"),
         MgmtAction::Revoke => unsupported("revoke:action-not-wired（身份撤销面归信任链）"),
@@ -486,11 +490,13 @@ mod tests {
                 ActionCapability::Stream => n_stream += 1,
             }
         }
-        // 70.6 面貌钉扎：4 只读 + 1 流式 + 4 副作用 + 13 显式未接实
-        //（update-check 归 70.7 接实 = Unsupported）。
-        assert_eq!((n_ro, n_stream, n_side, n_unsup), (4, 1, 4, 13));
-        // 危险动作必须全部显式 Unsupported（不空成功）。
-        for a in [FactoryReset, SecureErase, Revoke, Restore, UpdateRollback] {
+        // 70.7.5 面貌钉扎：5 只读 + 1 流式 + 6 副作用 + 10 显式未接实
+        //（update-check=只读投影 / update-rollback=副作用 / update-apply=
+        // 副作用面-诚实无包拒绝；70.6 面貌为 4/1/4/13）。
+        assert_eq!((n_ro, n_stream, n_side, n_unsup), (5, 1, 6, 10));
+        // 破坏性动作语义保持：UpdateRollback 已接实但仍属强认证破坏面
+        //（is_destructive），其余危险动作显式 Unsupported（不空成功）。
+        for a in [FactoryReset, SecureErase, Revoke, Restore] {
             assert_eq!(
                 action_capability(&a).capability,
                 ActionCapability::Unsupported,

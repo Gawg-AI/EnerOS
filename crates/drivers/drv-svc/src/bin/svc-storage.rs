@@ -37,7 +37,15 @@ pub extern "C" fn _start(
     mmio_vaddr: u64,
     dma_vaddr: u64,
     dma_phys: u64,
+    wall_epoch: u64,
+    // 70.7（WP-70.7.2）：boot 池 1:1 基址（spawn 独立连续分配，**X7** 直传
+    // ——第 8 参；X7 对 storage 空闲，UART 移交集互斥；0 = 启动后端不可用
+    // 诚实降级）。不可用第 9 参：aarch64 C-ABI 第 9 参不经寄存器（run12/13
+    // 实弹恒 0）。禁止按 "数据池 + N 页" 派生——REG-70.7-BOOT-BACKEND-
+    // ZEROSIZE 根因：first-fit 落位不保证紧邻，派生地址写 ghost 页 FAULT。
+    boot_dma_base: u64,
 ) -> ! {
+    let _ = wall_epoch;
     // K2.3：设置 IPC buffer TLS（__sel4_ipc_buffer）——libsel4 的
     // ipc_recv/get_mr 依赖该指针（21-A 遗留缺陷修复先例：svc-hello）。
     eneros_sel4_sys::safe::set_ipc_buffer(ipc_buffer);
@@ -75,29 +83,33 @@ pub extern "C" fn _start(
             }
             let mut s = eneros_drv_svc::block_cmd::StorageService::new();
             s.attach(backend);
-            // 70.7（WP-70.7.2）：启动盘（slot 0）受限安装面——DMA 池紧随
-            // 数据盘池（连续性契约，spawn 校验连续）；MMIO = 同页 slot 0。
-            let boot_dma = dma_phys + eneros_handover_abi::SVC_BOOT_DMA_PAGES as u64 * 4096;
-            // 启动盘 = slot 0（页基址 0x40000000）；X3 = slot 2 页内偏移
-            // +0x400（数据盘）——boot MMIO = X3 − 0x400。
-            match eneros_drv_svc::blk_backend::BootSlotBackend::try_new_boot(
-                mmio_vaddr - 0x400,
-                boot_dma,
-                boot_dma,
-            ) {
-                Ok(boot) => {
-                    use eneros_drv_svc::block_cmd::InstallBackend as _;
-                    let (is, il, bs, bl) = boot.install_ranges();
-                    s.attach_install(alloc::boxed::Box::new(boot));
-                    eneros_runtime::println!(
-                        "[svc-storage] BOOT-INSTALL attached: inactive_lba={is} lbas={il} bootctrl_lba={bs}"
-                    );
+            // 70.7（WP-70.7.2）：启动盘（slot 0）受限安装面——boot 池基址
+            // 经 X8 直传（0=不可用）；MMIO = 同页 slot 0（数据盘页内偏移
+            // +0x400，boot = −0x400 回页基址）。
+            if boot_dma_base != 0 && boot_dma_base & 0xfff == 0 {
+                match eneros_drv_svc::blk_backend::BootSlotBackend::try_new_boot(
+                    mmio_vaddr - 0x400,
+                    boot_dma_base,
+                    boot_dma_base,
+                ) {
+                    Ok(boot) => {
+                        use eneros_drv_svc::block_cmd::InstallBackend as _;
+                        let (is, il, bs, bl) = boot.install_ranges();
+                        s.attach_install(alloc::boxed::Box::new(boot));
+                        eneros_runtime::println!(
+                            "[svc-storage] BOOT-INSTALL attached: inactive_lba={is} lbas={il} bootctrl_lba={bs}"
+                        );
+                    }
+                    Err(e) => {
+                        eneros_runtime::println!(
+                            "[svc-storage] BOOT-INSTALL unavailable ({e}) —— 安装面禁用（诚实降级）"
+                        );
+                    }
                 }
-                Err(e) => {
-                    eneros_runtime::println!(
-                        "[svc-storage] BOOT-INSTALL unavailable ({e}) —— 安装面禁用（诚实降级）"
-                    );
-                }
+            } else {
+                eneros_runtime::println!(
+                    "[svc-storage] BOOT-INSTALL unavailable (no-handover) —— 安装面禁用（诚实降级）"
+                );
             }
             eneros_runtime::println!(
                 "[svc-storage] real block backend attached (mmio=0x{:x} dma=0x{:x} phys=0x{:x})",
@@ -129,8 +141,10 @@ pub extern "C" fn _start(
 
 #[cfg(target_os = "none")]
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
+fn panic(info: &PanicInfo) -> ! {
     // fail-closed：panic 挂起，由 root/watchdog 复位（不伪装继续服务）。
+    // REG-70.7 排查：静默黑洞有声化（E 卷教训——无声 spin 掩盖死因）。
+    eneros_runtime::println!("[svc-storage] PANIC: {}", info);
     loop {
         core::hint::spin_loop();
     }

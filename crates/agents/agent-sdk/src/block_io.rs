@@ -14,7 +14,8 @@
 /// 70.7（WP-70.7.2）：BLK_BOOT_* 安装面子码 re-export（svc-ota 安装
 /// 控制器消费；常量单源 = drv-svc::block_cmd）。
 pub use eneros_drv_svc::block_cmd::{
-    BLK_BOOT_FLUSH, BLK_BOOT_GUARD, BLK_BOOT_INSTALL_WRITE, BLK_BOOT_READ,
+    BLK_BOOT_CANCEL, BLK_BOOT_CONFIRM, BLK_BOOT_FLUSH, BLK_BOOT_GUARD,
+    BLK_BOOT_INSTALL_WRITE, BLK_BOOT_READ, BLK_BOOT_STATUS, BLK_BOOT_TRIAL,
 };
 use eneros_drv_svc::block_cmd::{
     BLK_CMD_FLUSH, BLK_CMD_READ, BLK_CMD_WRITE, BLK_READ_MAX, BLK_WRITE_MAX,

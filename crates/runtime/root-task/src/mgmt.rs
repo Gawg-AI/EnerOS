@@ -43,6 +43,12 @@ pub enum MgmtAction {
     Restart(usize),
     /// 重启后等待 ready 重验（服务句柄索引；调用方 poll 其 ready ntfn）。
     AwaitReady(usize),
+    /// 70.7.5：OTA1 单程中继（rollback=false = 0x06 状态投影只读 /
+    /// true = 0x0D 取消 trial）。调用方以 OTA1 响应字节**回填
+    /// verdict.resp 后再回复**——空 resp 的本裁决不得直接回复。
+    /// 维护态均可用：维护闸暂停的是 ControlChain 写面，更新回退正是
+    /// 退出坏 trial 的恢复通道。
+    OtaRelay { rollback: bool },
 }
 
 /// 裁决结果：回复帧 + 可选动作。
@@ -244,6 +250,23 @@ impl RootMgmtState {
                 action: None,
                 word: None,
             },
+            // 70.7.5：更新状态/回退——root 中继 svc-ota OTA1（root 是
+            // OTA1 唯一可信调用方，无 (*, svc-ota) 授予边）。resp 由调用
+            // 方中继后回填（见 MgmtAction::OtaRelay 契约）。
+            wire::CMD_UPDATE_STATUS => MgmtVerdict {
+                resp: Vec::new(),
+                action: Some(MgmtAction::OtaRelay { rollback: false }),
+                word: Some(alloc::format!(
+                    "MGMT-UPDATE: status relay requested (tick={tick})"
+                )),
+            },
+            wire::CMD_UPDATE_ROLLBACK => MgmtVerdict {
+                resp: Vec::new(),
+                action: Some(MgmtAction::OtaRelay { rollback: true }),
+                word: Some(alloc::format!(
+                    "MGMT-UPDATE: rollback (cancel trial) requested (tick={tick})"
+                )),
+            },
             _ => self.reject("unknown-cmd"),
         }
     }
@@ -278,6 +301,53 @@ mod tests {
 
     fn state() -> RootMgmtState {
         RootMgmtState::new(SERVICES.len())
+    }
+
+    /// 70.7.5：UPDATE-STATUS 裁决 = OtaRelay{rollback:false} + 空 resp
+    ///（调用方中继 OTA1 0x0E 后回填再回复）。维护态可用（只读）。
+    #[test]
+    fn update_status_verdict_relays_readonly() {
+        let mut m = state();
+        m.maintenance = true; // 维护态不拦只读投影
+        let v = m.handle(
+            &wire::encode_update_status(),
+            10,
+            SERVICES,
+            true,
+            &all_ready,
+        );
+        assert_eq!(v.action, Some(MgmtAction::OtaRelay { rollback: false }));
+        assert!(v.resp.is_empty(), "resp 由调用方中继回填");
+    }
+
+    /// 70.7.5：UPDATE-ROLLBACK 裁决 = OtaRelay{rollback:true}。维护态
+    /// 可用——回退正是退出坏 trial 的恢复通道（维护闸只停 ControlChain）。
+    #[test]
+    fn update_rollback_verdict_relays_cancel() {
+        let mut m = state();
+        m.maintenance = true;
+        let v = m.handle(
+            &wire::encode_update_rollback(),
+            10,
+            SERVICES,
+            false,
+            &all_ready,
+        );
+        assert_eq!(v.action, Some(MgmtAction::OtaRelay { rollback: true }));
+        assert!(v.resp.is_empty());
+    }
+
+    /// 70.7.5：wire 往返（encode → parse）cmd 位保真。
+    #[test]
+    fn update_wire_roundtrip() {
+        for (f, cmd) in [
+            (wire::encode_update_status(), wire::CMD_UPDATE_STATUS),
+            (wire::encode_update_rollback(), wire::CMD_UPDATE_ROLLBACK),
+        ] {
+            let (c, arg) = wire::parse_request(&f).unwrap();
+            assert_eq!(c, cmd);
+            assert!(arg.is_empty());
+        }
     }
 
     #[test]

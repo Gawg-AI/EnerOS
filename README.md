@@ -263,9 +263,8 @@ use std::net::TcpStream;
 
 #### 管理面动作接线现状（RBAC/CLI 放行面 > 服务接立面）
 
-管理 RPC 面共 22 个动作（`MgmtAction`）；svc-mgmt 服务侧**接实 6 个**：status / agent-restart / config-get / log-query / support-bundle / history-query。RBAC（mgmt-api `ApiAction::permission()` 逐动作权限映射）与 mgmt CLI 按全量动作面放行，未接实动作由服务侧 fail-closed 拒绝（不空成功）：
+管理 RPC 面共 22 个动作（`MgmtAction`）；svc-mgmt 服务侧**接实 9 个**：status / agent-restart / config-get / log-query / support-bundle / history-query / update-check / update-apply / update-rollback（70.7.5：OTA 三动作经 MGT2 root 中继接实——root 是 OTA1 唯一可信调用方，无 `(*, svc-ota)` 授予边；update-check = bootctrl 状态投影，update-rollback = 取消未确认 trial，update-apply = 无暂存包诚实拒绝直至 MGMT-DOWNLINK 交付）。RBAC（mgmt-api `ApiAction::permission()` 逐动作权限映射）与 mgmt CLI 按全量动作面放行，未接实动作由服务侧 fail-closed 拒绝（不空成功）：
 
-- **OTA 三动作**（update-check / update-apply / update-rollback）→ `ota-channel-unbound:mgmt→ota-grant-missing`（mgmt→ota EIPC 授予边未建立；升格接通属独立侦察项，蓝图 60 §5 默认不做）；
 - **其余 13 个**（slo / agent-list / agent-start / agent-stop / config-set / crash-symbolize / maintenance-enter / maintenance-exit / backup-create / restore / revoke / factory-reset / secure-erase）→ 裸词形 `action-not-wired:<action>`。
 
 对未接实动作收到上述 Failed 词形是**预期行为**（明确原因词形），不是 bug；接线面以 svc-mgmt executor 白名单为单一事实源（蓝图 60 WP-60.2 登记，计数有单测钉住）。
@@ -523,7 +522,7 @@ use std::net::TcpStream;
 | LLM inference | local llama.cpp spike = NO-GO (`docs/ai/local-inference-spike.md`, same verdict as the L2-path row); `llama-cpp` feature reserved (off by default) | Rust wrapper layer (unwired) |
 | Cryptography | Ed25519/SHA-256/rustls(P-256) (product line); SM2/SM3/SM4 hand-rolled, experimental — no hardware-acceleration claims (D4) | Protocol adaptation |
 
-> **Management-plane action wiring**: only 6 of 22 mgmt RPC actions are service-wired; the rest fail closed with the word form `ota-channel-unbound:mgmt→ota-grant-missing` (OTA triple — the mgmt→ota EIPC grant edge is absent) or bare `action-not-wired:<action>`. Receiving those Failed word forms is expected behavior, not a bug — see the Chinese section 「管理面动作接线现状」 for the full register.
+> **Management-plane action wiring**: 9 of 22 mgmt RPC actions are service-wired (since 70.7.5 the update triple runs via the MGT2 root relay — `ota-channel-unbound` is retired); the rest fail closed with the bare word form `action-not-wired:<action>`. Receiving those Failed word forms is expected behavior, not a bug — see the Chinese section 「管理面动作接线现状」 for the full register.
 
 ---
 

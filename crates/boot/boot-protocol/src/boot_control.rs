@@ -325,6 +325,31 @@ pub fn resolve_boot_control(
                     });
                 }
             }
+            // 70.7（WP-70.7.3）：运行时事务采纳——受限安装器运行在 EL0，
+            // 无法提交 UEFI vars 锚；其 trial/confirm 写后磁盘双副本与锚
+            // 前向分叉。**双副本字节一致 + 前向单调**（sequence 严格高于
+            // 锚 && security_floor 不低于锚）的记录在本 boot 被采纳并
+            // **重锚**（needs_anchor_initialization → boot-manager 重写
+            // vars）。断电语义不受影响：运行时写序（高序列副本 → 低序列
+            // 副本 → flush）与 UEFI 事务写序（target → 锚 → mirror）下，
+            // 任一中断点都保留锚定旧副本（精确匹配优先命中）；「双新无锚」
+            // 仅在双写+flush 完成后出现。回滚攻击（重写双副本 seq ≤ 锚或
+            // floor < 锚）→ fail-closed AnchorMismatch。
+            if first == second {
+                if let Ok(control) = BootControl::decode(first) {
+                    if control.sequence > anchor.sequence
+                        && control.security_floor >= anchor.security_floor
+                    {
+                        let adopted = BootControlAnchor::new(&control, first)?;
+                        return Ok(ResolvedBootControl {
+                            control,
+                            source: BootControlCopy::First,
+                            anchor: adopted,
+                            needs_anchor_initialization: true,
+                        });
+                    }
+                }
+            }
             Err(BootControlError::AnchorMismatch)
         }
         None => {
@@ -797,6 +822,57 @@ mod tests {
                 .unwrap()
                 .control,
             next
+        );
+    }
+
+    #[test]
+    fn runtime_forward_divergence_is_adopted_and_reanchored() {
+        // 70.7：运行时受限安装器写双副本（无法提交 vars 锚）——下次 boot
+        // 采纳前向分叉并重锚（needs_anchor_initialization 复用重写路径）。
+        let control = BootControl::factory(id(1), 2, id(3));
+        let record = control.encode().unwrap();
+        let anchor = BootControlAnchor::new(&control, &record).unwrap();
+        let mut next = control;
+        next.sequence += 1;
+        next.slot_b = SlotState::trial(15, 3, 2, id(2));
+        let next_record = next.encode().unwrap();
+        let resolved = resolve_boot_control(&next_record, &next_record, Some(&anchor)).unwrap();
+        assert_eq!(resolved.control, next);
+        assert!(resolved.needs_anchor_initialization, "采纳即重锚");
+        assert_eq!(resolved.anchor.sequence, next.sequence);
+        assert_eq!(
+            resolved.anchor.record_digest,
+            BootControl::digest(&next_record)
+        );
+        // 重锚后精确匹配闭环（再次 boot 无需重写）。
+        let re = resolve_boot_control(&next_record, &next_record, Some(&resolved.anchor)).unwrap();
+        assert_eq!(re.control, next);
+        assert!(!re.needs_anchor_initialization);
+    }
+
+    #[test]
+    fn runtime_rollback_and_floor_regression_fail_closed() {
+        // 锚在 seq2；磁盘双副本被重写回 seq1（回滚攻击）→ fail-closed。
+        let base = BootControl::factory(id(1), 2, id(3));
+        let mut seq2 = base;
+        seq2.sequence = 2;
+        let seq2_record = seq2.encode().unwrap();
+        let anchor2 = BootControlAnchor::new(&seq2, &seq2_record).unwrap();
+        let mut seq1 = base;
+        seq1.sequence = 1;
+        let seq1_record = seq1.encode().unwrap();
+        assert_eq!(
+            resolve_boot_control(&seq1_record, &seq1_record, Some(&anchor2)),
+            Err(BootControlError::AnchorMismatch)
+        );
+        // floor 回退（seq 前进而 floor 倒退）→ fail-closed。
+        let mut regressed = seq2;
+        regressed.sequence = 3;
+        regressed.security_floor = 1;
+        let regressed_record = regressed.encode().unwrap();
+        assert_eq!(
+            resolve_boot_control(&regressed_record, &regressed_record, Some(&anchor2)),
+            Err(BootControlError::AnchorMismatch)
         );
     }
 

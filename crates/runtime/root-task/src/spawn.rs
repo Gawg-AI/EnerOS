@@ -797,10 +797,11 @@ pub struct StorageHandover {
     pub dma_vaddr: u64,
     /// DMA 池物理基址（X5；Q_PFN/描述符 addr 写此值）。
     pub dma_phys: u64,
-    /// 70.7（WP-70.7.2）：启动盘（slot 0）DMA 池 1:1 基址——紧随数据盘
-    /// 池连续分配（连续性契约）。None = 启动后端不可用（诚实降级）。
-    /// svc-storage 零新寄存器：基址 = dma_phys + STORAGE_DMA_PAGES×4096
-    /// 推导 + boot MMIO = X3 + 0（数据盘页已覆盖 slot 0）。
+    /// 70.7（WP-70.7.2）：启动盘（slot 0）DMA 池 1:1 基址——**独立连续
+    /// 分配**（与数据池无位置耦合），经 initial_registers **X7** 直传
+    /// svc-storage（None → X7=0 → 服务侧诚实降级；X7 对 storage 空闲，
+    /// UART 移交集互斥；X8=C-ABI 第 9 参不可达 run12/13 实弹）。禁止
+    /// "+N 页" 派生：first-fit 落位不保证紧邻（同登记根因）。
     pub boot_dma_vaddr: Option<u64>,
 }
 
@@ -996,7 +997,9 @@ mod proto_uart_slot_tests {
     /// 可能写的全部 X 寄存器（x0..x7）。aarch64 规范序 X 不连续（X7=索引
     /// 10）——SPEC-D 曾沿用 count=10，X7 被内核静默截断（QEMU 空表下
     /// X7 恒 0 恰好无症状，真机移交即断链）。本测试锁「X7 落在写入面内」；
-    /// 编译期另有 const 断言双保险（见 [`INITIAL_REG_COUNT`]）。
+    /// 编译期另有 const 断言双保险（见 [`INITIAL_REG_COUNT`]）。70.7 注：
+    /// svc-storage 的 boot 池基址复用 X7（UART 集互斥），不新增寄存器——
+    /// X8 为 C-ABI 第 9 参不可达（run12/13 实弹）。
     #[test]
     fn initial_reg_count_covers_every_handover_register() {
         for x in 0..=7usize {
@@ -1880,6 +1883,13 @@ pub fn sel4_spawn_services(
 /// 服务空闲——storage/net 与 uart 分属互斥服务集，X3-X5 三路分支不受影响；
 /// UART 移交服务仍保留通用分支的 X3=EIPC 掩码 / X4=心跳槽，因其同时消费
 /// svc-config 授予边拉取协议配置）。0 = 无串口柄 → 服务侧诚实降级壳。
+///
+/// 70.7（WP-70.7.2）：svc-storage 的 boot 池 1:1 基址走 **X7**（`Some(s)`
+/// 臂内 `s.boot_dma_vaddr`，None → 0 = 启动后端不可用诚实降级；X7 对
+/// storage 空闲——UART 移交集互斥）。禁止按 "数据池 + N 页" 派生——boot
+/// 池独立连续分配（REG-70.7-BOOT-BACKEND-ZEROSIZE 根因：first-fit 落位
+/// +9 页而非紧邻 +10 页，派生地址写 ghost 页 → svc-storage FAULT 无限
+/// 重启）。亦不可用 X8：aarch64 C-ABI 第 9 参不经寄存器（run12/13 实弹）。
 /// 初寄存器写入面 count（`tcb_write_registers` 第三参）：必须覆盖
 /// [`initial_registers`] 触达的最高**规范索引**。aarch64 规范序 X 不连续
 /// （X7 = `REG_X7` = 10，跟在 PC/SP/SPSR 之后），故 count = 11 而非 X 寄存器
@@ -1891,7 +1901,7 @@ pub(crate) const INITIAL_REG_COUNT: usize = 11;
 
 const _: () = assert!(
     INITIAL_REG_COUNT > eneros_sel4_sys::types::REG_X7,
-    "INITIAL_REG_COUNT 必须覆盖 X7（REG_X7）——UART 移交经 X7",
+    "INITIAL_REG_COUNT 必须覆盖 X7（REG_X7）——UART 移交与 70.7 boot 池基址经 X7",
 );
 
 #[cfg(target_os = "none")]
@@ -1914,11 +1924,16 @@ pub(crate) fn initial_registers(
     regs.set_x(1, buffer_vaddr);
     regs.set_x(2, ready_ntfn_slot);
     match storage {
-        // 41：svc-storage 设备移交——X3=MMIO vaddr, X4=DMA vaddr, X5=DMA phys。
+        // 41：svc-storage 设备移交——X3=MMIO vaddr, X4=DMA vaddr, X5=DMA phys；
+        // 70.7：X7=boot 池 1:1 基址（None→0，服务侧诚实降级）。X7 对
+        // svc-storage 空闲（UART 移交集与 storage 互斥）；**不可用 X8**——
+        // aarch64 C-ABI 第 9 参不走寄存器，_start 形参读不到（run12/13
+        // 实弹：X8 已写而服务侧恒 0）。
         Some(s) => {
             regs.set_x(3, s.mmio_vaddr);
             regs.set_x(4, s.dma_vaddr);
             regs.set_x(5, s.dma_phys);
+            regs.set_x(7, s.boot_dma_vaddr.unwrap_or(0));
         }
         // 43：svc-modbus-tcp 设备移交（virtio-net）——同 X3/X4/X5 布局。
         None => match net {
@@ -2220,9 +2235,8 @@ fn configure_service(
         }
         // b) DMA 池：数据盘 9 页 + 启动盘 9 页（70.7 WP-70.7.2）——
         //    各自独立连续分配（first-fit；物理位置互不要求）。启动池基址
-        //    经 **mailbox**（数据池第 9 页 offset 0 = "ENRBOOT2"+boot 基址
-        //    ——该页仅 slot4 status 首字节在用）传递给 svc-storage；
-        //    失败 → 打印 + 降级（无后端显式 Unavailable，不阻断其他服务）。
+        //    经 initial_registers **X8** 直传 svc-storage；失败 → 打印 +
+        //    降级（无后端显式 Unavailable，不阻断其他服务）。
         if let Some((untyped, _byte_off, phys_base)) =
             ctx.untyped.alloc_contiguous_pages(STORAGE_DMA_PAGES)
         {
@@ -2255,16 +2269,6 @@ fn configure_service(
                 dma_frames.push(frame);
             }
             if dma_ok {
-                // mailbox：启动盘池 1:1 基址写入数据池第 9 页 offset 0
-                //（该页仅 slot4 status 首字节在用——串行请求不触及）。
-                let mut mb: Vec<u8> = Vec::new();
-                mb.extend_from_slice(b"ENRBOOT2");
-                mb.extend_from_slice(&0u64.to_le_bytes()); // phys 由下行回填
-                if copy_window_bytes(ctx, dma_frames[STORAGE_DMA_PAGES - 1], &mb, rights).is_err() {
-                    crate::println!(
-                        "[eneros-root-task] BOOT-STORAGE-HANDOVER: mailbox write FAILED"
-                    );
-                }
                 // 1:1 映射数据池。
                 let perm = VmPermissions::RW_NX;
                 for (k, frame) in dma_frames.into_iter().enumerate() {
@@ -2291,7 +2295,7 @@ fn configure_service(
                     STORAGE_DMA_PAGES
                 );
                 let mmio_vaddr = STORAGE_MMIO_VADDR + STORAGE_MMIO_SLOT * STORAGE_MMIO_SLOT_STRIDE;
-                // 70.7：启动盘池独立分配（任意物理位置——mailbox 传基址）。
+                // 70.7：启动盘池独立分配（任意物理位置——X8 传基址）。
                 let mut boot_dma_vaddr: Option<u64> = None;
                 if let Some((untyped_b, _off_b, boot_phys_base)) = ctx
                     .untyped
@@ -2518,19 +2522,6 @@ fn configure_service(
                 dma_frames.push(frame);
             }
             if dma_ok {
-                // 70.7（WP-70.7.2）：启动盘 mailbox——magic + 启动盘池 1:1
-                // 基址写入数据池第 9 页（驱动串行请求下仅 slot0 链在用，
-                // 第 9 页除 slot4 status 首字节外全空——offset 16 起安全）。
-                // svc-storage 启动读同址判定启动后端可用性。
-                let boot_dma_phys_mb = phys_base + (STORAGE_DMA_PAGES as u64) * 4096;
-                let mut mb: Vec<u8> = Vec::new();
-                mb.extend_from_slice(b"ENRBOOT2");
-                mb.extend_from_slice(&boot_dma_phys_mb.to_le_bytes());
-                if copy_window_bytes(ctx, dma_frames[8], &mb, rights).is_err() {
-                    crate::println!(
-                        "[eneros-root-task] BOOT-STORAGE-HANDOVER: mailbox write FAILED —— 启动后端不可用"
-                    );
-                }
                 let perm = VmPermissions::RW_NX;
                 for (k, frame) in dma_frames.into_iter().enumerate() {
                     if map_frame_with_pagetables(
@@ -2713,7 +2704,8 @@ fn configure_service(
     // SAFETY: regs 指向有效 UserContext（栈上），count=INITIAL_REG_COUNT 写
     // pc/sp/spsr/x0..x7（规范索引 0..10；X5 供 svc-storage/net 设备移交，
     // 其他服务 X5=0；X6=SPEC-B 墙钟 epoch 秒，全部服务统一；X7=SPEC-D
-    // UART MMIO vaddr，仅 UART_HANDOVER_TABLE 登记服务非零）。
+    // UART MMIO vaddr（UART 集服务）或 70.7 svc-storage boot 池基址
+    //（storage 臂）——两集互斥）。
     tcb_write_registers(tcb, 0, INITIAL_REG_COUNT as u64, &regs).map_err(SpawnError::Sel4)?;
 
     // 10. 优先级（authority = root TCB cap）。

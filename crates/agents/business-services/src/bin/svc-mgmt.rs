@@ -24,16 +24,6 @@ extern crate eneros_business_services;
 static ALLOC: eneros_business_services::HeapAllocator =
     eneros_business_services::HeapAllocator::new();
 
-/// 蓝图60 WP-60.2：OTA 三动作在 mgmt 侧的降级词形——「服务未绑定」语义
-/// 保持（fail-closed 不空成功），补 EIPC 授予边缺失原因，与 13 个
-/// `action-not-wired` 裸词形区分层级（svc-mgmt→svc-ota 授予边未建立；
-/// 升格接通属独立侦察项，蓝图60 §5 默认不做）。宿主测试面经
-/// `cfg(any(target_os = "none", test))` 双侧可用。
-#[cfg(any(target_os = "none", test))]
-fn ota_channel_unbound_detail() -> &'static str {
-    "ota-channel-unbound:mgmt→ota-grant-missing"
-}
-
 #[cfg(target_os = "none")]
 #[no_mangle]
 pub extern "C" fn _start(
@@ -932,11 +922,76 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
                     }
                 }
             }
-            MgmtAction::UpdateCheck | MgmtAction::UpdateApply | MgmtAction::UpdateRollback => {
+            MgmtAction::UpdateCheck => {
                 self.requests_seen = self.requests_seen.saturating_add(1);
+                // 70.7.5：root 中继 OTA1 0x0E 只读投影（维护态可用）。
+                match self.root_call(&eneros_agent_sdk::root_mgmt::encode_update_status()) {
+                    Some(resp) if !resp.starts_with(b"ERR:") => {
+                        match core::str::from_utf8(&resp) {
+                            Ok(text) => ActionResult {
+                                status: RpcStatus::Completed,
+                                detail: alloc::format!("update-status:{text}"),
+                                payload: None,
+                            },
+                            Err(_) => ActionResult {
+                                status: RpcStatus::Failed,
+                                detail: "update-check:bad-frame".into(),
+                                payload: None,
+                            },
+                        }
+                    }
+                    Some(resp) => ActionResult {
+                        status: RpcStatus::Failed,
+                        detail: alloc::format!(
+                            "update-check:{}",
+                            core::str::from_utf8(&resp[4..]).unwrap_or("?")
+                        ),
+                        payload: None,
+                    },
+                    None => ActionResult {
+                        status: RpcStatus::Failed,
+                        detail: "update-check:root-unbound".into(),
+                        payload: None,
+                    },
+                }
+            }
+            MgmtAction::UpdateRollback => {
+                self.requests_seen = self.requests_seen.saturating_add(1);
+                // 70.7.5：root 中继 OTA1 0x0D 取消未确认 trial（floor 不动；
+                // 已确认更新不可回退 = 新更新事务）。
+                match self.root_call(&eneros_agent_sdk::root_mgmt::encode_update_rollback()) {
+                    Some(resp) if resp.len() == 8 => {
+                        let seq = u64::from_le_bytes(resp[..8].try_into().unwrap());
+                        ActionResult {
+                            status: RpcStatus::Completed,
+                            detail: alloc::format!("update-rollback:trial-canceled seq={seq}"),
+                            payload: None,
+                        }
+                    }
+                    Some(resp) if resp.starts_with(b"ERR:") => ActionResult {
+                        status: RpcStatus::Failed,
+                        detail: alloc::format!(
+                            "update-rollback:{}",
+                            core::str::from_utf8(&resp[4..]).unwrap_or("?")
+                        ),
+                        payload: None,
+                    },
+                    _ => ActionResult {
+                        status: RpcStatus::Failed,
+                        detail: "update-rollback:bad-frame".into(),
+                        payload: None,
+                    },
+                }
+            }
+            MgmtAction::UpdateApply => {
+                self.requests_seen = self.requests_seen.saturating_add(1);
+                // 70.7.5：安装事务后端（OTA1 0x0A-C）已交付；缺暂存包源
+                // ——外部包注入依赖 MGMT-DOWNLINK（REG-70.6-MGMT-DOWNLINK
+                // 登记 Open）。诚实拒绝，不冒称受理。
                 ActionResult {
                     status: RpcStatus::Failed,
-                    detail: ota_channel_unbound_detail().into(),
+                    detail: "update-apply:no-staged-package:downlink-Open(REG-70.6-MGMT-DOWNLINK)"
+                        .into(),
                     payload: None,
                 }
             }
@@ -1176,28 +1231,25 @@ fn main() {}
 mod ota_word_form_tests {
     use eneros_business_services::mgmt_rpc::MgmtAction;
 
-    use crate::ota_channel_unbound_detail;
-
-    /// 蓝图60 D60.2.2：OTA 三动作降级词形钉住——词形自带 EIPC 授予边
-    /// 缺失原因（mgmt→ota-grant-missing），与 `action-not-wired` 裸词形分层。
+    /// 70.7.5：`ota-channel-unbound:mgmt→ota-grant-missing` 词形**退役**——
+    /// 三动作经 MGT2 root 中继接实（root 是 OTA1 唯一可信调用方，无
+    /// `(*, svc-ota)` 授予边——agent-sdk 红灯锁保持）。本测试反锁退役：
+    /// 三动作必须在接实白名单内（路由进真实执行臂而非未接臂）。
     #[test]
-    fn ota_actions_report_channel_unbound_reason() {
-        let d = ota_channel_unbound_detail();
-        assert_eq!(d, "ota-channel-unbound:mgmt→ota-grant-missing");
-        assert!(d.starts_with("ota-channel-unbound:"), "{d}");
-        assert!(d.contains("mgmt→ota-grant-missing"), "{d}");
-        assert!(!d.contains("action-not-wired"), "{d}");
-        // 三动作可解析且不在接实白名单（保证路由进 OTA 降级分支而非
-        // 通用 action-not-wired 臂）。
+    fn ota_actions_are_wired_via_root_relay() {
         for raw in ["update-check", "update-apply", "update-rollback"] {
             let a = MgmtAction::parse(raw).expect("ota action must parse");
-            assert!(!a.in_whitelist(), "{raw} 不应在 svc-mgmt 接实白名单");
+            assert!(a.in_whitelist(), "{raw} 应在 svc-mgmt 接实白名单（70.7.5）");
         }
+        // 回退/应用为破坏性动作（强认证语义保持）。
+        assert!(MgmtAction::parse("update-rollback").unwrap().is_destructive());
+        assert!(MgmtAction::parse("update-apply").unwrap().is_destructive());
     }
 
-    /// 蓝图60 D60.2.3 披露清单计数钉住：22 动作 = 6 接实 + 3 OTA 未绑定
-    /// 以及 13 个 `action-not-wired` 裸词形未接（README「管理面动作接线
-    /// 现状」小节的数字以本测试为单一事实源）。
+    /// 蓝图60 D60.2.3 披露清单计数钉住（70.7.5 修订）：22 动作 = 9 接实
+    ///（原 6 + OTA 三动作经 MGT2 root 中继）+ 13 个 `action-not-wired`
+    /// 裸词形未接（README「管理面动作接线现状」小节的数字以本测试为
+    /// 单一事实源）。
     #[test]
     fn action_surface_counts_match_disclosure() {
         let all = [
@@ -1237,9 +1289,9 @@ mod ota_word_form_tests {
                 n_ota += 1;
             }
         }
-        assert_eq!(n_wired, 6, "接实白名单面");
-        assert_eq!(n_ota, 3, "OTA 三动作（ota-channel-unbound 词形）");
-        assert_eq!(22 - n_wired - n_ota, 13, "action-not-wired 裸词形面");
+        assert_eq!(n_wired, 9, "接实白名单面（70.7.5 起 OTA 三动作接实）");
+        assert_eq!(n_ota, 3, "OTA 三动作（已接实，保留名册哨兵）");
+        assert_eq!(22 - n_wired, 13, "action-not-wired 裸词形面");
         // 穷尽性哨兵（code-review 加固）：MgmtAction 增删变体时本 match
         // 编译失败，强制同步上方名册与 README 披露清单，防止新增动作
         // 静默落在披露面之外。

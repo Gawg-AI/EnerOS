@@ -287,6 +287,8 @@ struct Orchestration {
     /// 控制链采集序列 / epoch / 完成轮次。
     collect_seq: u64,
     chain_epoch: u64,
+    /// 70.7.5：MGT2 OTA 中继的 chunked 会话 epoch（独立于探针/链）。
+    ota_relay_epoch: u64,
     chain_rounds: u64,
     /// 50（WP-50.1）：可观测遥测上报 epoch。
     obs_epoch: u64,
@@ -321,6 +323,7 @@ impl Orchestration {
             irq_count: 0,
             collect_seq: 0,
             chain_epoch: 0,
+            ota_relay_epoch: 0,
             chain_rounds: 0,
             obs_epoch: 0,
             identity_push_errs: 0,
@@ -574,9 +577,15 @@ impl Orchestration {
                     .map(|s| s.lifecycle_state() == crate::supervisor::LifecycleState::Ready)
                     .unwrap_or(false)
         });
-        let verdict = self
+        let mut verdict = self
             .mgmt
             .handle(&req, self.tick, service_names, required_ready, &ready_of);
+        // 70.7.5：OTA1 单程中继（0x06 status / 0x07 rollback）——root 是
+        // OTA1 唯一可信调用方（无 (*, svc-ota) 授予边，agent-sdk 红灯锁）；
+        // OTA1 响应字节原样回填 MGT2 响应（失败 → ERR:ota-relay 不伪造）。
+        if let Some(crate::mgmt::MgmtAction::OtaRelay { rollback }) = verdict.action {
+            verdict.resp = self.ota_relay_step(handles, rollback);
+        }
         if let Some(word) = &verdict.word {
             eneros_runtime::println!("[eneros-root-task] {word}");
         }
@@ -592,6 +601,27 @@ impl Orchestration {
         // 动作（重启在回复之后执行——请求方先拿到 ack）。
         if let Some(crate::mgmt::MgmtAction::Restart(idx)) = verdict.action {
             apply_manual_restart(self, supervisor, handles, idx, self.tick);
+        }
+    }
+
+    /// 70.7.5：MGT2 OTA 中继（同步 chunked Call svc-ota；与探针同型）。
+    /// 响应字节原样返回；失败/空响应 → `ERR:ota-relay`（fail-closed）。
+    fn ota_relay_step(
+        &mut self,
+        handles: &[crate::spawn::SpawnedHandle],
+        rollback: bool,
+    ) -> alloc::vec::Vec<u8> {
+        let Some(h) = handles.iter().find(|h| h.name == "svc-ota") else {
+            return crate::root_mgmt_wire::err_resp("ota-unavailable");
+        };
+        let frame = if rollback {
+            crate::mgt_probe::update_rollback_frame()
+        } else {
+            crate::mgt_probe::update_status_frame()
+        };
+        match crate::mgt_probe::driver::call_chunked_resp(h.ep, &frame, &mut self.ota_relay_epoch) {
+            Some(bytes) if !bytes.is_empty() => bytes,
+            _ => crate::root_mgmt_wire::err_resp("ota-relay"),
         }
     }
 
@@ -1545,7 +1575,8 @@ fn restart_service(
     tcb_suspend(handle.tcb)?;
     // count=spawn::INITIAL_REG_COUNT：与 spawn 一致（X5 供 svc-storage/net
     // 设备移交，其他服务 X5=0；X6=SPEC-B 墙钟 epoch 秒；X7=SPEC-D UART
-    // MMIO vaddr——count 按 aarch64 规范序计，X7=索引 10 ⇒ count=11）。
+    // MMIO vaddr；X8=70.7 svc-storage boot 池基址——count 按 aarch64 规范序
+    // 计，X8=索引 11 ⇒ count=12）。
     tcb_write_registers(handle.tcb, 0, crate::spawn::INITIAL_REG_COUNT as u64, &regs)?;
     tcb_resume(handle.tcb)
 }
