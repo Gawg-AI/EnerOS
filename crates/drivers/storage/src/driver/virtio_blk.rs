@@ -562,7 +562,7 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
             let used = unsafe { &*(bytes[0x1000..0x2000].as_ptr() as *const VirtqUsed) };
             let used_idx = used.idx;
             #[cfg(feature = "diag")]
-            if _spin % 20_000_000 == 0 {
+            if _spin % 1_000_000 == 0 {
                 let b2 = self.pool.borrow();
                 let by = b2.as_bytes();
                 let av = unsafe { &*(by[0x0100..0x1100].as_ptr() as *const VirtqAvail) };

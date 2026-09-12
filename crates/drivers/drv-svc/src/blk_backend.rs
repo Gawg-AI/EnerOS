@@ -243,8 +243,9 @@ pub struct BootSlotBackend<M: eneros_storage::driver::virtio_blk::VirtioMmio, P:
     /// 70.7（REG-70.7 run24/25 实弹）：BOOTCTRL 双副本**影子副本**——
     /// init 期读取填充（init 期驱动 I/O 正常），运行期 bootctrl 读全走
     /// 影子（运行期 boot 队列请求设备端不完成——挂死根因待 QEMU trace
-    /// 定位）；事务写成功后同步更新影子。
-    shadow: core::cell::RefCell<alloc::vec::Vec<u8>>,
+    /// 定位）；事务写成功后同步更新影子。定长数组（零堆——处理链上
+    /// 禁 alloc）。
+    shadow: core::cell::RefCell<[u8; 8192]>,
 }
 
 impl<M: eneros_storage::driver::virtio_blk::VirtioMmio, P: DmaPool, C: eneros_storage::driver::virtio_blk::ArmCache>
@@ -277,6 +278,32 @@ impl BootSlotBackend<
         boot_dma_vaddr: u64,
         boot_dma_phys: u64,
     ) -> Result<Self, &'static str> {
+        // REG-70.7（run16-33 实弹定性）：bootctrl 读为**布局/时序敏感**
+        // 操作——ELF 布局漂移即可使 init 读超时/失败（50 二分实验同款
+        // 注记）。整轮重试（每轮 VirtioBlkBackend::try_new 内部 Status=0
+        // 起步 = device reset + 重配 + 重读），最多 3 轮。
+        let mut last_err = "bootctrl-read";
+        for attempt in 1..=3u8 {
+            match Self::try_new_boot_once(boot_mmio_vaddr, boot_dma_vaddr, boot_dma_phys, attempt)
+            {
+                Ok(boot) => return Ok(boot),
+                Err(e) => {
+                    last_err = e;
+                    eneros_runtime::println!(
+                        "[svc-storage] BOOT-INSTALL attempt {attempt} failed ({e}) —— 重试"
+                    );
+                }
+            }
+        }
+        Err(last_err)
+    }
+
+    fn try_new_boot_once(
+        boot_mmio_vaddr: u64,
+        boot_dma_vaddr: u64,
+        boot_dma_phys: u64,
+        attempt: u8,
+    ) -> Result<Self, &'static str> {
         // REG-70.7-BOOT-BACKEND-ZEROSIZE 排查：init 前寄存器 dump
         //（magic@0x000 / deviceID@0x008 / vendor@0x00c / status@0x070）。
         {
@@ -300,6 +327,7 @@ impl BootSlotBackend<
                 ],
             );
         }
+        let _ = attempt;
         let mut inner = VirtioBlkBackend::try_new(boot_mmio_vaddr, boot_dma_vaddr, boot_dma_phys)?;
         // REG-70.7 排查：init 后 status/capacity 复核（对照 dump）。
         {
@@ -333,7 +361,7 @@ impl BootSlotBackend<
         let guard = crate::boot_guard::BootWriteGuard::resolve(&first, &second)?;
         // 影子副本：init 期双副本（8 KiB）入 RAM——运行期 bootctrl 读
         // 零驱动 I/O。
-        let mut shadow = alloc::vec![0u8; 8192];
+        let mut shadow = [0u8; 8192];
         shadow[..4096].copy_from_slice(&first);
         shadow[4096..].copy_from_slice(&second);
         Ok(BootSlotBackend {
@@ -659,7 +687,7 @@ mod tests {
             inner,
             guard,
             boot_dma_vaddr: 0,
-            shadow: core::cell::RefCell::new(alloc::vec![0u8; 8192]),
+            shadow: core::cell::RefCell::new([0u8; 8192]),
         };
         use crate::block_cmd::BlockBackend as _;
         // 扇区 LBA 100 → 字节 51200（换算生效）；扇区 0 保持零。

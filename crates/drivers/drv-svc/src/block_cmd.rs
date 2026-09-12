@@ -194,11 +194,16 @@ pub fn handle_boot_cmd(
             let mut inst = crate::boot_install::BootInstall::new(install);
             match inst.read_current() {
                 Ok((c, _)) => {
-                    let line = crate::boot_install::format_update_status(&c);
-                    let n = core::cmp::min(line.len(), crate::runtime::PAYLOAD_CAP);
-                    resp.payload[..n].copy_from_slice(&line.as_bytes()[..n]);
-                    resp.payload_len = n as u16;
-                    resp.status = ST_OK;
+                    match crate::boot_install::format_update_status(
+                        &c,
+                        &mut resp.payload[..],
+                    ) {
+                        Ok(n) => {
+                            resp.payload_len = n as u16;
+                            resp.status = ST_OK;
+                        }
+                        Err(word) => boot_word_reject(word, resp),
+                    }
                 }
                 Err(word) => boot_word_reject(word, resp),
             }

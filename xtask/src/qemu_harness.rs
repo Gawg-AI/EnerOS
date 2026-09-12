@@ -84,6 +84,10 @@ struct RunOptions {
 enum ReadyMarker {
     RootHeartbeat,
     ProductReady,
+    /// 70.7：探针全序列完成（含 BOOT 守卫/ trial/确认步）——窗口关闭与
+    /// 探针尾部步骤赛跑的根除（REG-70.7-BOOT-DEV-IO-HANG 终局定性：
+    /// 非 virtio 设备缺陷，是 root-heartbeat 首记录 QMP quit 赛跑）。
+    ProbeComplete,
 }
 
 impl ReadyMarker {
@@ -91,8 +95,9 @@ impl ReadyMarker {
         match value {
             "root-heartbeat" => Ok(Self::RootHeartbeat),
             "product-ready" => Ok(Self::ProductReady),
+            "probe-complete" => Ok(Self::ProbeComplete),
             _ => Err(invalid(
-                "--ready-marker must be root-heartbeat or product-ready",
+                "--ready-marker must be root-heartbeat, product-ready or probe-complete",
             )),
         }
     }
@@ -104,6 +109,7 @@ impl ReadyMarker {
         match self {
             Self::RootHeartbeat => br#""test":"root-heartbeat","result":"PASS""#,
             Self::ProductReady => br#"required degraded: )"#,
+            Self::ProbeComplete => br#"MGT-PROBE: sequence complete"#,
         }
     }
 }

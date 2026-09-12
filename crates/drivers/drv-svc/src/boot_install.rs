@@ -48,8 +48,12 @@ impl<'a> BootInstall<'a> {
         // 双 4KiB 记录缓冲 + 驱动 4KiB 块缓冲叠加曾致静默冻结形态）。
         let mut rec = [0u8; BC_RECORD];
         self.face.read(bc_lba, &mut rec).map_err(|_| "read0")?;
+        #[cfg(target_os = "none")]
+        eneros_runtime::println!("[svc-storage] boot_install read0 ok");
         let d0 = BootControl::decode(&rec);
         self.face.read(bc_lba + 8, &mut rec).map_err(|_| "read1")?;
+        #[cfg(target_os = "none")]
+        eneros_runtime::println!("[svc-storage] boot_install read1 ok");
         let d1 = BootControl::decode(&rec);
         match (d0, d1) {
             (Ok(a), Ok(b)) => {
@@ -203,10 +207,34 @@ impl<'a> BootInstall<'a> {
 
 /// 70.7.5 `update-check` 状态投影（纯函数，host 锁格式）：单行文本，
 /// svc-storage BLK_BOOT_STATUS 产出、root MGT2 0x06 中继、svc-mgmt
-/// detail 直达站端。
-pub fn format_update_status(c: &BootControl) -> alloc::string::String {
-    let slot = |s: &eneros_boot_protocol::SlotState| {
-        alloc::format!(
+/// detail 直达站端。**零堆**：写入调用方定长缓冲（IPC 处理链上禁止
+/// alloc——REG-70.7 run24-26 冻结面收窄后仅余堆/回复两嫌疑，此处消除
+/// 堆嫌疑）。
+pub fn format_update_status(
+    c: &BootControl,
+    buf: &mut [u8],
+) -> Result<usize, &'static str> {
+    use core::fmt::Write as _;
+    struct W<'a> {
+        buf: &'a mut [u8],
+        n: usize,
+        overflow: bool,
+    }
+    impl core::fmt::Write for W<'_> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let b = s.as_bytes();
+            if self.n + b.len() > self.buf.len() {
+                self.overflow = true;
+                return Err(core::fmt::Error);
+            }
+            self.buf[self.n..self.n + b.len()].copy_from_slice(b);
+            self.n += b.len();
+            Ok(())
+        }
+    }
+    let slot = |w: &mut W, s: &eneros_boot_protocol::SlotState| {
+        write!(
+            w,
             "{}/{}/{}/{}",
             s.priority,
             if s.successful { 1 } else { 0 },
@@ -214,13 +242,15 @@ pub fn format_update_status(c: &BootControl) -> alloc::string::String {
             s.security_version
         )
     };
-    alloc::format!(
-        "seq={} floor={} A={} B={}",
-        c.sequence,
-        c.security_floor,
-        slot(&c.slot_a),
-        slot(&c.slot_b)
-    )
+    let mut w = W { buf, n: 0, overflow: false };
+    let _ = write!(w, "seq={} floor={} A=", c.sequence, c.security_floor);
+    let _ = slot(&mut w, &c.slot_a);
+    let _ = write!(w, " B=");
+    let _ = slot(&mut w, &c.slot_b);
+    if w.overflow {
+        return Err("status-overflow");
+    }
+    Ok(w.n)
 }
 
 /// 70.7 安装控制器宿主测试（mock boot 面；事务逻辑与介质布局域分离）。
@@ -404,7 +434,10 @@ mod boot_install_tests {
         let mut inst = BootInstall::new(&mut face);
         inst.write_bootctrl_trial(2, [3u8; 16]).expect("trial");
         let (c, _) = inst.read_current().expect("read");
-        let line = format_update_status(&c);
-        assert_eq!(line, "seq=2 floor=1 A=14/1/0/1 B=15/0/3/2");
+        let mut buf = [0u8; 64];
+        let n = format_update_status(&c, &mut buf).expect("format");
+        assert_eq!(&buf[..n], b"seq=2 floor=1 A=14/1/0/1 B=15/0/3/2");
+        // 溢出拒绝（fail-closed，不静默裁剪）。
+        assert_eq!(format_update_status(&c, &mut buf[..8]), Err("status-overflow"));
     }
 }
