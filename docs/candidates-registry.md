@@ -433,13 +433,21 @@ trial 臂读取该计数（`BOOT-TRIAL-PROBE pre_count=`）。实测链
   4 KiB 降到 **0x280（640 B）**；`BootSlotBackend::write` 仍显示 4 KiB 帧——
   **待复核**（可能来自 `write_bootctrl_trial` 的 `rec` 被内联，或是 fp
   推导的另一局部）；这是下一轮第一件事。
-- **理论状态**：**候选根因 + 已有改动**，尚未取得"修后 trial 完成"的实弹回执
-  （本轮后续窗口因环境限制未能跑完）。**不得据本段宣称已修**。
+- **栈溢出假设已被证伪（同会话内）**：把上述四处（外加 `boot_install` 的四个
+  `rec`，改为 `Box<[u8; 4096]>`）全部移出栈后重链接复核，`BootSlotBackend::write`
+  的 `sub sp, sp, #0x1, lsl 12` **仍在**——说明这个 4 KiB 帧不是来自这些作为
+  缓冲的局部数组（判据：改了来源、帧不变）。因此"栈溢出 ⇒ seL4 fault"这条
+  假设**不成立**，4 KiB 帧本身在 64 KiB 栈下也不足以解释停摆。
+  改动保留（大缓冲走堆本身是正确形态，且已消除三处真实的大栈帧），但
+  **不再声称它是根因**。
+- **理论状态**：**根因未定**；已排除的假设清单见 §5.1 第 1–11 条。
 
-**下一步（一次构建 + 一次窗口）**：①复核 `BootSlotBackend::write` 剩余 4 KiB
-帧的来源（`boot_install::write_bootctrl_trial` 的 `rec` 也改堆即可消除）；
-②重跑 `--ready-marker probe-complete` 窗，期望链延伸到 `write1`/`flush`/`done`
-与 `MGT-PROBE: sequence complete`。**原始定位（同会话前两轮）**：trial 臂加"进入/退出"两行日志或超时，再看是 storage 未回还是 ota 未收。**追加（运行期 QMP 观测，run F，2026-09-13 同会话）**：停滞时刻**四个 CPU 的 PC 全部落在 `idle_thread`**（`0xffffff8040011118`，`wfi` + 回跳自旋；用 `aarch64-none-elf-nm -n target/sel4/kernel.elf` 逐地址判定），PSTATE=EL1h ⇒ seL4 内**没有任何可运行线程**：这不是互等自旋型死锁，而是"所有 EL0 线程都阻塞在 IPC 上、内核无事可做"。嫌疑因此收窄为**某个 `Call` 的发方在等一个永不到来的 reply**（收方被停/被重启/卡在别的 `Call` 上），而非两方互等 | 本表 / 执行卡 §5.1 |
+**下一步（一次构建 + 一次窗口）**：①换一条判据看 4 KiB 帧的真实来源——
+在 prologue 之后插"内联汇编读 sp 并存入全局"，由 root 心跳读出，确认该帧是否
+真的越界（若 sp 距栈基 > 64 KiB 则假设复现，否则彻底排除）；②若排除，则回到
+`VirtioBlkBackend::write` 的**首条内存访问**（`self.block_size` 读）与
+`self.driver.borrow_mut()` 两条路径，用"在首条语句前落一个全局标记"的探针
+确认执行到哪一条；③重跑 `probe-complete` 窗验证。**原始定位（同会话前两轮）**：trial 臂加"进入/退出"两行日志或超时，再看是 storage 未回还是 ota 未收。**追加（运行期 QMP 观测，run F，2026-09-13 同会话）**：停滞时刻**四个 CPU 的 PC 全部落在 `idle_thread`**（`0xffffff8040011118`，`wfi` + 回跳自旋；用 `aarch64-none-elf-nm -n target/sel4/kernel.elf` 逐地址判定），PSTATE=EL1h ⇒ seL4 内**没有任何可运行线程**：这不是互等自旋型死锁，而是"所有 EL0 线程都阻塞在 IPC 上、内核无事可做"。嫌疑因此收窄为**某个 `Call` 的发方在等一个永不到来的 reply**（收方被停/被重启/卡在别的 `Call` 上），而非两方互等 | 本表 / 执行卡 §5.1 |
 | REG-70.12-DESC-DIGEST-VOLATILE | `crates/product/board-facts/src/digest.rs::description_digest`、`crates/runtime/root-task/src/board_select.rs`（`ENEROS_BOARD_DESCRIPTION_DIGEST`） | **Open（本会话实弹暴露的设计约束）**：同一镜像五次启动的运行时 DTB **字节非确定** ⇒ `desc_digest` 每次不同（实测 5 组：`0a8057b2…`/`9e077f5b…`/`ac882e03…`/`adb086f3…`/…）。因此**构建期常量绑定 `ENEROS_BOARD_DESCRIPTION_DIGEST` 会逐次误拒**（`platform-description-mismatch`）。可选修法：① 启动期算摘要、与已置备基线比对；② 对 DTB 做**规范化**（剔除 volatile 字段）后再摘要；③ 改为绑定 manifest/镜像身份而非描述字节。本会话仅登记（未选型） | 本表 / 执行卡 §5.1 |
 | REG-70.12-S7-AUDIT-FIXES | `crates/product/board-facts/*`、`xtask/src/{board,soak}.rs`、`tests/soak/*.sh` | **Done（S7 独立复查：23 条可用发现全部复现→修复→红测）**：P1×4 = ①产品能力覆盖只查 `verified`（13 族用仓库占位事实即可拿资格，`is_hardware_evidence` 是死代码）②`schema=v2` + `entries: []` 绕过全部账本判据 ③浸泡 PANIC 扫描遇非 UTF-8 整文件跳过 ④资格记录里的 run 从不过 soak 判据（qemu scope 的 manifest 也能支撑 72h 资格）。P2/P3 = 摘要漏缺失登记/版本、键侧无长度前缀（摘要撞车）、`record_digest`/账本身份从不参与判定、只给描述摘要的绑定被静默忽略、注册项不校验摘要与修订、`parse_size` 高位溢出、`looks_numeric` 漏分隔形态、未知 kind 静默退化、v2 可省 revision、chosen 报错指错族、`phy` 让 USB PHY 冒充网卡、RFC3339 接受非法日历且极年 overflow panic、零字节原始证据/绝对路径/`..` 逃逸/缺必需产物角色、协议覆盖可 60 秒 1 样本、影响映射只哈希顶层、matrix 读失败静默、shell 零字节算已采集、campaign 取 `values()` 第一个、空执行器检测可绕过 | 本表 / 执行卡 §5.2 |
 | REG-70.14-JUDGE-POLICY-OVERRIDE | `xtask/src/soak.rs::command_run_check`（`--min-hours` / `--max-heap-slope` / `--control-limit-ms` / `--max-heartbeat-gap-s`） | **Open（S7 审计 P2，登记不修）**：阈值可由调用方放宽且**不写入判据产物** ⇒ "放水后的 PASS"与"资格 PASS"字节不可区分。修法属判据策略签名设计面（谁有权放宽、如何留痕、是否双人签署），本会话只登记 | 本表 / 执行卡 §5.2 |

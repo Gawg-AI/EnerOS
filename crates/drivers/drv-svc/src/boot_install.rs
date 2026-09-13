@@ -44,11 +44,16 @@ impl<'a> BootInstall<'a> {
         );
         // 单缓冲复用（栈峰值 -4KB；REG-70.7 排查：IPC 处理链栈深贴线，
         // 双 4KiB 记录缓冲 + 驱动 4KiB 块缓冲叠加曾致静默冻结形态）。
-        let mut rec = [0u8; BC_RECORD];
-        self.face.read(bc_lba, &mut rec).map_err(|_| "read0")?;
-        let d0 = BootControl::decode(&rec);
-        self.face.read(bc_lba + 8, &mut rec).map_err(|_| "read1")?;
-        let d1 = BootControl::decode(&rec);
+        // 70.14（REG-70.12-PROBE-BOOT-TRIAL-STALL 候选根因）：记录缓冲走**堆**——
+        // 栈上 4 KiB 局部会在 boot 安装长链上叠加（实弹反汇编：`BootSlotBackend::write`
+        // 的 prologue 即 `sub sp,#0x1000`），逼近 svc-storage 的 64 KiB 栈上限。
+        let mut rec: alloc::boxed::Box<[u8; BC_RECORD]> = alloc::boxed::Box::new([0u8; BC_RECORD]);
+        self.face.read(bc_lba, &mut rec[..]).map_err(|_| "read0")?;
+        let d0 = BootControl::decode(&rec[..]);
+        self.face
+            .read(bc_lba + 8, &mut rec[..])
+            .map_err(|_| "read1")?;
+        let d1 = BootControl::decode(&rec[..]);
         match (d0, d1) {
             (Ok(a), Ok(b)) => {
                 if a.sequence >= b.sequence {
@@ -118,13 +123,16 @@ impl<'a> BootInstall<'a> {
         next.sequence = current.sequence + 1;
         // 单缓冲编码（栈预算：复用一棵 4 KiB 缓冲；`encode()` 按值返回会在
         // 本帧再叠一份 4 KiB 临时——70.7 目标侧 32 KiB 栈实弹 16 KiB 帧）。
-        let mut rec = [0u8; BC_RECORD];
+        // 70.14（REG-70.12-PROBE-BOOT-TRIAL-STALL 候选根因）：记录缓冲走**堆**——
+        // 栈上 4 KiB 局部会在 boot 安装长链上叠加（实弹反汇编：`BootSlotBackend::write`
+        // 的 prologue 即 `sub sp,#0x1000`），逼近 svc-storage 的 64 KiB 栈上限。
+        let mut rec: alloc::boxed::Box<[u8; BC_RECORD]> = alloc::boxed::Box::new([0u8; BC_RECORD]);
         next.encode_into(&mut rec).map_err(|_| "encode")?;
         // 写序：高序列副本先写（掉电后 resolve 仍取新块）；再写低副本。
         let (first, second) = if high_copy == 0 {
-            ((bc_lba, &rec), (bc_lba + 8, &rec))
+            ((bc_lba, &rec[..]), (bc_lba + 8, &rec[..]))
         } else {
-            ((bc_lba + 8, &rec), (bc_lba, &rec))
+            ((bc_lba + 8, &rec[..]), (bc_lba, &rec[..]))
         };
         // 70.14 插桩：事务三步各自可见（阻塞点定位：write0 / write1 / flush）。
         #[cfg(target_os = "none")]
@@ -176,13 +184,18 @@ impl<'a> BootInstall<'a> {
         next.sequence = current.sequence + 1;
         // 单缓冲编码（栈预算：复用一棵 4 KiB 缓冲；`encode()` 按值返回会在
         // 本帧再叠一份 4 KiB 临时——70.7 目标侧 32 KiB 栈实弹 16 KiB 帧）。
-        let mut rec = [0u8; BC_RECORD];
+        // 70.14（REG-70.12-PROBE-BOOT-TRIAL-STALL 候选根因）：记录缓冲走**堆**——
+        // 栈上 4 KiB 局部会在 boot 安装长链上叠加（实弹反汇编：`BootSlotBackend::write`
+        // 的 prologue 即 `sub sp,#0x1000`），逼近 svc-storage 的 64 KiB 栈上限。
+        let mut rec: alloc::boxed::Box<[u8; BC_RECORD]> = alloc::boxed::Box::new([0u8; BC_RECORD]);
         next.encode_into(&mut rec).map_err(|_| "encode")?;
         let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
             eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
         );
-        self.face.write(bc_lba, &rec).map_err(|_| "write0")?;
-        self.face.write(bc_lba + 8, &rec).map_err(|_| "write1")?;
+        self.face.write(bc_lba, &rec[..]).map_err(|_| "write0")?;
+        self.face
+            .write(bc_lba + 8, &rec[..])
+            .map_err(|_| "write1")?;
         self.face.flush().map_err(|_| "flush")?;
         Ok(next.sequence)
     }
@@ -221,13 +234,18 @@ impl<'a> BootInstall<'a> {
         next.sequence = current.sequence + 1;
         // 单缓冲编码（栈预算：复用一棵 4 KiB 缓冲；`encode()` 按值返回会在
         // 本帧再叠一份 4 KiB 临时——70.7 目标侧 32 KiB 栈实弹 16 KiB 帧）。
-        let mut rec = [0u8; BC_RECORD];
+        // 70.14（REG-70.12-PROBE-BOOT-TRIAL-STALL 候选根因）：记录缓冲走**堆**——
+        // 栈上 4 KiB 局部会在 boot 安装长链上叠加（实弹反汇编：`BootSlotBackend::write`
+        // 的 prologue 即 `sub sp,#0x1000`），逼近 svc-storage 的 64 KiB 栈上限。
+        let mut rec: alloc::boxed::Box<[u8; BC_RECORD]> = alloc::boxed::Box::new([0u8; BC_RECORD]);
         next.encode_into(&mut rec).map_err(|_| "encode")?;
         let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
             eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
         );
-        self.face.write(bc_lba, &rec).map_err(|_| "write0")?;
-        self.face.write(bc_lba + 8, &rec).map_err(|_| "write1")?;
+        self.face.write(bc_lba, &rec[..]).map_err(|_| "write0")?;
+        self.face
+            .write(bc_lba + 8, &rec[..])
+            .map_err(|_| "write1")?;
         self.face.flush().map_err(|_| "flush")?;
         Ok(next.sequence)
     }
