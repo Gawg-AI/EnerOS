@@ -443,9 +443,24 @@ impl<
             return Err(());
         }
         let off = lba.checked_mul(512).ok_or(())?;
+        // 70.14 插桩（第六轮）：把"console 路径阻塞"与"调用边界阻塞"分开。
+        // 第五轮已证：本行**打印**，紧随的驱动方法体首行**不打印**，且同窗其它
+        // 服务仍在打印（console 未死）、宿主 %CPU=0（非自旋）。故本行先自增一个
+        // 静态计数器再打印——串口无输出但计数器递增 ⇒ console 路径被阻塞；
+        // 计数器不递增 ⇒ 阻塞在打印之前的调用边界。
+        #[cfg(target_os = "none")]
+        {
+            crate::block_cmd::BOOT_WRITE_PRE_PROBES
+                .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            eneros_runtime::println!(
+                "[svc-storage] boot-write inner pre off={} len={}",
+                off,
+                data.len()
+            );
+        }
         crate::block_cmd::BlockBackend::write(&mut self.inner, off, data)?;
         #[cfg(target_os = "none")]
-        eneros_runtime::println!("[svc-storage] boot-write inner done lba={}", lba);
+        eneros_runtime::println!("[svc-storage] boot-write inner post lba={}", lba);
         // 影子同步（仅 BOOTCTRL 双副本区间；写守卫已限定范围）。
         //
         // 形状契约：**整条 4096B 记录落在副本基址** = 快速路径（生产唯一

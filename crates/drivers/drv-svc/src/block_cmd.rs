@@ -34,6 +34,14 @@ pub const BLK_CMD_HEALTH: u8 = 0x04;
 pub const BLK_BOOT_READ: u8 = 0x05;
 /// 70.7.5（事务下沉）：trial 事务（secver 8 + image_id 16 → seq 8）。
 pub const BLK_BOOT_TRIAL: u8 = 0x09;
+
+/// 70.14 探针（REG-70.12-PROBE-BOOT-TRIAL-STALL 第六轮定位）：boot 面写
+/// **进入驱动调用前**的自增计数。与串口行配对使用——串口无输出而计数递增
+/// ⇒ 阻塞在 console 打印路径；计数不递增 ⇒ 阻塞在该调用边界。
+/// 生产可读（`driver_service_main` 之外无副作用），零行为影响。
+#[cfg(target_os = "none")]
+pub static BOOT_WRITE_PRE_PROBES: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
 /// 70.7.5：启动确认（slot_is_a 1 + secver 8 + image_id 16 → seq 8）。
 pub const BLK_BOOT_CONFIRM: u8 = 0x0a;
 /// 70.7.5：取消未确认 trial（→ seq 8 ‖ word 文本）。
