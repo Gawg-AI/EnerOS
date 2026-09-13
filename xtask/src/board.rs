@@ -230,10 +230,14 @@ pub struct BoardFactFreezeV2View {
 ///
 /// 形态判定（先判再解析，不靠"猜字段"）：
 /// - 原始 JSON 无 `entries` → v1 记录：整体转为 v1 视图，`entries` 为空；
-/// - 有 `entries` → 严格解析 v2（未知字段即拒绝）。
+/// - 有 `entries`（或 `schema` 为 v2）→ 严格解析 v2（未知字段即拒绝）。
+///
+/// 审计（S7 F2）：形态判定必须看 **schema 字段**，不能只看"`entries` 键在不在"
+/// ——`schema=v2` 但 `entries: []` 的记录会走 v1 分支、绕过全部账本判据。
 pub fn read_freeze_view(path: &Path) -> DynResult<BoardFactFreezeV2View> {
     let raw = read_json::<serde_json::Value>(path)?;
-    let has_entries = raw.get("entries").is_some();
+    let schema_str = raw.get("schema").and_then(|x| x.as_str()).unwrap_or("");
+    let has_entries = raw.get("entries").is_some() || schema_str.ends_with(".v2");
     if !has_entries {
         let schema = raw
             .get("schema")
@@ -433,8 +437,15 @@ pub fn validate_freeze_v2_qualified(
         }
         if view.frozen_at.trim().is_empty() || view.source_commit.trim().is_empty() {
             // 冻结时刻与基线 commit 是"这份记录何时、基于哪个代码身份取得"的
-            // 最小可核对字段（v2 记录必须给）。
+            // 最小可核对字段。
             failures.push(format!("sku-fact-header-incomplete:{catalog_sku}"));
+        }
+        // 审计（S7 F2）红测：`schema=v2` 却给空 `entries` 不是"v1 兼容"，而是
+        // **声明了结构化账本却没内容**——旧实现从这里直接返回 ⇒ 全部账本判据
+        // （含 `ledger-no-facts`、逐条事实校验、能力覆盖）被绕过。
+        if view.schema.ends_with(".v2") {
+            failures.push(format!("sku-fact-v2-empty-entries:{catalog_sku}"));
+            failures.push(format!("ledger-no-facts:{catalog_sku}"));
         }
         return failures;
     }
@@ -447,6 +458,11 @@ pub fn validate_freeze_v2_qualified(
     if view.frozen_at.trim().is_empty() || view.source_commit.trim().is_empty() {
         failures.push(format!("sku-fact-header-incomplete:{catalog_sku}"));
     }
+    // 审计（S7 F11）：v2 记录必须给 `revision`——否则资格记录的修订交叉核对
+    // 会静默跳过（`board_revision` 与记录不符也测不出来）。
+    if view.revision.trim().is_empty() {
+        failures.push(format!("sku-fact-revision-missing:{catalog_sku}"));
+    }
     if view.missing.is_empty() && view.structured_missing.is_empty() {
         // 两份缺失清单都空 → 该组合**声明**全部事实已冻结；此时能力覆盖
         // 硬门必然生效（`qualified` 路径），此处仅作形态提示，避免"空清单
@@ -455,7 +471,16 @@ pub fn validate_freeze_v2_qualified(
     }
     let (facts, missing, mut extra) = extract_ledger_parts(view, catalog_sku);
     failures.append(&mut extra);
-    let kind = SkuKind::parse(catalog_kind).unwrap_or(SkuKind::Development);
+    // 审计（S7 F10）：未知 kind 旧实现静默退化为 Development（"Product" 大写
+    // 拼写错即可绕过产品硬门）——现在显式判负，同时保留 Development 兜底
+    // （catalog 侧另有 `sku-kind-invalid`，两道都不许静默）。
+    let kind = match SkuKind::parse(catalog_kind) {
+        Some(k) => k,
+        None => {
+            failures.push(format!("sku-kind-unknown:{catalog_sku}:{catalog_kind}"));
+            SkuKind::Development
+        }
+    };
     let ledger = match BoardLedger::new(
         &view.sku_id,
         &view.revision,
@@ -595,6 +620,9 @@ pub fn validate_bringup(
         }
         if !is_sha256(digest) {
             v.push(format!("bringup-artifact-digest-bad:{role}"));
+        } else if digest.chars().all(|c| c == '0') {
+            // 审计（S7 P2）：全零摘要是"占位"而不是实测产物摘要。
+            v.push(format!("bringup-artifact-digest-zero:{role}"));
         }
     }
     if !record.artifacts.contains_key("boot_chain") {
@@ -612,8 +640,12 @@ pub fn validate_bringup(
         v.push("bringup-raw-evidence-empty".to_owned());
     }
     for rel in &record.raw_evidence {
-        if !root.join(rel).is_file() {
+        let path = root.join(rel);
+        if !path.is_file() {
             v.push(format!("bringup-raw-evidence-missing:{rel}"));
+        } else if path.metadata().map(|m| m.len() == 0).unwrap_or(true) {
+            // 审计（S7 P2）：零字节"证据文件"不算证据。
+            v.push(format!("bringup-raw-evidence-empty:{rel}"));
         }
     }
     if v.is_empty() {
@@ -635,9 +667,25 @@ pub fn freeze_record_digest(root: &Path, sku_id: &str) -> DynResult<String> {
         let bytes = fs::read(&path)?;
         return Ok(format!("v1:{}", hex(&Sha256::digest(&bytes))));
     }
-    use eneros_board_facts::digest::ledger_digest;
-    let (facts, _missing, _failures) = extract_ledger_parts(&view, &view.sku_id);
-    Ok(ledger_digest(&view.sku_id, &view.revision, &facts))
+    // 审计（S7 F5）：摘要必须覆盖**缺失登记与账本版本**——否则"这一族还没
+    // 冻结"的状态变化不影响摘要，而 bring-up / 资格记录正是用它判"记录未变"。
+    // 审计（S7 F5b）：提取失败（未知族/未知来源等级）旧实现静默忽略，会让
+    // 摘要"看起来稳定"却漏掉非法条目——现在显式失败。
+    let (facts, missing, failures) = extract_ledger_parts(&view, &view.sku_id);
+    if !failures.is_empty() {
+        return Err(invalid(format!(
+            "freeze record {} unextractable: {}",
+            path.display(),
+            failures.join("; ")
+        )));
+    }
+    Ok(eneros_board_facts::digest::freeze_digest(
+        &view.sku_id,
+        &view.revision,
+        view.ledger_version,
+        &facts,
+        &missing,
+    ))
 }
 
 fn short(s: &str) -> String {
@@ -710,7 +758,22 @@ fn command_matrix(root: &Path, args: &[String]) -> DynResult<()> {
             })
             .unwrap_or_default();
         let freeze_rel = format!("product/skus/{sku_id}.json");
-        let freeze = read_freeze_view(&root.join(&freeze_rel)).ok();
+        // 审计（S7 P3）：读失败不得静默当"无事实"——能力表是发布面判据。
+        let freeze = match read_freeze_view(&root.join(&freeze_rel)) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                rows.push(serde_json::json!({
+                    "sku_id": sku_id,
+                    "kind": kind,
+                    "protocol": "",
+                    "driver_present": false,
+                    "state": "freeze-record-unreadable",
+                    "error": e.to_string(),
+                    "qualification": "unqualified",
+                }));
+                continue;
+            }
+        };
         let declared_missing: BTreeSet<String> = freeze
             .as_ref()
             .map(|f| {
@@ -871,6 +934,29 @@ pub fn validate_qualification(
             v.push(format!("qualify-run-manifest-missing:{}", r.manifest));
         } else {
             required_manifest = true;
+            // 审计（S7 P1）：资格记录里的 run **必须**过 soak 判据——旧实现
+            // 只看文件存在 ⇒ 一个被判负的 run（scope=qemu / 无序列号 / 时间
+            // 非法）也能支撑资格。这里按硬件口径复判，并与 run 绑定交叉核对。
+            let rel = r.manifest.clone();
+            match super::soak::load_and_validate_run(
+                root,
+                &rel,
+                &super::soak::SoakPolicy::QUALIFICATION,
+                true,
+            ) {
+                Ok(verdict) => {
+                    for failure in &verdict.violations {
+                        v.push(format!("qualify-run-judge:{failure}"));
+                    }
+                    if verdict.run_id != r.run_id {
+                        v.push(format!(
+                            "qualify-run-id-mismatch:{}!={}",
+                            r.run_id, verdict.run_id
+                        ));
+                    }
+                }
+                Err(e) => v.push(format!("qualify-run-unreadable:{rel}:{e}")),
+            }
         }
     }
     if !required_manifest {
@@ -956,7 +1042,7 @@ fn qualify_evidence_check(root: &Path, rel: &str, kind: &str) -> String {
 /// 的事实源不在本仓库（厂商手册、实板、外部对端），返回 `None` 并要求人工
 /// 裁决——**不得**默认"未变"（蓝图 §6：复验裁剪必须依据合同影响，不能用
 /// "只改几行"豁免）。
-fn current_impact_digest(root: &Path, i: &ImpactBinding) -> DynResult<Option<String>> {
+pub(crate) fn current_impact_digest(root: &Path, i: &ImpactBinding) -> DynResult<Option<String>> {
     match i.component.as_str() {
         "config" => {
             // 配置 = configs/ 下全部文件的排序字节摘要（可算且稳定）。
@@ -965,22 +1051,37 @@ fn current_impact_digest(root: &Path, i: &ImpactBinding) -> DynResult<Option<Str
                 return Ok(None);
             }
             let mut hasher = Sha256::new();
-            let mut files: Vec<PathBuf> = fs::read_dir(&dir)?
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .filter(|p| p.is_file())
-                .collect();
+            // 审计（S7 P2）：旧实现只看顶层文件 ⇒ `configs/kms-dev/`、
+            // `configs/platform-contracts/` 等子目录改动对复验不可见；读失败
+            // 也静默跳过（文件名入摘要、内容不读）。改为递归 + 读失败即错。
+            let mut files: Vec<PathBuf> = Vec::new();
+            let mut stack = vec![dir.clone()];
+            while let Some(d) = stack.pop() {
+                for entry in fs::read_dir(&d)?.filter_map(|e| e.ok()) {
+                    let p = entry.path();
+                    if p.is_dir() {
+                        stack.push(p);
+                    } else if p.is_file() {
+                        files.push(p);
+                    }
+                }
+            }
             files.sort();
             for p in files {
-                hasher.update(
-                    p.file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default()
-                        .as_bytes(),
-                );
-                if let Ok(bytes) = fs::read(&p) {
-                    hasher.update(&bytes);
-                }
+                let rel = p
+                    .strip_prefix(&dir)
+                    .unwrap_or(&p)
+                    .to_string_lossy()
+                    .to_string();
+                hasher.update(rel.as_bytes());
+                hasher.update([0u8]);
+                let bytes = fs::read(&p).map_err(|e| {
+                    invalid(format!(
+                        "config impact digest cannot read {}: {e}",
+                        p.display()
+                    ))
+                })?;
+                hasher.update(&bytes);
             }
             Ok(Some(hex(&hasher.finalize())))
         }
@@ -1082,6 +1183,30 @@ mod tests {
         })
     }
 
+    /// 夹具时间戳：2026-09-01T00:00:00Z + minutes（RFC3339 定形，供 soak 判据）。
+    fn rfc3339_at_minutes(minutes: u64) -> String {
+        let base = super::super::soak::parse_rfc3339_secs("2026-09-01T00:00:00Z").unwrap();
+        let t = base + (minutes as i64) * 60;
+        let days = t.div_euclid(86_400);
+        let rem = t.rem_euclid(86_400);
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let y = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let mo = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = if mo <= 2 { y + 1 } else { y };
+        format!(
+            "{y:04}-{mo:02}-{d:02}T{:02}:{:02}:{:02}Z",
+            rem / 3600,
+            (rem % 3600) / 60,
+            rem % 60
+        )
+    }
+
     fn view_of(root: &Path, sku: &str) -> BoardFactFreezeV2View {
         read_freeze_view(&root.join(format!("product/skus/{sku}.json"))).unwrap()
     }
@@ -1135,11 +1260,11 @@ mod tests {
             true,
         );
         for expected in [
-            "capability-unverified:storage:C4/C5",
-            "capability-unverified:trng:C10",
-            "capability-unverified:rollback-counter:C12",
-            "capability-unverified:bus:C8/C9",
-            "capability-unverified:network-phy:C6",
+            "capability-not-hardware-evidence:storage:C4/C5",
+            "capability-not-hardware-evidence:trng:C10",
+            "capability-not-hardware-evidence:rollback-counter:C12",
+            "capability-not-hardware-evidence:bus:C8/C9",
+            "capability-not-hardware-evidence:network-phy:C6",
         ] {
             assert!(
                 failures.iter().any(|f| f.starts_with(expected)),
@@ -1149,6 +1274,150 @@ mod tests {
         // 同一记录在 development 口径下可以只是 RAM/GIC 等基础族齐备 → 通过。
         let dev = validate_freeze_v2(&view_of(&root, "acme-board"), "acme-board", "development");
         assert!(dev.is_empty(), "unexpected: {dev:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 审计（S7 F2）红测：`schema=v2` + 空 `entries` 不得走 v1 兼容分支
+    /// （旧实现让全部账本判据被绕过）。
+    #[test]
+    fn v2_with_empty_entries_is_rejected() {
+        let root = tmp_root("v2empty");
+        let body = serde_json::json!({
+            "schema": "eneros.board-fact-freeze.v2",
+            "sku_id": "acme-board",
+            "frozen_at": "2026-09-01T00:00:00Z",
+            "source_commit": "deadbeef",
+            "revision": "rev-A",
+            "ledger_version": 2,
+            "entries": [],
+            "missing": [],
+            "structured_missing": [],
+        });
+        fs::write(
+            root.join("product/skus/acme-board.json"),
+            serde_json::to_vec_pretty(&body).unwrap(),
+        )
+        .unwrap();
+        let view = view_of(&root, "acme-board");
+        let failures = validate_freeze_v2(&view, "acme-board", "development");
+        assert!(
+            failures.contains(&"sku-fact-v2-empty-entries:acme-board".to_string()),
+            "{failures:?}"
+        );
+        assert!(
+            failures.contains(&"ledger-no-facts:acme-board".to_string()),
+            "{failures:?}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 审计（S7 F10/F11）红测：未知 kind 与缺 revision 都要显式判负。
+    #[test]
+    fn unknown_kind_and_missing_revision_are_reported() {
+        let root = tmp_root("kindrev");
+        write_freeze(
+            &root,
+            "acme",
+            serde_json::json!([entry("soc", "compatible", "acme,soc", "none", true)]),
+            serde_json::json!([]),
+        );
+        // 去掉 revision（写回后手工删除字段）。
+        let p = root.join("product/skus/acme.json");
+        let mut v: serde_json::Value = read_json(&p).unwrap();
+        v.as_object_mut().unwrap().remove("revision");
+        fs::write(&p, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+        let view = view_of(&root, "acme");
+        let failures = validate_freeze_v2(&view, "acme", "Product");
+        assert!(
+            failures.contains(&"sku-fact-revision-missing:acme:acme".to_string()),
+            "{failures:?}"
+        );
+        assert!(
+            failures.contains(&"sku-kind-unknown:acme:Product:acme".to_string()),
+            "{failures:?}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 审计（S7 P1）红测：资格记录里的 run 必须过 soak 判据（QEMU scope 的
+    /// manifest 不得支撑资格）。
+    #[test]
+    fn qualification_run_must_pass_the_soak_judge() {
+        let root = tmp_root("qualrun");
+        write_freeze(
+            &root,
+            "acme-board",
+            serde_json::json!([entry("soc", "compatible", "acme,soc", "none", true)]),
+            serde_json::json!([]),
+        );
+        fs::write(root.join("evidence/case.json"), b"{}").unwrap();
+        // 一份**会被 soak 判据判负**的记录：scope=qemu。
+        let run = serde_json::json!({
+            "schema": "eneros.soak-run.v1",
+            "run_id": "run-1",
+            "scenario": "hil",
+            "scope": "qemu",
+            "artifacts": {"root_task": "a".repeat(64), "boot_chain": "b".repeat(64)},
+            "device": {"sku_id": "acme-board", "board_revision": "rev-A",
+                       "serial": "SN-1", "firmware": "f"},
+            "rig": {"rig_id": "r", "instruments": ["i"], "power_channel": "p"},
+            "started_at": "2026-09-01T00:00:00Z",
+            "ended_at": "2026-09-04T00:00:00Z",
+            "heartbeats": ["2026-09-01T00:00:00Z", "2026-09-04T00:00:00Z"],
+            "protocol_coverage": [],
+            "metrics": [],
+            "judge_version": "x",
+            "raw_files": [],
+            "interruptions": [],
+        });
+        fs::write(
+            root.join("evidence/run-manifest.json"),
+            serde_json::to_vec_pretty(&run).unwrap(),
+        )
+        .unwrap();
+        let record = QualificationRecord {
+            schema: QUALIFICATION_SCHEMA.to_owned(),
+            candidate_id: "cand-1".to_owned(),
+            sku_id: "acme-board".to_owned(),
+            board_revision: "rev-A".to_owned(),
+            scope: "hw-hil".to_owned(),
+            required_cases: vec![CaseBinding {
+                case_id: "CORE-70-R11".to_owned(),
+                requirement: "CORE-70-R11".to_owned(),
+                evidence: "evidence/case.json".to_owned(),
+            }],
+            runs: vec![RunBinding {
+                run_id: "run-1".to_owned(),
+                scenario: "hil".to_owned(),
+                scope: "hw-hil".to_owned(),
+                started_at: "2026-09-01T00:00:00Z".to_owned(),
+                ended_at: "2026-09-04T00:00:00Z".to_owned(),
+                manifest: "evidence/run-manifest.json".to_owned(),
+            }],
+            impacts: vec![ImpactBinding {
+                component: "config".to_owned(),
+                digest: current_impact_digest(
+                    &root,
+                    &ImpactBinding {
+                        component: "config".to_owned(),
+                        digest: String::new(),
+                        scenarios: vec![],
+                    },
+                )
+                .unwrap()
+                .unwrap_or_else(|| "c".repeat(64)),
+                scenarios: vec!["hil".to_owned()],
+            }],
+            fact_record_digest: freeze_record_digest(&root, "acme-board").unwrap(),
+            unsupported: vec![],
+            limitations: vec![],
+        };
+        let v = validate_qualification(&root, &record, false).unwrap();
+        assert!(
+            v.iter()
+                .any(|x| x.starts_with("qualify-run-judge:run-scope-not-hardware")),
+            "QEMU scope 的 manifest 必须被判负：{v:?}"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1262,13 +1531,62 @@ mod tests {
         .unwrap();
         let mut hasher = Sha256::new();
         hasher.update(b"points.toml");
-        hasher.update(
-            b"a = 1
-",
-        );
-        let config_digest = hex(&hasher.finalize());
+        // 期望摘要取自**判据自身**（单源：夹具不得手抄公式，否则公式一改
+        // 夹具就变成"测旧公式"）。
+        let config_digest = current_impact_digest(
+            &root,
+            &ImpactBinding {
+                component: "config".to_owned(),
+                digest: String::new(),
+                scenarios: vec![],
+            },
+        )
+        .unwrap()
+        .expect("configs/ 存在即应可算");
+        // 一份**真实可判**的 72h 硬件口径记录（含原始文件与产物角色）。
         let manifest_rel = "evidence/run-manifest.json";
-        fs::write(root.join(manifest_rel), b"{}").unwrap();
+        let hb: Vec<String> = (0..=(72 * 6)).map(|i| rfc3339_at_minutes(i * 10)).collect();
+        let metrics: Vec<serde_json::Value> = (0..73)
+            .map(|i| {
+                serde_json::json!({
+                    "at": rfc3339_at_minutes(i * 60),
+                    "heap_bytes": 1_000_000,
+                    "dma_bytes": 250_000,
+                    "handles": 40,
+                    "flush_latency_ms_max": 12,
+                    "control_period_ms_max": 100,
+                })
+            })
+            .collect();
+        let run = serde_json::json!({
+            "schema": "eneros.soak-run.v1",
+            "run_id": "run-1",
+            "scenario": "hil-full-plan",
+            "scope": "hw-hil",
+            "artifacts": {"root_task": "a".repeat(64), "boot_chain": "b".repeat(64)},
+            "device": {"sku_id": "acme-board", "board_revision": "rev-A",
+                       "serial": "SN-1", "firmware": "uefi-1"},
+            "rig": {"rig_id": "rig-1", "instruments": ["power-meter"],
+                    "power_channel": "psu-1"},
+            "started_at": rfc3339_at_minutes(0),
+            "ended_at": rfc3339_at_minutes(72 * 60),
+            "heartbeats": hb,
+            "protocol_coverage": [
+                {"protocol": "modbus-tcp", "active_from": rfc3339_at_minutes(0),
+                 "active_to": rfc3339_at_minutes(72 * 60), "samples": 1000},
+                {"protocol": "iec104", "active_from": rfc3339_at_minutes(0),
+                 "active_to": rfc3339_at_minutes(72 * 60), "samples": 500}],
+            "metrics": metrics,
+            "judge_version": "fixture",
+            "raw_files": ["evidence/run-serial.log"],
+            "interruptions": [],
+        });
+        fs::write(root.join("evidence/run-serial.log"), b"boot ok\n").unwrap();
+        fs::write(
+            root.join(manifest_rel),
+            serde_json::to_vec_pretty(&run).unwrap(),
+        )
+        .unwrap();
         let mut record = QualificationRecord {
             schema: QUALIFICATION_SCHEMA.to_owned(),
             candidate_id: "cand-1".to_owned(),

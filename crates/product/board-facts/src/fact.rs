@@ -12,6 +12,9 @@ use crate::capability::Subsystem;
 /// 无单位事实（拓扑/标识/布尔类）的显式标记——不用空串，避免"忘了填"。
 pub const UNIT_NONE: &str = "none";
 
+/// 硬件实证依据串的最小长度（审计 S7 F8：单字符证据不算依据）。
+pub const MIN_HARDWARE_EVIDENCE_LEN: usize = 8;
+
 /// 事实来源等级。**决定该事实能否作为硬件实证依据**。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HardwareScope {
@@ -70,6 +73,8 @@ pub enum FactError {
     BadDigest,
     /// 宣称硬件实证但没有实测依据。
     HardwareWithoutEvidence,
+    /// 事实键形态非法（空/含分隔符或控制字符）——摘要域边界依赖键的唯一性。
+    BadKey,
 }
 
 impl FactError {
@@ -85,6 +90,7 @@ impl FactError {
             FactError::HardwareWithoutDigest => "fact-hardware-without-digest",
             FactError::BadDigest => "fact-bad-digest",
             FactError::HardwareWithoutEvidence => "fact-hardware-without-evidence",
+            FactError::BadKey => "fact-bad-key",
         }
     }
 }
@@ -145,6 +151,16 @@ impl Fact {
 
     /// 判据 —— 逐项自校验（顺序即报告顺序）。
     pub fn validate(&self) -> Result<(), FactError> {
+        // 键形态（审计 S7 F6）：键进入摘要的字段标识——含 `=`/`:`/换行/控制
+        // 字符会让字段边界产生歧义（两个不同记录撞同一摘要）。空键同理。
+        if self.key.trim().is_empty()
+            || self
+                .key
+                .chars()
+                .any(|c| c == '=' || c == ':' || c == '\n' || c == '\r' || c.is_control())
+        {
+            return Err(FactError::BadKey);
+        }
         if self.value.trim().is_empty() {
             return Err(FactError::EmptyValue);
         }
@@ -171,7 +187,9 @@ impl Fact {
             return Err(FactError::NumericValueWithoutUnit);
         }
         if self.hardware_scope.is_hardware_hard() {
-            if self.evidence.trim().is_empty() {
+            // 审计（S7 F8）：证据串必须**可核对**——单字符/空白填充不算依据
+            // （否则任意 64hex 摘要 + 一个字母即可宣称硬件实证）。
+            if self.evidence.trim().len() < MIN_HARDWARE_EVIDENCE_LEN {
                 return Err(FactError::HardwareWithoutEvidence);
             }
             match self.digest.as_deref() {
@@ -214,21 +232,32 @@ fn looks_blocked(text: &str) -> bool {
     MARKERS.iter().any(|m| text.contains(m))
 }
 
-/// 裸数字检测：纯数值（含 `0x` 前缀、小数、千分位）且无单位。
+/// 裸数字检测（含 `0x` 前缀、小数、千分位/下划线分隔、正负号）——这些
+/// 形态都是"量"，没有单位就不成立。
+///
+/// 审计（70.12 S7）修正：旧实现把 `_`/`,`/`+`/`-` 当"非数字"字符 → `"1_000"`
+/// `"1,000"` `"-5"` `"0x2800_1000"` 一律漏判。
 fn looks_numeric(value: &str) -> bool {
     let v = value.trim();
     if v.is_empty() {
         return false;
     }
+    let v = v
+        .strip_prefix('+')
+        .or_else(|| v.strip_prefix('-'))
+        .unwrap_or(v);
     let body = v.strip_prefix("0x").or_else(|| v.strip_prefix("0X"));
     match body {
-        Some(hex) => !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()),
+        Some(hex) => {
+            let cleaned: String = hex.chars().filter(|c| *c != '_').collect();
+            !cleaned.is_empty() && cleaned.chars().all(|c| c.is_ascii_hexdigit())
+        }
         None => {
             let mut seen_digit = false;
             for c in v.chars() {
                 if c.is_ascii_digit() {
                     seen_digit = true;
-                } else if c == '.' {
+                } else if c == '.' || c == '_' || c == ',' {
                 } else {
                     return false;
                 }

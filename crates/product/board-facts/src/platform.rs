@@ -125,6 +125,10 @@ pub enum PlatformVouchError {
     CoherencyWithoutFact { device: String },
     /// 账本未通过判据（构建期选择所依据的事实本身有问题）。
     LedgerNotValid(String),
+    /// 账本身份与选择不一致（选择的 SKU 与账本记录的 SKU 不同）。
+    LedgerIdentityMismatch { expected: String, actual: String },
+    /// 记录摘要与当前账本不符（记录已变 / 选错了记录）。
+    RecordDigestMismatch { expected: String, actual: String },
 }
 
 impl PlatformVouchError {
@@ -155,6 +159,14 @@ impl PlatformVouchError {
                 format!("platform-coherency-without-fact:{device}")
             }
             PlatformVouchError::LedgerNotValid(r) => format!("platform-ledger-invalid:{r}"),
+            PlatformVouchError::LedgerIdentityMismatch { expected, actual } => {
+                format!("platform-ledger-identity-mismatch:{expected}!={actual}")
+            }
+            PlatformVouchError::RecordDigestMismatch { expected, actual } => format!(
+                "platform-record-digest-mismatch:{}!={}",
+                short(expected),
+                short(actual)
+            ),
         }
     }
 
@@ -194,10 +206,13 @@ pub enum PlatformRole {
 }
 
 /// 通用类别词（跨厂商稳定；`compatible` 的通用部分而非型号）。
+/// 审计（S7 F14）：`phy` 单独成词会让 `/soc/usb-phy@…` 冒充网络控制器——
+/// 网络判定改为"需要明确的网络类词"（`ethernet`/`net`/`mdio`/`mac`/`gmac`/
+/// `macb`）；PHY 只在同时出现网络词时才有意义，不单独作为判据。
 const ROLE_CLASSES: [(PlatformRole, &[&str]); 4] = [
     (
         PlatformRole::Net,
-        &["ethernet", "net", "mdio", "phy", "gmac", "macb"],
+        &["ethernet", "net", "mdio", "mac", "gmac", "macb"],
     ),
     (PlatformRole::Console, &["serial", "uart", "console"]),
     (
@@ -294,25 +309,52 @@ pub fn vouch_selection(
     inv.validate()
         .map_err(|e| PlatformVouchError::InvalidInventory(format!("{e:?}")))?;
 
+    // 审计（S7 F4）：选择里带了**记录摘要**时，必须核对账本身份与摘要——
+    // 旧实现只比描述摘要，`selection.record_digest` 从不参与判定（"构建期
+    // 所选记录"与"运行时依据的事实"可以完全无关）。目标侧不携带冻结记录时
+    // 账本为空（记录判据由 xtask 侧把守），此时不重复判。
+    if !ledger.facts.is_empty() {
+        if ledger.sku_id != selection.sku_id {
+            return Err(PlatformVouchError::LedgerIdentityMismatch {
+                expected: selection.sku_id.clone(),
+                actual: ledger.sku_id.clone(),
+            });
+        }
+        if !selection.record_digest.is_empty() {
+            let actual = crate::digest::freeze_digest(
+                &ledger.sku_id,
+                &ledger.revision,
+                ledger.ledger_version,
+                &ledger.facts,
+                &ledger.missing,
+            );
+            if actual != selection.record_digest {
+                return Err(PlatformVouchError::RecordDigestMismatch {
+                    expected: selection.record_digest.clone(),
+                    actual,
+                });
+            }
+        }
+    }
+
     // 必需设备在场（chosen 角色 + 网络控制器）。
-    let chosen_ok = |idx: Option<usize>, what: &'static str| -> Result<(), PlatformVouchError> {
+    // 审计（S7 F14）：每个 chosen 角色报**自己的**能力族（旧实现三者都报
+    // `docs`，拒绝理由指错族——判据串是给运维读的，必须指对人）。
+    let chosen_ok = |idx: Option<usize>,
+                     what: &'static str,
+                     subsystem: &'static str|
+     -> Result<(), PlatformVouchError> {
         match idx {
             Some(i) => match inv.devices.get(i) {
                 Some(d) if d.status == DeviceStatus::Ok => Ok(()),
-                _ => Err(PlatformVouchError::MissingRequiredDevice {
-                    subsystem: "docs",
-                    what,
-                }),
+                _ => Err(PlatformVouchError::MissingRequiredDevice { subsystem, what }),
             },
-            None => Err(PlatformVouchError::MissingRequiredDevice {
-                subsystem: "docs",
-                what,
-            }),
+            None => Err(PlatformVouchError::MissingRequiredDevice { subsystem, what }),
         }
     };
-    chosen_ok(inv.chosen.console, "console")?;
-    chosen_ok(inv.chosen.boot_storage, "boot-storage")?;
-    chosen_ok(inv.chosen.entropy, "entropy")?;
+    chosen_ok(inv.chosen.console, "console", "docs")?;
+    chosen_ok(inv.chosen.boot_storage, "boot-storage", "storage")?;
+    chosen_ok(inv.chosen.entropy, "entropy", "trng")?;
 
     let mut required_devices: Vec<String> = Vec::new();
     for d in &inv.devices {
@@ -640,6 +682,77 @@ mod tests {
             err,
             PlatformVouchError::CoherencyWithoutFact { .. }
         ));
+    }
+
+    /// 审计（S7 F4）红测：选择里的记录摘要/账本身份必须参与判定。
+    #[test]
+    fn record_digest_and_ledger_identity_are_bound() {
+        let desc = b"dtb";
+        let inv = ensure_network_inventory();
+        let ledger = ledger_for();
+        let digest = crate::digest::freeze_digest(
+            &ledger.sku_id,
+            &ledger.revision,
+            ledger.ledger_version,
+            &ledger.facts,
+            &ledger.missing,
+        );
+        let mut sel = selection_for(desc);
+        sel.record_digest = digest.clone();
+        assert!(vouch_selection(&sel, "test-sku", "rev1", desc, &inv, &ledger).is_ok());
+        let mut bad = selection_for(desc);
+        bad.record_digest = "b".repeat(64);
+        let err = vouch_selection(&bad, "test-sku", "rev1", desc, &inv, &ledger).unwrap_err();
+        assert!(
+            err.reason().starts_with("platform-record-digest-mismatch:"),
+            "unexpected: {}",
+            err.reason()
+        );
+        let evil = BoardLedger::new(
+            "evil-sku",
+            "rev1",
+            2,
+            ledger.facts.clone(),
+            ledger.missing.clone(),
+        )
+        .unwrap();
+        let err = vouch_selection(&sel, "test-sku", "rev1", desc, &inv, &evil).unwrap_err();
+        assert!(
+            err.reason()
+                .starts_with("platform-ledger-identity-mismatch:"),
+            "unexpected: {}",
+            err.reason()
+        );
+    }
+
+    #[test]
+    fn usb_phy_is_not_a_network_controller() {
+        // 审计（S7 F14）：`phy` 单独成词不得判为网络控制器。
+        let nd = device_at(
+            9,
+            "vendor,usb2-phy",
+            0x1000_0000,
+            0x1000,
+            false,
+            "/soc/usb-phy@10000000",
+        );
+        assert_eq!(platform_role(&nd), PlatformRole::Other);
+        let nd = device_at(9, "vendor,mdio", 0x1000_0000, 0x1000, false, "/soc/x");
+        assert_eq!(platform_role(&nd), PlatformRole::Net);
+    }
+
+    #[test]
+    fn chosen_role_refusals_name_the_right_subsystem() {
+        let desc = b"dtb";
+        let sel = selection_for(desc);
+        let mut inv = ensure_network_inventory();
+        inv.inventory.chosen.entropy = None;
+        let err = vouch_selection(&sel, "test-sku", "rev1", desc, &inv, &ledger_for()).unwrap_err();
+        assert_eq!(
+            err.reason(),
+            "platform-missing-device:trng:entropy",
+            "缺熵源必须报 trng（旧实现报 docs）"
+        );
     }
 
     #[test]

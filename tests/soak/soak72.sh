@@ -324,7 +324,13 @@ echo "[soak] hardware=${HARDWARE} boot_cycles=${BOOT_CYCLES} power_cuts=${POWER_
 # ── 2. 执行器（真实硬件命令）→ 检查器（读证据，fail-closed）──
 # 蓝图 36 WP-36.10 #3：空执行器（仅占位注释）只能 PENDING 并非零——
 # 不允许"预置少量日志"冒充 72h 浸泡。
-if awk '/^run_executors\(\) \{/,/^\}/' "${BASH_SOURCE[0]}" | grep -qE '^    :$'; then
+# 70.14（S7 审计 P3）：空执行器检测不能只看"行恰为 `    :`"——`: # TODO`、
+# `true`、`return 0` 都能绕过。改为"run_executors 体内不存在任何真实命令"
+# （非注释、非纯冒号/true/return 的行）。
+if ! awk '/^run_executors\(\) \{/,/^\}/' "${BASH_SOURCE[0]}" \
+        | grep -vE '^\s*(#|$)' \
+        | grep -vE '^run_executors\(\) \{|^\}' \
+        | grep -qE '^\s*(cargo|bash|python3|sh|[A-Za-z_][A-Za-z0-9_]*=|local |if |for |while |mkdir|cp|truncate)'; then
     cat > "${OUT_DIR}/soak-empty-executor-evidence.json" <<'EOF'
 {
   "schema": "eneros.soak-executor.v1",
@@ -353,7 +359,20 @@ else
     if cargo xtask soak "${RUN_CHECK_ARGS[@]}" --base-dir "${OUT_DIR}" \
             --out "${OUT_DIR}/soak-run-verdict.json"; then
         MEASURED_HOURS=$(python3 -c "import json,sys;print(json.load(open('${OUT_DIR}/soak-run-verdict.json'))['measured_hours'])" 2>/dev/null || echo "")
-        MEASURED_ARTIFACT=$(python3 -c "import json,sys;m=json.load(open('${RUN_MANIFEST}'));print(next(iter(m['artifacts'].values()),''))" 2>/dev/null || echo "")
+        # 70.14（S7 审计 P2）：候选产物摘要取**必需角色**（不再是 values() 第一个
+        # ——任意角色的任意 64hex 都能冒充候选绑定）。
+        MEASURED_ARTIFACT=$(python3 -c "
+import json,sys
+m=json.load(open('${RUN_MANIFEST}'))
+a=m.get('artifacts',{})
+print(a.get('root_task',''))
+" 2>/dev/null || echo "")
+        # 70.14（S7 审计 P3）：实测小时解析失败 = 判定不可用（不得后续写成
+        # 空串造成非法 JSON / fail-open）。
+        case "${MEASURED_HOURS}" in
+            ''|*[!0-9]*) fail "measured_hours unparsable (run-check verdict missing/invalid)"; MEASURED_HOURS=0 ;;
+        esac
+        [ -n "${MEASURED_ARTIFACT}" ] || fail "artifact binding missing role root_task"
     else
         fail "soak run-check rejected ${RUN_MANIFEST}"
     fi

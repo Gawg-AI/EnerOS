@@ -187,7 +187,9 @@ pub fn parse_size(value: &str, unit: &str) -> Option<u64> {
         "TiB" | "TB" => 40,
         _ => return None,
     };
-    n.checked_shl(shift)
+    // 审计（S7 F12）：`checked_shl` 只拒绝移位数 ≥64，**不拒绝高位移出**——
+    // `16777217 TiB` 会被读成 1 TiB。改用 checked_mul。
+    n.checked_mul(1u64.checked_shl(shift)?)
 }
 
 /// 便捷构造：已验证 RAM 窗口事实对（迁移/测试用）。

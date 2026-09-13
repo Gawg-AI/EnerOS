@@ -225,13 +225,27 @@ impl BoardLedger {
     pub fn capability_coverage(&self, kind: SkuKind) -> Vec<String> {
         let mut out = Vec::new();
         for req in requirements_for(kind) {
-            let verified = self
-                .facts
-                .iter()
-                .any(|f| f.subsystem == req.subsystem && f.verified);
-            if !verified {
+            // 审计（S7 F1）：**产品**资格判据 = 硬件实证（`hardware_scope =
+            // hardware` + 依据 + 材料摘要），不是"有 verified 事实"——否则
+            // 全部 13 个硬门族都用仓库占位事实（`repo`）填上就能拿到资格，
+            // 与蓝图 C4–C12「实板事实」的原意相反（`is_hardware_evidence`
+            // 此前是零调用的死代码）。开发平台沿用"已验证即可"。
+            let ok = self.facts.iter().any(|f| {
+                f.subsystem == req.subsystem
+                    && if kind == SkuKind::Product {
+                        f.is_hardware_evidence()
+                    } else {
+                        f.verified
+                    }
+            });
+            if !ok {
                 out.push(format!(
-                    "capability-unverified:{}:{}",
+                    "{}:{}:{}",
+                    if kind == SkuKind::Product {
+                        "capability-not-hardware-evidence"
+                    } else {
+                        "capability-unverified"
+                    },
                     req.subsystem.json_name(),
                     req.criterion
                 ));
@@ -426,13 +440,13 @@ mod tests {
             spans: report.spans,
         };
         for expected in [
-            "capability-unverified:storage:C4/C5",
-            "capability-unverified:network-phy:C6",
-            "capability-unverified:bus:C8/C9",
-            "capability-unverified:trng:C10",
-            "capability-unverified:rollback-counter:C12",
-            "capability-unverified:power:C5",
-            "capability-unverified:watchdog:C5",
+            "capability-not-hardware-evidence:storage:C4/C5",
+            "capability-not-hardware-evidence:network-phy:C6",
+            "capability-not-hardware-evidence:bus:C8/C9",
+            "capability-not-hardware-evidence:trng:C10",
+            "capability-not-hardware-evidence:rollback-counter:C12",
+            "capability-not-hardware-evidence:power:C5",
+            "capability-not-hardware-evidence:watchdog:C5",
         ] {
             assert!(
                 r.violations.iter().any(|v| v == expected),
@@ -440,6 +454,51 @@ mod tests {
                 r.violations
             );
         }
+    }
+
+    #[test]
+    fn repo_facts_do_not_satisfy_product_capability() {
+        // 审计（S7 F1）红测：把 13 个产品硬门族全部用 repo 事实（占位）填上，
+        // 旧实现会判"能力齐备"；现必须逐族报 hardware-evidence 缺失。
+        let mut facts = Vec::new();
+        for sub in crate::capability::SkuKind::Product.required() {
+            let mut f = Fact::repo(*sub, "placeholder", "value", "none");
+            f.source = "repo:placeholder".into();
+            facts.push(f);
+        }
+        let l = BoardLedger::new("sku", "rev", 2, facts, Vec::new()).unwrap();
+        let r = l.validate(SkuKind::Product);
+        assert!(r.is_ok(), "形态成立：{:?}", r.violations);
+        let cov = l.capability_coverage(SkuKind::Product);
+        assert_eq!(
+            cov.len(),
+            crate::capability::SkuKind::Product.required().len(),
+            "全部族都应因缺硬件实证被拒：{cov:?}"
+        );
+        assert!(cov
+            .iter()
+            .all(|v| v.starts_with("capability-not-hardware-evidence:")));
+        // 换成硬件实证事实 → 通过。
+        let mut hw = Vec::new();
+        for sub in crate::capability::SkuKind::Product.required() {
+            hw.push(Fact {
+                subsystem: *sub,
+                key: "f".into(),
+                value: "v".into(),
+                unit: "none".into(),
+                verified: true,
+                hardware_scope: HardwareScope::Hardware,
+                source: "TRM §1".into(),
+                evidence: "bringup serial log line 42".into(),
+                digest: Some("a".repeat(64)),
+            });
+        }
+        let l = BoardLedger::new("sku", "rev", 2, hw, Vec::new()).unwrap();
+        assert_eq!(
+            l.capability_coverage(SkuKind::Product),
+            Vec::<String>::new(),
+            "硬件实证事实满足产品覆盖"
+        );
     }
 
     #[test]

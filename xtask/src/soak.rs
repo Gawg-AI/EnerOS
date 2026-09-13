@@ -155,21 +155,46 @@ pub fn parse_rfc3339_secs(s: &str) -> Option<i64> {
     let s = s.trim();
     let (date, rest) = s.split_once('T')?;
     let rest = rest.strip_suffix('Z')?;
-    let mut d = date.split('-');
-    let y: i64 = d.next()?.parse().ok()?;
-    let mo: i64 = d.next()?.parse().ok()?;
-    let day: i64 = d.next()?.parse().ok()?;
-    if d.next().is_some() {
+    // 审计（S7 P3）：字段必须**定形**（逐段固定位宽的无符号数字）——旧实现
+    // 只查 `1..=31`（`2026-02-30` 被静默规范化成 3-02）、不设年份上界
+    // （`9223372036854775807-01-01…` 在 dev profile 直接 overflow panic），
+    // 且 `+2026`/`2026-9-1`/`T0:0:0` 都被接受。先校验形态，再解析。
+    let d: Vec<&str> = date.split('-').collect();
+    if d.len() != 3 || d[0].len() != 4 || d[1].len() != 2 || d[2].len() != 2 {
         return None;
     }
-    let mut t = rest.split(':');
-    let h: i64 = t.next()?.parse().ok()?;
-    let mi: i64 = t.next()?.parse().ok()?;
-    let se: i64 = t.next()?.split('.').next()?.parse().ok()?;
-    if t.next().is_some() {
+    let secs_part = rest.split('.').next().unwrap_or("");
+    let t: Vec<&str> = secs_part.split(':').collect();
+    if t.len() != 3 || t.iter().any(|p| p.len() != 2) {
         return None;
     }
-    if !(1..=12).contains(&mo) || !(1..=31).contains(&day) || h > 23 || mi > 59 || se > 60 {
+    let all_digits = |parts: &[&str]| {
+        parts
+            .iter()
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+    };
+    if !all_digits(&d) || !all_digits(&t) {
+        return None;
+    }
+    let y: i64 = d[0].parse().ok()?;
+    let mo: i64 = d[1].parse().ok()?;
+    let day: i64 = d[2].parse().ok()?;
+    let h: i64 = t[0].parse().ok()?;
+    let mi: i64 = t[1].parse().ok()?;
+    let se: i64 = t[2].parse().ok()?;
+    if !(1970..=9999).contains(&y) || !(1..=12).contains(&mo) || h > 23 || mi > 59 || se > 60 {
+        return None;
+    }
+    // 闰年/月长校验（`2026-02-30`、`2026-04-31` 一律拒绝）。
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let dim = match mo {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if !(1..=dim).contains(&day) {
         return None;
     }
     // 民用历到 Unix 秒（Howard Hinnant 算法）。
@@ -275,6 +300,14 @@ pub fn validate_run(
     // 产物绑定：至少 root/boot 链摘要，且形如 sha256、不得为字面零。
     if manifest.artifacts.is_empty() {
         v.violations.push("run-artifacts-empty".to_owned());
+    }
+    // 审计（S7 P2）：注释说"至少 root/boot 链摘要"但代码只查非空——任意角色名
+    // 的任意 64hex 都能充当候选产物绑定，而 shell 又取 `values()` 的第一个当
+    // `artifact_sha256`。改为按角色名强制（与 bring-up 判据同口径）。
+    for role in ["root_task", "boot_chain"] {
+        if !manifest.artifacts.contains_key(role) {
+            v.violations.push(format!("run-artifact-missing:{role}"));
+        }
     }
     for (role, digest) in &manifest.artifacts {
         if !is_sha256(digest) {
@@ -392,6 +425,17 @@ pub fn validate_run(
                         v.violations
                             .push(format!("run-protocol-window-outside-run:{}", c.protocol));
                     }
+                    // 审计（S7 P2）：旧实现只查"窗口在运行区间内且样本>0" ——
+                    // 72h 运行里 60 秒、1 个样本也过。要求覆盖区间达到冻结
+                    // 时长（容差 1 小时：允许单次重连造成的短缝）。
+                    let span = b - a;
+                    let needed = (policy.min_hours as i64) * 3_600 - 3_600;
+                    if policy.min_hours > 0 && span < needed {
+                        v.violations.push(format!(
+                            "run-protocol-window-too-short:{}:{}s<{}s",
+                            c.protocol, span, needed
+                        ));
+                    }
                 }
             }
             _ => v
@@ -471,8 +515,22 @@ pub fn validate_run(
         v.violations.push("run-raw-files-empty".to_owned());
     }
     for rel in &manifest.raw_files {
-        if !base.join(rel).is_file() {
+        let path = base.join(rel);
+        if !path.is_file() {
             v.violations.push(format!("run-raw-file-missing:{rel}"));
+        } else if path.metadata().map(|m| m.len() == 0).unwrap_or(true) {
+            // 审计（S7 P2）：零字节"原始证据"不是证据。
+            v.violations.push(format!("run-raw-file-empty:{rel}"));
+        }
+        // 审计（S7 P2）：绝对路径会绕过 base（`base.join("/etc/hostname")`），
+        // `..` 可以指到仓库外——原始证据必须是运行目录内的相对路径。
+        let p = std::path::Path::new(rel);
+        if p.is_absolute()
+            || p.components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            v.violations
+                .push(format!("run-raw-file-escapes-base:{rel}"));
         }
     }
     Ok(v)
@@ -505,9 +563,15 @@ pub fn scan_fatal_markers(
     let mut hits = Vec::new();
     for rel in raw_files {
         let path = base.join(rel);
-        let Ok(text) = fs::read_to_string(&path) else {
+        // 审计（S7 P1）：旧实现用 `read_to_string` + `else { continue }`——
+        // 只要原始日志里有一个非 UTF-8 字节，**整个文件**就不被扫描，
+        // PANIC/OOM 零泛豁免形同虚设（构造性绕过：往日志尾部塞一个 0xFF）。
+        // 改为按字节读 + lossy 解码；读不出的文件本身即判负。
+        let bytes = fs::read(&path).unwrap_or_default();
+        if bytes.is_empty() {
             continue;
-        };
+        }
+        let text = String::from_utf8_lossy(&bytes);
         for (i, line) in text.lines().enumerate() {
             let l = line.to_ascii_lowercase();
             if l.contains("panic") || l.contains("oom") || l.contains("out of memory") {
@@ -925,6 +989,119 @@ mod tests {
             .iter()
             .any(|x| x.starts_with("run-metric-outside-run")));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 审计（S7 P1）红测：非 UTF-8 字节不得让 PANIC 扫描整文件跳过。
+    #[test]
+    fn fatal_marker_scan_survives_non_utf8_bytes() {
+        let root = tmp_root("nonutf8");
+        let mut bytes = b"boot ok\nPANIC #1 at x.rs:1\n".to_vec();
+        bytes.extend_from_slice(&[0xff, 0xfe, 0x80]);
+        fs::write(root.join("evidence/serial.log"), &bytes).unwrap();
+        let hits = scan_fatal_markers(&root, &["evidence/serial.log".to_owned()]).unwrap();
+        assert_eq!(
+            hits.len(),
+            1,
+            "非 UTF-8 尾部不得让整个文件逃过扫描: {hits:?}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 审计（S7 P2）红测：零字节原始证据 / 绝对路径 / `..` 逃逸 / 缺必需
+    /// 产物角色，都必须判负。
+    #[test]
+    fn raw_files_and_artifact_roles_are_hardened() {
+        let root = tmp_root("hard");
+        let m = good_manifest(&root);
+        fs::write(root.join("evidence/serial.log"), b"").unwrap();
+        let v = validate_run(&root, &m, &SoakPolicy::QUALIFICATION, true).unwrap();
+        assert!(
+            v.violations
+                .iter()
+                .any(|x| x.starts_with("run-raw-file-empty")),
+            "{:?}",
+            v.violations
+        );
+        let mut m2 = good_manifest(&root);
+        m2.raw_files = vec!["/etc/hostname".to_owned()];
+        let v2 = validate_run(&root, &m2, &SoakPolicy::QUALIFICATION, true).unwrap();
+        assert!(
+            v2.violations
+                .iter()
+                .any(|x| x.starts_with("run-raw-file-escapes-base")),
+            "{:?}",
+            v2.violations
+        );
+        let mut m3 = good_manifest(&root);
+        m3.raw_files = vec!["../../etc/hostname".to_owned()];
+        let v3 = validate_run(&root, &m3, &SoakPolicy::QUALIFICATION, true).unwrap();
+        assert!(
+            v3.violations
+                .iter()
+                .any(|x| x.starts_with("run-raw-file-escapes-base")),
+            "{:?}",
+            v3.violations
+        );
+        let mut m4 = good_manifest(&root);
+        m4.artifacts.clear();
+        m4.artifacts.insert("misc".to_owned(), "a".repeat(64));
+        let v4 = validate_run(&root, &m4, &SoakPolicy::QUALIFICATION, true).unwrap();
+        for expected in [
+            "run-artifact-missing:root_task",
+            "run-artifact-missing:boot_chain",
+        ] {
+            assert!(
+                v4.violations.contains(&expected.to_string()),
+                "{:?}",
+                v4.violations
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 审计（S7 P2）红测：协议"覆盖"必须真覆盖（60 秒 1 样本不足 72h）。
+    #[test]
+    fn protocol_coverage_must_span_the_run() {
+        let root = tmp_root("span");
+        let mut m = good_manifest(&root);
+        m.protocol_coverage[0].active_to = hhmm_minutes(1);
+        let v = validate_run(&root, &m, &SoakPolicy::QUALIFICATION, true).unwrap();
+        assert!(
+            v.violations
+                .iter()
+                .any(|x| x.starts_with("run-protocol-window-too-short")),
+            "{:?}",
+            v.violations
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 审计（S7 P3）红测：非法日历（2 月 30 日）与越界年份必须拒绝。
+    #[test]
+    fn rfc3339_rejects_impossible_dates_and_extreme_years() {
+        assert!(
+            parse_rfc3339_secs("2026-02-30T00:00:00Z").is_none(),
+            "2 月 30 日"
+        );
+        assert!(
+            parse_rfc3339_secs("2026-04-31T00:00:00Z").is_none(),
+            "4 月 31 日"
+        );
+        assert!(
+            parse_rfc3339_secs("2024-02-29T00:00:00Z").is_some(),
+            "闰年 2 月 29 日合法"
+        );
+        assert!(
+            parse_rfc3339_secs("2026-02-29T00:00:00Z").is_none(),
+            "平年 2 月 29 日"
+        );
+        assert!(parse_rfc3339_secs("9223372036854775807-01-01T00:00:00Z").is_none());
+        assert!(parse_rfc3339_secs("+2026-09-01T00:00:00Z").is_none());
+        assert!(parse_rfc3339_secs("2026-9-1T0:0:0Z").is_none());
+        assert!(
+            parse_rfc3339_secs("1969-12-31T23:59:59Z").is_none(),
+            "年份下界"
+        );
     }
 
     #[test]

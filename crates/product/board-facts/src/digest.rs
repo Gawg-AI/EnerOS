@@ -13,9 +13,10 @@
 //! 采用长度前缀而不是 `k=v\n` 裸拼接：值里出现 `=`/换行/空串都不会造成
 //! 字段边界歧义（单源摘要公式的常见坑）。
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+use crate::capability::Subsystem;
 use crate::fact::{Fact, UNIT_NONE};
 
 /// 域分隔标记（版本化；换公式必须换标记）。
@@ -27,6 +28,9 @@ pub fn ledger_digest(sku_id: &str, revision: &str, facts: &[Fact]) -> String {
     fields.push(("sku_id".into(), sku_id.into()));
     fields.push(("revision".into(), revision.into()));
     for f in sorted_facts(facts) {
+        // 审计（S7 F6）：字段标识必须自描长度，否则含 `=`/`:`/`\n` 的键可以
+        // 把"键+值"的边界推到别处（两个不同记录撞同一摘要）。值侧本就长度
+        // 前缀，这里补齐标识侧。
         let id = alloc::format!("{}#{}", f.subsystem.json_name(), f.key);
         fields.push((
             id,
@@ -43,6 +47,41 @@ pub fn ledger_digest(sku_id: &str, revision: &str, facts: &[Fact]) -> String {
         ));
     }
     join(fields)
+}
+
+/// 冻结记录摘要（含**缺失登记**与账本版本）。
+///
+/// 审计（S7 F5）：`ledger_digest` 只覆盖 sku/revision/facts —— 记录换了
+/// `structured_missing`（"这一族还没冻结"）或版本号时摘要不变，而
+/// bring-up / 资格记录正是用这个摘要做"记录未变"的绑定 ⇒ 事实与缺失登记
+/// 的状态分叉不可检测。
+pub fn freeze_digest(
+    sku_id: &str,
+    revision: &str,
+    ledger_version: u32,
+    facts: &[Fact],
+    missing: &[(Subsystem, String)],
+) -> String {
+    let body = ledger_digest(sku_id, revision, facts);
+    let mut entries: Vec<String> = missing
+        .iter()
+        .map(|(s, note)| alloc::format!("{}#{}", s.json_name(), note))
+        .collect();
+    entries.sort();
+    fields_digest(&[
+        ("ledger_digest", body.clone()),
+        ("ledger_version", ledger_version.to_string()),
+        ("missing", entries.join("\u{1f}")),
+    ])
+}
+
+/// 多字段域分隔摘要（同 [`join`] 公式；供 `freeze_digest` 复用）。
+fn fields_digest(fields: &[(&str, String)]) -> String {
+    let owned: Vec<(String, String)> = fields
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), v.clone()))
+        .collect();
+    join(owned)
 }
 
 /// 平台描述摘要（运行时 DTB / 描述字节）。
@@ -268,6 +307,53 @@ mod tests {
         // sku/revision 进摘要（换板修订 = 新组合）。
         assert_ne!(ledger_digest("s", "r", &a), ledger_digest("s", "r2", &a));
         assert_ne!(ledger_digest("s", "r", &a), ledger_digest("s2", "r", &a));
+    }
+
+    #[test]
+    fn freeze_digest_covers_missing_and_version() {
+        // 审计（S7 F5）红测：同一 sku/revision 事实集下，缺失登记与账本版本
+        // 都必须改变摘要（bring-up/资格记录靠它判"记录未变"）。
+        let facts = vec![
+            Fact::repo(Subsystem::Cpu, "cores", "8", "count"),
+            Fact::repo(Subsystem::Ram, "base", "0x0", "addr"),
+        ];
+        let missing = vec![(Subsystem::Storage, "无介质事实".to_string())];
+        let a = freeze_digest("s", "r", 2, &facts, &missing);
+        let b = freeze_digest("s", "r", 2, &facts, &Vec::new());
+        assert_ne!(a, b, "缺失登记必须进摘要");
+        let c = freeze_digest("s", "r", 3, &facts, &missing);
+        assert_ne!(a, c, "账本版本必须进摘要");
+        let mut missing2 = missing.clone();
+        missing2.push((Subsystem::Trng, "TRNG 手册未取得".to_string()));
+        assert_ne!(a, freeze_digest("s", "r", 2, &facts, &missing2));
+        // 顺序无关（按族名+说明排序）。
+        let mut reordered = missing2.clone();
+        reordered.reverse();
+        assert_eq!(
+            freeze_digest("s", "r", 2, &facts, &missing2),
+            freeze_digest("s", "r", 2, &facts, &reordered)
+        );
+    }
+
+    #[test]
+    fn key_boundary_cannot_be_pushed_into_value() {
+        // 审计（S7 F6）红测：键与值之间不得产生边界歧义（长度前缀兜住）。
+        // 两种"键吞掉后续内容"的构造必须得到不同摘要。
+        let a = vec![
+            Fact::repo(Subsystem::Cpu, "k", "a", "none"),
+            Fact::repo(Subsystem::Cpu, "x", "y", "none"),
+        ];
+        let b = vec![Fact::repo(
+            Subsystem::Cpu,
+            "k=1:v=a|u=none|ver=true|scope=repo|src=repo|ev=|dg=\ncpu#x",
+            "y",
+            "none",
+        )];
+        assert_ne!(
+            ledger_digest("s", "r", &a),
+            ledger_digest("s", "r", &b),
+            "键内分隔符不得把字段边界推走"
+        );
     }
 
     #[test]

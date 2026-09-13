@@ -48,11 +48,30 @@ collect_if_present() {
     local name="$1"
     local src="$2"
     local dst="$3"
-    if [ -e "${src}" ]; then
+    # 70.14（S7 审计 P3）：零字节"证据文件"不算证据——旧实现只看存在性，
+    # 11 个空文件也能自报 COMPLETE。
+    if [ -s "${src}" ]; then
         cp "${src}" "${dst}"
         echo "collected: ${name} <- ${src}"
+    elif [ -e "${src}" ]; then
+        echo "empty: ${name} (${src})" >> "${BUNDLE_DIR}/missing-evidence.txt"
     else
         echo "missing: ${name} (${src})" >> "${BUNDLE_DIR}/missing-evidence.txt"
+    fi
+}
+
+# 目录类证据（pcap/exported）：必须存在且含至少一个非空文件。
+collect_dir_if_present() {
+    local name="$1"
+    local src="$2"
+    local dst="$3"
+    if [ -d "${src}" ] && find "${src}" -type f -size +0c | head -1 | grep -q .; then
+        cp -r "${src}" "${dst}"
+        echo "collected: ${name} <- ${src}"
+    elif [ -d "${src}" ]; then
+        echo "empty: ${name}/ (${src})" >> "${BUNDLE_DIR}/missing-evidence.txt"
+    else
+        echo "missing: ${name}/ (${src})" >> "${BUNDLE_DIR}/missing-evidence.txt"
     fi
 }
 
@@ -67,12 +86,7 @@ collect_if_present "power-cut.log" "${SOAK_DIR}/power-cut.log" "${BUNDLE_DIR}/po
 collect_if_present "recovery-check.log" "${SOAK_DIR}/recovery-check.log" "${BUNDLE_DIR}/recovery-check.log"
 
 # 3. 协议对通：抓包 + 点表一致性
-if [ -d "${SOAK_DIR}/pcap" ]; then
-    cp -r "${SOAK_DIR}/pcap" "${BUNDLE_DIR}/pcap"
-    echo "collected: pcap/ <- ${SOAK_DIR}/pcap"
-else
-    echo "missing: pcap/ (${SOAK_DIR}/pcap)" >> "${BUNDLE_DIR}/missing-evidence.txt"
-fi
+collect_dir_if_present "pcap" "${SOAK_DIR}/pcap" "${BUNDLE_DIR}/pcap"
 collect_if_present "point-consistency.json" "${SOAK_DIR}/point-consistency.json" "${BUNDLE_DIR}/point-consistency.json"
 
 # 4. 决策链：调度日志 + 阻断事件
@@ -85,12 +99,7 @@ collect_if_present "ota-rollback.log" "${SOAK_DIR}/ota-rollback.log" "${BUNDLE_D
 collect_if_present "attestation.log" "${SOAK_DIR}/attestation.log" "${BUNDLE_DIR}/attestation.log"
 
 # 6. 运维：导出样本 + 符号化报告
-if [ -d "${SOAK_DIR}/exported" ]; then
-    cp -r "${SOAK_DIR}/exported" "${BUNDLE_DIR}/exported"
-    echo "collected: exported/ <- ${SOAK_DIR}/exported"
-else
-    echo "missing: exported/ (${SOAK_DIR}/exported)" >> "${BUNDLE_DIR}/missing-evidence.txt"
-fi
+collect_dir_if_present "exported" "${SOAK_DIR}/exported" "${BUNDLE_DIR}/exported"
 collect_if_present "symbolize-report.json" "${SOAK_DIR}/symbolize-report.json" "${BUNDLE_DIR}/symbolize-report.json"
 
 # ── 2. 证据包清单（sha256，防篡改基线）──
@@ -104,7 +113,7 @@ MANIFEST="${BUNDLE_DIR}/MANIFEST.sha256"
 
 # ── 3. 汇总 ──
 COLLECTED=$(grep -c "^collected" <<<"$(cat "${BUNDLE_DIR}/missing-evidence.txt" 2>/dev/null; echo collected:)" 2>/dev/null || true)
-MISSING=$(grep -c "^missing" "${BUNDLE_DIR}/missing-evidence.txt" || true)
+MISSING=$(grep -cE "^(missing|empty):" "${BUNDLE_DIR}/missing-evidence.txt" || true)
 echo ""
 echo "[evidence] bundle: ${BUNDLE_DIR}"
 echo "[evidence] manifest: ${MANIFEST} ($(wc -l < "${MANIFEST}") files hashed)"

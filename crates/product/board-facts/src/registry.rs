@@ -93,6 +93,21 @@ impl AdapterRegistry {
                 reason: "revision-empty",
             });
         }
+        // 审计（S7 F7）：模块头承诺"无摘要的实板 adapter 不接受"、
+        // `revision=unknown` 不得用于产品装配——旧实现两条都不查（空摘要
+        // 还会让 `resolve` 的比对被跳过）。
+        if !crate::fact::is_sha256_hex(entry.record_digest) {
+            return Err(BoardRefusal::RegistrationIncomplete {
+                sku_id: entry.sku_id.to_string(),
+                reason: "record-digest-not-sha256",
+            });
+        }
+        if entry.revision.eq_ignore_ascii_case("unknown") {
+            return Err(BoardRefusal::RegistrationIncomplete {
+                sku_id: entry.sku_id.to_string(),
+                reason: "revision-unknown",
+            });
+        }
         if self.entries.iter().any(|e| e.sku_id == entry.sku_id) {
             return Err(BoardRefusal::RegistrationIncomplete {
                 sku_id: entry.sku_id.to_string(),
@@ -165,7 +180,12 @@ pub fn assembly_selection(
     record_digest: Option<&str>,
     description_digest: Option<&str>,
 ) -> Result<Option<BoardSelection>, BoardRefusal> {
-    let any = sku.is_some() || revision.is_some() || record_digest.is_some();
+    // 审计（S7 F3）：旧实现漏了 `description_digest` —— 只给描述摘要的
+    // 构建会**静默**变成"未绑定开发镜像"，与"半套绑定即拒绝"的契约相反。
+    let any = sku.is_some()
+        || revision.is_some()
+        || record_digest.is_some()
+        || description_digest.is_some();
     if !any {
         return Ok(None);
     }
@@ -237,6 +257,55 @@ mod tests {
         r
     }
 
+    /// 审计（S7 F7）：空/非 sha256 摘要与 `revision=unknown` 的注册必须拒绝。
+    #[test]
+    fn registration_requires_digest_and_real_revision() {
+        let mut r = AdapterRegistry::new();
+        assert_eq!(
+            r.register(RegisteredAdapter {
+                sku_id: "s",
+                revision: "rev-A",
+                record_digest: "",
+                adapter: &HW,
+            })
+            .unwrap_err()
+            .reason(),
+            "board-registration-incomplete:s:record-digest-not-sha256"
+        );
+        assert_eq!(
+            r.register(RegisteredAdapter {
+                sku_id: "s",
+                revision: "rev-A",
+                record_digest: "not-a-digest",
+                adapter: &HW,
+            })
+            .unwrap_err()
+            .reason(),
+            "board-registration-incomplete:s:record-digest-not-sha256"
+        );
+        assert_eq!(
+            r.register(RegisteredAdapter {
+                sku_id: "s",
+                revision: "unknown",
+                record_digest: REC_A,
+                adapter: &HW,
+            })
+            .unwrap_err()
+            .reason(),
+            "board-registration-incomplete:s:revision-unknown"
+        );
+    }
+
+    /// 审计（S7 F3）：只给描述摘要的绑定必须被拒（不得静默降级为开发镜像）。
+    #[test]
+    fn description_digest_only_binding_is_refused() {
+        let err = assembly_selection(None, None, None, Some(REC_A)).unwrap_err();
+        assert_eq!(
+            err.reason(),
+            "board-registration-incomplete:<unset>:sku-unset"
+        );
+    }
+
     fn selection(sku: &str, revision: &str, digest: &str) -> BoardSelection {
         BoardSelection {
             sku_id: sku.to_string(),
@@ -304,7 +373,7 @@ mod tests {
             .register(RegisteredAdapter {
                 sku_id: "acme-board",
                 revision: "rev-A",
-                record_digest: "",
+                record_digest: REC_A,
                 adapter: &HW_DUP,
             })
             .unwrap_err();
@@ -316,7 +385,7 @@ mod tests {
             .register(RegisteredAdapter {
                 sku_id: "",
                 revision: "rev-A",
-                record_digest: "",
+                record_digest: REC_A,
                 adapter: &HW_DUP,
             })
             .unwrap_err();
