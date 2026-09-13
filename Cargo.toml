@@ -50,6 +50,8 @@ members = [
     "crates/ai/runner",
     "crates/hal/hal",
     "crates/hal/board",
+    # 蓝图 70.12（v0.342.0）：板级事实账本与平台描述校验（方向 6 唯一判据源）。
+    "crates/product/board-facts",
     "crates/runtime/runtime",
     "crates/runtime/sel4-sys",
     "crates/runtime/durable-log",

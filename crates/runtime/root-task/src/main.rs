@@ -25,7 +25,8 @@ use core::panic::PanicInfo;
 
 extern crate eneros_runtime;
 
-#[cfg(target_os = "none")]
+// 不带 cfg：`platform.rs`/`board_select.rs` 的 alloc 面同时被 host 测试与目标
+// 构建使用（host 下 std 提供 alloc）。
 extern crate alloc;
 
 // target 分支必须显式导入（三审 E0599 修复）
@@ -34,6 +35,10 @@ use eneros_runtime::{init, println};
 use eneros_tenant::TenantManager; // WP-37.2：`TenantStore::create` 是 trait 方法，
 
 pub mod allocator;
+// 70.12（WP-70.12.2/3）：板级装配选择（注册表 + 描述绑定；判据在
+// board-facts crate，root 只装配与打印证据行）。
+#[cfg(target_os = "none")]
+pub mod board_select;
 pub mod boot;
 pub mod bundle;
 // W4.3（蓝图23）：frame.rs 兼容垫片（`pub use eneros_ipc_wire::el0::*`）已删除——
@@ -260,12 +265,19 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
                         .unwrap_or("none"),
                     p.hal.dma.iommu_present
                 );
+                // 70.12（WP-70.12.2）：板级装配绑定证据行（SKU/修订/描述
+                // 摘要/bound/识别到的平台角色设备）——描述摘要与构建期声明
+                // 不符时 `assemble` 已拒绝（不在此静默）。
+                if let Some(v) = p.vouch.as_ref() {
+                    println!("{}", v.log_line());
+                }
                 p
             }
             Err(e) => {
                 println!(
-                    "[eneros-root-task] 38 HAL: assembly FAILED {:?} — 挂起（fail-closed，零设备写）",
-                    e
+                    "[eneros-root-task] 38 HAL: assembly FAILED {:?} reason={} — 挂起（fail-closed，零设备写）",
+                    e,
+                    e.reason()
                 );
                 loop {
                     core::hint::spin_loop();

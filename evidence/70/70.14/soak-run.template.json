@@ -1,0 +1,28 @@
+{
+  "schema": "eneros.soak-run.v1",
+  "run_id": "template-not-a-run",
+  "scenario": "steady-72h",
+  "scope": "hw-soak",
+  "artifacts": {},
+  "device": {
+    "sku_id": "",
+    "board_revision": "",
+    "serial": "",
+    "firmware": ""
+  },
+  "rig": {
+    "rig_id": "",
+    "instruments": [],
+    "power_channel": ""
+  },
+  "started_at": "",
+  "ended_at": "",
+  "heartbeats": [],
+  "protocol_coverage": [],
+  "metrics": [],
+  "judge_version": "xtask/soak-1",
+  "raw_files": [
+    "evidence/70/70.14/hil-serial.placeholder.log"
+  ],
+  "interruptions": []
+}

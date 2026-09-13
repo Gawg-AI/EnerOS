@@ -1,0 +1,19 @@
+{
+  "schema": "eneros.board-bringup.v1",
+  "sku_id": "phytium-d2000",
+  "board_revision": "unknown",
+  "serial": "",
+  "rig_id": "",
+  "scope": "hw-bringup",
+  "fact_record_digest": "",
+  "artifacts": {},
+  "required_services": [],
+  "raw_evidence": [
+    "evidence/70/70.12/bring-up-raw.log"
+  ],
+  "operators": {
+    "device_facts_by": "",
+    "bringup_by": "",
+    "reviewed_by": ""
+  }
+}

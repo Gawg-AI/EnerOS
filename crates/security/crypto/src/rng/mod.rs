@@ -16,5 +16,11 @@ pub mod csrng;
 pub use csrng::{fill_bytes_checked, fill_bytes_or_reseed, CsRng, DrbgError, RESEED_INTERVAL};
 
 pub mod entropy;
+pub mod entropy_health;
 pub mod virtio_rng;
-pub use entropy::{csrng_from_platform, platform_entropy_source, EntropyError, EntropySource};
+pub use entropy::{
+    csrng_from_platform, csrng_from_platform_checked, platform_entropy_seed,
+    platform_entropy_seed_policy, platform_entropy_source, EntropyError, EntropySource,
+};
+// 70.12（WP-70.12.4）：熵源健康判据与有界轮询（生产装配在取种前必须跑）。
+pub use entropy_health::{fill_bounded, HealthPolicy, HealthTest, HealthVerdict};

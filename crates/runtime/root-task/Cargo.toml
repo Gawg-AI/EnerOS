@@ -28,6 +28,9 @@ eneros-time = { path = "../../drivers/time" }
 eneros-hal = { path = "../../hal/hal" }
 # WP-27.2：驱动装配（FDT 解析 + 绑定表 + can/rs485 迁入绑定表）。
 eneros-board = { path = "../../hal/board" }
+# 70.12（WP-70.12.2/3）：板级装配——注册表选择 adapter + 描述摘要绑定 +
+# 角色/MMIO 判据（判据实现单源在 board-facts，root 只装配与打印证据行）。
+eneros-board-facts = { path = "../../product/board-facts" }
 eneros-driver-framework = { path = "../../drivers/framework" }
 eneros-can = { path = "../../drivers/can" }
 eneros-rs485 = { path = "../../drivers/rs485" }

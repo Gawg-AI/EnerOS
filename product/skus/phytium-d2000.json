@@ -1,40 +1,88 @@
 {
-  "schema": "eneros.board-fact-freeze.v1",
+  "schema": "eneros.board-fact-freeze.v2",
   "sku_id": "phytium-d2000",
-  "frozen_at": "2026-08-18T00:00:00Z",
-  "source_commit": "b96774e3a20a468ccfc4d6d81c0ee761a460860b",
-  "facts": {
-    "soc": {
-      "value": "Phytium D2000（占位骨架，compatible = \"phytium,d2000\"）",
+  "revision": "unknown",
+  "frozen_at": "2026-09-13T00:00:00Z",
+  "source_commit": "071f606",
+  "ledger_version": 2,
+  "entries": [
+    {
+      "subsystem": "soc",
+      "key": "compatible",
+      "value": "phytium,d2000",
+      "unit": "none",
       "verified": true,
-      "source": "configs/phytium-d2000.dts:28"
+      "hardware_scope": "repo",
+      "source": "configs/phytium-d2000.dts:28（占位骨架，仅 compatible 级别）",
+      "evidence": "",
+      "digest": null
     },
-    "cpu": {
-      "value": "8 cores（PlatformConfig PHYTIUM_D2000）",
+    {
+      "subsystem": "docs",
+      "key": "dtb",
+      "value": "configs/phytium-d2000.dts",
+      "unit": "none",
       "verified": true,
-      "source": "crates/hal/hal/src/arm64/platform.rs:40（未真机验证，BLOCKED 缺硬件）"
-    },
-    "uart": {
-      "value": "未知（PL011 假设未证实）",
-      "verified": false,
-      "source": "BLOCKED：无真机 UART 地址/IRQ 事实"
-    },
-    "memory": {
-      "value": "未知（无板级 RAM map）",
-      "verified": false,
-      "source": "BLOCKED：缺硬件与 BSP 文档"
-    },
-    "firmware": {
-      "value": "UEFI/TF-A 版本与配置未冻结",
-      "verified": false,
-      "source": "BLOCKED：缺板级固件事实（configs/phytium-d2000.dts 为占位骨架）"
-    },
-    "dtb": {
-      "value": "configs/phytium-d2000.dts 占位最小骨架",
-      "verified": true,
-      "source": "configs/phytium-d2000.dts（仅 compatible 级别）"
+      "hardware_scope": "repo",
+      "source": "configs/phytium-d2000.dts（最小骨架；真机 DTB 由固件供给，digest 口径不同）",
+      "evidence": "",
+      "digest": null
     }
-  },
+  ],
+  "structured_missing": [
+    {
+      "subsystem": "ram",
+      "note": "RAM map / reserved / CMA / secure world 未取得（B0 实测待做）"
+    },
+    {
+      "subsystem": "cpu",
+      "note": "真机核数/型号/主频未实测（repo 常量不作硬件事实）"
+    },
+    {
+      "subsystem": "storage",
+      "note": "存储控制器 / 介质 / sector / flush / 掉电特性未取得（C4/C5）"
+    },
+    {
+      "subsystem": "network-phy",
+      "note": "NIC / PHY / MAC / clock / reset / MDIO 未取得（C6）"
+    },
+    {
+      "subsystem": "bus",
+      "note": "RS485 / CAN / GPIO / transceiver / termination 未取得（C8/C9）"
+    },
+    {
+      "subsystem": "power",
+      "note": "电源轨 / 掉电通知设计未取得（C5）"
+    },
+    {
+      "subsystem": "thermal",
+      "note": "温度传感器 / 降频事实未取得（C15）"
+    },
+    {
+      "subsystem": "watchdog",
+      "note": "watchdog / 复位原因寄存器未取得"
+    },
+    {
+      "subsystem": "rtc",
+      "note": "RTC 型号与寄存器未取得"
+    },
+    {
+      "subsystem": "trng",
+      "note": "TRNG 寄存器手册与上电实测未取得（C10 硬门，bring-up 第一优先）"
+    },
+    {
+      "subsystem": "secure-element",
+      "note": "TPM / 安全元件 / eFuse 事实未取得"
+    },
+    {
+      "subsystem": "rollback-counter",
+      "note": "防回滚单调计数器（eFuse/RPMB）可用性未实证（C12）"
+    },
+    {
+      "subsystem": "cache",
+      "note": "cache / SMMU / 一致性域事实未取得（C2）"
+    }
+  ],
   "missing": [
     "soc revision / cache / SMMU / GIC 版本与寄存器布局",
     "RAM map / reserved / CMA / secure world",
@@ -43,6 +91,8 @@
     "RS485 / CAN / GPIO / transceiver / termination",
     "power / thermal / sensor",
     "watchdog / RTC / TRNG / TPM",
-    "known errata / workaround owner"
+    "known errata / workaround owner",
+    "soc: SoC revision / cache / SMMU / GIC 版本与寄存器布局未取得",
+    "docs: known errata / workaround owner 未取得（C14/C16；上游 TF-A 无 Phytium 平台页）"
   ]
 }

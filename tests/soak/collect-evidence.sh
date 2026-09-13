@@ -12,7 +12,12 @@
 # 从 `target/soak/` 采集原始证据 → 统一打包为带 sha256 清单的证据包
 # （evidence-bundle/），供 D1 验收与阶段 D 出口评审引用。
 #
-# 用法：bash tests/soak/collect-evidence.sh [--bundle-dir <dir>]
+# 70.14（WP-70.14.1）判据变更：
+# - 缺必需材料 = **非零退出**（旧实现无论缺多少都 exit 0，无法与完整包区分）；
+# - `--allow-missing` 显式进入"缺件报告"模式（non_release），产物标注
+#   verdict=INCOMPLETE 且不得作为技术资格证据（无硬件环境的开发回归用）。
+#
+# 用法：bash tests/soak/collect-evidence.sh [--bundle-dir <dir>] [--allow-missing]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,7 +25,21 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${REPO_ROOT}"
 
 SOAK_DIR="${ENEROS_SOAK_OUT:-target/soak}"
-BUNDLE_DIR="${1:-${SOAK_DIR}/evidence-bundle}"
+ALLOW_MISSING=0
+BUNDLE_DIR=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --bundle-dir) BUNDLE_DIR="${2:-}"; shift 2 ;;
+        --allow-missing) ALLOW_MISSING=1; shift ;;
+        -h|--help)
+            echo "usage: collect-evidence.sh [--bundle-dir <dir>] [--allow-missing]"
+            exit 0 ;;
+        *) echo "[evidence] unknown arg: $1" >&2; exit 2 ;;
+    esac
+done
+if [ -z "${BUNDLE_DIR}" ]; then
+    BUNDLE_DIR="${SOAK_DIR}/evidence-bundle"
+fi
 
 mkdir -p "${BUNDLE_DIR}"
 
@@ -92,6 +111,26 @@ echo "[evidence] manifest: ${MANIFEST} ($(wc -l < "${MANIFEST}") files hashed)"
 echo "[evidence] missing: ${MISSING} item(s) (see missing-evidence.txt)"
 
 if [ "${MISSING}" -gt 0 ]; then
-    echo "[evidence] WARN: 存在缺失证据——浸泡未覆盖全部六类证据（硬件/外设依赖项）"
+    echo "[evidence] FAIL: 存在缺失证据——浸泡未覆盖全部必需证据类（硬件/外设依赖项）" >&2
+    # 70.14（WP-70.14.1）：「打包完成」与「证据齐全」是两件事。旧实现无论
+    # 缺多少材料都 exit 0（蓝图 §9 D6-14 复核属实），下游无法区分"完整包"
+    # 与"只有清单的包"。现在：
+    # - 默认（无 --allow-missing）：缺必需材料 → 非零退出（fail-closed；
+    #   soak72.sh 与 CI 都按失败处理）；
+    # - `--allow-missing`：显式登记为"缺件报告"（用于无硬件环境的开发回归），
+    #   该模式下的产物**不得**作为技术资格证据。
+    if [ "${ALLOW_MISSING}" -eq 1 ]; then
+        echo "[evidence] allow-missing: 缺件报告模式（non_release）——不得作为技术资格证据" >&2
+        printf '{\n  "schema": "eneros.evidence-bundle-verdict.v1",\n  "verdict": "INCOMPLETE",\n  "non_release": true,\n  "missing": %s\n}\n' "${MISSING}" \
+            > "${BUNDLE_DIR}/bundle-verdict.json"
+        exit 0
+    fi
+    printf '{\n  "schema": "eneros.evidence-bundle-verdict.v1",\n  "verdict": "FAIL",\n  "missing": %s\n}\n' "${MISSING}" \
+        > "${BUNDLE_DIR}/bundle-verdict.json"
+    exit 1
 fi
+
+printf '{\n  "schema": "eneros.evidence-bundle-verdict.v1",\n  "verdict": "COMPLETE",\n  "missing": 0\n}\n' \
+    > "${BUNDLE_DIR}/bundle-verdict.json"
+echo "[evidence] OK: 全部必需材料齐备"
 exit 0

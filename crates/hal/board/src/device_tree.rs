@@ -275,6 +275,7 @@ impl FdtTree {
             }
             devices.push(DeviceResources {
                 id: DeviceId(i as u32),
+                path: n.path.clone(),
                 compatible: compat,
                 status: DeviceStatus::Ok,
                 regs,

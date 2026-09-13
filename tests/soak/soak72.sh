@@ -212,9 +212,66 @@ self_test() {
         ok=0
     fi
 
+    # 用例 4（70.14）：运行记录判据——"参数声称 72h"但实测窗口只有 2h
+    #         必须被判负；同记录的诚实版本（真实 72h）必须通过。
+    OUT_DIR="$(mktemp -d)"
+    printf 'boot ok\n' > "${OUT_DIR}/serial.log"
+    write_run_manifest() {
+        local hours="$1" out="$2"
+        python3 - "${hours}" "${out}" <<'PY_RUN'
+import json, sys
+hours = int(sys.argv[1]); out = sys.argv[2]
+def ts(mins):
+    # 2026-09-01T00:00:00Z + mins（固定基准，测试夹具）
+    import datetime
+    base = datetime.datetime(2026, 9, 1, tzinfo=datetime.timezone.utc)
+    return (base + datetime.timedelta(minutes=mins)).strftime("%Y-%m-%dT%H:%M:%SZ")
+hb = [ts(m) for m in range(0, hours * 60 + 1, 10)]
+metrics = [{"at": ts(m), "heap_bytes": 1000000 + (m % 50),
+            "dma_bytes": 250000, "handles": 40,
+            "flush_latency_ms_max": 12, "control_period_ms_max": 100}
+           for m in range(0, hours * 60 + 1, 60)]
+body = {
+  "schema": "eneros.soak-run.v1",
+  "run_id": "self-test-run",
+  "scenario": "steady",
+  "scope": "hw-soak",
+  "artifacts": {"root_task": "a"*64, "boot_chain": "b"*64},
+  "device": {"sku_id": "self-test-sku", "board_revision": "rev-A",
+             "serial": "SN-SELFTEST", "firmware": "uefi-1"},
+  "rig": {"rig_id": "rig-self-test", "instruments": ["power-meter"],
+          "power_channel": "psu-1"},
+  "started_at": ts(0), "ended_at": ts(hours * 60),
+  "heartbeats": hb,
+  "protocol_coverage": [
+     {"protocol": "modbus-tcp", "active_from": ts(0), "active_to": ts(hours*60), "samples": 1000},
+     {"protocol": "iec104", "active_from": ts(0), "active_to": ts(hours*60), "samples": 500}],
+  "metrics": metrics,
+  "judge_version": "self-test",
+  "raw_files": ["serial.log"],
+  "interruptions": []
+}
+json.dump(body, open(out, "w"))
+PY_RUN
+    }
+    # 4a：诚实 72h → 判据通过
+    write_run_manifest 72 "${OUT_DIR}/soak-run.json"
+    if ! cargo xtask soak run-check "${OUT_DIR}/soak-run.json" --min-hours 72 \
+            --base-dir "${OUT_DIR}" --out "${OUT_DIR}/verdict-ok.json" > /dev/null 2>&1; then
+        echo "[self-test] case 4a (honest 72h run) was rejected" >&2
+        ok=0
+    fi
+    # 4b：实测窗口 2h（参数/声明声称 72h 的形态）→ 判负
+    write_run_manifest 2 "${OUT_DIR}/soak-run.json"
+    if cargo xtask soak run-check "${OUT_DIR}/soak-run.json" --min-hours 72 \
+            --base-dir "${OUT_DIR}" > /dev/null 2>&1; then
+        echo "[self-test] case 4b (claimed 72h, measured 2h) was accepted" >&2
+        ok=0
+    fi
     OUT_DIR="${orig_out}"
+
     if [ "${ok}" -eq 1 ]; then
-        echo "[self-test] ALL 3 TAMPER CASES REJECTED (ok)"
+        echo "[self-test] ALL 4 TAMPER CASES REJECTED (ok)"
         exit 0
     fi
     echo "[self-test] FAILED: at least one tamper case was accepted" >&2
@@ -258,7 +315,7 @@ EOF
     echo "[soak] 真机浸泡留待硬件就绪（蓝图 36 WP-36.10 #3：无执行器/无硬件 = PENDING，非 PASS，退出非零）"
     # v0.254.0（D1b）：跳过路径也产证据包（跳过证据 + 缺失清单），
     # 使 CI 门禁可验证"证据采集器本身工作正常"。
-    bash "${SCRIPT_DIR}/collect-evidence.sh" > /dev/null 2>&1 || true
+    bash "${SCRIPT_DIR}/collect-evidence.sh" --allow-missing > /dev/null 2>&1 || true
     exit 1
 fi
 
@@ -282,10 +339,32 @@ fi
 run_executors
 run_checks
 
+# ── 2b. 运行记录判据（70.14 WP-70.14.1/4：真实起止/心跳/覆盖/样本序列）──
+# 旧实现的缺口（蓝图 §9 D6-13 复核属实）：duration_days 由参数推导、
+# artifact 固定读 qemu-prod 路径、memory_leak 字面零写入。现在这些都必须
+# 来自 `soak-run.json`（执行器写原始事实），并由 xtask 判据核对。
+RUN_MANIFEST="${OUT_DIR}/soak-run.json"
+RUN_CHECK_ARGS=(run-check "${RUN_MANIFEST}" --min-hours "$((PROTOCOL_HOURS))")
+MEASURED_HOURS=""
+MEASURED_ARTIFACT=""
+if [ ! -f "${RUN_MANIFEST}" ]; then
+    fail "missing run manifest: ${RUN_MANIFEST}（真实起止/心跳/协议覆盖/样本序列的唯一来源）"
+else
+    if cargo xtask soak "${RUN_CHECK_ARGS[@]}" --base-dir "${OUT_DIR}" \
+            --out "${OUT_DIR}/soak-run-verdict.json"; then
+        MEASURED_HOURS=$(python3 -c "import json,sys;print(json.load(open('${OUT_DIR}/soak-run-verdict.json'))['measured_hours'])" 2>/dev/null || echo "")
+        MEASURED_ARTIFACT=$(python3 -c "import json,sys;m=json.load(open('${RUN_MANIFEST}'));print(next(iter(m['artifacts'].values()),''))" 2>/dev/null || echo "")
+    else
+        fail "soak run-check rejected ${RUN_MANIFEST}"
+    fi
+fi
+
 # ── 3. 产出 QA-018 证据（verdict 由检查结果推导）──
-DURATION_DAYS=$(( PROTOCOL_HOURS / 24 ))
-if [ "${DURATION_DAYS}" -lt 1 ]; then
-    DURATION_DAYS=3
+# duration_days 只作**对照**记录；正式判据是 run-check 实测小时数（无实测
+# 即无结论，不再由参数推算）。
+DURATION_DAYS=""
+if [ -n "${MEASURED_HOURS}" ]; then
+    DURATION_DAYS=$(( MEASURED_HOURS / 24 ))
 fi
 
 if [ "${FAIL_COUNT}" -gt 0 ]; then
@@ -297,7 +376,9 @@ if [ "${FAIL_COUNT}" -gt 0 ]; then
   "campaign_id": "real-hardware-${HARDWARE}-${BOOT_CYCLES}x",
   "verdict": "${V_VERDICT}",
   "fail_checks": ${FAIL_COUNT},
-  "duration_days": ${DURATION_DAYS}
+  "measured_hours": "${MEASURED_HOURS}",
+  "duration_days_measured": "${DURATION_DAYS}",
+  "run_check": "soak-run-verdict.json"
 }
 EOF
     exit 1
@@ -305,8 +386,9 @@ fi
 
 V_VERDICT="PASS"
 echo "[soak] VERDICT: ${V_VERDICT} — all checks derived from evidence files"
-# 蓝图 36 WP-36.10 #3：artifact_sha256 为空 → 直接 FAIL（无候选绑定不得 PASS）。
-ARTIFACT_HASH="$(sha256sum "${OUT_DIR}/../eneros/artifacts/qemu-prod/eneros-qemu-prod.raw" 2>/dev/null | cut -d' ' -f1 || true)"
+# 候选绑定（70.14）：产物摘要取自**本次运行记录**绑定的产物——不再固定读
+# qemu-prod 路径（真机 SKU 的产物摘要不在那里），也不再允许字面零摘要。
+ARTIFACT_HASH="${MEASURED_ARTIFACT}"
 if [ -z "${ARTIFACT_HASH}" ]; then
     V_VERDICT="FAIL"
     echo "[soak] FAIL: artifact_sha256 empty (no candidate artifact bound)" >&2
@@ -328,16 +410,19 @@ cat > "${OUT_DIR}/soak-campaign.json" <<CAMPAIGN_EOF
   "campaign_id": "real-hardware-${HARDWARE}-${BOOT_CYCLES}x",
   "artifact_sha256": "${ARTIFACT_HASH}",
   "verdict": "${V_VERDICT}",
-  "duration_days": ${DURATION_DAYS},
-  "min_duration_days": 3,
-  "memory_leak_bytes_per_day": 0,
-  "memory_leak_threshold": 0,
-  "data_corruption": false,
-  "restarts": [],
-  "metric_samples": ${BOOT_CYCLES}
+  "measured_hours": ${MEASURED_HOURS},
+  "duration_days_measured": ${DURATION_DAYS},
+  "min_duration_hours": ${PROTOCOL_HOURS},
+  "run_check": "soak-run-verdict.json",
+  "resource_metrics": "derived-from-run-manifest (见 soak-run-verdict.json: heap_peak/heap_slope/dma_peak/handles_peak)"
 }
 CAMPAIGN_EOF
 echo "[soak] campaign evidence: ${OUT_DIR}/soak-campaign.json"
 echo "[soak] DONE"
 # v0.254.0（D1b）：打包六类证据（含 sha256 清单）。
-bash "${SCRIPT_DIR}/collect-evidence.sh" || true
+# 70.14：缺必需材料 → 非零退出（旧实现 `|| true` 吞掉失败——"打包完成"被
+# 当成"证据齐全"）。
+if ! bash "${SCRIPT_DIR}/collect-evidence.sh"; then
+    echo "[soak] FAIL: evidence bundle incomplete (see missing-evidence.txt)" >&2
+    exit 1
+fi

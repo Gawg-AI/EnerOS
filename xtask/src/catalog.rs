@@ -27,6 +27,9 @@ use super::{hex, invalid, read_json, DynResult};
 pub const CATALOG_SCHEMA: &str = "eneros.compatibility-catalog.v1";
 pub const MATRIX_SCHEMA: &str = "eneros.sku-protocol-matrix.v1";
 pub const BOARD_FACT_SCHEMA: &str = "eneros.board-fact-freeze.v1";
+/// 70.12（WP-70.12.1）：结构化账本 schema（族/单位/来源等级/摘要 + 结构化
+/// 缺失登记）。v1 记录仍可读，但产品板卡必须给 v2（见 `board::validate_freeze_v2_qualified`）。
+pub const BOARD_FACT_SCHEMA_V2: &str = "eneros.board-fact-freeze.v2";
 pub const FORBIDDEN_SCHEMA: &str = "eneros.forbidden-core-paths.v1";
 pub const ENVELOPE_SCHEMA: &str = "eneros.evidence-envelope.v1";
 
@@ -109,9 +112,21 @@ pub struct BoardFactFreeze {
     pub sku_id: String,
     pub frozen_at: String,
     pub source_commit: String,
+    /// v1 形态的扁平事实表（v2 记录改用 `entries`，此处为空）。
+    #[serde(default)]
     pub facts: BTreeMap<String, BoardFact>,
     /// 未冻结/未知事实清单（缺项必须显式登记，禁止用默认值填空）。
+    #[serde(default)]
     pub missing: Vec<String>,
+    // ---- v2（70.12 WP-70.12.1）：结构化账本字段（v1 记录缺省）----
+    #[serde(default)]
+    pub revision: String,
+    #[serde(default)]
+    pub ledger_version: u32,
+    #[serde(default)]
+    pub entries: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub structured_missing: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -801,7 +816,7 @@ fn validate_assets(root: &Path) -> DynResult<Vec<String>> {
     if forbidden.forbidden_prefixes.is_empty() || forbidden.platform_surface_prefixes.is_empty() {
         v.push("forbidden-paths-empty".to_owned());
     }
-    // 5. 板级事实冻结存在性。
+    // 5. 板级事实冻结存在性 + 70.12 账本判据（v2）。
     let skus_dir = root.join("product/skus");
     for sku in &catalog.skus {
         let record = skus_dir.join(format!("{}.json", sku.sku_id));
@@ -810,8 +825,10 @@ fn validate_assets(root: &Path) -> DynResult<Vec<String>> {
             continue;
         }
         let fact: BoardFactFreeze = read_json(&record)?;
-        if fact.schema != BOARD_FACT_SCHEMA {
-            v.push(format!("sku-fact-schema:{}", sku.sku_id));
+        // 70.12：v2 结构化账本与 v1 扁平事实表都接受（迁移期双读），
+        // 其它 schema 一律拒绝。
+        if fact.schema != BOARD_FACT_SCHEMA && fact.schema != BOARD_FACT_SCHEMA_V2 {
+            v.push(format!("sku-fact-schema:{}:{}", sku.sku_id, fact.schema));
         }
         if fact.sku_id != sku.sku_id {
             v.push(format!("sku-fact-id-mismatch:{}", sku.sku_id));
@@ -819,6 +836,16 @@ fn validate_assets(root: &Path) -> DynResult<Vec<String>> {
         if fact.missing.is_empty() && sku.status == "qualified" {
             // qualified 必须同时满足"板级事实完整"（missing 空）。
         }
+        // 70.12（WP-70.12.1）：结构化账本判据（族约束/内存重叠/硬门能力）。
+        // v1 记录照旧通过存在性；`kind=product` 必须有结构化账本——否则
+        // 真实板卡事实无法被机器核对（"文件存在"不等于硬件已验证）。
+        let view = super::board::read_freeze_view(&record)?;
+        v.extend(super::board::validate_freeze_v2_qualified(
+            &view,
+            &sku.sku_id,
+            &sku.kind,
+            sku.status == "qualified",
+        ));
     }
     // 6. 外部评审矩阵（WP-43.12）：存在且状态枚举合法；N/A 必须有理由。
     let review_path = root.join("product/skus/external-review-matrix.json");
@@ -856,6 +883,114 @@ fn validate_assets(root: &Path) -> DynResult<Vec<String>> {
 // ============================================================
 // gate：43 机器 Gate（WP-43.15）
 // ============================================================
+
+/// 方向 6 的 gate 判据（bring-up / 能力表 / 资格记录）。
+///
+/// 分工：
+/// - **存在即判**：`evidence/70/70.12/*bring-up*.json` 与
+///   `product/skus/*.qualification.json` 一旦存在就必须自身成立
+///   （不得留"看起来像证据但字段造假"的文件）；
+/// - **产品 SKU 硬门**：目录里声明的协议必须有对应驱动（"枚举到硬件但无
+///   驱动"必须是显式状态，不能被当成"已支持"）；`status=qualified` 时
+///   另需结构化账本 + 通过判据的 bring-up 记录 + 资格记录；
+/// - 开发平台（QEMU/合成）不得凭这些记录获得任何资格结论。
+pub(crate) fn board_gate_violations(root: &Path) -> DynResult<Vec<String>> {
+    let mut v = Vec::new();
+    // 1. bring-up 记录（存在即判）。
+    let bringup_dir = root.join("evidence/70/70.12");
+    if bringup_dir.is_dir() {
+        let mut files: Vec<PathBuf> = fs::read_dir(&bringup_dir)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .map(|n| {
+                        let n = n.to_string_lossy();
+                        n.ends_with(".json") && n.contains("bring-up") && !n.contains("template")
+                    })
+                    .unwrap_or(false)
+            })
+            .collect();
+        files.sort();
+        for f in files {
+            let record: super::board::BringUpRecord = read_json(&f)?;
+            let rel = f
+                .strip_prefix(root)
+                .unwrap_or(&f)
+                .to_string_lossy()
+                .to_string();
+            for failure in super::board::validate_bringup(root, &record, &rel)? {
+                v.push(format!("{failure}:{rel}"));
+            }
+        }
+    }
+    // 2. 能力表：产品 SKU 的协议必须有驱动；qualified 需要结构化账本。
+    let catalog: CompatibilityCatalog =
+        read_json(&root.join("product/compatibility-catalog.json"))?;
+    for sku in &catalog.skus {
+        let record = root.join(format!("product/skus/{}.json", sku.sku_id));
+        let view = if record.is_file() {
+            Some(super::board::read_freeze_view(&record)?)
+        } else {
+            None
+        };
+        if sku.kind == "product" {
+            for proto in &sku.protocols {
+                // 驱动的存在性以目录声明为准（构建期闭包由 closure gate 复核）；
+                // 这里判"声明协议是否被声明的驱动覆盖"——没有驱动的协议不得
+                // 作为能力发布（WP-70.13.5 三态区分）。
+                let covered = sku.drivers.iter().any(|d| {
+                    let d = d.to_ascii_lowercase();
+                    d.contains(&proto.to_ascii_lowercase())
+                        || (proto.starts_with("modbus") && d.contains("modbus"))
+                        || (proto == "mqtt" && d.contains("net"))
+                });
+                if !covered {
+                    v.push(format!(
+                        "board-protocol-without-driver:{}:{}",
+                        sku.sku_id, proto
+                    ));
+                }
+            }
+        }
+        if sku.status == "qualified" {
+            let Some(view) = view else {
+                v.push(format!("qualified-sku-no-fact-record:{}", sku.sku_id));
+                continue;
+            };
+            if view.entries.is_empty() {
+                v.push(format!("qualified-sku-no-structured-ledger:{}", sku.sku_id));
+            }
+            // bring-up 记录：资格化板卡必须有**通过判据**的实板启动记录。
+            let bringup_rel = format!("evidence/70/70.12/{}-bring-up.json", sku.sku_id);
+            if !root.join(&bringup_rel).is_file() {
+                v.push(format!("qualified-sku-no-bringup-record:{}", sku.sku_id));
+            } else {
+                let record: super::board::BringUpRecord = read_json(&root.join(&bringup_rel))?;
+                for failure in super::board::validate_bringup(root, &record, &bringup_rel)? {
+                    v.push(format!("{failure}:{}", sku.sku_id));
+                }
+            }
+            // 技术资格记录（存在即判 + 必须是硬件 scope）。
+            let qual_rel = format!("product/skus/{}.qualification.json", sku.sku_id);
+            if !root.join(&qual_rel).is_file() {
+                v.push(format!(
+                    "qualified-sku-no-qualification-record:{}",
+                    sku.sku_id
+                ));
+            } else {
+                let rec: super::board::QualificationRecord = read_json(&root.join(&qual_rel))?;
+                for failure in super::board::validate_qualification(root, &rec, false)? {
+                    v.push(format!("{failure}:{}", sku.sku_id));
+                }
+                if super::board::has_non_hardware_run(&rec) {
+                    v.push(format!("qualified-sku-non-hardware-run:{}", sku.sku_id));
+                }
+            }
+        }
+    }
+    Ok(v)
+}
 
 fn current_lineage_digests(root: &Path) -> DynResult<(String, String)> {
     // 复用 evidence42 的候选血缘计算（同一 digest 语义）。
@@ -906,6 +1041,8 @@ fn command_gate(root: &Path, args: &[String]) -> DynResult<()> {
     if !verify_asset_signature(root, "product/sku-matrix.json") {
         violations.push("matrix-signature-invalid".to_owned());
     }
+    // 70.12/70.13/70.14（方向 6）：实板 bring-up 记录 + 精确能力表判据。
+    violations.extend(board_gate_violations(root)?);
     // 当前血缘（dirty worktree 允许开发证据；clean release 另需 tag/clone）。
     let (current_dirty, _current_commit) = current_lineage_digests(root)
         .map_err(|e| invalid(format!("catalog gate cannot compute lineage: {e}")))?;
@@ -921,11 +1058,21 @@ fn command_gate(root: &Path, args: &[String]) -> DynResult<()> {
         }
         let record = root.join(format!("product/skus/{}.json", sku.sku_id));
         let fact: BoardFactFreeze = read_json(&record)?;
-        if !fact.missing.is_empty() {
+        let view = super::board::read_freeze_view(&record)?;
+        // 70.12：资格化要求**结构化账本**且逐族无未冻结登记——v1 扁平事实表
+        // 与"文件存在"都不足以支撑硬件资格（"文件存在"≠"硬件已验证"）。
+        if view.entries.is_empty() {
+            violations.push(format!("qualified-sku-no-structured-ledger:{}", sku.sku_id));
+        }
+        let mut unfrozen: Vec<String> = fact.missing.clone();
+        for m in &view.structured_missing {
+            unfrozen.push(format!("{}:{}", m.subsystem, m.note));
+        }
+        if !unfrozen.is_empty() {
             violations.push(format!(
                 "qualified-sku-unfrozen-facts:{}:{}",
                 sku.sku_id,
-                fact.missing.join(",")
+                unfrozen.join(",")
             ));
         }
         for fact in fact.facts.values() {
@@ -933,9 +1080,31 @@ fn command_gate(root: &Path, args: &[String]) -> DynResult<()> {
                 violations.push(format!("qualified-sku-unverified-fact:{}", sku.sku_id));
             }
         }
+        for e in &view.entries {
+            if !e.verified {
+                violations.push(format!(
+                    "qualified-sku-unverified-entry:{}:{}#{}",
+                    sku.sku_id, e.subsystem, e.key
+                ));
+            }
+        }
         if sku.qualification_evidence.is_empty() {
             violations.push(format!("qualified-sku-no-evidence:{}", sku.sku_id));
             continue;
+        }
+        // 70.14（WP-70.14.5）：若存在技术资格记录，它必须自身成立且不得
+        // 混入非硬件 scope 的 run（"参数推算 72h"不得计入资格）。
+        for (path, record) in super::board::load_qualification_records(root)? {
+            if record.sku_id != sku.sku_id {
+                continue;
+            }
+            let failures = super::board::validate_qualification(root, &record, false)?;
+            for f in failures {
+                violations.push(format!("{}:{}", f, path));
+            }
+            if super::board::has_non_hardware_run(&record) {
+                violations.push(format!("qualified-sku-non-hardware-run:{}", sku.sku_id));
+            }
         }
         for rel in &sku.qualification_evidence {
             if !envelope_verdict_pass(root, rel) {
@@ -1329,5 +1498,197 @@ mod tests {
             .expect("git rev-parse runs");
         assert!(out.status.success());
         String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+}
+
+#[cfg(test)]
+mod catalog_70_tests {
+    use super::*;
+
+    /// 70.13（WP-70.13.5）：产品 SKU 声明协议但没有对应驱动 → 必须显式判负
+    /// （三态里的 `driver-missing` 不得被当成"已支持"）。
+    #[test]
+    fn product_protocol_without_driver_is_reported() {
+        let dir = std::env::temp_dir().join(format!(
+            "eneros-catalog70-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(dir.join("product/skus")).unwrap();
+        let catalog = serde_json::json!({
+            "schema": CATALOG_SCHEMA,
+            "catalog_id": "x",
+            "generated_at": "2026-09-01T00:00:00Z",
+            "core_arch": "aarch64",
+            "product_manifest_digest": "d",
+            "platform_contract_version": 1,
+            "signer": "dev",
+            "signature": "",
+            "skus": [{
+                "sku_id": "acme",
+                "kind": "product",
+                "board_revision": "rev-A",
+                "firmware": {"uefi": "uefi", "tfa": "tfa"},
+                "dtb_digest": "",
+                "bsp_adapter": "Adapter",
+                "drivers": ["svc-drv-blk"],
+                "protocols": ["modbus-tcp"],
+                "qualification_evidence": [],
+                "status": "not-qualified",
+                "status_reason": "无 L4"
+            }]
+        });
+        fs::write(
+            dir.join("product/compatibility-catalog.json"),
+            serde_json::to_vec_pretty(&catalog).unwrap(),
+        )
+        .unwrap();
+        let v = board_gate_violations(&dir).unwrap();
+        assert!(
+            v.contains(&"board-protocol-without-driver:acme:modbus-tcp".to_string()),
+            "{v:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 70.12：`qualified` 但没有结构化账本/bring-up/资格记录 → 三条都要报。
+    #[test]
+    fn qualified_sku_requires_ledger_bringup_and_qualification() {
+        let dir = std::env::temp_dir().join(format!(
+            "eneros-catalog70q-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(dir.join("product/skus")).unwrap();
+        let catalog = serde_json::json!({
+            "schema": CATALOG_SCHEMA,
+            "catalog_id": "x",
+            "generated_at": "2026-09-01T00:00:00Z",
+            "core_arch": "aarch64",
+            "product_manifest_digest": "d",
+            "platform_contract_version": 1,
+            "signer": "dev",
+            "signature": "",
+            "skus": [{
+                "sku_id": "acme",
+                "kind": "product",
+                "board_revision": "rev-A",
+                "firmware": {"uefi": "uefi", "tfa": "tfa"},
+                "dtb_digest": "",
+                "bsp_adapter": "Adapter",
+                "drivers": [],
+                "protocols": [],
+                "qualification_evidence": [],
+                "status": "qualified",
+                "status_reason": "x"
+            }]
+        });
+        fs::write(
+            dir.join("product/compatibility-catalog.json"),
+            serde_json::to_vec_pretty(&catalog).unwrap(),
+        )
+        .unwrap();
+        // v1 扁平记录（无 entries）→ qualified 不得通过。
+        fs::write(
+            dir.join("product/skus/acme.json"),
+            br#"{"schema":"eneros.board-fact-freeze.v1","sku_id":"acme","frozen_at":"x","source_commit":"y","facts":{},"missing":[]}"#,
+        )
+        .unwrap();
+        let v = board_gate_violations(&dir).unwrap();
+        for expected in [
+            "qualified-sku-no-structured-ledger:acme",
+            "qualified-sku-no-bringup-record:acme",
+            "qualified-sku-no-qualification-record:acme",
+        ] {
+            assert!(
+                v.contains(&expected.to_string()),
+                "missing {expected} in {v:?}"
+            );
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 存在即判：bring-up 记录文件在场但字段造假（错 scope/无序号）→ 判负。
+    #[test]
+    fn existing_bringup_record_is_always_judged() {
+        let dir = std::env::temp_dir().join(format!(
+            "eneros-catalog70b-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(dir.join("product/skus")).unwrap();
+        fs::create_dir_all(dir.join("evidence/70/70.12")).unwrap();
+        let catalog = serde_json::json!({
+            "schema": CATALOG_SCHEMA,
+            "catalog_id": "x",
+            "generated_at": "2026-09-01T00:00:00Z",
+            "core_arch": "aarch64",
+            "product_manifest_digest": "d",
+            "platform_contract_version": 1,
+            "signer": "dev",
+            "signature": "",
+            "skus": [{
+                "sku_id": "acme",
+                "kind": "product",
+                "board_revision": "rev-A",
+                "firmware": {"uefi": "uefi", "tfa": "tfa"},
+                "dtb_digest": "",
+                "bsp_adapter": "Adapter",
+                "drivers": [],
+                "protocols": [],
+                "qualification_evidence": [],
+                "status": "not-qualified",
+                "status_reason": "x"
+            }]
+        });
+        fs::write(
+            dir.join("product/compatibility-catalog.json"),
+            serde_json::to_vec_pretty(&catalog).unwrap(),
+        )
+        .unwrap();
+        // scope=qemu（QEMU 冒填实板）+ 无序号。
+        let record = serde_json::json!({
+            "schema": "eneros.board-bringup.v1",
+            "sku_id": "acme",
+            "board_revision": "rev-A",
+            "serial": "",
+            "rig_id": "",
+            "scope": "qemu",
+            "fact_record_digest": "",
+            "artifacts": {},
+            "required_services": [],
+            "raw_evidence": [],
+            "operators": {"device_facts_by": "", "bringup_by": "a", "reviewed_by": "a"}
+        });
+        fs::write(
+            dir.join("evidence/70/70.12/acme-bring-up.json"),
+            serde_json::to_vec_pretty(&record).unwrap(),
+        )
+        .unwrap();
+        let v = board_gate_violations(&dir).unwrap();
+        assert!(
+            v.iter()
+                .any(|x| x.starts_with("bringup-non-hardware-scope:qemu")),
+            "{v:?}"
+        );
+        assert!(
+            v.iter().any(|x| x.starts_with("bringup-serial-unbound")),
+            "{v:?}"
+        );
+        assert!(
+            v.iter()
+                .any(|x| x.starts_with("bringup-reviewer-not-independent")),
+            "{v:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 }

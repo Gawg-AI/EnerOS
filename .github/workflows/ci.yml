@@ -522,11 +522,32 @@ jobs:
 
       - name: D1 evidence collection (RC-1b, six-category bundle + sha256 manifest)
         run: |
-          # 六类证据采集打包：无硬件时产出缺失清单（fail-open 报告），
-          # 有硬件时产出完整证据包。manifest 哈希供防篡改校验。
-          bash tests/soak/collect-evidence.sh
+          # 六类证据采集打包 + sha256 清单。
+          # 70.14（WP-70.14.1）：缺必需材料 = 非零退出（旧实现无论缺多少都
+          # exit 0，与完整包不可区分）；CI 无硬件 → 用显式 `--allow-missing`
+          # 产出"缺件报告"（verdict=INCOMPLETE、non_release），并断言这一
+          # 语义；严格模式必须失败（证明判据有牙）。
+          bash tests/soak/collect-evidence.sh --allow-missing
           test -f target/soak/evidence-bundle/MANIFEST.sha256
           test -f target/soak/evidence-bundle/missing-evidence.txt
+          grep -q '"verdict": "INCOMPLETE"' target/soak/evidence-bundle/bundle-verdict.json \
+            || { echo "allow-missing bundle must self-declare INCOMPLETE" >&2; exit 1; }
+          if bash tests/soak/collect-evidence.sh --bundle-dir target/soak/evidence-strict > /dev/null 2>&1; then
+            echo "strict bundle must fail closed when evidence is missing" >&2
+            exit 1
+          fi
+          grep -q '"verdict": "FAIL"' target/soak/evidence-strict/bundle-verdict.json \
+            || { echo "strict bundle must self-declare FAIL" >&2; exit 1; }
+
+      - name: "D1 soak run judge (70.14 WP-70.14.1/4: 实测时长/心跳/覆盖/样本)"
+        run: |
+          # 运行记录判据自证：策略可打印、无记录即非零（不得由参数推算时长）。
+          cargo xtask soak policy
+          cargo xtask board fact-validate
+          if cargo xtask soak run-check target/soak/soak-run.json > /dev/null 2>&1; then
+            echo "soak run-check must fail when no run manifest exists" >&2
+            exit 1
+          fi
 
   gkernel-qemu-spawn-ipc:
     runs-on: ubuntu-22.04

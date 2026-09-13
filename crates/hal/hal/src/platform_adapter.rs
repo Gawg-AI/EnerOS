@@ -265,6 +265,7 @@ mod tests {
     fn test_inventory() -> PlatformInventory {
         let pl011 = DeviceResources {
             id: DeviceId(1),
+            path: String::from("/pl011@9000000"),
             compatible: NonEmptyVec::new(vec!["arm,pl011".into()]).unwrap(),
             status: DeviceStatus::Ok,
             regs: vec![MmioRegion {

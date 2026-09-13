@@ -121,6 +121,12 @@ pub struct IommuRef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceResources {
     pub id: DeviceId,
+    /// 描述树节点路径（FDT node path；manifest 源可留空）。
+    ///
+    /// 70.12（WP-70.12.3）：平台角色判据（"这是不是网卡"）用**描述事实**
+    /// 而不是厂商 compatible 子串猜——路径在真板 FDT 上直接可读，换板不需要
+    /// 改判定逻辑；compatible 厂商串不参与角色判定（厂商分支禁忌）。
+    pub path: String,
     pub compatible: NonEmptyVec<CompatibleId>,
     pub status: DeviceStatus,
     pub regs: Vec<MmioRegion>,
@@ -546,6 +552,7 @@ mod tests {
     fn dev(id: u32, compat: &str, base: u64, size: u64) -> DeviceResources {
         DeviceResources {
             id: DeviceId(id),
+            path: String::from("/soc/device"),
             compatible: NonEmptyVec::new(vec![compat.into()]).unwrap(),
             status: DeviceStatus::Ok,
             regs: vec![MmioRegion {

@@ -23,6 +23,8 @@ eneros-boot-manager-uefi = { path = "../crates/boot/boot-manager-uefi" }
 eneros-crash-dump = { path = "../crates/observability/crash-dump" }
 eneros-config-bundle = { path = "../crates/runtime/config-bundle", features = ["compile"] }
 eneros-crypto = { path = "../crates/security/crypto" }
+# 蓝图 70.12：板级事实账本/平台描述校验（判据实现单源；xtask 只做 JSON 桥接）。
+eneros-board-facts = { path = "../crates/product/board-facts" }
 eneros-signer-keyring = { path = "../crates/security/signer-keyring" }
 ed25519-dalek = { version = "2.2.0", default-features = true }
 sha2 = "0.10.9"

@@ -20,7 +20,7 @@
 
 use alloc::boxed::Box;
 
-use super::CsRng;
+use super::{entropy_health, CsRng};
 
 /// 熵源错误（fail-closed：无源即错误，不降级）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +29,10 @@ pub enum EntropyError {
     Unavailable,
     /// 熵源返回数据不足。
     ShortRead,
+    /// 轮询超出预算仍未就绪（70.12 WP-70.12.4：不无限自旋）。
+    Timeout,
+    /// 健康自检未通过（卡住/退化/零熵）。
+    Unhealthy(entropy_health::HealthVerdict),
 }
 
 /// 统一熵源接口（CRY-002）。
@@ -139,10 +143,46 @@ pub fn platform_entropy_source() -> Result<Box<dyn EntropySource>, EntropyError>
 /// 无可用熵源时返回错误——调用方（密钥生成/签名）必须 fail-closed，
 /// 不得静默使用固定种子（`CsRng::new()` 在 release 下不存在）。
 pub fn csrng_from_platform() -> Result<CsRng, EntropyError> {
-    let mut src = platform_entropy_source()?;
     let mut seed = [0u8; 32];
-    src.fill_entropy(&mut seed)?;
+    platform_entropy_seed(&mut seed)?;
     Ok(CsRng::from_seed(&seed))
+}
+
+/// 70.12（WP-70.12.4）：健康门控的生产取种入口（`platform_entropy_seed` 的
+/// 可归档形态——返回自检判定，供启动证据行/诊断使用）。
+pub fn csrng_from_platform_checked() -> Result<(CsRng, entropy_health::HealthVerdict), EntropyError>
+{
+    let mut seed = [0u8; 32];
+    let verdict = platform_entropy_seed_policy(&mut seed, entropy_health::HealthPolicy::PRODUCT)?;
+    Ok((CsRng::from_seed(&seed), verdict))
+}
+
+/// 70.12（WP-70.12.4）：取种**必须**先过健康自检。
+///
+/// 判据（[`entropy_health::HealthPolicy::PRODUCT`]）：多样本不同块 + 取值域
+/// + 每字节最小熵 + 有界轮询。任一不过 → [`EntropyError::Unhealthy`]。
+///
+/// 调用方（密钥供给/生产身份）不得继续，更不得回退固定种子。
+pub fn platform_entropy_seed_policy(
+    out: &mut [u8; 32],
+    policy: entropy_health::HealthPolicy,
+) -> Result<entropy_health::HealthVerdict, EntropyError> {
+    let mut src = platform_entropy_source()?;
+    let test = entropy_health::HealthTest::new(policy)?;
+    let verdict = test.run(src.as_mut())?;
+    if !verdict.ok {
+        return Err(EntropyError::Unhealthy(verdict));
+    }
+    // 自检样本与取种分离：取种走**新的**一次读取（不复用自检样本——
+    // 样本已进证据/日志面，不得与密钥材料同源）。
+    let mut src2 = platform_entropy_source()?;
+    entropy_health::fill_bounded(src2.as_mut(), out, policy.max_polls)?;
+    Ok(verdict)
+}
+
+/// 便捷封装：默认生产判据取种。
+pub fn platform_entropy_seed(out: &mut [u8; 32]) -> Result<(), EntropyError> {
+    platform_entropy_seed_policy(out, entropy_health::HealthPolicy::PRODUCT).map(|_| ())
 }
 
 #[cfg(test)]

@@ -1,25 +1,92 @@
 {
-  "schema": "eneros.board-fact-freeze.v1",
+  "schema": "eneros.board-fact-freeze.v2",
   "sku_id": "kunpeng-920",
-  "frozen_at": "2026-08-18T00:00:00Z",
-  "source_commit": "b96774e3a20a468ccfc4d6d81c0ee761a460860b",
-  "facts": {
-    "soc": {
-      "value": "Kunpeng 920（占位骨架，compatible = \"hisilicon,kunpeng-920\", \"arm,v8.2\"）",
+  "revision": "unknown",
+  "frozen_at": "2026-09-13T00:00:00Z",
+  "source_commit": "071f606",
+  "ledger_version": 2,
+  "entries": [
+    {
+      "subsystem": "soc",
+      "key": "compatible",
+      "value": "hisilicon,kunpeng-920 / arm,v8.2",
+      "unit": "none",
       "verified": true,
-      "source": "configs/kunpeng-920.dts:34"
+      "hardware_scope": "repo",
+      "source": "configs/kunpeng-920.dts:34（占位骨架，仅 compatible 级别）",
+      "evidence": "",
+      "digest": null
     },
-    "cpu": {
-      "value": "未知（占位骨架未声明核数）",
-      "verified": false,
-      "source": "BLOCKED：缺硬件与 BSP 文档"
-    },
-    "dtb": {
-      "value": "configs/kunpeng-920.dts 占位最小骨架",
+    {
+      "subsystem": "docs",
+      "key": "dtb",
+      "value": "configs/kunpeng-920.dts",
+      "unit": "none",
       "verified": true,
-      "source": "configs/kunpeng-920.dts（仅 compatible 级别）"
+      "hardware_scope": "repo",
+      "source": "configs/kunpeng-920.dts（最小骨架；真机 DTB 由固件供给）",
+      "evidence": "",
+      "digest": null
     }
-  },
+  ],
+  "structured_missing": [
+    {
+      "subsystem": "ram",
+      "note": "RAM map / reserved / CMA / secure world 未取得"
+    },
+    {
+      "subsystem": "cpu",
+      "note": "核数/型号/主频未实测"
+    },
+    {
+      "subsystem": "boot-chain",
+      "note": "firmware / UEFI / TF-A / version / config 未取得"
+    },
+    {
+      "subsystem": "storage",
+      "note": "storage controller / media / sector / flush / power-loss 未取得（C4/C5）"
+    },
+    {
+      "subsystem": "network-phy",
+      "note": "NIC / PHY / MAC / clock / reset / MDIO 未取得（C6）"
+    },
+    {
+      "subsystem": "bus",
+      "note": "RS485 / CAN / GPIO / transceiver / termination 未取得（C8/C9）"
+    },
+    {
+      "subsystem": "power",
+      "note": "电源轨 / 掉电通知设计未取得（C5）"
+    },
+    {
+      "subsystem": "thermal",
+      "note": "温度传感器 / 降频事实未取得（C15）"
+    },
+    {
+      "subsystem": "watchdog",
+      "note": "watchdog / 复位原因寄存器未取得"
+    },
+    {
+      "subsystem": "rtc",
+      "note": "RTC 型号与寄存器未取得"
+    },
+    {
+      "subsystem": "trng",
+      "note": "TRNG 寄存器手册与上电实测未取得（C10 硬门）"
+    },
+    {
+      "subsystem": "secure-element",
+      "note": "TPM / 安全元件 / eFuse 事实未取得"
+    },
+    {
+      "subsystem": "rollback-counter",
+      "note": "防回滚单调计数器可用性未实证（C12）"
+    },
+    {
+      "subsystem": "cache",
+      "note": "cache / SMMU / 一致性域事实未取得（C2）"
+    }
+  ],
   "missing": [
     "soc revision / core count / cache / SMMU / GIC",
     "RAM map / reserved / CMA / secure world",
@@ -29,6 +96,8 @@
     "RS485 / CAN / GPIO / transceiver / termination",
     "power / thermal / sensor",
     "watchdog / RTC / TRNG / TPM",
-    "known errata / workaround owner"
+    "known errata / workaround owner",
+    "soc: SoC revision / core count / cache / SMMU / GIC 未取得",
+    "docs: known errata / workaround owner 未取得（C14/C16）"
   ]
 }

@@ -370,6 +370,24 @@
 | REG-70.8-SYNTH-NO-OBS | `crates/runtime/root-task`（qemu-test-synth 合成源）、`crates/agents/control-services/src/event_face.rs`（惰性打开）、`configs/catalog.toml`（source 1 注释） | **Open（P1 验证面，2026-09-13 首次 QEMU 实弹暴露）**：70.8 起决策输入 = **事件面冻结快照**；而 qemu-test 装配的遥测源是 root 合成轨（只走旧 `TelemetrySample` 兼容路径、**永不产生 `ObservationEvent`**）⇒ 事件面永不打开、`SNAPSHOT-INPUT-REJECT reason=no-frozen-snapshot` ×21、EA 恒 `status=NOACTION`（fail-closed，无安全风险但**主链不可证**）。本卷 QEMU 证据因此只能证到装配面（`CERTIFIER-ACTIVE` / `PLAN-SPEC-NONE` / 同代目录行）。修法二选一：合成源升级为发 `obs_batch_wire` 帧，或门内起南向从站模拟器使采集轮产出 ObservationEvent | 本表 / 执行卡 §9.5 |
 | REG-70.10-RECONNECT-UNWIRED | `crates/agents/control-services/src/remote_brain.rs::on_session_reconnect` | **Open（P3，登记不修）**：方法存在且有测（t8c），但**零生产调用方**（svc-mqtt 重连不通知 svc-ai-worker）⇒ 会话重连后旧 pending 只能靠 30s 超时清除。接线属 svc-mqtt→worker 事件面工作 | 本表 |
 
+## F-70-12..14. 蓝图 70.12–70.14 登记（2026-09-13，方向 6 真实板卡与设备兼容会话）
+
+> 范围：`949ce53` + 工作树（方向 6 的可移植代码与判据部分；实板出口因外部
+> 实物缺失保持 BLOCKED）。执行卡：`蓝图/70-核心七方向全链路深化蓝图/
+> 23-执行卡-70.12-70.14.md`。宿主基线复跑 = **8991 passed / 0 failed**。
+
+| ID | 锚点 | 状态 | 登记处 |
+|---|---|---|---|
+| REG-70.12-SKU-UNFROZEN | `product/skus/{phytium-d2000,kunpeng-920}.json`、`product/skus/board-selection-criteria.md` §5 | **Open（外部待证，判据已就绪）**：库内两份产品 SKU 记录已升 **v2 结构化账本**，全部硬件事实仍 `verified=false`，13/14 个能力族逐族登记 `structured_missing`；owner 选板签字位为空 ⇒ C10（TRNG 手册）/C14（寄存器手册）两项历史双高风险硬门无法解除。判据已生效：`kind=product` 无 v2 账本即 `sku-fact-ledger-required`；`status=qualified` 追加能力覆盖硬门（缺 storage/network-phy/bus/trng/rollback-counter/power/watchdog 任一即 `capability-unverified:<族>:<判据>`）。**不得用 QEMU 事实或默认容量填空** | 执行卡 §3/§7 |
+| REG-70.12-ADAPTER-REGISTRY | `crates/runtime/root-task/src/board_select.rs::REGISTERED_ADAPTERS`、`crates/product/board-facts/src/registry.rs` | **Open（设计如此，外部待证）**：实板 adapter 注册表**当前为空**——`board-prod` 镜像一旦声明 `ENEROS_BOARD_*` 即在装配期被拒（`board-no-adapter-for-sku`），**不回退 QEMU**。这是对旧行为（`platform.rs` 硬编码 `QemuVirtAdapter`，任何镜像都用 QEMU 平台事实）的修正。板卡型号冻结后在此登记（含修订与冻结记录摘要）；在此之前实板启动出口保持 BLOCKED | 执行卡 §3/§7 |
+| REG-70.12-ENTROPY-REAL-TRNG | `crates/security/crypto/src/rng/entropy_health.rs`、`entropy.rs::PhytiumTrng/KunpengTrng` | **Open（外部待证，判据已就绪）**：健康判据（不同块数/取值域/单字节最小熵/有界轮询）与 fail-closed 接缝已落地并被 `platform_entropy_seed` / `csrng_from_platform` 消费；**真实 TRNG 寄存器接口与噪声模型仍缺**（厂商文档 + B0 实测）——`PhytiumTrng`/`KunpengTrng` 仍恒 `Unavailable`。判据口径 = 退化检测（SP 800-90B 启发型最小子集），**不是**完整熵评估 | 执行卡 §3/§7 |
+| REG-70.12-DESCRIPTION-BINDING | `crates/product/board-facts/src/platform.rs::vouch_selection`、`registry.rs` | **Done（代码 + host 锁）**：构建期所选 SKU/修订/描述摘要 × 运行时描述必须一致；必需设备（控制台/启动存储/熵/网络控制器）、MMIO 页对齐与非零、以及**一致性声明必须有硬件依据**（无 `Cache`/`Soc` 已验证事实即拒绝 —— 不许把 QEMU coherent 假设搬到真板）。8 例负例覆盖。目标侧证据行 `70.12 BOARD …` 已接电（root 装配失败打印 `reason=`） | 执行卡 §3 |
+| REG-70.12-ROLE-BY-DESCRIPTION | `crates/hal/hal/src/inventory.rs`（`DeviceResources.path`）、`board-facts/src/platform.rs::platform_role` | **Done（顺带缺陷修复）**：平台角色（网卡/串口/块设备/熵源）此前只能靠 compatible 厂商串子串猜；改为**先看 FDT 节点路径**、再看 compatible 的通用类别词（`net/ethernet/serial/blk/rng/…`），型号串（`lan91c111`/`d2000-gpio`）不再参与判定。`DeviceResources` 新增 `path` 字段（FDT 解析填充；非 wire/介质变更） | 执行卡 §3 |
+| REG-70.14-RUN-JUDGE | `xtask/src/soak.rs`、`tests/soak/{soak72,collect-evidence}.sh`、`.github/workflows/ci.yml` | **Done（判据 + 脚本改造）**：浸泡"时长/产物/增长"改为必须来自原始运行记录——`duration_days` 不再由 `PROTOCOL_HOURS/24` 推算、`artifact_sha256` 不再固定读 `qemu-prod` 路径、删除 `memory_leak_*: 0` 字面值；缺必需证据材料 → 非零退出（`--allow-missing` 显式进入 `INCOMPLETE/non_release` 模式）；自检扩到 4 例（含"参数声称 72h 但实测 2h 判负"）。**真实 72h 与实机 HIL 仍外部待证**（无试验台/无板卡） | 执行卡 §3 |
+| REG-70.14-QUALIFICATION-IMPACTS | `xtask/src/board.rs::validate_qualification` | **Done（判据）；资格记录待实板**：技术资格记录须绑当前冻结记录摘要、run 须硬件 scope、required case 非空不重、影响映射逐组件登记；`verify` 模式下"可算组件"（`configs/` 内容摘要）自动复验并**撤销受影响场景**，"不可自动核对组件"（hardware/firmware/driver/protocol）返回 `qualify-impact-unverifiable` **要求人工裁决，不默认未变** | 执行卡 §3 |
+| REG-70.12-ORPHAN-GATE-CONFLICT | `crates/protocols/control-dispatch/src/plan_hold.rs`、`xtask/src/gate.rs`（orphan-check） | **Open（门语义与在册登记冲突，登记不修）**：orphan-check 的判据是"删掉候选 + mod 声明后仍能编译 ⇒ 真死文件 ⇒ 删除"，而 `plan_hold.rs` 正是 `REG-70.11-HOLD-UNWIRED` 记载的**生产零调用方但在案待接线**模块（约 1040 行 + 7 例判据）——门执行即永久抹除。本会话实测该文件被反复删除（同时也解释了工作树"跟踪文件被回退"的现象）。处置归 70.15/后续卷（接线 or 删除并同步本册），**本会话只登记事实并提供备份**（`/tmp` 备份非入仓，须在接线前恢复） | 本表 / 执行卡 §8 |
+| REG-70.12-WORKTREE-EXTERNAL-REVERT | 全仓（`xtask/src/main.rs`、`Cargo.toml`、`product/skus/*.json`、`tests/soak/*.sh`、root-task 侧文件等 ~18 个跟踪文件） | **Open（过程事实，必须留痕）**：本会话期间跟踪文件多次被**外部进程回退到 HEAD 且不报冲突**（同一分钟内先后出现/消失；`plan_hold.rs` 反复被删）。全部改动经 `git stash`（含 20 文件差异）与 `/tmp/eneros-70.12-70.14-backup/` 完整恢复；恢复后 H-1/H-2/H-4 与新判据套件复跑全绿。交接前须 `git status --short` 核对执行卡 §3 清单 | 执行卡 §8 |
+
 ## F-70-6. 蓝图 70.6 登记（2026-09-12，v0.336.0 会话）
 
 | ID | 锚点 | 状态 | 登记处 |

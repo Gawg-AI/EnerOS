@@ -1,0 +1,15 @@
+[package]
+name = "eneros-board-facts"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Board fact ledger, platform selection and device-side validation (no_std, host-testable)"
+
+[dependencies]
+# 70.12（WP-70.12.2/3）：inventory/addr/dma 是平台事实与校验的唯一模型源
+# （本 crate 只判事实一致性，不新增平台抽象层）。
+eneros-hal = { path = "../../hal/hal" }
+
+[features]
+default = []

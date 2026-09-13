@@ -620,6 +620,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "eneros-board-facts"
+version = "0.337.0"
+dependencies = [
+ "eneros-hal",
+]
+
+[[package]]
 name = "eneros-boot-manager-uefi"
 version = "0.337.0"
 dependencies = [
@@ -1726,6 +1733,7 @@ dependencies = [
  "eneros-agent-sdk",
  "eneros-audit",
  "eneros-board",
+ "eneros-board-facts",
  "eneros-boot-protocol",
  "eneros-can",
  "eneros-config-bundle",
@@ -2097,6 +2105,7 @@ name = "eneros-xtask"
 version = "0.337.0"
 dependencies = [
  "ed25519-dalek",
+ "eneros-board-facts",
  "eneros-boot-manager-uefi",
  "eneros-boot-protocol",
  "eneros-config-bundle",

@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use crate::product_manifest::ServiceSpec;
 
 mod artifact_inspector;
+mod board;
 mod catalog;
 mod closure;
 mod config_compile;
@@ -31,7 +32,9 @@ mod product_deriver;
 mod product_manifest;
 mod qa;
 mod qemu_harness;
+// 70.14（WP-70.14.1/4）：浸泡/HIL 运行证据 fail-closed 判据。
 mod sbom;
+mod soak;
 mod symbolize;
 mod test_results;
 mod toolchain;
@@ -300,6 +303,10 @@ fn real_main() -> DynResult<()> {
         "build" => command_build(&root, &rest),
         "test" => command_test(&root, &rest),
         "catalog" => catalog::command_catalog(&root, &rest),
+        // 70.12/70.13/70.14（方向 6）：板级事实/bring-up/能力表/技术资格。
+        "board" => board::command_board(&root, &rest),
+        // 70.14：浸泡/HIL 运行记录判据（真实起止/心跳/覆盖/样本序列）。
+        "soak" => soak::command_soak(&root, &rest),
         "fault" => fault_factory::command_fault(&root, &rest),
         "fuzz" => command_fuzz(&root, &rest),
         "build-compare" => vrf002::command_build_compare(&root),
