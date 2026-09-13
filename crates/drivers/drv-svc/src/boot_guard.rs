@@ -98,11 +98,7 @@ impl BootWriteGuard {
 /// 越出 16 扇区的 BOOTCTRL 区间 → 安装事务恒 ST_UNAVAILABLE
 ///（`BOOT-TRIAL: rejected (io)`）。单位换算（字节 → 扇区上取整）只许
 /// 发生在本模块的 [`crate::block_cmd::InstallBackend::write_allowed`]。
-pub fn install_write_allowed(
-    ranges: (u64, u64, u64, u64),
-    lba: u64,
-    count: u64,
-) -> bool {
+pub fn install_write_allowed(ranges: (u64, u64, u64, u64), lba: u64, count: u64) -> bool {
     let (inactive_start_lba, inactive_lbas, bootctrl_start_lba, bootctrl_lbas) = ranges;
     if count == 0 {
         return false;

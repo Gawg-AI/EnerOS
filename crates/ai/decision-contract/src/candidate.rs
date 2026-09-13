@@ -310,6 +310,13 @@ impl CandidatePlan {
     pub fn step_count(&self) -> u32 {
         self.step_count
     }
+
+    /// 步长（毫秒；**下限 1ms**）——单源：编译（时段窗）与计划持有
+    /// （到期驱动）必须用同一换算，否则同一份计划在两处得到不同的步窗。
+    /// `step_ns ∈ (0, 1ms)` 不得产生零宽窗（那会让所有步瞬间"错窗"）。
+    pub fn step_len_ms(&self) -> u64 {
+        (self.step_ns / 1_000_000).max(1)
+    }
     pub fn assignments(&self) -> &[Assignment] {
         &self.assignments
     }

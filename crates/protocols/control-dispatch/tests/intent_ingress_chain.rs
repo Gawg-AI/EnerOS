@@ -177,7 +177,7 @@ fn engine_with_chain(
     gate: DecisionGate,
     chain: ControlChain,
 ) -> DispatchEngine {
-    let config = support::test_config(support::TestConfigSeed {
+    let config = support::test_config_legacy(support::TestConfigSeed {
         chain,
         key: KEY.to_vec(),
         profile: test_profile(),

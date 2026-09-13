@@ -107,6 +107,469 @@ pub struct PeerPlan {
     pub ttl_secs: u32,
 }
 
+// ============================================================================
+// 蓝图 70.10（WP-70.10.1/70.10.2）：**结构化全计划**站端通道 v2
+// ============================================================================
+//
+// v1（上方）只承载单值 `power_kw`：目标侧拿到的是 host 取第 1 步再钳制的
+// 有损投影。v2 把**完整计划**搬过通道：请求携带目标侧事实引用（快照身份/
+// 目录代次/时域/逐资产规格/目标价格），应答携带全部资源 × 全部时段的
+// 分配、求解状态与模型/输入摘要。
+//
+// 纪律（与 v1 同律，逐条加严）：
+// - `deny_unknown_fields`：未知键整体拒绝；
+// - 版本闭集（仅 2）；身份**逐字段绑定**（快照/目录/时域必须与请求一致）；
+// - 分配条数 ≤ [`PEER_PLAN_MAX_ASSIGNMENTS`]（与 decision-contract inline
+//   上限同源），每资产恰好 `step_count` 步（轨迹长度不符即拒）；
+// - 数值有限、非零资产、步序 ∈ [1, step_count]；**预算越界即拒**——
+//   v2 禁止 host 钳制后仍声称原求解证明（钳制 = 计划不再是被认证的那份）。
+
+use alloc::vec::Vec;
+
+/// v2 契约版本。
+pub const PEER_CONTRACT_VERSION_V2: u64 = 2;
+/// v2 请求 JSON 尺寸上限（结构化输入：逐资产规格 + 价格序列）。
+pub const PEER_REQUEST_MAX_LEN_V2: usize = 4096;
+/// v2 应答 JSON 尺寸上限（64 项分配 × ~90B + 头部）。
+pub const PEER_RESPONSE_MAX_LEN_V2: usize = 8192;
+/// 分配条数上限（= decision-contract inline assignment 上限；同源约束）。
+pub const PEER_PLAN_MAX_ASSIGNMENTS: usize = 64;
+
+/// 逐资产规格（目标侧事实 → host 模型输入；**不是** host 自持 fixture）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerAssetSpec {
+    pub asset_id: u64,
+    /// 铭牌容量 kWh（>0；目录铭牌同代）。
+    pub capacity_kwh: f64,
+    pub eta_c: f64,
+    pub eta_d: f64,
+    /// 快照 SOC × 容量的初始能量 kWh。
+    pub initial_kwh: f64,
+    /// 可用 SOC 窗（0..1 分数；目录铭牌）。
+    pub soc_min: f64,
+    pub soc_max: f64,
+    /// 功率窗 kW（包络求交后）。
+    pub p_min_kw: f64,
+    pub p_max_kw: f64,
+    pub ramp_up_kw_s: f64,
+    pub ramp_down_kw_s: f64,
+    /// 分配绑定（device/point/unit；0 = 未绑定，由 dispatch 解析）。
+    pub device_id: u16,
+    pub point_id: u32,
+    pub unit_code: u16,
+}
+
+/// 结构化决策请求 v2（target → host）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerRequestV2 {
+    pub v: u64,
+    pub req_id: u64,
+    pub ts_ms: u64,
+    /// 冻结快照身份（hex 32；绑定的唯一代次）。
+    pub snapshot_id_hex: String,
+    /// 快照 provenance root（hex 64）。
+    pub provenance_hex: String,
+    /// 目录合同版本（同代）。
+    pub catalog_version: u64,
+    /// 计划时域（起点 ms / 步长 ns / 步数）。
+    pub horizon_start_ms: u64,
+    pub step_ns: u64,
+    pub step_count: u32,
+    /// 逐资产规格（≥1）。
+    pub assets: Vec<PeerAssetSpec>,
+    /// 并网点资产（0 = 无）。
+    pub grid_asset_id: u64,
+    /// 目标：`min_cost` | `max_revenue`（闭集）。
+    pub objective_kind: String,
+    /// 每步电价（元/kWh；len == step_count）。
+    pub prices_per_kwh: Vec<f64>,
+    /// 预算（功率幅值/TTL 上界；host 不得越界提案）。
+    pub budget: PeerBudget,
+}
+
+impl PeerRequestV2 {
+    /// 编码 + 闭合校验（host 侧入口与 target 侧构造共用）。
+    pub fn encode(&self) -> Result<String, PeerContractError> {
+        validate_request_v2(self)?;
+        let s = serde_json::to_string(self)
+            .map_err(|e| PeerContractError::Serialization(e.to_string()))?;
+        if s.len() > PEER_REQUEST_MAX_LEN_V2 {
+            return Err(PeerContractError::TooLarge(s.len()));
+        }
+        Ok(s)
+    }
+}
+
+/// 请求 v2 闭合校验（schema 之外的结构/数值判据）。
+pub fn validate_request_v2(req: &PeerRequestV2) -> Result<(), PeerContractError> {
+    if req.v != PEER_CONTRACT_VERSION_V2 {
+        return Err(PeerContractError::Version(req.v));
+    }
+    if !is_hex(&req.snapshot_id_hex, 32) {
+        return Err(PeerContractError::Range(
+            String::from("snapshot_id_hex"),
+            String::from("expect 32 lowercase hex"),
+        ));
+    }
+    if !is_hex(&req.provenance_hex, 64) {
+        return Err(PeerContractError::Range(
+            String::from("provenance_hex"),
+            String::from("expect 64 lowercase hex"),
+        ));
+    }
+    if req.catalog_version == 0 || req.step_count == 0 || req.step_ns == 0 {
+        return Err(PeerContractError::Range(
+            String::from("horizon"),
+            String::from("zero catalog/step_count/step_ns"),
+        ));
+    }
+    if req.assets.is_empty() {
+        return Err(PeerContractError::Range(
+            String::from("assets"),
+            String::from("empty"),
+        ));
+    }
+    if req.assets.len() as u64 * u64::from(req.step_count) > PEER_PLAN_MAX_ASSIGNMENTS as u64 {
+        return Err(PeerContractError::Range(
+            String::from("assets"),
+            String::from("assets × steps exceeds plan cap"),
+        ));
+    }
+    if req.prices_per_kwh.len() != req.step_count as usize {
+        return Err(PeerContractError::Range(
+            String::from("prices_per_kwh"),
+            String::from("len != step_count"),
+        ));
+    }
+    if req.prices_per_kwh.iter().any(|p| !p.is_finite()) {
+        return Err(PeerContractError::Range(
+            String::from("prices_per_kwh"),
+            String::from("non-finite"),
+        ));
+    }
+    match req.objective_kind.as_str() {
+        "min_cost" | "max_revenue" => {}
+        _ => {
+            return Err(PeerContractError::Range(
+                String::from("objective_kind"),
+                String::from("not in closed set"),
+            ))
+        }
+    }
+    if !req.budget.max_power_kw.is_finite() || req.budget.max_power_kw <= 0.0 {
+        return Err(PeerContractError::Range(
+            String::from("budget.max_power_kw"),
+            String::from("non-positive"),
+        ));
+    }
+    for a in &req.assets {
+        if a.asset_id == 0 {
+            return Err(PeerContractError::Range(
+                String::from("assets[].asset_id"),
+                String::from("zero"),
+            ));
+        }
+        let finite = [
+            a.capacity_kwh,
+            a.eta_c,
+            a.eta_d,
+            a.initial_kwh,
+            a.soc_min,
+            a.soc_max,
+            a.p_min_kw,
+            a.p_max_kw,
+            a.ramp_up_kw_s,
+            a.ramp_down_kw_s,
+        ];
+        if finite.iter().any(|v| !v.is_finite()) {
+            return Err(PeerContractError::Range(
+                String::from("assets[]"),
+                String::from("non-finite parameter"),
+            ));
+        }
+        if a.capacity_kwh <= 0.0
+            || a.p_min_kw > a.p_max_kw
+            || a.soc_min < 0.0
+            || a.soc_max > 1.0
+            || a.soc_min >= a.soc_max
+            || a.ramp_up_kw_s < 0.0
+            || a.ramp_down_kw_s < 0.0
+        {
+            return Err(PeerContractError::Range(
+                String::from("assets[]"),
+                String::from("inconsistent parameters"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// 计划绑定（target 期望的同代事实；逐字段比对）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlanBinds {
+    pub snapshot_id: [u8; 16],
+    pub catalog_version: u64,
+    pub horizon_start_ms: u64,
+    pub step_ns: u64,
+    pub step_count: u32,
+}
+
+/// 单条分配（资源 × 步）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerAssignment {
+    pub asset_id: u64,
+    pub device_id: u16,
+    pub point_id: u32,
+    pub unit_code: u16,
+    /// 1-based 步序（∈ [1, step_count]）。
+    pub step_index: u32,
+    pub power_kw: f64,
+}
+
+/// 结构化计划体（v2）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerPlanV2 {
+    /// 绑定字段（必须与请求/目标侧在途输入逐字段相等）。
+    pub snapshot_id_hex: String,
+    pub catalog_version: u64,
+    pub horizon_start_ms: u64,
+    pub step_ns: u64,
+    pub step_count: u32,
+    /// `optimal` | `suboptimal`（闭集；非成功求解不得应答）。
+    pub solver_status: String,
+    /// 模型摘要（hex 64）——求解证明的可复验引用。
+    pub model_digest_hex: String,
+    /// 输入摘要（hex 64）。
+    pub input_digest_hex: String,
+    pub objective_value: f64,
+    pub relative_gap: f64,
+    pub elapsed_ms: u64,
+    /// 全量分配（≤ [`PEER_PLAN_MAX_ASSIGNMENTS`]）。
+    pub assignments: Vec<PeerAssignment>,
+    pub target_device: String,
+    pub ttl_secs: u32,
+}
+
+/// 结构化计划应答（v2）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerResponseV2 {
+    pub v: u64,
+    pub req_id: u64,
+    pub seq: u64,
+    pub plan: PeerPlanV2,
+    pub reason: String,
+}
+
+impl PeerResponseV2 {
+    /// 编码（host 侧；尺寸闭合）。
+    pub fn encode(&self) -> Result<String, PeerContractError> {
+        let s = serde_json::to_string(self)
+            .map_err(|e| PeerContractError::Serialization(e.to_string()))?;
+        if s.len() > PEER_RESPONSE_MAX_LEN_V2 {
+            return Err(PeerContractError::TooLarge(s.len()));
+        }
+        Ok(s)
+    }
+}
+
+/// 解析 + 全量校验一条 v2 应答（target 侧；**不受信输入**）。
+///
+/// **不走 LLM 归一化**（与 v1 的关键差异，复查实锤）：v1 的
+/// `normalize_llm_json` 会把"看起来像数字的字符串"去引号（为 LLM 输出
+/// 容错而设）——v2 的 hex 摘要/身份字段恰恰可能是全数字串
+/// （如 `snapshot_id_hex = "1111…"`），归一会把它变成 JSON 数字，
+/// 使**合法计划被 schema 拒绝**（实测：64 位十六进制全数字 ⇒
+/// `invalid type: floating point …, expected a string`）。v2 是机器对机器
+/// 的结构化通道，故解析**严格**：不做任何形态改写（也不接受围栏/多余
+/// 文本——那是 LLM 通道的容错面，不属于结构化计划通道）。
+///
+/// 判据（短路）：schema → 版本闭集 → req_id 配对 → seq 单调 → 绑定逐字段
+/// 相等 → 求解状态闭集 → 摘要 hex → 分配结构（条数/步序/资产非零/唯一性/
+/// 轨迹完整）→ 数值有限 → 预算域 → TTL 域。
+pub fn parse_and_validate_v2(
+    json: &str,
+    checks: &ResponseChecks<'_>,
+    binds: &PlanBinds,
+) -> Result<PeerResponseV2, PeerContractError> {
+    let resp: PeerResponseV2 =
+        serde_json::from_str(json).map_err(|e| PeerContractError::Schema(e.to_string()))?;
+    validate_response_v2(&resp, checks, binds)?;
+    Ok(resp)
+}
+
+/// 对已解析 v2 应答执行全量校验（单源；`parse_and_validate_v2` 与
+/// 装配期预检共用）。
+pub fn validate_response_v2(
+    resp: &PeerResponseV2,
+    checks: &ResponseChecks<'_>,
+    binds: &PlanBinds,
+) -> Result<(), PeerContractError> {
+    if resp.v != PEER_CONTRACT_VERSION_V2 {
+        return Err(PeerContractError::Version(resp.v));
+    }
+    if resp.req_id != checks.expect_req_id {
+        return Err(PeerContractError::Correlation {
+            expected: checks.expect_req_id,
+            got: resp.req_id,
+        });
+    }
+    if let Some(last) = checks.expect_seq_gt {
+        if resp.seq <= last {
+            return Err(PeerContractError::Sequence {
+                last: Some(last),
+                got: resp.seq,
+            });
+        }
+    }
+    if resp.reason.trim().is_empty() {
+        return Err(PeerContractError::Range(
+            String::from("reason"),
+            String::from("empty"),
+        ));
+    }
+    let p = &resp.plan;
+    // —— 身份绑定：逐字段相等（不得"事后改写身份使不匹配候选通过"）——
+    let expect_sid = hex16(&binds.snapshot_id);
+    if p.snapshot_id_hex != expect_sid {
+        return Err(PeerContractError::Range(
+            String::from("plan.snapshot_id_hex"),
+            String::from("not the bound generation"),
+        ));
+    }
+    if p.catalog_version != binds.catalog_version {
+        return Err(PeerContractError::Range(
+            String::from("plan.catalog_version"),
+            String::from("mismatch"),
+        ));
+    }
+    if p.horizon_start_ms != binds.horizon_start_ms
+        || p.step_ns != binds.step_ns
+        || p.step_count != binds.step_count
+    {
+        return Err(PeerContractError::Range(
+            String::from("plan.horizon"),
+            String::from("mismatch"),
+        ));
+    }
+    match p.solver_status.as_str() {
+        "optimal" | "suboptimal" => {}
+        _ => {
+            return Err(PeerContractError::Range(
+                String::from("plan.solver_status"),
+                String::from("not in closed set"),
+            ))
+        }
+    }
+    if !is_hex(&p.model_digest_hex, 64) || !is_hex(&p.input_digest_hex, 64) {
+        return Err(PeerContractError::Range(
+            String::from("plan.digest_hex"),
+            String::from("expect 64 lowercase hex"),
+        ));
+    }
+    if !p.objective_value.is_finite() || !p.relative_gap.is_finite() || p.relative_gap < 0.0 {
+        return Err(PeerContractError::Range(
+            String::from("plan.objective"),
+            String::from("non-finite or negative gap"),
+        ));
+    }
+    if p.target_device.trim().is_empty() {
+        return Err(PeerContractError::Range(
+            String::from("plan.target_device"),
+            String::from("empty"),
+        ));
+    }
+    if p.assignments.is_empty() || p.assignments.len() > PEER_PLAN_MAX_ASSIGNMENTS {
+        return Err(PeerContractError::Range(
+            String::from("plan.assignments"),
+            String::from("empty or exceeds cap"),
+        ));
+    }
+    // 轨迹完整性：每资产恰好 step_count 步、步序唯一且 ∈ [1, step_count]。
+    let mut seen: Vec<(u64, u32)> = Vec::with_capacity(p.assignments.len());
+    let mut counts: Vec<(u64, u32)> = Vec::new();
+    for a in &p.assignments {
+        if a.asset_id == 0 {
+            return Err(PeerContractError::Range(
+                String::from("plan.assignments[].asset_id"),
+                String::from("zero"),
+            ));
+        }
+        if a.step_index == 0 || a.step_index > p.step_count {
+            return Err(PeerContractError::Range(
+                String::from("plan.assignments[].step_index"),
+                String::from("out of [1, step_count]"),
+            ));
+        }
+        if !a.power_kw.is_finite() {
+            return Err(PeerContractError::Range(
+                String::from("plan.assignments[].power_kw"),
+                String::from("non-finite"),
+            ));
+        }
+        // 预算域：越界即拒（**不钳制**——钳制后计划已不是被求解的那份）。
+        if a.power_kw.abs() > checks.budget.max_power_kw {
+            return Err(PeerContractError::Range(
+                String::from("plan.assignments[].power_kw"),
+                String::from("exceeds budget"),
+            ));
+        }
+        if seen.contains(&(a.asset_id, a.step_index)) {
+            return Err(PeerContractError::Range(
+                String::from("plan.assignments"),
+                String::from("duplicate asset/step"),
+            ));
+        }
+        seen.push((a.asset_id, a.step_index));
+        match counts.iter_mut().find(|(id, _)| *id == a.asset_id) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((a.asset_id, 1)),
+        }
+    }
+    if counts.iter().any(|(_, n)| *n != p.step_count) {
+        return Err(PeerContractError::Range(
+            String::from("plan.assignments"),
+            String::from("incomplete trajectory (per-asset steps != step_count)"),
+        ));
+    }
+    if p.ttl_secs == 0 || p.ttl_secs > checks.budget.ttl_secs {
+        return Err(PeerContractError::Range(
+            String::from("plan.ttl_secs"),
+            String::from("out of [1, budget.ttl_secs]"),
+        ));
+    }
+    Ok(())
+}
+
+/// 小写 hex 长度判定（严格：长度 + 字符集）。
+fn is_hex(s: &str, len: usize) -> bool {
+    s.len() == len
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// 16B → 32 小写 hex（绑定比对单源）。
+pub fn hex16(id: &[u8; 16]) -> String {
+    let mut s = String::with_capacity(32);
+    for b in id {
+        s.push_str(&alloc::format!("{b:02x}"));
+    }
+    s
+}
+
+/// 32B → 64 小写 hex（摘要字段单源）。
+pub fn hex32(d: &[u8; 32]) -> String {
+    let mut s = String::with_capacity(64);
+    for b in d {
+        s.push_str(&alloc::format!("{b:02x}"));
+    }
+    s
+}
+
 /// 契约错误（仅 Debug，D9 同款简化）。
 #[derive(Debug)]
 pub enum PeerContractError {
@@ -260,6 +723,8 @@ pub fn budget(max_power_kw: f64, ttl_secs: u32) -> PeerBudget {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_macros)] // 测试内判定 panic（clippy.toml 测试模块豁免）
+
     use super::*;
 
     const BUDGET: PeerBudget = PeerBudget {
@@ -574,6 +1039,241 @@ mod tests {
             parse_and_validate(&with_real, &checks_first_frame()),
             Err(PeerContractError::Schema(_))
         ));
+    }
+
+    // ========================================================================
+    // 蓝图 70.10 WP-70.10.1/70.10.2：结构化全计划 v2 校验（正例 + 逐类负例）
+    // ========================================================================
+
+    fn binds() -> PlanBinds {
+        PlanBinds {
+            snapshot_id: [0x5A; 16],
+            catalog_version: 3,
+            horizon_start_ms: 1_700_000_000_000,
+            step_ns: 60_000_000_000,
+            step_count: 4,
+        }
+    }
+
+    fn budget_v2() -> PeerBudget {
+        PeerBudget {
+            max_power_kw: 500.0,
+            ttl_secs: 60,
+        }
+    }
+
+    fn checks_v2(seq_gt: Option<u64>) -> ResponseChecks<'static> {
+        // 预算为常量借用（'static 生命周期便于测试构造）。
+        static BUDGET: PeerBudget = PeerBudget {
+            max_power_kw: 500.0,
+            ttl_secs: 60,
+        };
+        ResponseChecks {
+            expect_req_id: 7,
+            expect_seq_gt: seq_gt,
+            budget: &BUDGET,
+        }
+    }
+
+    fn assignment(asset: u64, step: u32, power: f64) -> PeerAssignment {
+        PeerAssignment {
+            asset_id: asset,
+            device_id: 2,
+            point_id: 10,
+            unit_code: 6,
+            step_index: step,
+            power_kw: power,
+        }
+    }
+
+    fn plan_v2_full() -> PeerPlanV2 {
+        let mut assignments = Vec::new();
+        for asset in [1u64, 10] {
+            for step in 1..=4u32 {
+                assignments.push(assignment(asset, step, -20.0 + step as f64));
+            }
+        }
+        PeerPlanV2 {
+            snapshot_id_hex: hex16(&[0x5A; 16]),
+            catalog_version: 3,
+            horizon_start_ms: 1_700_000_000_000,
+            step_ns: 60_000_000_000,
+            step_count: 4,
+            solver_status: String::from("optimal"),
+            model_digest_hex: hex32(&[0x11; 32]),
+            input_digest_hex: hex32(&[0x22; 32]),
+            objective_value: -12.5,
+            relative_gap: 0.0,
+            elapsed_ms: 12,
+            assignments,
+            target_device: String::from("pcs"),
+            ttl_secs: 60,
+        }
+    }
+
+    fn resp_v2(plan: PeerPlanV2) -> PeerResponseV2 {
+        PeerResponseV2 {
+            v: PEER_CONTRACT_VERSION_V2,
+            req_id: 7,
+            seq: 1,
+            plan,
+            reason: String::from("backend=planner status=optimal"),
+        }
+    }
+
+    fn json_v2(plan: PeerPlanV2) -> String {
+        serde_json::to_string(&resp_v2(plan)).expect("encode")
+    }
+
+    /// 正例：2 资产 × 4 时段全轨迹通过（逐字段绑定一致）。
+    #[test]
+    fn v2_full_plan_accepted_and_bound() {
+        let json = json_v2(plan_v2_full());
+        let r = parse_and_validate_v2(&json, &checks_v2(None), &binds()).expect("accept");
+        assert_eq!(r.plan.assignments.len(), 8);
+        assert_eq!(r.plan.solver_status, "optimal");
+    }
+
+    /// 跨代快照（身份不再逐字段相等）→ 拒。
+    #[test]
+    fn v2_cross_generation_snapshot_rejected() {
+        let mut plan = plan_v2_full();
+        plan.snapshot_id_hex = hex16(&[0x77; 16]);
+        assert!(parse_and_validate_v2(&json_v2(plan), &checks_v2(None), &binds()).is_err());
+    }
+
+    /// 目录版本 / 时域不符 → 拒（时域错位是最危险的静默错绑）。
+    #[test]
+    fn v2_catalog_and_horizon_mismatch_rejected() {
+        let mut p1 = plan_v2_full();
+        p1.catalog_version = 4;
+        assert!(parse_and_validate_v2(&json_v2(p1), &checks_v2(None), &binds()).is_err());
+        let mut p2 = plan_v2_full();
+        p2.horizon_start_ms += 1;
+        assert!(parse_and_validate_v2(&json_v2(p2), &checks_v2(None), &binds()).is_err());
+        let mut p3 = plan_v2_full();
+        p3.step_count = 3;
+        assert!(parse_and_validate_v2(&json_v2(p3), &checks_v2(None), &binds()).is_err());
+    }
+
+    /// 轨迹不完整（某资产缺步）→ 拒（不得"取 first 或补默认值"）。
+    #[test]
+    fn v2_incomplete_trajectory_rejected() {
+        let mut plan = plan_v2_full();
+        plan.assignments
+            .retain(|a| !(a.asset_id == 10 && a.step_index == 3));
+        assert!(parse_and_validate_v2(&json_v2(plan), &checks_v2(None), &binds()).is_err());
+    }
+
+    /// 越预算即拒（**不钳制**——钳制后计划已不是被求解的那份）。
+    #[test]
+    fn v2_over_budget_assignment_rejected_not_clamped() {
+        let mut plan = plan_v2_full();
+        plan.assignments[0].power_kw = 501.0;
+        match parse_and_validate_v2(&json_v2(plan), &checks_v2(None), &binds()) {
+            Err(PeerContractError::Range(f, _)) => assert_eq!(f, "plan.assignments[].power_kw"),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    /// 重复 (asset, step) 与越界步序 → 拒。
+    #[test]
+    fn v2_duplicate_and_out_of_range_step_rejected() {
+        let mut p1 = plan_v2_full();
+        p1.assignments[1].step_index = 1;
+        assert!(parse_and_validate_v2(&json_v2(p1), &checks_v2(None), &binds()).is_err());
+        let mut p2 = plan_v2_full();
+        p2.assignments[0].step_index = 5;
+        assert!(parse_and_validate_v2(&json_v2(p2), &checks_v2(None), &binds()).is_err());
+    }
+
+    /// 求解状态闭集 / 摘要形态 / 非有限数值 → 拒。
+    #[test]
+    fn v2_status_digest_and_finiteness_rejected() {
+        let mut p1 = plan_v2_full();
+        p1.solver_status = String::from("infeasible");
+        assert!(parse_and_validate_v2(&json_v2(p1), &checks_v2(None), &binds()).is_err());
+        let mut p2 = plan_v2_full();
+        p2.model_digest_hex = String::from("zz");
+        assert!(parse_and_validate_v2(&json_v2(p2), &checks_v2(None), &binds()).is_err());
+        let mut p3 = plan_v2_full();
+        p3.assignments[0].power_kw = f64::NAN;
+        assert!(parse_and_validate_v2(&json_v2(p3), &checks_v2(None), &binds()).is_err());
+        let mut p4 = plan_v2_full();
+        p4.relative_gap = -1.0;
+        assert!(parse_and_validate_v2(&json_v2(p4), &checks_v2(None), &binds()).is_err());
+    }
+
+    /// 分配条数上限（> 64）→ 拒；seq 重放 → 拒；req_id 不配对 → 拒。
+    #[test]
+    fn v2_cap_replay_and_correlation_rejected() {
+        let mut plan = plan_v2_full();
+        // 65 项：把某资产轨迹拉长到 65 步（同时也破坏轨迹完整性）。
+        plan.step_count = 65;
+        plan.assignments = (1..=65).map(|s| assignment(1, s, 1.0)).collect();
+        assert!(parse_and_validate_v2(&json_v2(plan), &checks_v2(None), &binds()).is_err());
+        // seq 重放（须严格递增）。
+        let json = json_v2(plan_v2_full());
+        assert!(matches!(
+            parse_and_validate_v2(&json, &checks_v2(Some(1)), &binds()),
+            Err(PeerContractError::Sequence { .. })
+        ));
+        // req_id 不配对。
+        let bad = json.replace("\"req_id\":7", "\"req_id\":8");
+        assert!(matches!(
+            parse_and_validate_v2(&bad, &checks_v2(None), &binds()),
+            Err(PeerContractError::Correlation { .. })
+        ));
+    }
+
+    /// 请求 v2 闭合校验：自持 fixture 缺失（无资产/价格长度不符/越上限）
+    /// → 拒（host 不得凭 host 自持配置补值）。
+    #[test]
+    fn v2_request_closed_validation() {
+        let spec = PeerAssetSpec {
+            asset_id: 1,
+            capacity_kwh: 100.0,
+            eta_c: 0.95,
+            eta_d: 0.95,
+            initial_kwh: 60.0,
+            soc_min: 0.05,
+            soc_max: 0.95,
+            p_min_kw: -500.0,
+            p_max_kw: 500.0,
+            ramp_up_kw_s: 3.0,
+            ramp_down_kw_s: 3.0,
+            device_id: 2,
+            point_id: 10,
+            unit_code: 6,
+        };
+        let req = PeerRequestV2 {
+            v: PEER_CONTRACT_VERSION_V2,
+            req_id: 7,
+            ts_ms: 1_700_000_000_000,
+            snapshot_id_hex: hex16(&[0x5A; 16]),
+            provenance_hex: hex32(&[0x3D; 32]),
+            catalog_version: 3,
+            horizon_start_ms: 1_700_000_000_000,
+            step_ns: 60_000_000_000,
+            step_count: 4,
+            assets: vec![spec.clone()],
+            grid_asset_id: 0,
+            objective_kind: String::from("min_cost"),
+            prices_per_kwh: vec![0.5; 4],
+            budget: budget_v2(),
+        };
+        assert!(req.encode().is_ok());
+        let mut no_assets = req.clone();
+        no_assets.assets.clear();
+        assert!(no_assets.encode().is_err());
+        let mut bad_prices = req.clone();
+        bad_prices.prices_per_kwh.pop();
+        assert!(bad_prices.encode().is_err());
+        let mut too_many = req.clone();
+        too_many.step_count = 32;
+        too_many.prices_per_kwh = vec![0.5; 32];
+        too_many.assets = vec![spec.clone(), spec.clone(), spec];
+        assert!(too_many.encode().is_err(), "3×32 > 64 必须拒");
     }
 
     #[test]

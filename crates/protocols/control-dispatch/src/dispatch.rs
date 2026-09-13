@@ -131,6 +131,25 @@ pub trait ControlDispatch {
         actor: &AuthenticatedActor,
         deadline_ms: u64,
     ) -> Result<DispatchReceipt, DispatchError>;
+
+    /// 本 dispatch 绑定的默认资产（未绑定分配 `asset_id == 0` 的解析
+    /// 目标；0 = 无绑定 → 调用方不做解析）。默认 0（测试双）。
+    fn default_asset_id(&self) -> u64 {
+        0
+    }
+
+    /// 蓝图 70.8 WP-70.8.4：**带可信输入身份**的 typed 提交（生产唯一
+    /// 入口）。引擎在入口验证候选与可信输入同代（快照/目录/时域/摘要），
+    /// 不匹配即整批拒绝（零投递，绝不改写身份使其通过）。
+    fn submit_trusted(
+        &mut self,
+        plan: &eneros_decision_contract::CandidatePlan,
+        trusted: &eneros_agent_sdk::snap_input_wire::TrustedInput,
+        target_device: &str,
+        telemetry: &TrustedTelemetry,
+        actor: &AuthenticatedActor,
+        deadline_ms: u64,
+    ) -> Result<DispatchReceipt, DispatchError>;
 }
 
 #[cfg(test)]

@@ -133,11 +133,12 @@ struct TelemetryEipc(EipcClient);
 #[cfg(target_os = "none")]
 impl eneros_control_services::energy_agent_service::TelemetryClient for TelemetryEipc {
     fn fetch_telemetry(&mut self) -> Result<alloc::vec::Vec<u8>, alloc::string::String> {
-        // 蓝图 67 WP-67.3：跨 crate 双名混用消除——直呼 wire 单源常量
-        // （control-services 侧 re-export 别名保留供旧路径）。
+        // 蓝图 70.8 WP-70.8.1：生产决策输入 = 可信快照输入（身份 + 状态
+        // 一体）。旧 TEL_REQ_SNAPSHOT（144B 裸遥测）保留为差分轨，生产
+        // 装配不再请求它。
         self.0.call(
             "svc-telemetry",
-            &[eneros_agent_sdk::tel_wire::TEL_REQ_SNAPSHOT],
+            &[eneros_agent_sdk::tel_wire::TEL_REQ_SNAPSHOT_INPUT],
         )
     }
 }

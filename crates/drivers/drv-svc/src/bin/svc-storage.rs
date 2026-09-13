@@ -84,7 +84,7 @@ pub extern "C" fn _start(
             let mut s = eneros_drv_svc::block_cmd::StorageService::new();
             s.attach(backend);
             // 70.7（WP-70.7.2）：启动盘（slot 0）受限安装面——boot 池基址
-            // 经 X8 直传（0=不可用）；MMIO = 同页 slot 0（数据盘页内偏移
+            // 经 X7 直传（0=不可用）；MMIO = 同页 slot 0（数据盘页内偏移
             // +0x400，boot = −0x400 回页基址）。
             if boot_dma_base != 0 && boot_dma_base & 0xfff == 0 {
                 match eneros_drv_svc::blk_backend::BootSlotBackend::try_new_boot(

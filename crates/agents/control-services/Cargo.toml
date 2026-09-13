@@ -21,6 +21,9 @@ eneros-runtime = { path = "../../runtime/runtime" }
 eneros-safety-validator = { path = "../../ai/safety-validator" }
 # 49（WP-49.2 契约层）：target↔peer 消息契约 + 不受信应答全量校验。
 eneros-intent-contract = { path = "../../ai/intent-contract" }
+# 蓝图 70.10：v2 版本判别探针（serde/serde_json 反序列化 v 字段）。
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 # 设备侧收口点 + 注册表（agent-runtime 桥接关闭——target 闭包无 llama/highs）。
 eneros-device-agent = { path = "../../agents/device-agent", default-features = false }
 # 唯一 ControlDispatch 引擎。
@@ -51,6 +54,9 @@ eneros-semantic-catalog = { path = "../../agents/semantic-catalog" }
 eneros-snapshot-service = { path = "../../agents/snapshot-service" }
 # 蓝图 61 v0.314.35：ResourceRegistry（PlannerView——命令批编译绑定权威）。
 eneros-resource-registry = { path = "../../agents/resource-registry" }
+# 蓝图 70.9 WP-70.9.1/70.9.2：独立认证来源装配（certify/verify + 上下文
+# 装配——本 crate 是唯一生产装配点；引擎只持接缝）。
+eneros-certifier = { path = "../../ai/certifier" }
 # 47（WP-47.4 审计持久化）：SHA-256 控制事件链（D4 线）。
 eneros-audit = { path = "../../security/audit" }
 # SPEC-C（WP-C.1 / D-TSDB-2 方案 A）：svc-telemetry 磁盘历史——TSDB 库、
@@ -75,6 +81,8 @@ sel4 = ["eneros-control-dispatch/sel4", "eneros-agent-sdk/sel4"]
 test-util = []
 
 [dev-dependencies]
+# 蓝图 70.9：测试缝夹具认证器（真实评估器出证；生产面零 feature）。
+eneros-certifier = { path = "../../ai/certifier", features = ["test-util"] }
 # 服务逻辑 host 测试：内存通道 + mock 设备。
 eneros-device-agent = { path = "../../agents/device-agent", default-features = false, features = ["mock"] }
 # 蓝图 61 v0.314.33：catalog/points 编译面（parity 测试）。

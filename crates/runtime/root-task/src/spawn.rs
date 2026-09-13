@@ -2235,7 +2235,7 @@ fn configure_service(
         }
         // b) DMA 池：数据盘 9 页 + 启动盘 9 页（70.7 WP-70.7.2）——
         //    各自独立连续分配（first-fit；物理位置互不要求）。启动池基址
-        //    经 initial_registers **X8** 直传 svc-storage；失败 → 打印 +
+        //    经 initial_registers **X7** 直传 svc-storage；失败 → 打印 +
         //    降级（无后端显式 Unavailable，不阻断其他服务）。
         if let Some((untyped, _byte_off, phys_base)) =
             ctx.untyped.alloc_contiguous_pages(STORAGE_DMA_PAGES)
@@ -2295,7 +2295,7 @@ fn configure_service(
                     STORAGE_DMA_PAGES
                 );
                 let mmio_vaddr = STORAGE_MMIO_VADDR + STORAGE_MMIO_SLOT * STORAGE_MMIO_SLOT_STRIDE;
-                // 70.7：启动盘池独立分配（任意物理位置——X8 传基址）。
+                // 70.7：启动盘池独立分配（任意物理位置——X7 传基址）。
                 let mut boot_dma_vaddr: Option<u64> = None;
                 if let Some((untyped_b, _off_b, boot_phys_base)) = ctx
                     .untyped

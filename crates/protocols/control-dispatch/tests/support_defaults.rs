@@ -46,7 +46,7 @@ fn test_config_defaults_locked() {
     // 蓝图 69.4 WP-69.4.4：字段分组后断言取径改为组路径
     // （issuer/safety/audit_sinks/delivery_binding）；断言条数与期望值
     // 逐字节不变（变异靶锁不得削弱——卷出口第 4 项）。
-    let mut cfg = support::test_config(seed());
+    let mut cfg = support::test_config_legacy(seed());
     assert_eq!(cfg.issuer.issuer_epoch, 0);
     assert_eq!(cfg.delivery_binding.target_endpoint, "svc-device-agent");
     assert_eq!(cfg.safety.max_power_kw, 500.0);

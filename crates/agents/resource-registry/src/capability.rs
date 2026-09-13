@@ -124,6 +124,50 @@ impl CapabilityEnvelope {
         self
     }
 
+    /// 爬坡维求交（[08] §4.3 同律）：合同 `ramp_kw_per_s` 是**运行限值**，
+    /// 铭牌爬坡是**物理能力**——包络取二者之紧者（逐向 min），绝不放宽。
+    ///
+    /// `limit_kw_s <= 0` = **未声明**（编译面 `ramp_kw_per_s` 为可选键，
+    /// 缺省 0.0）→ 本函数不收紧、不留证据（不得把"未声明"当"禁止爬坡"：
+    /// 那会让一切计划在首个步间被判违约）。非有限/负值 = 非法输入 →
+    /// 与 [`Self::intersect`] 同律 fail-closed（Unavailable）。
+    pub fn intersect_ramp(
+        mut self,
+        source: &'static str,
+        constraint_id: u32,
+        limit_kw_s: f64,
+        valid_until_ns: u64,
+    ) -> CapabilityEnvelope {
+        if !limit_kw_s.is_finite() || limit_kw_s < 0.0 {
+            self.tightenings.push(Tightening {
+                source,
+                constraint_id,
+                original: (self.ramp_up_kw_s, self.ramp_down_kw_s),
+                tightened: (0.0, 0.0),
+                valid_until_ns,
+            });
+            self.availability = Availability::Unavailable;
+            if self.derating_reason == DeratingReason::None {
+                self.derating_reason = DeratingReason::Contract;
+            }
+            return self;
+        }
+        if limit_kw_s == 0.0 {
+            return self; // 未声明：无约束可施加
+        }
+        let original = (self.ramp_up_kw_s, self.ramp_down_kw_s);
+        self.ramp_up_kw_s = self.ramp_up_kw_s.min(limit_kw_s);
+        self.ramp_down_kw_s = self.ramp_down_kw_s.min(limit_kw_s);
+        self.tightenings.push(Tightening {
+            source,
+            constraint_id,
+            original,
+            tightened: (self.ramp_up_kw_s, self.ramp_down_kw_s),
+            valid_until_ns,
+        });
+        self
+    }
+
     /// 数值稳定性：全部边界有限（NaN/Inf → 按 Unavailable 处理——
     /// 任何 provider 输入异常都不得扩大能力）。
     pub fn sanitize(mut self) -> Self {

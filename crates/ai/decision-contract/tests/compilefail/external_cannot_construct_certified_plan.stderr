@@ -5,17 +5,10 @@ error[E0599]: no associated function or constant named `new` found for struct `C
   |                             ^^^ associated function or constant not found in `CertifiedPlan`
   |
 note: if you're trying to build a new `CertifiedPlan` consider using one of the following associated functions:
-      CertifiedPlan::new_transition
       CertifiedPlan::new_certified
       CertifiedPlan::decode_v1
  --> src/certificate.rs
   |
-  | /     pub fn new_transition(
-  | |         seal: CertifierSeal,
-  | |         fields: CertifiedPlanFields,
-  | |     ) -> Result<Self, ContractError> {
-  | |____________________________________^
-...
   | /     pub fn new_certified(
   | |         seal: CertifierSeal,
   | |         fields: CertifiedPlanFields,

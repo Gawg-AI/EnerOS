@@ -54,10 +54,14 @@ pub const VIRTIO_MMIO_REGION_BASE: u64 = 0x0a00_0000;
 ///
 /// **传递契约（REG-70.7-BOOT-BACKEND-ZEROSIZE 修订）**：启动盘池由 spawn
 /// **独立连续分配**（first-fit，与数据盘池无位置耦合），基址经
-/// `initial_registers` **X8** 直传 svc-storage（root `spawn.rs` 单源；
+/// `initial_registers` **X7** 直传 svc-storage（root `spawn.rs` 单源；
 /// 0 = 启动后端不可用诚实降级）。禁止 "+N 页" 派生——first-fit 落位
 /// 不保证紧邻（实测数据池 0x40a0c000、boot 池 0x40a16000，派生
 /// 0x40a15000 落 ghost 页 → svc-storage FAULT 无限重启）。
+///
+/// **寄存器选择**：X7（`INITIAL_REG_COUNT` 恒 11 的最后一格，对
+/// svc-storage 空闲——UART 移交集与其互斥）。**不可用 X8**：aarch64
+/// C-ABI 第 9 参不经寄存器，`_start` 形参恒读 0（run12/13 实弹）。
 pub const SVC_BOOT_DMA_PAGES: usize = 9;
 
 /// 启动盘 = virtio slot 0（MMIO = STORAGE_MMIO_VADDR + 0×0x200——数据盘

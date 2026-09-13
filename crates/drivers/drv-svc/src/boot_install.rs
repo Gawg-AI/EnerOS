@@ -38,9 +38,7 @@ impl<'a> BootInstall<'a> {
     }
 
     /// 读当前 bootctrl（双副本高序列解析；任一副本有效即取该副本）。
-    pub fn read_current(
-        &mut self,
-    ) -> Result<(BootControl, usize), &'static str> {
+    pub fn read_current(&mut self) -> Result<(BootControl, usize), &'static str> {
         let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
             eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
         );
@@ -65,19 +63,34 @@ impl<'a> BootInstall<'a> {
         }
     }
 
-    /// 写 bootctrl trial 事务（WP-70.7.3）：目标 = 非活动槽 trial
-    /// （优先级 = 活跃+1 封顶 15；tries=3；security_version = 目标值），
-    /// 序列 +1；双副本写（高序列副本先写，低序列后写——掉电窗口任一
-    /// 时刻 resolve 均取更高有效序列）+ flush。
+    /// 写 bootctrl trial 事务（WP-70.7.3）：目标 = **非活动槽** trial
+    /// （优先级 15；tries=3；security_version = 目标值），序列 +1；双副本写
+    /// （高序列副本先写，低序列后写——掉电窗口任一时刻 resolve 均取更高
+    /// 有效序列）+ flush。
     /// `target_image_id`/`target_security_version` 来自 70.5 验签描述。
     /// 返回新序列号。
+    ///
+    /// **非活动槽判据单源 = `BootControl::select()`**（70.7 复查修正）：
+    /// 旧版按 `slot_a.priority >= slot_b.priority` 自判，与
+    /// `BootWriteGuard::resolve`（用 `select()`）**在平局/试启动态下相反**——
+    /// trial 记录会落到**当前正在运行的槽**（下次引导仍选它，试启动语义
+    /// 自我失效），而 svc-ota 的候选身份读面（0x0F）读的是守卫口径的
+    /// 「非活动槽」，两侧指向不同物理分区 → manifest 身份与载荷不符。
+    /// 现两处同源：select() 选出的是被启动槽，trial 恒写其对侧。
     pub fn write_bootctrl_trial(
         &mut self,
         target_security_version: u64,
         target_image_id: [u8; 16],
     ) -> Result<u64, &'static str> {
         let (current, high_copy) = self.read_current()?;
-        let active_is_a = current.slot_a.priority >= current.slot_b.priority;
+        // 活跃槽 = select() 的裁决（priority → successful 平局规则的权威
+        // 实现）；Recovery/不可选 = 无「非活动槽」概念 → 拒绝（fail-closed：
+        // 守卫也不放行任何 BOOT 槽写）。
+        let active_is_a = match current.select().map_err(|_| "no-bootable-slot")?.slot {
+            eneros_boot_protocol::BootSlot::A => true,
+            eneros_boot_protocol::BootSlot::B => false,
+            eneros_boot_protocol::BootSlot::Recovery => return Err("recovery-selected"),
+        };
         let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
             eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
         );
@@ -178,18 +191,14 @@ impl<'a> BootInstall<'a> {
         match (pending(current.slot_a), pending(current.slot_b)) {
             (true, false) => {
                 let t = current.slot_a;
-                next.slot_a = eneros_boot_protocol::SlotState::disabled(
-                    t.security_version,
-                    t.image_id,
-                );
+                next.slot_a =
+                    eneros_boot_protocol::SlotState::disabled(t.security_version, t.image_id);
                 next.slot_b.priority = (next.slot_b.priority + 1).min(15);
             }
             (false, true) => {
                 let t = current.slot_b;
-                next.slot_b = eneros_boot_protocol::SlotState::disabled(
-                    t.security_version,
-                    t.image_id,
-                );
+                next.slot_b =
+                    eneros_boot_protocol::SlotState::disabled(t.security_version, t.image_id);
                 next.slot_a.priority = (next.slot_a.priority + 1).min(15);
             }
             // 双 pending（歧义）或无 pending → 拒绝（fail-closed）。
@@ -215,10 +224,7 @@ impl<'a> BootInstall<'a> {
 /// detail 直达站端。**零堆**：写入调用方定长缓冲（IPC 处理链上禁止
 /// alloc——REG-70.7 run24-26 冻结面收窄后仅余堆/回复两嫌疑，此处消除
 /// 堆嫌疑）。
-pub fn format_update_status(
-    c: &BootControl,
-    buf: &mut [u8],
-) -> Result<usize, &'static str> {
+pub fn format_update_status(c: &BootControl, buf: &mut [u8]) -> Result<usize, &'static str> {
     use core::fmt::Write as _;
     struct W<'a> {
         buf: &'a mut [u8],
@@ -247,7 +253,11 @@ pub fn format_update_status(
             s.security_version
         )
     };
-    let mut w = W { buf, n: 0, overflow: false };
+    let mut w = W {
+        buf,
+        n: 0,
+        overflow: false,
+    };
     let _ = write!(w, "seq={} floor={} A=", c.sequence, c.security_floor);
     let _ = slot(&mut w, &c.slot_a);
     let _ = write!(w, " B=");
@@ -341,6 +351,30 @@ mod boot_install_tests {
         c.encode().unwrap()
     }
 
+    /// **B 活跃**稳态（双 successful：A=14 / B=15）——select() 取 B。
+    /// 旧按优先级自判的实现此处恰好也对，但配合下面平局种子即露出反例。
+    fn factory_b_active() -> [u8; BOOT_CONTROL_RECORD_SIZE] {
+        let id = [9u8; 16];
+        let mut c = BootControl::factory(id, 1, id);
+        c.slot_a = eneros_boot_protocol::SlotState::successful(14, 1, id);
+        c.slot_b = eneros_boot_protocol::SlotState::successful(15, 1, id);
+        c.sequence = 1;
+        c.encode().unwrap()
+    }
+
+    /// 平局种子（双 successful 同级：A=B=15）——select() 走「B successful
+    /// 且 A 非」不成立 → **优先 A**；而 `priority >= priority` 的自判同样
+    /// 得 A。真正露反例的是「B successful 且 A trial 且同级」：select() 取
+    /// B（successful 胜 trial），自判却取 A。
+    fn factory_tie_b_successful() -> [u8; BOOT_CONTROL_RECORD_SIZE] {
+        let id = [9u8; 16];
+        let mut c = BootControl::factory(id, 1, id);
+        c.slot_a = eneros_boot_protocol::SlotState::trial(15, 3, 1, id);
+        c.slot_b = eneros_boot_protocol::SlotState::successful(15, 1, id);
+        c.sequence = 1;
+        c.encode().unwrap()
+    }
+
     #[test]
     fn trial_transaction_promotes_inactive_strictly_higher() {
         let mut face = MockFace::new();
@@ -380,6 +414,64 @@ mod boot_install_tests {
         let sel = c.select().expect("select");
         assert_eq!(sel.slot, BootSlot::B);
         assert!(!sel.trial);
+    }
+
+    /// 70.7 复查回归锁：trial 目标槽 = **select() 的裁决对侧**。
+    ///
+    /// 缺陷形态（旧实现）：按 `slot_a.priority >= slot_b.priority` 自判活跃槽。
+    /// 平局时自判 A、select() 也返回 A（successful 平局规则）——但**当活跃
+    /// 槽是 B 且两槽优先级相等**时（B 确认后 A 降 1 再被 trial 写回 15、
+    /// 或 cancel 恢复优先级后两槽同为 successful 15/14 的多轮事务），
+    /// 自判与 select() 相反 → trial 记录落在**正在运行的槽**上（下次引导
+    /// 仍选它 = 试启动自我失效），且 svc-ota 候选身份读面按守卫口径取的
+    /// 是另一分区 → manifest 身份与载荷不符。
+    ///
+    /// 本锁断言：任意种子下，trial 写入的槽恒不等 select() 当前裁决槽，
+    /// 且新记录 select() 恰好指向 trial 槽（试启动语义成立）。
+    #[test]
+    fn trial_targets_opposite_of_select_not_priority_order() {
+        // 种子矩阵：A 活跃（15/14）、B 活跃（14/15）、**双 successful 平局
+        // 但 B 优先**（15/15 → select 走 successful 规则取 A）、trial 态。
+        type Seed = fn() -> [u8; BOOT_CONTROL_RECORD_SIZE];
+        let seeds: [(&str, Seed); 4] = [
+            ("A-active", factory_stable),
+            ("B-active", factory_b_active),
+            ("tie-b-successful", factory_tie_b_successful),
+            ("A-trial-remain", factory_a_trial3),
+        ];
+        for (name, seed) in seeds {
+            let mut face = MockFace::new();
+            let rec = seed();
+            face.seed_bootctrl(&rec, 0);
+            face.seed_bootctrl(&rec, 1);
+            let mut inst = BootInstall::new(&mut face);
+            let before = inst
+                .read_current()
+                .expect("read")
+                .0
+                .select()
+                .expect("select")
+                .slot;
+            inst.write_bootctrl_trial(2, [3u8; 16]).expect("trial");
+            let after = inst.read_current().expect("read").0;
+            let sel = after.select().expect("select");
+            // 种子全是可引导态；落到 Recovery 即种子本身失效。
+            assert_ne!(before, BootSlot::Recovery, "{name}: 种子不得落在 Recovery");
+            let expected = match before {
+                BootSlot::A => BootSlot::B,
+                BootSlot::B => BootSlot::A,
+                BootSlot::Recovery => BootSlot::Recovery,
+            };
+            assert_eq!(sel.slot, expected, "{name}: trial 必须落在 select() 对侧");
+            assert!(sel.trial, "{name}: 对新记录必须是试启动态");
+            // 回退资格：原活跃槽优先级保留 ≥1（tries 耗尽可回退）。
+            let old = if expected == BootSlot::B {
+                after.slot_a
+            } else {
+                after.slot_b
+            };
+            assert!(old.priority >= 1, "{name}: 原活跃槽保留回退资格");
+        }
     }
 
     #[test]
@@ -443,6 +535,9 @@ mod boot_install_tests {
         let n = format_update_status(&c, &mut buf).expect("format");
         assert_eq!(&buf[..n], b"seq=2 floor=1 A=14/1/0/1 B=15/0/3/2");
         // 溢出拒绝（fail-closed，不静默裁剪）。
-        assert_eq!(format_update_status(&c, &mut buf[..8]), Err("status-overflow"));
+        assert_eq!(
+            format_update_status(&c, &mut buf[..8]),
+            Err("status-overflow")
+        );
     }
 }

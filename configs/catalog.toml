@@ -232,6 +232,24 @@ priority = "remote"
 safe_state = "hold"
 lost_link = "hold"
 
+# --- 物理参数铭牌（蓝图 70.8 WP-70.8.3） ---
+# 包络求交、认证电池参数与计划模型的物理输入唯一来源；与目录同代。
+# 缺铭牌的资产不可控（fail-closed，不从 host fixture 补值）。
+[[nameplate]]
+asset_id = 1
+capacity_kwh = 100.0          # PCS-1 电池额定容量
+eta_c = 0.95                  # 充电效率
+eta_d = 0.95                  # 放电效率
+energy_max_kwh = 100.0        # 可调度能量上界
+p_min_kw = -500.0             # 与 control_contract 1 一致（合同为最终收紧项）
+p_max_kw = 500.0
+q_min_kvar = 0.0
+q_max_kvar = 0.0
+ramp_up_kw_s = 3.3333         # 200 kW/min ÷ 60
+ramp_down_kw_s = 3.3333
+soc_min = 0.05                # 可用 SOC 下限（认证 MinSoc 硬约束来源）
+soc_max = 0.95                # 可用 SOC 上限（认证 MaxSoc 硬约束来源）
+
 # --- 安全约束目录（状态告警阈值；与 safety-validator 语义对齐） ---
 [[safety_constraint]]
 constraint_id = 1

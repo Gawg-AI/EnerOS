@@ -53,6 +53,23 @@ pub const SM2_SIG_LEN: usize = 64;
 /// SM3 摘要长度。
 pub const DIGEST_LEN: usize = 32;
 
+/// **构建期注入密钥材料**的配置条目（单一事实源）。
+///
+/// 三条目各携带一段只经 KMS/产线注入、永不落 TOML 的密钥字节：
+/// `ota.root_key`（64B SM2 未压缩点）、`security.control_chain_key`
+///（32B 控制链 HMAC）、`ai-peer.degrade_lease_key`（32B 降级租约 HMAC）。
+/// 其 payload 是**密文级**材料——任何把它原样回给运维面的读取路径都是
+/// 泄密面（`svc-mgmt` ConfigGet 的脱敏判据消费本常量）。
+///
+/// 新增携带注入密钥的条目时**必须**同步登记此处：与注入面
+///（`toml_compile::compile_entry` 的 `injected_*` 形参）同波次审查，
+/// `secret_bearing_covers_every_injected_config` 测试锁住两侧一致。
+pub const SECRET_BEARING_CONFIGS: [&str; 3] = [
+    schema::ota::CONFIG_ID,
+    schema::security::CONFIG_ID,
+    schema::ai_peer::CONFIG_ID,
+];
+
 /// 配置 ID——注册表与 bundle 条目的唯一键。
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ConfigId(pub alloc::string::String);

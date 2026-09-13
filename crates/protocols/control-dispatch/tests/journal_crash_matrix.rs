@@ -412,7 +412,7 @@ fn engine_with(
     channel: Box<dyn DeliveryChannel>,
     intent_log: Box<dyn IntentStore>,
 ) -> DispatchEngine {
-    let config = support::test_config(support::TestConfigSeed {
+    let config = support::test_config_legacy(support::TestConfigSeed {
         chain,
         key: KEY.to_vec(),
         profile: test_profile(),

@@ -399,19 +399,32 @@ impl eneros_durable_state::Decode for MgmtOpsState {
         bytes: &[u8],
     ) -> Result<(eneros_durable_state::Generation, Self), eneros_durable_state::StoreError> {
         use eneros_durable_state::{Generation, StoreError};
-        if bytes.len() < 17 {
+        // **RegionStateStore payload 布局：generation(8) ‖ state**——前缀由
+        // 本 impl 消费（与 ledger.rs::LedgerSnapshot / ota_service.rs::
+        // TrialState / agent_bus.rs::SessionCursor / learn.rs::LearnSnapshot
+        // 同源契约）。70.6 首版漏读该前缀：`Generation(1)` 硬编码返回 + 状态
+        // 解析整体右移 8B（count 从 state[16] 读成 state[8] 低位）→ 恢复
+        // 恒 n=0 且代次恒 1（REG-70.6-OPS-RESTORE-N0 真根因，实弹
+        // `MGMT-OPS ledger restored n=0`，宿主/旁证双复现）。
+        //
+        // 单元测试（`persistence_roundtrip_preserves_ledger`）只喂 `encode()`
+        // 原始字节（无前缀）——生产路径恒有前缀，故该测试对本次缺陷全盲；
+        // 回归锁见 `decode_consumes_store_generation_prefix`（前缀形态）。
+        if bytes.len() < 8 + 17 {
             return Err(StoreError::Corrupt);
         }
-        let next_op_id = u64::from_le_bytes(bytes[0..8].try_into().expect("u64"));
-        let dropped = u64::from_le_bytes(bytes[8..16].try_into().expect("u64"));
-        let count = bytes[16] as usize;
-        if count > MGMT_OPS_MAX || bytes.len() < 17 + count * ENC_ROW {
+        let generation = Generation(u64::from_le_bytes(bytes[0..8].try_into().expect("u64")));
+        let state = &bytes[8..];
+        let next_op_id = u64::from_le_bytes(state[0..8].try_into().expect("u64"));
+        let dropped = u64::from_le_bytes(state[8..16].try_into().expect("u64"));
+        let count = state[16] as usize;
+        if count > MGMT_OPS_MAX || state.len() < 17 + count * ENC_ROW {
             return Err(StoreError::Corrupt);
         }
         let mut records = Vec::with_capacity(count);
         let mut pos = 17;
         for _ in 0..count {
-            let row = &bytes[pos..pos + ENC_ROW];
+            let row = &state[pos..pos + ENC_ROW];
             pos += ENC_ROW;
             let status = OpStatus::from_code(row[72]).ok_or(StoreError::Corrupt)?;
             let detail_len = row[97] as usize;
@@ -432,7 +445,7 @@ impl eneros_durable_state::Decode for MgmtOpsState {
             });
         }
         Ok((
-            Generation(1),
+            generation,
             MgmtOpsState {
                 ledger: OperationLedger {
                     records,
@@ -638,8 +651,12 @@ mod tests {
         ));
         // 在途保持 Running。
         let bytes = state.encode().unwrap();
-        let (gen, restored) = MgmtOpsState::decode(&bytes).unwrap();
-        assert_eq!(gen.0, 1);
+        // 生产路径形态 = store payload（generation(8) ‖ state）——直接喂
+        // `encode()` 原样字节会绕开前缀契约（70.6 缺陷正是这样被漏过的）。
+        let mut store_payload = 4u64.to_le_bytes().to_vec();
+        store_payload.extend_from_slice(&bytes);
+        let (gen, restored) = MgmtOpsState::decode(&store_payload).unwrap();
+        assert_eq!(gen.0, 4, "代次 = store 前缀（不得硬编码）");
         assert_eq!(restored.ledger.records().len(), 2);
         assert_eq!(restored.ledger.records()[0].principal, "station-ops");
         assert_eq!(restored.ledger.records()[0].status, OpStatus::Completed);
@@ -663,6 +680,69 @@ mod tests {
         assert!(matches!(g, OpGate::New(3)), "op_id 必须跨持久化延续");
     }
 
+    /// REG-70.6-OPS-RESTORE-N0 回归锁（70.7 复查发现）：**store payload 前缀**
+    /// = generation(8) ‖ encode()。缺陷形态 = 解码从 state[0] 读 next_op_id
+    /// （整体右移 8B）且返回硬编码 `Generation(1)` → 恢复恒 n=0、代次恒 1
+    ///（跨重启幂等账本凭空清空，已确认操作可被重复执行）。
+    ///
+    /// 断言两侧：① 前缀形态解码出真实记录与真实代次；② **无前缀**形态必须
+    /// 被拒（若 `encode()` 将来自己带上 generation，本锁即红——迫使
+    /// RegionStateStore 与 codec 的前缀归属重新对齐，而不是两边各写一份）。
+    #[test]
+    fn decode_consumes_store_generation_prefix() {
+        use eneros_durable_state::{Decode, Encode};
+        let mut state = MgmtOpsState {
+            ledger: OperationLedger::new(),
+        };
+        for i in 1..=3u64 {
+            let gate = state.ledger.begin(
+                i,
+                "station-ops",
+                "config-set",
+                arg_digest(&i.to_le_bytes()),
+                5,
+                1000 + i,
+            );
+            // 断言先于取值：gate 必须为 New（失败信息含实得形态），
+            // 取值臂留非 panic 兜底（仓内禁 panic 宏）。
+            assert!(
+                matches!(gate, OpGate::New(_)),
+                "新请求必须受理，实得 {gate:?}"
+            );
+            let id = match gate {
+                OpGate::New(id) => id,
+                _ => 0,
+            };
+            state.ledger.finish(
+                id,
+                OpStatus::Completed,
+                "config-stage-part accepted",
+                1000 + i,
+            );
+        }
+        let body = state.encode().expect("encode");
+        let mut payload = 9u64.to_le_bytes().to_vec();
+        payload.extend_from_slice(&body);
+        let (gen, restored) = MgmtOpsState::decode(&payload).expect("生产形态必须解码");
+        assert_eq!(gen.0, 9, "代次取自 store 前缀");
+        assert_eq!(restored.ledger.records().len(), 3, "记录数不得归零");
+        assert_eq!(restored.ledger.records()[2].op_id, 3);
+        assert_eq!(restored.ledger.records()[0].principal, "station-ops");
+        // 无前缀形态（= `encode()` 原样字节）不得被当作有效状态解出记录：
+        // 前缀被吃掉 8B → 长度下界不足，或 count 落在错误偏移 → 拒绝
+        //（fail-closed，不静默恢复「空账本却是有效记录」）。70.6 缺陷形态
+        // 正是后者：返回 Ok 且 n=0。
+        match MgmtOpsState::decode(&body) {
+            Err(_) => {}
+            Ok((_, bogus)) => assert_eq!(
+                bogus.ledger.records().len(),
+                0,
+                "无前缀形态一旦解出非零记录，前缀归属已被破坏"
+            ),
+        }
+        assert!(MgmtOpsState::decode(&[]).is_err(), "空 payload 必须拒绝");
+    }
+
     #[test]
     fn long_fields_truncated_to_caps() {
         let mut led = OperationLedger::new();
@@ -675,14 +755,16 @@ mod tests {
         let r = led.get(1).unwrap();
         assert_eq!(r.principal.len(), PRINCIPAL_CAP);
         assert_eq!(r.detail.len(), DETAIL_CAP);
-        // 编码往返在截断后保持稳定。
+        // 编码往返在截断后保持稳定（store payload 形态：generation(8) ‖ encode）。
         use eneros_durable_state::{Decode, Encode};
         let bytes = MgmtOpsState {
             ledger: led.clone(),
         }
         .encode()
         .unwrap();
-        let (_, back) = MgmtOpsState::decode(&bytes).unwrap();
+        let mut payload = GEN.to_le_bytes().to_vec();
+        payload.extend_from_slice(&bytes);
+        let (_, back) = MgmtOpsState::decode(&payload).unwrap();
         assert_eq!(back.ledger.records()[0].detail.len(), ENC_DETAIL_MAX);
     }
 

@@ -23,11 +23,16 @@ pub mod registry;
 pub use capability::{Availability, CapabilityEnvelope, DeratingReason};
 pub use contract::ControlContractView;
 pub use provider::{CapabilityProvider, ResourceKind};
-pub use registry::{ResilienceInputs, ResourceRegistry};
+pub use registry::{
+    registry_from_catalog, CatalogRegistryReport, ResilienceInputs, ResourceRegistry,
+};
 
 /// 资源统一种类（[08] §4.2 闭枚举；与 catalog asset kind 对齐）。
 pub mod kinds {
     pub const BATTERY: u16 = 1;
+    // 蓝图 70.8 WP-70.8.3：目录资产 kind（config-bundle `catalog_kinds::
+    // ASSET_*`）与本闭枚举数值对齐——parity 由 `known()` 边界与
+    // catalog 装配测试共同锁定。
     pub const PV: u16 = 2;
     pub const WIND: u16 = 3;
     pub const GENERATOR: u16 = 4;
@@ -38,6 +43,23 @@ pub mod kinds {
     pub const PROCESS_UNIT: u16 = 9;
     pub const GRID_CONNECTION: u16 = 10;
     pub const AGGREGATE: u16 = 11;
+    /// 已知资源种类（目录资产 kind → 本闭枚举；未知 = 不可控）。
+    pub fn known(kind: u16) -> bool {
+        matches!(
+            kind,
+            BATTERY
+                | PV
+                | WIND
+                | GENERATOR
+                | FLEXIBLE_LOAD
+                | FIXED_LOAD
+                | EVSE
+                | HVAC
+                | PROCESS_UNIT
+                | GRID_CONNECTION
+                | AGGREGATE
+        )
+    }
 }
 
 /// 资源描述（[02] §6 字段集）。

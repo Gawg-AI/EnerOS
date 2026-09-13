@@ -597,10 +597,7 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
                 // 精确 head 一致性校验登记为真机项（33 §真机填空）。
                 if (elem.id as usize) >= QUEUE_MAX {
                     #[cfg(target_os = "none")]
-                    eneros_runtime::println!(
-                        "[blk-wait] used id OUT OF RANGE id={}",
-                        elem.id
-                    );
+                    eneros_runtime::println!("[blk-wait] used id OUT OF RANGE id={}", elem.id);
                     return Err(StorageError::HardwareFault {
                         detail: "virtio-blk used ring id out of range",
                     });

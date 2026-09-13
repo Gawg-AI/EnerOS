@@ -152,6 +152,34 @@ pub struct DispatchConfig {
     pub control_mode: crate::arbiter::ControlMode,
     /// 单调时钟（毫秒）。
     pub now_fn: fn() -> u64,
+    /// 蓝图 70.8 WP-70.8.4：可信输入策略——`Required` 下引擎拒绝一切
+    /// 非冻结快照身份的候选（生产装配值）；`LegacyMigration` 仅限迁移
+    /// 期差分对照（不具备新控制资格）。
+    pub trusted_input: TrustedInputPolicy,
+    /// 蓝图 70.9 WP-70.9.1：独立认证来源（生产 = 独立认证者；缺省 =
+    /// [`crate::certify::NoCertifier`] fail-closed——无本地发放回退）。
+    pub certifier: alloc::boxed::Box<dyn crate::certify::CertificateSource + 'static>,
+    /// 蓝图 70.9 WP-70.9.3：验方 key 环（key id/version/MAC 验真；轮换
+    /// N-1 窗口与退役即时失效由 [`eneros_certifier::proof::CertifierKeyRing`]
+    /// 承载）。
+    pub certifier_ring: eneros_certifier::proof::CertifierKeyRing,
+}
+
+/// 可信输入准入策略（蓝图 70.8 WP-70.8.4）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustedInputPolicy {
+    /// 生产：候选必须携带与可信输入同代的快照身份/目录版本/绑定摘要，
+    /// 否则整批拒绝（零投递）。
+    Required,
+    /// 迁移窗：允许旧派生伪快照身份（差分/历史 wire 读入）。
+    LegacyMigration,
+}
+
+impl Default for TrustedInputPolicy {
+    /// 缺省 = 生产形态（fail-closed）；迁移轨必须显式声明。
+    fn default() -> Self {
+        Self::Required
+    }
 }
 
 /// 签发身份与授权束（蓝图 69.4 WP-69.4.4 分组）——授权链、信封签名
@@ -270,6 +298,11 @@ pub struct DispatchEngine {
     journal: ExecutionJournal,
     feedback_builder: TrustedFeedbackBuilder,
     now_fn: fn() -> u64,
+    /// 蓝图 70.8 WP-70.8.4：可信输入准入策略。
+    trusted_input: TrustedInputPolicy,
+    /// 蓝图 70.9：独立认证来源与验方 key 环。
+    certifier: alloc::boxed::Box<dyn crate::certify::CertificateSource + 'static>,
+    certifier_ring: eneros_certifier::proof::CertifierKeyRing,
     seq: u64,
     /// 已提交（Committed）次数（观测/审计；经 `committed_count` 只读）。
     committed_count: u64,
@@ -1110,6 +1143,9 @@ impl DispatchEngine {
             journal: ExecutionJournal::new(128),
             feedback_builder: TrustedFeedbackBuilder::new(config.delivery_binding.feedback_mapping),
             now_fn: config.now_fn,
+            trusted_input: config.trusted_input,
+            certifier: config.certifier,
+            certifier_ring: config.certifier_ring,
             seq: 0,
             committed_count: 0,
             last_transition_proof_digest: None,
@@ -1498,6 +1534,7 @@ impl DispatchEngine {
             telemetry,
             actor,
             deadline_ms,
+            None,
         )
     }
 
@@ -1517,6 +1554,9 @@ impl DispatchEngine {
     /// 改为体内派生；`started` 两调用点均 `(self.now_fn)()` 现算现传
     /// （μs 级），同样改体内派生。参数 8 → 6（删除
     /// `#[allow(clippy::too_many_arguments)]`）。
+    #[allow(clippy::too_many_arguments)] // 蓝图 70.8 WP-70.8.4：新增可信
+                                         // 输入事实入参（认证准入前置判据）——参数成束重构留待 70.11 计划持有
+                                         // 模块落地时统一收拢（届时 trusted/energy/telemetry 归入单一请求结构）。
     fn run_typed(
         &mut self,
         plan: &eneros_decision_contract::CandidatePlan,
@@ -1525,66 +1565,61 @@ impl DispatchEngine {
         telemetry: &TrustedTelemetry,
         actor: &AuthenticatedActor,
         deadline_ms: u64,
+        trusted: Option<&eneros_agent_sdk::snap_input_wire::SnapshotFacts>,
     ) -> Result<DispatchReceipt, DispatchError> {
-        use eneros_decision_contract::{CertificateId, CertifiedPlan, CertifierSeal};
-
         let started = (self.now_fn)();
         if !plan.is_valid_at(started) {
             return Err(DispatchError::ProposalInvalid(String::from("计划已过期")));
         }
+        // 蓝图 70.8 WP-70.8.4：**可信输入准入**。入口只验证、绝不改写
+        // 候选身份——不匹配即整批拒绝（零投递）。
+        self.admit_trusted_input(plan, trusted, started)?;
         // 63 WP-63.1.3：states 恒为推进链起点（原调用点同构构造，本体内
         // 不增删）。
         let states: Vec<DispatchState> =
             alloc::vec![DispatchState::Proposed, DispatchState::Validated];
 
         // —— 过渡认证（[06] §3.5.4：dispatch 入口 CertifiedPlan 路由）——
-        // plan_sha256 = SHA-256(CandidatePlan V1 wire)；窗口语义见
-        // ADR-051 §2（transition-certifier 保留至目标侧认证输入齐备，
-        // 蓝图 66 doc 对齐；ADR-0048 初版「.38 替换」口径已被其订正）。
-        // 62 v0.315.0 WP-62.1.2：派生单源 = decision-contract
-        // `plan_wire_sha256`（原手写 SHA-256 删除）。
-        // 66 WP-66.2.2：过渡 proof keyed MAC 化（v2）——
-        // HMAC-SHA256(控制链信封密钥, "eneros.transition-proof.v2" ‖
-        // plan_sha)。key = 装配面 fetch_control_chain_key 注入的
-        // engine.key（与信封 build 同源，本文件 envelope build(&self.key)）；
-        // keyed 原语契约：生产调用方必须拒绝空 key（fail-closed）。
-        // v1（无钥 SHA-256，可伪造）为蓝图 66 登记的已关闭窗口。
-        if self.key.is_empty() {
-            return Err(DispatchError::ProposalInvalid(String::from(
-                "transition proof key missing (CHAIN-KEY-MISSING; fail-closed)",
-            )));
-        }
+        // 未绑定分配（asset 0）解析：**认证与编译之前一次性归一**——证书
+        // 与命令批绑定同一份计划 wire（只替换占位资产，身份字段不动）。
+        let resolved = crate::adapter::resolve_unbound_assets(plan, self.default_asset_id())?;
+        let plan = &resolved;
+        // —— 独立认证（蓝图 70.9 WP-70.9.1/70.9.4）——
+        // plan_sha256 = SHA-256(CandidatePlan V1 wire)（派生单源 =
+        // decision-contract `plan_wire_sha256`）。证书**只**来自装配的
+        // 独立认证来源（`CertificateSource`）；过渡发放面
+        // （`transition-certifier` / `CertifierSeal::issue_transition`）
+        // 已按 ADR-051 出口条件删除——本函数无任何本地发放分支。
+        let plan_wire = plan.encode_v1();
         let plan_sha: [u8; 32] = eneros_decision_contract::CandidatePlan::plan_wire_sha256(plan);
-        let mut proof_input = alloc::vec::Vec::with_capacity(64);
-        proof_input.extend_from_slice(b"eneros.transition-proof.v2");
-        proof_input.extend_from_slice(&plan_sha);
-        let proof_digest: [u8; 32] =
-            eneros_decision_contract::keyed::hmac_sha256(&self.key, &proof_input);
-        // 观测面（蓝图 66 WP-66.2.2）：最近一次过渡 proof digest——Gateway
-        // 侧持钥验证的读点（生产读者随 certifier 接电接入；零 wire 影响）。
-        self.last_transition_proof_digest = Some(proof_digest);
-        let certificate_id = CertificateId::new(plan_sha[..16].try_into().unwrap())
-            .map_err(|_| DispatchError::ProposalInvalid(String::from("证书 ID 派生失败")))?;
-        let certificate = CertifiedPlan::new_transition(
-            CertifierSeal::issue_transition(),
-            eneros_decision_contract::CertifiedPlanFields {
-                certificate_id,
-                plan_id: *plan.id(),
-                plan_sha256: plan_sha,
-                snapshot_id: plan.snapshot_id(),
-                certifier_version: 1, // control-chain-transition v1
-                constraint_catalog_version: plan.resource_catalog_version(),
-                tolerance_profile_id: 1, // tolerance profile
-                certified_at_ms: started,
-                valid_until_ms: started.saturating_add(plan.ttl_ms()),
-                // hard_constraint_count：transition 语义 = 0（ADR-051 窗口
-                // 内无独立评估；链内安全目录无可派生的硬约束计数源——
-                // 蓝图 66 WP-66.2.3 核查登记，wire 布局不变）
-                hard_constraint_count: 0,
-                proof_digest,
-            },
-        )
-        .map_err(|e| DispatchError::ProposalInvalid(alloc::format!("certificate: {e:?}")))?;
+        let reply = self
+            .certifier
+            .certify(&plan_wire, started)
+            .map_err(|e| DispatchError::ProposalInvalid(alloc::format!("certifier: {e}")))?;
+        // 验方环：认证者自带环时以它为准（轮换/退役即刻生效），否则用装配
+        // 在引擎侧的环（测试双/无环来源）。
+        let certificate = match self.certifier.verifier_ring() {
+            Some(ring) => crate::certify::verify_reply(plan, &plan_wire, &reply, ring, started),
+            None => crate::certify::verify_reply(
+                plan,
+                &plan_wire,
+                &reply,
+                &self.certifier_ring,
+                started,
+            ),
+        }
+        .map_err(|e| DispatchError::ProposalInvalid(alloc::format!("certify-reject: {e}")))?;
+        // 观测面：最近一次独立认证的 proof digest（Gateway/审计读点；
+        // 与证书内证据同一字段，供证据行比对）。
+        self.last_transition_proof_digest = Some(*certificate.proof_digest());
+        eneros_runtime::println!(
+            "[svc-control-dispatch] CERTIFIED plan={:02x?} cert={:02x?} constraints={} key={}/{}",
+            &plan_sha[..4],
+            &certificate.certificate_id().0[..4],
+            certificate.hard_constraint_count(),
+            reply.key_id,
+            reply.key_version
+        );
 
         // —— PlanCompiler：全 assignments → 确定性命令批（WP-5.1）——
         // 已确认基线（分辨率合并参照）：(device,point) → 最近 AppliedConfirmed
@@ -2405,6 +2440,10 @@ impl DispatchEngine {
 }
 
 impl ControlDispatch for DispatchEngine {
+    fn default_asset_id(&self) -> u64 {
+        u64::from(self.profile.device_id)
+    }
+
     fn submit(
         &mut self,
         proposal: &ProposedControlPlan,
@@ -2444,7 +2483,104 @@ impl ControlDispatch for DispatchEngine {
             telemetry,
             actor,
             deadline_ms,
+            None,
         )
+    }
+
+    fn submit_trusted(
+        &mut self,
+        plan: &eneros_decision_contract::CandidatePlan,
+        trusted: &eneros_agent_sdk::snap_input_wire::TrustedInput,
+        target_device: &str,
+        telemetry: &TrustedTelemetry,
+        actor: &AuthenticatedActor,
+        deadline_ms: u64,
+    ) -> Result<DispatchReceipt, DispatchError> {
+        let started = (self.now_fn)();
+        if !telemetry.is_valid_at(started) {
+            return Err(DispatchError::TelemetryExpired);
+        }
+        self.run_typed(
+            plan,
+            alloc::string::String::from(target_device),
+            None,
+            telemetry,
+            actor,
+            deadline_ms,
+            Some(trusted.facts()),
+        )
+    }
+}
+
+impl DispatchEngine {
+    /// 验方 key 环替换（装配/轮换用；生产装配在构造时注入，运行期轮换由
+    /// 运维动作驱动——本访问器是唯一改点）。
+    pub fn set_certifier_ring(&mut self, ring: eneros_certifier::proof::CertifierKeyRing) {
+        self.certifier_ring = ring;
+    }
+
+    /// 蓝图 70.8 WP-70.8.4：可信输入准入判据（**只验证、不改写**）。
+    ///
+    /// 1. 策略：`Required` 下无可信输入的候选一律拒绝（零投递）；
+    /// 2. 身份同代：候选 `snapshot_id` / `resource_catalog_version` /
+    ///    时域起点必须与可信输入逐字段相等；
+    /// 3. 摘要自洽：`objective_digest` 必须等于绑定公式输出（防篡改）；
+    /// 4. 完整性：快照必须完整（缺必需点 = 无控制资格）。
+    fn admit_trusted_input(
+        &self,
+        plan: &eneros_decision_contract::CandidatePlan,
+        trusted: Option<&eneros_agent_sdk::snap_input_wire::SnapshotFacts>,
+        now_ms: u64,
+    ) -> Result<(), DispatchError> {
+        let Some(facts) = trusted else {
+            return match self.trusted_input {
+                TrustedInputPolicy::Required => Err(DispatchError::ProposalInvalid(String::from(
+                    "trusted-input: 缺可信输入身份（生产策略 Required，零投递）",
+                ))),
+                TrustedInputPolicy::LegacyMigration => Ok(()),
+            };
+        };
+        if !facts.is_complete() {
+            return Err(DispatchError::ProposalInvalid(String::from(
+                "trusted-input: 快照不完整（缺必需点）",
+            )));
+        }
+        if plan.snapshot_id().0 != facts.snapshot_id {
+            return Err(DispatchError::ProposalInvalid(String::from(
+                "trusted-input: 候选快照身份与可信输入不同代",
+            )));
+        }
+        if plan.resource_catalog_version() != facts.catalog_version {
+            return Err(DispatchError::ProposalInvalid(String::from(
+                "trusted-input: 候选目录版本与可信输入不同代",
+            )));
+        }
+        let expect_horizon = facts.produced_at_ns / 1_000_000;
+        if plan.horizon_start_ms() != expect_horizon {
+            return Err(DispatchError::ProposalInvalid(String::from(
+                "trusted-input: 候选时域起点与快照产出时刻不符",
+            )));
+        }
+        let expect_digest = eneros_decision_contract::objective_binding_v1(
+            &facts.snapshot_id,
+            facts.catalog_version,
+            plan.horizon_start_ms(),
+            plan.step_ns(),
+            plan.step_count(),
+        );
+        if plan.objective_digest() != &expect_digest {
+            return Err(DispatchError::ProposalInvalid(String::from(
+                "trusted-input: 候选目标摘要与绑定公式不符（伪造/陈旧）",
+            )));
+        }
+        // 快照年龄（输入新鲜度在 svc-telemetry 侧判；此处二次防线：滚动
+        // 时域窗内的旧快照不得驱动新命令）。
+        if now_ms < plan.issued_at_ms() {
+            return Err(DispatchError::ProposalInvalid(String::from(
+                "trusted-input: 候选签发时刻晚于本机时刻（时钟异常）",
+            )));
+        }
+        Ok(())
     }
 }
 

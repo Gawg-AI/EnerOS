@@ -9,9 +9,9 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::ai_worker::{AI_PROPOSE, AI_UNAVAILABLE};
+use crate::ai_worker::{AI_PROPOSE_SNAP, AI_UNAVAILABLE};
 use crate::dispatch_service::decode_receipt;
-use crate::dispatch_service::DISP_SUBMIT;
+use crate::dispatch_service::DISP_SUBMIT_TRUSTED;
 #[cfg(test)]
 use crate::telemetry::decode_trusted;
 use crate::telemetry::SNAPSHOT_OK;
@@ -28,8 +28,13 @@ pub use eneros_agent_sdk::ea_wire::{EA_INVALID, EA_NOACTION, EA_OK, EA_UNAVAILAB
 pub const DEFAULT_COOLDOWN_MS: u64 = 30_000;
 
 /// 遥测客户端（svc-telemetry 消费 seam）。
+///
+/// 蓝图 70.8 WP-70.8.1：请求码 = `TEL_REQ_SNAPSHOT_INPUT`，应答 =
+/// `[SNAPSHOT_OK][TrustedInput wire]`（身份 + 144B 状态）或
+/// `[TEL_RESP_ERR, 快照拒绝码]`。旧 `TEL_REQ_SNAPSHOT`（144B 裸遥测）
+/// 自此为差分轨——生产决策输入必须携带冻结快照身份。
 pub trait TelemetryClient {
-    /// 取受信任遥测 wire（TEL_SNAPSHOT 响应）。
+    /// 取可信快照输入 wire（身份 + 状态一体）。
     fn fetch_telemetry(&mut self) -> Result<Vec<u8>, String>;
 }
 
@@ -111,7 +116,7 @@ impl EnergyAgentService {
         if self.policy.in_error() && now_ms < self.cooldown_until_ms {
             return self.noaction("error-budget-exhausted");
         }
-        // 1. 可信遥测（缺失 → 零推理零新写）。
+        // 1. 可信快照输入（缺失/不可得 → 零推理零新写）。
         let tel_wire = match self.telemetry.0.fetch_telemetry() {
             Ok(w) => w,
             Err(e) => {
@@ -120,14 +125,26 @@ impl EnergyAgentService {
             }
         };
         if tel_wire.first() != Some(&SNAPSHOT_OK) {
-            let resp = self.noaction("telemetry rejected");
+            // 蓝图 70.8：服务端结构化拒绝码（无冻结快照/不完整/过期/背压）
+            // ——如实入降级统计，绝不回退旧评估器伪身份。
+            let code = tel_wire.get(1).copied().unwrap_or(0);
+            let reason = alloc::format!(
+                "trusted-input:{}",
+                eneros_agent_sdk::snap_input_wire::reject_word(code)
+            );
+            let resp = self.noaction(&reason);
             return self.settle(TickOutcome::NoTrustedInput, resp, now_ms);
         }
-        let tel = &tel_wire[1..];
+        let input = &tel_wire[1..];
+        if eneros_agent_sdk::snap_input_wire::TrustedInput::decode(input).is_none() {
+            let resp = self.noaction("trusted-input:malformed");
+            return self.settle(TickOutcome::NoTrustedInput, resp, now_ms);
+        }
         // 2. 决策（worker 不可用 → 结构化降级）。
-        let mut worker_req = Vec::with_capacity(1 + tel.len());
-        worker_req.push(AI_PROPOSE);
-        worker_req.extend_from_slice(tel);
+        // 身份随输入一体传给 worker 与 dispatch（同一次冻结产物）。
+        let mut worker_req = Vec::with_capacity(1 + input.len());
+        worker_req.push(AI_PROPOSE_SNAP);
+        worker_req.extend_from_slice(input);
         let worker_resp = match self.worker.0.propose(&worker_req) {
             Ok(r) => r,
             Err(e) => {
@@ -150,11 +167,12 @@ impl EnergyAgentService {
             return self.settle(TickOutcome::NoAction, resp, now_ms);
         }
         let proposal_wire = &worker_resp[1..];
-        // 3. 投递（唯一 ControlDispatch）。
-        let mut disp_req = Vec::with_capacity(1 + proposal_wire.len() + tel.len() + 1);
-        disp_req.push(DISP_SUBMIT);
+        // 3. 投递（唯一 ControlDispatch；可信输入入口——引擎在入口验证
+        //    候选与输入同代，不匹配整批拒绝）。
+        let mut disp_req = Vec::with_capacity(1 + proposal_wire.len() + input.len() + 1);
+        disp_req.push(DISP_SUBMIT_TRUSTED);
         disp_req.extend_from_slice(proposal_wire);
-        disp_req.extend_from_slice(tel);
+        disp_req.extend_from_slice(input);
         disp_req.push(2); // ActorKind::Ai
         match self.dispatch.0.submit(&disp_req) {
             Ok(receipt_wire) => {
@@ -221,16 +239,39 @@ impl EnergyAgentService {
 mod tests {
     use super::*;
 
+    /// 冻结快照输入 wire（测试：[SNAPSHOT_OK][TrustedInput]——生产同形）。
+    fn stub_input_wire() -> (Vec<u8>, eneros_agent_sdk::snap_input_wire::TrustedInput) {
+        use eneros_agent_sdk::snap_input_wire::{
+            SnapshotFacts, TrustedInput, COMPLETE, SNAP_INPUT_TELEMETRY_LEN,
+        };
+        let t = crate::ai_worker::tests_helpers::minimal_trusted();
+        let payload = crate::telemetry::encode_trusted(&t);
+        let mut telemetry = [0u8; SNAP_INPUT_TELEMETRY_LEN];
+        telemetry.copy_from_slice(&payload);
+        let facts = SnapshotFacts {
+            snapshot_id: [0x5C; 16],
+            provenance_root: t.provenance_digest,
+            cut_time_ns: t.generated_at_ms * 1_000_000,
+            produced_at_ns: t.generated_at_ms * 1_000_000,
+            catalog_version: 1,
+            catalog_digest8: [9, 9, 9, 9, 9, 9, 9, 9],
+            accepted: 7,
+            missing: 0,
+            completeness: COMPLETE,
+        };
+        let input = TrustedInput::new(facts, telemetry);
+        let mut out = vec![SNAPSHOT_OK];
+        out.extend_from_slice(&input.encode());
+        (out, input)
+    }
+
     struct StubTelemetry {
         ok: bool,
     }
     impl TelemetryClient for StubTelemetry {
         fn fetch_telemetry(&mut self) -> Result<Vec<u8>, String> {
             if self.ok {
-                let t = crate::ai_worker::tests_helpers::minimal_trusted();
-                let mut out = vec![SNAPSHOT_OK];
-                out.extend_from_slice(&crate::telemetry::encode_trusted(&t));
-                Ok(out)
+                Ok(stub_input_wire().0)
             } else {
                 Err(String::from("telemetry-unavailable"))
             }
@@ -245,8 +286,13 @@ mod tests {
             if self.fail {
                 return Ok(vec![AI_UNAVAILABLE]);
             }
-            // 用 ai_worker 的 mock 后端逻辑（固定 proposal）。
-            let t = decode_trusted(&telemetry_wire[1..]).ok_or_else(|| String::from("bad tel"))?;
+            // 用 ai_worker 的 mock 后端逻辑（固定 proposal）。请求形态 =
+            // [AI_PROPOSE_SNAP][TrustedInput]（蓝图 70.8 生产形态）。
+            assert_eq!(telemetry_wire.first(), Some(&AI_PROPOSE_SNAP));
+            let input =
+                eneros_agent_sdk::snap_input_wire::TrustedInput::decode(&telemetry_wire[1..])
+                    .ok_or_else(|| String::from("bad input"))?;
+            let t = decode_trusted(input.telemetry()).ok_or_else(|| String::from("bad tel"))?;
             let plan = eneros_dual_brain::ProposedControlPlan {
                 plan_id: String::from("req-orch-1"),
                 path: eneros_dual_brain::DecisionPath::Fast,
@@ -273,10 +319,19 @@ mod tests {
                 safety_clamped: false,
                 feedback: None,
             };
+            // 蓝图 70.8：候选绑定冻结快照身份（生产同形）。
+            use eneros_control_dispatch::adapter::{proposal_to_candidate_bound, CandidateInputs};
+            let inputs = CandidateInputs::from_snapshot(
+                input.facts().snapshot_id,
+                input.facts().catalog_version,
+                input.facts().produced_at_ns / 1_000_000,
+                0,
+                1,
+            );
+            let cand = proposal_to_candidate_bound(&plan, &inputs, (0, 0, 0, 0), 0)
+                .map_err(|e| alloc::format!("{e:?}"))?;
             let mut out = vec![crate::ai_worker::AI_OK];
-            out.extend_from_slice(&crate::ai_worker::encode_candidate_payload(
-                &crate::ai_worker::proposal_to_candidate_unbound(&plan).expect("stub cand"),
-            ));
+            out.extend_from_slice(&crate::ai_worker::encode_candidate_payload(&cand));
             Ok(out)
         }
     }
@@ -286,6 +341,11 @@ mod tests {
     }
     impl DispatchClient for StubDispatch {
         fn submit(&mut self, _req: &[u8]) -> Result<Vec<u8>, String> {
+            assert_eq!(
+                _req.first(),
+                Some(&DISP_SUBMIT_TRUSTED),
+                "EA 必须以可信输入入口提交（蓝图 70.8 WP-70.8.4）"
+            );
             let state = if self.committed {
                 eneros_control_dispatch::DispatchState::Committed
             } else {

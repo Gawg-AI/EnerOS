@@ -204,7 +204,7 @@ impl eneros_control_dispatch::DeliveryChannel for StubChannel {
 
 fn build_engine(control_audit: Box<dyn AuditLogger>, outcome_code: u8) -> DispatchEngine {
     let outcome = [outcome_code, 0];
-    let base = support::test_config(support::TestConfigSeed {
+    let base = support::test_config_legacy(support::TestConfigSeed {
         chain: build_chain(),
         key: KEY.to_vec(),
         profile: test_profile(),

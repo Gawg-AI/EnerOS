@@ -31,11 +31,14 @@ eneros-audit = { path = "../../security/audit" }
 # 61 v0.314.24：receipt_digest = SM3(对端回执帧)（journal 原 receipt 证据绑定）。
 eneros-crypto = { path = "../../security/crypto" }
 # 蓝图 61 v0.314.28：决策有类型产物链（CandidatePlan/CertifiedPlan/
-# CommandIntent/CommandBatch）。transition-certifier = 迁移窗口认证权印
-# （ControlChain 复核路径发放；.38 真 certifier 落地后删除）。
-eneros-decision-contract = { path = "../../ai/decision-contract", features = [
-    "transition-certifier",
-] }
+# CommandIntent/CommandBatch）。蓝图 70.9 WP-70.9.4：迁移窗口认证权印
+# （transition-certifier）已按 ADR-051 出口条件删除——本 crate 不再启用
+# 任何发放 feature。
+eneros-decision-contract = { path = "../../ai/decision-contract" }
+# 蓝图 70.9 WP-70.9.1/70.9.4：独立认证接缝与验真（certifier crate 只提供
+# `CertifierModule::verify` + key ring；本 crate 无发放能力——`certifier`
+# feature 只由 eneros-certifier 自身启用）。
+eneros-certifier = { path = "../../ai/certifier" }
 # 蓝图 63 WP-63.1.1（v0.316.0）：DispatchState 12 态码表单一实现
 # （to_code/from_code/display_name 单源；本 crate re-export 定义点）。
 eneros-dispatch-state = { path = "../dispatch-state" }
@@ -50,8 +53,12 @@ default = []
 sel4 = ["eneros-agent-sdk/sel4"]
 # 测试/仿真专用通道 impl（release 禁）。
 mock = []
+# 测试缝：夹具认证来源（`src/test_support.rs`；生产 build 不含）。
+test-util = []
 
 [dev-dependencies]
+# 蓝图 70.9：测试缝夹具认证器（真实评估器出证；生产面零 feature）。
+eneros-certifier = { path = "../../ai/certifier", features = ["test-util"] }
 eneros-solver-core = { path = "../../ai/solver-core", features = ["mock"] }
 eneros-dual-brain = { path = "../../ai/dual-brain", features = ["mock"] }
 # 集成测试：in-process 通道直连 device-agent 收口点（唯一真实路径）。

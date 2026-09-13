@@ -2,21 +2,22 @@
 //!
 //! # 构造权收口（[06] §3.3）
 //!
-//! 字段全私有；构造器需要 [`CertifierSeal`]——该类型**无公开构造器**：
-//! - 未启用 `transition-certifier` 的 crate：**无法构造** CertifiedPlan
-//!   （编译期事实；tests/compilefail 锁定）。外部只有 [`CertifiedPlan::
-//!   decode_v1`]/[`CertifiedPlan::verify_binding`]。
-//! - 启用 `transition-certifier`：ControlChain 十二步复核（gateway 独立
-//!   裁决 = 独立代码路径重算）作为过渡认证器发放 seal。**窗口延长裁决
-//!   （ADR-051 §2，蓝图 66 对齐）**：transition-certifier 保留至 Phase 5
-//!   PlanCompiler 落地、目标侧认证输入齐备（快照/包络存储句柄移交接线）
-//!   后删除；期间 CertifiedPlan 的规范生产者 = dispatch 的过渡发放面
-//!   （ADR-051 初稿「规范生产者 = eneros-certifier」已订正——该 host/
-//!   planner 路径不存在，certifier 生产零消费者是裁决内事实非疏漏）。
+//! 字段全私有；构造器需要 [`CertifierSeal`]——该类型**无公开字段构造**：
+//! - 未启用 `certifier` feature 的 crate：枚举面无法构造（`E0451`，
+//!   tests/compilefail 锁定）。外部只有 [`CertifiedPlan::decode_v1`]/
+//!   [`CertifiedPlan::verify_binding`]。
+//! - 启用 `certifier` feature：`CertifierSeal::issue()` 可用 = **唯一发放
+//!   面** `eneros-certifier`（`CertifierModule::certify`）。蓝图 70.9 起
+//!   dispatch 的过渡发放面（`transition-certifier`）已按 ADR-051 出口条件
+//!   **删除**：没有"证书缺失就启用旧 seal"的分支。
 //!
-//! 生成器不能给自己签证书：CandidatePlan 的生产者（solver/规则/模型）
-//! 不持有 seal；seal 发放只发生在 dispatch 裁决路径（与生成器不同代码
-//! 路径）。
+//! **诚实边界（复查订正）**：`certifier` 是 Cargo feature，而 feature 在
+//! 同一构建图内**合并**——凡依赖 `eneros-certifier`（验证面：ring +
+//! verify）的图都会打开它，于是 `issue()` 在该图内语法可达。故"生成器
+//! 签不出自己的证书"由**源码扫描门**执法（唯一发放面 + 定义面之外的
+//! 任何 crate 不得出现发放构造调用，见 certifier crate
+//! `tests/integration.rs::seal_issuance_source_scan_rejects_third_party_callers`），
+//! 不是类型系统保证。
 
 use alloc::vec::Vec;
 
@@ -47,8 +48,9 @@ impl Copy for CertifierSeal {}
 
 #[cfg(feature = "certifier")]
 impl CertifierSeal {
-    /// 真认证器发放（.38 起；仅 eneros-certifier crate 编译期可达——
-    /// 该 crate 独占启用 `certifier` feature，rg 门 + compile-fail 锁定）。
+    /// 真认证器发放（唯一发放点 = eneros-certifier 的
+    /// `CertifierModule::certify`；发放面唯一性由源码扫描门执法——
+    /// feature 在同图内合并，见模块头「诚实边界」）。
     ///
     /// 语义约定：调用方必须已用**独立评估器**重算全部硬约束并留证
     /// （proof records）；本函数不接收证据参数——它只是"谁可以造证书"
@@ -57,21 +59,6 @@ impl CertifierSeal {
     #[doc(hidden)]
     #[must_use]
     pub fn issue() -> Self {
-        Self { _priv: () }
-    }
-}
-
-#[cfg(feature = "transition-certifier")]
-impl CertifierSeal {
-    /// 迁移窗口 seal 发放（.28-.37）。
-    ///
-    /// 语义约定：调用方必须已完成与生成器独立的复核（ControlChain 十二
-    /// 步链：gateway 授权/安全目录/租约/fencing/幂等）。本函数不接收
-    /// 证据参数——它只是"谁可以造证书"的类型闸；证据由调用路径的链
-    /// 结构保证（execute_core 顺序），mutation 测试锁序。
-    #[doc(hidden)]
-    #[must_use]
-    pub fn issue_transition() -> Self {
         Self { _priv: () }
     }
 }
@@ -94,8 +81,8 @@ pub struct CertifiedPlan {
     proof_digest: [u8; 32],
 }
 
-/// 认证侧字段袋（WP-64.3.1：三个 seal-gated 构造器共用同一字段形状
-/// ——`new_transition`/`new_certified`/`new_sealed` 12 位置参签名去重）。
+/// 认证侧字段袋（WP-64.3.1：seal-gated 构造器共用同一字段形状——
+/// 12 位置参签名去重）。
 pub struct CertifiedPlanFields {
     pub certificate_id: CertificateId,
     pub plan_id: PlanId,
@@ -111,20 +98,6 @@ pub struct CertifiedPlanFields {
 }
 
 impl CertifiedPlan {
-    /// 迁移窗口公开构造器（`transition-certifier` feature；.28-.37）。
-    ///
-    /// Cargo feature 为加法性——任何 crate 都可启用本 feature；因此
-    /// 构造收口的执行面是：(a) 默认态无任何构造器（compile-fail 锁定）；
-    /// (b) `rg 'issue_transition'` 门 = 仅 control-dispatch 裁决路径调用；
-    /// (c) .38 真 certifier 落地即删除本 feature（ADR-0048 如实登记）。
-    #[cfg(feature = "transition-certifier")]
-    pub fn new_transition(
-        seal: CertifierSeal,
-        fields: CertifiedPlanFields,
-    ) -> Result<Self, ContractError> {
-        Self::new_sealed(seal, fields)
-    }
-
     /// 真认证器构造（.38 起；`certifier` feature = 仅 eneros-certifier
     /// 可达）。seal 本身不可跨 crate 构造——构造权仍收口于发放面。
     #[cfg(feature = "certifier")]
@@ -338,10 +311,10 @@ mod tests {
 
     use super::*;
 
-    #[cfg(feature = "transition-certifier")]
+    #[cfg(feature = "certifier")]
     fn sealed_cert() -> CertifiedPlan {
         CertifiedPlan::new_sealed(
-            CertifierSeal::issue_transition(),
+            CertifierSeal::issue(),
             CertifiedPlanFields {
                 certificate_id: CertificateId([9u8; 16]),
                 plan_id: PlanId([1u8; 16]),
@@ -360,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "transition-certifier")]
+    #[cfg(feature = "certifier")]
     fn roundtrip_and_binding() {
         let c = sealed_cert();
         let wire = c.encode_v1();
@@ -375,10 +348,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "transition-certifier")]
+    #[cfg(feature = "certifier")]
     fn empty_digest_rejected() {
         let r = CertifiedPlan::new_sealed(
-            CertifierSeal::issue_transition(),
+            CertifierSeal::issue(),
             CertifiedPlanFields {
                 certificate_id: CertificateId([9u8; 16]),
                 plan_id: PlanId([1u8; 16]),
@@ -396,7 +369,7 @@ mod tests {
         assert_eq!(r, Err(ContractError::MissingField("digest")));
         // 倒窗。
         let r = CertifiedPlan::new_sealed(
-            CertifierSeal::issue_transition(),
+            CertifierSeal::issue(),
             CertifiedPlanFields {
                 certificate_id: CertificateId([9u8; 16]),
                 plan_id: PlanId([1u8; 16]),
@@ -414,7 +387,7 @@ mod tests {
         assert_eq!(r, Err(ContractError::InvalidWindow));
         // 零 plan/certificate ID = 缺字段（与 CandidatePlan 同纪律）。
         let r = CertifiedPlan::new_sealed(
-            CertifierSeal::issue_transition(),
+            CertifierSeal::issue(),
             CertifiedPlanFields {
                 certificate_id: CertificateId([9u8; 16]),
                 plan_id: PlanId([0u8; 16]),
@@ -437,8 +410,8 @@ mod tests {
     }
 
     /// 无 feature 时：CertifierSeal 与 CertifiedPlan::new_sealed 均
-    /// crate 私有——外部唯一途径是 decode_v1。此测试在两种 feature 态
-    /// 下都编译运行（seal 的 `issue_transition` 只在 feature 下存在）。
+    /// crate 私有——外部唯一途径是 decode_v1（过渡发放面已按 ADR-051
+    /// 出口条件删除：`transition-certifier` feature 与构造器均不存在）。
     #[test]
     fn decode_rejects_version_and_layout() {
         let mut wire = vec![b'C', b'E', b'R', b'T', 0x09, 0x00];

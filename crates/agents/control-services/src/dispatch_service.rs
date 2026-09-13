@@ -33,6 +33,10 @@ pub fn candidate_from_proposal(
 pub const DISP_SUBMIT: u8 = 1;
 /// 47（WP-47.1 协议入站写）：协议写意图提交（intent wire + actor）。
 pub const DISP_SUBMIT_INTENT: u8 = 2;
+/// 蓝图 70.8 WP-70.8.4：**带可信快照输入**的 typed 提交（生产唯一入口）
+/// ——布局 `[3][CAND wire][TrustedInput wire 234B][actor 1B]`。引擎在入口
+/// 验证候选与可信输入同代（快照/目录/时域/摘要），不匹配整批拒绝。
+pub const DISP_SUBMIT_TRUSTED: u8 = 3;
 
 /// 回执状态。
 pub const DISP_OK: u8 = 0;
@@ -85,6 +89,10 @@ pub fn handle_submit(engine: &mut dyn ControlDispatch, req: &[u8]) -> Vec<u8> {
     let Some(&code) = req.first() else {
         return err_receipt("empty request");
     };
+    // 蓝图 70.8 WP-70.8.4：可信输入形态（生产入口）。
+    if code == DISP_SUBMIT_TRUSTED {
+        return handle_submit_trusted(engine, &req[1..]);
+    }
     if code != DISP_SUBMIT {
         return err_receipt("unknown opcode");
     }
@@ -138,6 +146,58 @@ pub fn handle_submit(engine: &mut dyn ControlDispatch, req: &[u8]) -> Vec<u8> {
     // 承诺的退役）——非候选形态 fail-closed 显式拒绝（如实回执，不得
     // 静默成功；t21 锁此语义）。
     err_receipt("plan body not CAND (legacy proposal wire retired v0.329.0)")
+}
+
+/// 蓝图 70.8 WP-70.8.4：`[CAND wire][TrustedInput wire][actor]` → 引擎
+/// 可信准入提交。任一段解码失败 → 结构化错误回执（零投递）。
+pub fn handle_submit_trusted(engine: &mut dyn ControlDispatch, body: &[u8]) -> Vec<u8> {
+    use eneros_agent_sdk::snap_input_wire::{TrustedInput, SNAP_INPUT_WIRE_LEN};
+    let in_len = SNAP_INPUT_WIRE_LEN;
+    if body.len() <= in_len + 1 {
+        return err_receipt("short trusted request");
+    }
+    let plan_len = body.len() - in_len - 1;
+    let Some(input) = TrustedInput::decode(&body[plan_len..plan_len + in_len]) else {
+        return err_receipt("bad trusted input");
+    };
+    let actor_kind = body[plan_len + in_len];
+    if actor_kind != eneros_telemetry_model::command::ActorKind::Ai as u8 {
+        return err_receipt("actor must be Ai");
+    }
+    let actor = AuthenticatedActor {
+        kind: eneros_control_gateway::envelope::ActorKind::Ai,
+        service: [0u8; 16],
+        session_epoch: 0,
+    };
+    if plan_len < 4 || &body[0..4] != b"CAND" {
+        return err_receipt("plan body not CAND");
+    }
+    let Ok(cand) = eneros_decision_contract::CandidatePlan::decode_v1(&body[..plan_len]) else {
+        return err_receipt("bad candidate");
+    };
+    // 未绑定分配（asset 0）的解析由引擎在认证/编译前统一完成（单点，
+    // 见 `adapter::resolve_unbound_assets`）——服务层不做二次改写。
+    // 遥测载体 = 同一输入 wire 内嵌的 144B 载荷（决策侧与执行侧同一
+    // 冻结产物——不再有第二个快照请求）。
+    let Some(telemetry) = decode_trusted(input.telemetry()) else {
+        return err_receipt("bad trusted telemetry payload");
+    };
+    match engine.submit_trusted(&cand, &input, "pcs", &telemetry, &actor, 5_000) {
+        Ok(receipt) => {
+            if !receipt.final_state.is_committed() {
+                eneros_runtime::println!(
+                    "[svc-control-dispatch] TRUSTED state={:?} note={:?}",
+                    receipt.final_state,
+                    receipt.note
+                );
+            }
+            encode_receipt(&receipt)
+        }
+        Err(e) => {
+            eneros_runtime::println!("[svc-control-dispatch] TRUSTED-ERR {e:?}");
+            err_receipt(&format!("{e:?}"))
+        }
+    }
 }
 
 pub fn err_receipt(reason: &str) -> Vec<u8> {
@@ -277,7 +337,7 @@ pub fn prod_chain(
 
 #[cfg(test)]
 mod tests {
-    use eneros_control_dispatch::{DispatchEngine, InMemoryIntentStore};
+    use eneros_control_dispatch::{DispatchConfig, DispatchEngine, InMemoryIntentStore};
 
     use super::*;
 
@@ -292,7 +352,7 @@ mod tests {
     impl crate::ai_worker::DecisionBackend for LocalBackend {
         fn decide(
             &mut self,
-            _t: &eneros_safety_validator::TrustedTelemetry,
+            _input: &crate::ai_worker::DecisionInput<'_>,
             now_ms: u64,
         ) -> Result<Vec<u8>, crate::ai_worker::DecisionReject> {
             // 蓝图 55：单时段计划构造器单源。
@@ -363,10 +423,15 @@ mod tests {
     /// `catalog_version=1`（engine.rs `run`）——t21 用 1 使删除前旧臂可
     /// 真达 Committed（红测语义 =「旧臂是活入口」）；主路夹具恒 0。
     fn engine_with_catalog_version(catalog_version: u64) -> DispatchEngine {
+        DispatchEngine::new(with_fixture_cert(engine_config(catalog_version)))
+    }
+
+    #[allow(dead_code)]
+    fn engine_without_fixture_cert(catalog_version: u64) -> DispatchEngine {
         // 简化装配：budget 宽松；delivery 回 Applied（code 0）。
         // 蓝图 55：档案单源（TTL 600/代次 4 为本测试变体，值语义与旧
         // 手抄 build_chain 一致）。
-        let outcome = eneros_device_agent::OutcomeFrame {
+        let _outcome = eneros_device_agent::OutcomeFrame {
             code: eneros_device_agent::CODE_APPLIED,
             class: 0,
         }
@@ -403,26 +468,114 @@ mod tests {
                 compensable: false,
             },
         );
-        DispatchEngine::new(
-            eneros_control_dispatch::ConfigSeed {
-                chain,
-                key: key.to_vec(),
-                fencing_token: 8,
-                issuer_service: [0x41; 16],
-                now_fn: || 1_700_000_000_000,
-                intent_log: Box::new(InMemoryIntentStore::new(64)),
-                delivery: Box::new(MemoryChannel { outcome }),
-                resources: Box::new(HostResourceView {
-                    device_id: TEST_DEVICE_ID as u16,
-                    point_id: TEST_POINT_ID,
-                    unit_code: eneros_telemetry_model::unit_catalog::code_of(profile.unit),
-                    catalog_version,
-                }),
-                contracts: Box::new(contracts),
-                profile,
+        DispatchEngine::new(engine_config(catalog_version))
+    }
+
+    /// 夹具认证来源（蓝图 70.9 测试缝；真实评估器出证）。
+    struct FixtureCert {
+        inner: eneros_certifier::FixtureCertifier,
+    }
+    impl FixtureCert {
+        fn new(key: &[u8]) -> Self {
+            Self {
+                inner: eneros_certifier::FixtureCertifier::new(key, 100.0, -500.0, 500.0, 0.5),
             }
-            .assemble(),
-        )
+        }
+        fn ring(&self) -> eneros_certifier::proof::CertifierKeyRing {
+            self.inner.ring().clone()
+        }
+    }
+    impl eneros_control_dispatch::CertificateSource for FixtureCert {
+        fn certify(
+            &mut self,
+            plan_wire: &[u8],
+            now_ms: u64,
+        ) -> Result<eneros_control_dispatch::CertifierReply, eneros_control_dispatch::CertifyReject>
+        {
+            let plan = eneros_decision_contract::CandidatePlan::decode_v1(plan_wire)
+                .map_err(|e| eneros_control_dispatch::CertifyReject::Rejected(format!("{e:?}")))?;
+            let r = self
+                .inner
+                .certify(&plan, now_ms)
+                .map_err(|e| eneros_control_dispatch::CertifyReject::Rejected(format!("{e:?}")))?;
+            Ok(eneros_control_dispatch::CertifierReply {
+                certificate: r.certificate,
+                key_id: r.key_id,
+                key_version: r.key_version,
+                mac: r.mac,
+            })
+        }
+    }
+
+    /// 夹具认证来源注入（测试单源）。
+    fn with_fixture_cert(config: DispatchConfig) -> DispatchConfig {
+        let c = FixtureCert::new(b"fixture-cert-key-0123456789abcdef");
+        let ring = c.ring();
+        DispatchConfig {
+            certifier: Box::new(c),
+            certifier_ring: ring,
+            ..config
+        }
+    }
+
+    /// 引擎配置装配（**迁移轨**：`LegacyMigration` 策略——本模块历史
+    /// 用例消费旧派生身份；可信输入准入（`Required`）的用例自建配置）。
+    fn engine_config(catalog_version: u64) -> DispatchConfig {
+        let outcome = eneros_device_agent::OutcomeFrame {
+            code: eneros_device_agent::CODE_APPLIED,
+            class: 0,
+        }
+        .encode()
+        .to_vec();
+        let key: &[u8] = b"w40-svc-key-000000000000000000000000";
+        let profile = eneros_control_gateway::ControlProfile {
+            lease_ttl_secs: 600,
+            ..eneros_control_gateway::ControlProfile::ai_pcs_setpoint(
+                TEST_DEVICE_ID,
+                TEST_POINT_ID,
+                4,
+                [0x40; 16],
+                7,
+            )
+        };
+        let mut chain = eneros_control_gateway::chain::ControlChain::from_profile(key, &profile);
+        let _ = profile.issue_lease(&mut chain, 1_700_000_000);
+        use eneros_control_dispatch::compiler::{MapContractView, PlanContract};
+        let mut contracts = MapContractView::new();
+        contracts.insert(
+            u64::from(TEST_DEVICE_ID),
+            PlanContract {
+                class: 2,
+                readback_point_id: 1001,
+                reversible: 1,
+                min: -500.0,
+                max: 500.0,
+                settle_ms: 0,
+                compensable: false,
+            },
+        );
+        let config = eneros_control_dispatch::ConfigSeed {
+            chain,
+            key: key.to_vec(),
+            fencing_token: 8,
+            issuer_service: [0x41; 16],
+            now_fn: || 1_700_000_000_000,
+            intent_log: Box::new(InMemoryIntentStore::new(64)),
+            delivery: Box::new(MemoryChannel { outcome }),
+            resources: Box::new(HostResourceView {
+                device_id: TEST_DEVICE_ID as u16,
+                point_id: TEST_POINT_ID,
+                unit_code: eneros_telemetry_model::unit_catalog::code_of(profile.unit),
+                catalog_version,
+            }),
+            contracts: Box::new(contracts),
+            profile,
+        }
+        .assemble();
+        DispatchConfig {
+            trusted_input: eneros_control_dispatch::TrustedInputPolicy::LegacyMigration,
+            ..config
+        }
     }
 
     fn request_from_worker() -> Vec<u8> {
@@ -514,6 +667,101 @@ mod tests {
         out.extend_from_slice(&crate::telemetry::encode_trusted(&t));
         out.push(eneros_telemetry_model::command::ActorKind::Ai as u8);
         out
+    }
+
+    // ========================================================================
+    // 蓝图 70.8 WP-70.8.4：可信输入入口（DISP_SUBMIT_TRUSTED）端到端
+    // ========================================================================
+
+    /// 生产形态：worker 经 `AI_PROPOSE_SNAP`（可信输入）产出**绑定**候选，
+    /// dispatch 经 `DISP_SUBMIT_TRUSTED` 验证身份后提交 → Committed。
+    /// 同时证明 worker 侧候选的 snapshot_id/objective_digest 来自冻结快照
+    /// 身份而非自造值。
+    #[test]
+    fn trusted_submit_end_to_end_commits_and_binds_identity() {
+        use eneros_agent_sdk::snap_input_wire::{
+            SnapshotFacts, TrustedInput, COMPLETE, SNAP_INPUT_WIRE_LEN,
+        };
+        // ① 冻结快照身份（与引擎时钟一致：produced_at = now）。
+        let now_ms = 1_700_000_000_000u64;
+        let facts = SnapshotFacts {
+            snapshot_id: [0x5C; 16],
+            provenance_root: [0x3D; 32],
+            cut_time_ns: now_ms * 1_000_000,
+            produced_at_ns: now_ms * 1_000_000,
+            catalog_version: 1, // 与引擎 resources 视图的 catalog_version 一致
+            catalog_digest8: [1, 2, 3, 4, 5, 6, 7, 8],
+            accepted: 7,
+            missing: 0,
+            completeness: COMPLETE,
+        };
+        let t = crate::ai_worker::tests_helpers::minimal_trusted_at(now_ms);
+        let payload = crate::telemetry::encode_trusted(&t);
+        let mut telemetry = [0u8; 144];
+        telemetry.copy_from_slice(&payload);
+        let input = TrustedInput::new(facts, telemetry);
+
+        // ② worker：AI_PROPOSE_SNAP → 绑定候选（启发式后端 = 生产有界
+        //    后端；测试后端 LocalBackend 为未绑定形态，不能证绑定面）。
+        let mut worker =
+            AiWorkerService::new(crate::ai_worker::HeuristicBackend::new(), [0xAA; 16]);
+        let mut wreq = vec![crate::ai_worker::AI_PROPOSE_SNAP];
+        wreq.extend_from_slice(&input.encode());
+        let wresp = worker.propose(&wreq, now_ms);
+        assert_eq!(wresp[0], crate::ai_worker::AI_OK);
+        let cand =
+            eneros_decision_contract::CandidatePlan::decode_v1(&wresp[1..]).expect("bound cand");
+        assert_eq!(
+            cand.snapshot_id().0,
+            facts.snapshot_id,
+            "候选身份 = 快照身份"
+        );
+        assert_eq!(
+            cand.objective_digest(),
+            &eneros_decision_contract::objective_binding_v1(
+                &facts.snapshot_id,
+                facts.catalog_version,
+                now_ms,
+                0,
+                1
+            ),
+            "候选目标摘要 = 绑定公式输出"
+        );
+
+        // ③ dispatch：DISP_SUBMIT_TRUSTED → Committed（同代准入通过）。
+        let mut eng = engine_with_catalog_version(1);
+        let mut req = vec![DISP_SUBMIT_TRUSTED];
+        req.extend_from_slice(&wresp[1..]);
+        req.extend_from_slice(&input.encode());
+        req.push(eneros_telemetry_model::command::ActorKind::Ai as u8);
+        let resp = handle_submit(&mut eng, &req);
+        let (status, state, _c, _l, note) = decode_receipt(&resp).expect("receipt");
+        assert_eq!(status, DISP_OK, "note={note}");
+        assert_eq!(state, DispatchState::Committed, "note={note}");
+
+        // ④ 负例：同一候选 + **另一代**输入 → 拒绝（零投递）。
+        let mut eng2 = engine_with_catalog_version(1);
+        let other = TrustedInput::new(
+            SnapshotFacts {
+                snapshot_id: [0x77; 16],
+                ..facts
+            },
+            telemetry,
+        );
+        let mut req2 = vec![DISP_SUBMIT_TRUSTED];
+        req2.extend_from_slice(&wresp[1..]);
+        req2.extend_from_slice(&other.encode());
+        req2.push(eneros_telemetry_model::command::ActorKind::Ai as u8);
+        let resp2 = handle_submit(&mut eng2, &req2);
+        assert_eq!(resp2[0], DISP_ERR, "跨代输入必须拒绝");
+
+        // ⑤ 负例：截断的可信输入 → 显式拒绝（不猜）。
+        let mut eng3 = engine_with_catalog_version(1);
+        let mut req3 = vec![DISP_SUBMIT_TRUSTED];
+        req3.extend_from_slice(&wresp[1..]);
+        req3.extend_from_slice(&input.encode()[..SNAP_INPUT_WIRE_LEN - 1]);
+        req3.push(eneros_telemetry_model::command::ActorKind::Ai as u8);
+        assert_eq!(handle_submit(&mut eng3, &req3)[0], DISP_ERR);
     }
 
     /// WP-69.4.1：`CAND` 主路是唯一活入口。删除前后都必须绿——

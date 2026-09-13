@@ -11,8 +11,8 @@ use eneros_control_dispatch::compiler::{
     SkipReason,
 };
 use eneros_decision_contract::{
-    Assignment, CandidatePlan, CandidatePlanParts, CertificateId, CertifiedPlan, CertifierSeal,
-    ContractError, PlanId, ResourceRegistry, SnapshotId, SolveStatusKind,
+    Assignment, CandidatePlan, CandidatePlanParts, CertifiedPlan, ContractError, PlanId,
+    ResourceRegistry, SnapshotId, SolveStatusKind,
 };
 
 // ---------------------------------------------------------------- 夹具
@@ -83,23 +83,9 @@ fn plan_with(
 }
 
 fn cert_of(plan: &CandidatePlan, plan_sha: [u8; 32], now_ms: u64) -> CertifiedPlan {
-    CertifiedPlan::new_transition(
-        CertifierSeal::issue_transition(),
-        eneros_decision_contract::CertifiedPlanFields {
-            certificate_id: CertificateId([9u8; 16]),
-            plan_id: *plan.id(),
-            plan_sha256: plan_sha,
-            snapshot_id: plan.snapshot_id(),
-            certifier_version: 1,
-            constraint_catalog_version: plan.resource_catalog_version(),
-            tolerance_profile_id: 1,
-            certified_at_ms: now_ms,
-            valid_until_ms: now_ms + plan.ttl_ms(),
-            hard_constraint_count: 4,
-            proof_digest: [0xCD; 32],
-        },
-    )
-    .expect("合法证书")
+    // 蓝图 70.9：过渡发放面已删除——测试契据改走 certifier crate 的
+    // test-util 夹具（结构合法的 CertifiedPlan；引擎验真另判）。
+    eneros_certifier::fixture_certificate(plan, plan_sha, now_ms, 4).expect("fixture cert")
 }
 
 fn plan_sha(plan: &CandidatePlan) -> [u8; 32] {
@@ -234,8 +220,13 @@ fn golden_batch_digest_stable() {
     let digest = out.batches[0].batch_digest();
     let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
     assert_eq!(
-        hex, "01cd04a28f68f5421515f33b191ba4ebaf87f0b597d5a7852fde8fb9f07ed030",
-        "batch golden 漂移——编译器派生规则或策略入码变化（须显式重锚）"
+        hex, "abb1df57af6427f3af70524cd731c6590acef86f694db89e8ec2a496150a7c45",
+        "batch golden 漂移——编译器派生规则或策略入码变化（须显式重锚）。\
+         重锚记录（蓝图 70.9 WP-70.9.4）：旧值 01cd04a2… 锚定**过渡发放**契据\
+         （certifier_version 1 / tolerance 1 / proof_digest [0xCD;32] / 硬约束 4）；\
+         过渡发放面删除后契据改由 certifier crate 夹具签发（certifier_version 1、\
+         tolerance 2、同一 proof_digest 与计数）——批摘要随契据字段变化，\
+         非编译器规则变化"
     );
 }
 

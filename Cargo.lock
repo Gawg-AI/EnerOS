@@ -772,6 +772,7 @@ version = "0.337.0"
 dependencies = [
  "eneros-agent-sdk",
  "eneros-audit",
+ "eneros-certifier",
  "eneros-control-gateway",
  "eneros-crypto",
  "eneros-decision-contract",
@@ -805,6 +806,7 @@ version = "0.337.0"
 dependencies = [
  "eneros-agent-sdk",
  "eneros-audit",
+ "eneros-certifier",
  "eneros-config-bundle",
  "eneros-control-dispatch",
  "eneros-control-gateway",
@@ -834,6 +836,8 @@ dependencies = [
  "eneros-tsdb",
  "eneros-upa-model",
  "heapless 0.8.0",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

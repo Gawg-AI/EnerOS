@@ -437,8 +437,14 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
                 }
             }
             // 70.6（WP-70.6.2）：ConfigGet 返回获准载荷 + 摘要 + 代次；
-            // 敏感配置（ota/security 含密钥材料）只回摘要 + redacted 标记
-            //（密钥字节不出服务边界——越权敏感字段负例的结构性拒绝）。
+            // **携带构建期注入密钥**的配置（脱敏名单单源 =
+            // `eneros_config_bundle::SECRET_BEARING_CONFIGS`：ota/security/
+            // ai-peer）只回摘要 + redacted 标记（密钥字节不出服务边界）。
+            // 70.7 复查：首版名单硬编码 ["ota","security"]，漏掉 `ai-peer`
+            // 的 32B `degrade_lease_key`（KMS 注入，与控制链密钥同密级）——
+            // operator 会话一次 `config-get ai-peer` 即取回全量密钥字节。
+            // 现改为消费单源常量：新增注入密钥条目时 `secret_bearing_
+            // covers_every_injected_config` 锁会把本面一起钉住。
             MgmtAction::ConfigGet => {
                 self.requests_seen = self.requests_seen.saturating_add(1);
                 let id = core::str::from_utf8(arg).unwrap_or("");
@@ -449,10 +455,8 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
                         payload: None,
                     };
                 }
-                const SENSITIVE: [&str; 2] = ["ota", "security"];
-                if SENSITIVE.contains(&id)
-                    && !(session.has_role("admin") || session.has_role("superuser"))
-                {
+                let sensitive = eneros_config_bundle::SECRET_BEARING_CONFIGS.contains(&id);
+                if sensitive && !(session.has_role("admin") || session.has_role("superuser")) {
                     return ActionResult {
                         status: RpcStatus::Failed,
                         detail: format!("config-sensitive-requires-admin:{id}"),
@@ -471,7 +475,7 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
                     Ok(raw) => {
                         let digest = eneros_crypto::sm3_hash(&raw);
                         let gen = self.config_generation();
-                        if SENSITIVE.contains(&id) {
+                        if sensitive {
                             // 密钥材料脱敏：不回载荷，只回摘要与代次。
                             ActionResult {
                                 status: RpcStatus::Completed,
@@ -734,17 +738,27 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
                             };
                         };
                         match client.call("svc-config", &req) {
-                            Ok(r) if !r.is_empty() => ActionResult {
-                                status: RpcStatus::Completed,
-                                detail: format!("config-stage-part:{}/{} accepted", r[0], arg[2]),
-                                payload: None,
-                            },
-                            Ok(r) => ActionResult {
+                            // 成功 = 单字节回显分片序号。**先判失败词形**：
+                            // svc-config 的拒绝以 `ERR:` 文本承载（长度 ≥1 且
+                            // 首字节 'E'=69），"非空即成功"会把每次拒绝都记成
+                            // `config-stage-part:69/N accepted` 并作为**已完成**
+                            // 副作用写进幂等账本（同一 request_id 无法重试）。
+                            Ok(r) if r.starts_with(b"ERR:") => ActionResult {
                                 status: RpcStatus::Failed,
                                 detail: format!(
                                     "config-stage-rejected:{}",
                                     core::str::from_utf8(&r).unwrap_or("?")
                                 ),
+                                payload: None,
+                            },
+                            Ok(r) if !r.is_empty() => ActionResult {
+                                status: RpcStatus::Completed,
+                                detail: format!("config-stage-part:{}/{} accepted", r[0], arg[2]),
+                                payload: None,
+                            },
+                            Ok(_) => ActionResult {
+                                status: RpcStatus::Failed,
+                                detail: "config-stage-rejected:empty-response".into(),
                                 payload: None,
                             },
                             Err(e) => ActionResult {
@@ -926,20 +940,18 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
                 self.requests_seen = self.requests_seen.saturating_add(1);
                 // 70.7.5：root 中继 OTA1 0x0E 只读投影（维护态可用）。
                 match self.root_call(&eneros_agent_sdk::root_mgmt::encode_update_status()) {
-                    Some(resp) if !resp.starts_with(b"ERR:") => {
-                        match core::str::from_utf8(&resp) {
-                            Ok(text) => ActionResult {
-                                status: RpcStatus::Completed,
-                                detail: alloc::format!("update-status:{text}"),
-                                payload: None,
-                            },
-                            Err(_) => ActionResult {
-                                status: RpcStatus::Failed,
-                                detail: "update-check:bad-frame".into(),
-                                payload: None,
-                            },
-                        }
-                    }
+                    Some(resp) if !resp.starts_with(b"ERR:") => match core::str::from_utf8(&resp) {
+                        Ok(text) => ActionResult {
+                            status: RpcStatus::Completed,
+                            detail: alloc::format!("update-status:{text}"),
+                            payload: None,
+                        },
+                        Err(_) => ActionResult {
+                            status: RpcStatus::Failed,
+                            detail: "update-check:bad-frame".into(),
+                            payload: None,
+                        },
+                    },
                     Some(resp) => ActionResult {
                         status: RpcStatus::Failed,
                         detail: alloc::format!(
@@ -1242,7 +1254,9 @@ mod ota_word_form_tests {
             assert!(a.in_whitelist(), "{raw} 应在 svc-mgmt 接实白名单（70.7.5）");
         }
         // 回退/应用为破坏性动作（强认证语义保持）。
-        assert!(MgmtAction::parse("update-rollback").unwrap().is_destructive());
+        assert!(MgmtAction::parse("update-rollback")
+            .unwrap()
+            .is_destructive());
         assert!(MgmtAction::parse("update-apply").unwrap().is_destructive());
     }
 

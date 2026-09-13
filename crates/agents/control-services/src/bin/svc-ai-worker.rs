@@ -67,9 +67,14 @@ pub extern "C" fn _start(
     });
     // 蓝图 61 v0.314.35：目录版本装载（候选计划 resource_catalog_version
     // 与 dispatch PlannerView 同代——[08] §4.8 planner 输入只查 Registry）。
-    let catalog_version = config_client
+    // 蓝图 70.10：目录仓库**保留**（结构化计划输入源 = 同代目录派生；
+    // 此前只取版本号即丢弃）。
+    let fetched_catalog = config_client
         .as_mut()
-        .and_then(eneros_control_services::catalog_gateway::fetch_catalog)
+        .and_then(eneros_control_services::catalog_gateway::fetch_catalog);
+    let catalog_repo = fetched_catalog.as_ref().map(|c| c.repo.clone());
+    let catalog_version = fetched_catalog
+        .as_ref()
         .map(|c| {
             use eneros_semantic_catalog::SemanticCatalog;
             let v = c.repo.version_set().contract_version;
@@ -134,6 +139,12 @@ pub extern "C" fn _start(
             };
             // SPEC-E WP-E.3：学习器装配（闸+授予双条件；None ⇒ 出厂行为）。
             let learn = build_learner(eipc_mask, c.learn_enabled);
+            // 结构化计划输入源：目录 + 站点侧计划参数（plan 参数缺省 ⇒
+            // None ⇒ v1 迁移轨，行为与 70.10 前一致）。
+            let plan_source = match (catalog_repo, c.plan.clone()) {
+                (Some(repo), Some(params)) => Some((repo, params)),
+                _ => None,
+            };
             run_remote(
                 ep,
                 ready_ntfn,
@@ -142,6 +153,7 @@ pub extern "C" fn _start(
                 mqtt,
                 learn,
                 catalog_version,
+                plan_source,
             )
         }
         (cfg, mqtt_client) => {

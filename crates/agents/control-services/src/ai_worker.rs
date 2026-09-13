@@ -19,6 +19,11 @@ use crate::telemetry::decode_trusted;
 
 /// 请求码。
 pub const AI_PROPOSE: u8 = 1;
+/// 蓝图 70.8 WP-70.8.1/70.8.4：**可信快照输入**请求——载荷 =
+/// [`eneros_agent_sdk::snap_input_wire::TrustedInput`] wire（身份 + 144B
+/// 状态）。候选身份由该输入派生；旧 `AI_PROPOSE`（144B 裸遥测）自此为
+/// 差分/迁移轨，不具备新控制资格。
+pub const AI_PROPOSE_SNAP: u8 = 4;
 
 /// 响应状态。
 pub const AI_OK: u8 = 0; // proposal wire
@@ -77,14 +82,42 @@ pub mod learn_wire {
     pub const DEGRADE_OBS_WIRE_LEN: usize = 68;
 }
 
+/// 决策输入（蓝图 70.8 WP-70.8.1：身份与状态**一体**）。
+///
+/// `facts` = 冻结快照身份（`snapshot_id`/目录版本/产出时刻）；`ZERO` =
+/// 旧 `AI_PROPOSE` 差分轨（无身份）。后端必须用 `facts` 派生候选身份——
+/// 这正是"生成者拿不到伪造身份的便利"的实现面。
+#[derive(Debug, Clone, Copy)]
+pub struct DecisionInput<'a> {
+    /// 由同一冻结快照派生的可信状态载荷。
+    pub telemetry: &'a TrustedTelemetry,
+    /// 冻结快照身份（差分轨为 [`eneros_agent_sdk::snap_input_wire::SnapshotFacts::ZERO`]）。
+    pub facts: &'a eneros_agent_sdk::snap_input_wire::SnapshotFacts,
+}
+
+impl DecisionInput<'_> {
+    /// 是否携带可信快照身份（生产轨必需）。
+    pub fn bound(&self) -> bool {
+        !self.facts.is_unbound()
+    }
+}
+
+/// 测试用决策输入构造（差分轨：无冻结快照身份 → `facts = ZERO`）。
+///
+/// 生产代码不得调用：生产输入唯一来源 = `AI_PROPOSE_SNAP` 解码。
+#[cfg(test)]
+pub fn dinp(t: &TrustedTelemetry) -> DecisionInput<'_> {
+    DecisionInput {
+        telemetry: t,
+        facts: &eneros_agent_sdk::snap_input_wire::SnapshotFacts::ZERO,
+    }
+}
+
 /// 决策后端（服务注入 seam——target 无声明后端时为 Unavailable）。
 pub trait DecisionBackend {
     /// 执行决策：返回 Proposal wire 或结构化拒绝。
-    fn decide(
-        &mut self,
-        telemetry: &TrustedTelemetry,
-        now_ms: u64,
-    ) -> Result<Vec<u8>, DecisionReject>;
+    fn decide(&mut self, input: &DecisionInput<'_>, now_ms: u64)
+        -> Result<Vec<u8>, DecisionReject>;
 }
 
 /// 后端拒绝（结构化区分——WP-40.3 语义：不可用≠无动作）。
@@ -102,7 +135,7 @@ pub struct UnavailableBackend;
 impl DecisionBackend for UnavailableBackend {
     fn decide(
         &mut self,
-        _telemetry: &TrustedTelemetry,
+        _input: &DecisionInput<'_>,
         _now_ms: u64,
     ) -> Result<Vec<u8>, DecisionReject> {
         Err(DecisionReject::Unavailable(String::from(
@@ -383,9 +416,10 @@ impl Default for HeuristicBackend {
 impl DecisionBackend for HeuristicBackend {
     fn decide(
         &mut self,
-        telemetry: &TrustedTelemetry,
+        input: &DecisionInput<'_>,
         now_ms: u64,
     ) -> Result<Vec<u8>, DecisionReject> {
+        let telemetry = input.telemetry;
         // WP-5.3（[10] §4.7）：降级 lease 门——武装后每次 decide 逐次授权，
         // 任何失败拒绝决策（fail-closed，不产生未授权 fallback 动作）。
         // 68.5 复查修复：兜底提案功率钳到 lease 授权上界内（站点
@@ -438,8 +472,28 @@ impl DecisionBackend for HeuristicBackend {
             now_ms,
             Some(telemetry.provenance_digest),
         );
-        let cand = crate::dispatch_service::candidate_from_proposal(&plan, self.catalog_version)
-            .map_err(|e| DecisionReject::NoAction(alloc::format!("candidate-adapter: {e:?}")))?;
+        // 蓝图 70.8 WP-70.8.4：候选身份绑定。
+        // - 可信输入轨（`input.bound()`）：身份/摘要/时域全部取自冻结
+        //   快照（目录版本 = 输入携带的合同版本；时域起点 = 快照产出时刻）
+        //   ——生成者不再能自行拼身份；
+        // - 差分轨（无身份）：走迁移 adapter 并在 dispatch 入口按策略拒绝。
+        let cand = if input.bound() {
+            use eneros_control_dispatch::adapter::{proposal_to_candidate_bound, CandidateInputs};
+            let inputs = CandidateInputs::from_snapshot(
+                input.facts.snapshot_id,
+                input.facts.catalog_version,
+                input.facts.produced_at_ns / 1_000_000,
+                0, // 迁移窗单时段（step_ns = 0 ⇒ step_count == 1）
+                1,
+            );
+            // 资源绑定保持"未绑定形态"（asset 0）：绑定由 dispatch 编译期
+            // 经目录 Registry 完成（与迁移 adapter 同语义，[06] §3.3）。
+            proposal_to_candidate_bound(&plan, &inputs, (0, 0, 0, 0), 0)
+                .map_err(|e| DecisionReject::NoAction(alloc::format!("candidate-bound: {e:?}")))?
+        } else {
+            crate::dispatch_service::candidate_from_proposal(&plan, self.catalog_version)
+                .map_err(|e| DecisionReject::NoAction(alloc::format!("candidate-adapter: {e:?}")))?
+        };
         Ok(encode_candidate_payload(&cand))
     }
 }
@@ -482,19 +536,39 @@ impl<B: DecisionBackend> AiWorkerService<B> {
     }
 
     /// 处理一次推理请求（可信遥测 wire → proposal wire/结构化拒绝）。
+    ///
+    /// 蓝图 70.8：新增可信输入形态 [`AI_PROPOSE_SNAP`]——后端收到
+    /// [`DecisionInput`]（身份 + 状态），候选由该身份绑定（生产轨）；
+    /// 旧 [`AI_PROPOSE`] 仍可解（差分轨/历史夹具），但其产物在
+    /// `TrustedInputPolicy::Required` 的 dispatch 入口被拒。
     pub fn propose(&mut self, req: &[u8], now_ms: u64) -> Vec<u8> {
         let Some(&code) = req.first() else {
             return vec![AI_INVALID];
         };
-        if code != AI_PROPOSE {
+        let (telemetry, facts) = if code == AI_PROPOSE_SNAP {
+            let Some(input) = eneros_agent_sdk::snap_input_wire::TrustedInput::decode(&req[1..])
+            else {
+                return vec![AI_INVALID];
+            };
+            let Some(t) = decode_trusted(input.telemetry()) else {
+                return vec![AI_INVALID];
+            };
+            (t, *input.facts())
+        } else if code == AI_PROPOSE {
+            let Some(t) = decode_trusted(&req[1..]) else {
+                return vec![AI_INVALID];
+            };
+            (t, eneros_agent_sdk::snap_input_wire::SnapshotFacts::ZERO)
+        } else {
             return vec![AI_INVALID];
-        }
-        let Some(telemetry) = decode_trusted(&req[1..]) else {
-            return vec![AI_INVALID];
+        };
+        let input = DecisionInput {
+            telemetry: &telemetry,
+            facts: &facts,
         };
         // 后端不可用 → 显式 Unavailable（零推理、零新写）；
         // 死区无动作 → NoAction（有能力，本输入不动作）。
-        match self.backend.decide(&telemetry, now_ms) {
+        match self.backend.decide(&input, now_ms) {
             Ok(proposal_wire) => {
                 self.decisions += 1;
                 let mut out = vec![AI_OK];
@@ -634,9 +708,10 @@ mod tests {
     impl DecisionBackend for MockBackend {
         fn decide(
             &mut self,
-            telemetry: &TrustedTelemetry,
+            input: &DecisionInput<'_>,
             now_ms: u64,
         ) -> Result<Vec<u8>, DecisionReject> {
+            let telemetry = input.telemetry;
             if self.fail {
                 return Err(DecisionReject::Unavailable(String::from("backend-broken")));
             }
@@ -699,11 +774,11 @@ mod tests {
         // SOC 0.6 ≥ 0.5 → 放电 +5kW；plan_id 唯一（幂等键派生源）。
         let mut backend = HeuristicBackend::new();
         let t = trusted(); // soc 0.6
-        let w1 = backend.decide(&t, 10_000).expect("discharge");
+        let w1 = backend.decide(&dinp(&t), 10_000).expect("discharge");
         let cand1 = eneros_decision_contract::CandidatePlan::decode_v1(&w1).expect("cand");
         assert_eq!(cand1.assignments()[0].power_kw, 5.0);
         let id1 = *cand1.id();
-        let w2 = backend.decide(&t, 10_000).expect("discharge 2");
+        let w2 = backend.decide(&dinp(&t), 10_000).expect("discharge 2");
         let cand2 = eneros_decision_contract::CandidatePlan::decode_v1(&w2).expect("cand");
         assert_ne!(id1, *cand2.id(), "plan_id 必须唯一");
     }
@@ -715,7 +790,7 @@ mod tests {
         let mut backend = HeuristicBackend::new();
         let mut t = trusted();
         t.state.soc_pct = 0.4;
-        match backend.decide(&t, 10_000) {
+        match backend.decide(&dinp(&t), 10_000) {
             Err(DecisionReject::NoAction(_)) => {}
             other => panic!("死区必须 NoAction，got {other:?}"),
         }
@@ -726,7 +801,7 @@ mod tests {
         let mut backend = HeuristicBackend::new();
         let mut t = trusted();
         t.state.soc_pct = 0.2;
-        let w = backend.decide(&t, 10_000).expect("charge");
+        let w = backend.decide(&dinp(&t), 10_000).expect("charge");
         let cand = eneros_decision_contract::CandidatePlan::decode_v1(&w).expect("cand");
         assert_eq!(cand.assignments()[0].power_kw, -5.0, "充电为负功率");
     }
@@ -737,7 +812,7 @@ mod tests {
         let mut t = trusted();
         t.state.soc_pct = f64::NAN;
         assert!(matches!(
-            backend.decide(&t, 10_000),
+            backend.decide(&dinp(&t), 10_000),
             Err(DecisionReject::NoAction(_))
         ));
     }
@@ -837,13 +912,13 @@ mod tests {
         let mut b = HeuristicBackend::new();
         let mut t = trusted();
         t.state.soc_pct = 0.52; // 出厂带 [0.3, 0.5] 之外 ⇒ 放电。
-        assert!(b.decide(&t, 10_000).is_ok());
+        assert!(b.decide(&dinp(&t), 10_000).is_ok());
         // 半宽加宽到 0.14 ⇒ 带 [0.26, 0.54] ⇒ 0.52 落入死区。
         b.set_deadband(
             soc_band::charge_soc(soc_band::LEARN_MAX_HALF_WIDTH),
             soc_band::discharge_soc(soc_band::LEARN_MAX_HALF_WIDTH),
         );
-        match b.decide(&t, 10_000) {
+        match b.decide(&dinp(&t), 10_000) {
             Err(DecisionReject::NoAction(reason)) => {
                 assert!(reason.contains("soc-deadband"), "{reason}");
             }
@@ -897,9 +972,9 @@ mod tests {
         assert!(backend.degradation_armed());
         let t = trusted();
         // 窗内（1_500 ≤ 2_000）：授权成功 → 兜底产出。
-        assert!(backend.decide(&t, 1_500).is_ok(), "窗内兜底持签产出");
+        assert!(backend.decide(&dinp(&t), 1_500).is_ok(), "窗内兜底持签产出");
         // 过期（3_000 > 2_000）：时效门拒绝 → Unavailable（不是 NoAction）。
-        match backend.decide(&t, 3_000) {
+        match backend.decide(&dinp(&t), 3_000) {
             Err(DecisionReject::Unavailable(reason)) => {
                 assert!(reason.contains("expired"), "{reason}");
             }
@@ -938,7 +1013,7 @@ mod tests {
         let mut t = trusted();
         t.state.soc_pct = 0.52; // 出厂带 [0.3, 0.5] 带外 ⇒ 兜底放电提案
         let w = backend
-            .decide(&t, 1_500)
+            .decide(&dinp(&t), 1_500)
             .expect("兜底提案须钳到 lease 上界内产出（修复前恒 Unavailable）");
         let cand = eneros_decision_contract::CandidatePlan::decode_v1(&w).expect("cand");
         let power = cand.assignments()[0].power_kw;

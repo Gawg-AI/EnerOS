@@ -9,18 +9,19 @@
 //!   ——候选类型没有该签名，传参即编译失败）。
 
 /// feature 态门控：trybuild stderr 快照依赖 feature 状态（workspace
-/// feature 合一恒含 transition-certifier——control-dispatch 依赖）。快照
-/// 在该状态下生成并锁定；无 feature 态的构造收口由 lib 单测
-/// （decode_rejects_version_and_layout + 源码审计）覆盖。
+/// feature 合一恒含 `certifier`——control-dispatch 依赖 eneros-certifier
+/// 验证面）。快照在该状态下生成并锁定；无 feature 态的构造收口由 lib
+/// 单测（decode_rejects_version_and_layout + 源码审计）覆盖，发放面
+/// 唯一性另由 certifier crate 的源码扫描门执法。
 #[test]
-#[cfg(feature = "transition-certifier")]
+#[cfg(feature = "certifier")]
 fn compile_fail_stage_safety() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/compilefail/*.rs");
 }
 
 #[test]
-#[cfg(feature = "transition-certifier")]
+#[cfg(feature = "certifier")]
 fn compile_pass_sealed_api_usable() {
     let t = trybuild::TestCases::new();
     t.pass("tests/compilepass/*.rs");

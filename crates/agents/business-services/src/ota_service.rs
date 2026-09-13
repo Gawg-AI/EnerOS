@@ -370,14 +370,12 @@ pub fn candidate_identity(manifest_bytes: &[u8]) -> Result<(u64, [u8; 16]), &'st
     if total < MANIFEST_HEADER_LEN || total > manifest_bytes.len() {
         return Err("candidate-len");
     }
-    let manifest = ReleaseManifest::decode(&manifest_bytes[..total]).map_err(|_| "candidate-decode")?;
+    let manifest =
+        ReleaseManifest::decode(&manifest_bytes[..total]).map_err(|_| "candidate-decode")?;
     if manifest.header.security_version == 0 {
         return Err("candidate-secver-zero");
     }
-    Ok((
-        manifest.header.security_version,
-        manifest.header.release_id,
-    ))
+    Ok((manifest.header.security_version, manifest.header.release_id))
 }
 
 /// OTA 服务（包装 OtaManager 实现；注入真实存储/验签）。
@@ -1746,4 +1744,3 @@ mod svc_ota_source_guard {
         );
     }
 }
-

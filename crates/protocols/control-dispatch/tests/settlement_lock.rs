@@ -375,7 +375,7 @@ fn base_config(
     intent_log: Box<dyn IntentStore>,
     delivery: Box<dyn DeliveryChannel>,
 ) -> DispatchConfig {
-    let base = support::test_config(support::TestConfigSeed {
+    let base = support::test_config_legacy(support::TestConfigSeed {
         chain: build_chain(),
         key: KEY.to_vec(),
         profile,

@@ -885,9 +885,39 @@ impl ConfigService {
         ))
     }
 
+    /// **只读激活预检**（70.7 复查）：与 [`Self::activate_staged`] 的前三个
+    /// 门（pubkey / decode / 代次推进 / 验签）逐条同源，**零副作用**。
+    ///
+    /// 用途 = 盘上提交**之前**的准入：svc-config 的 ACTIVATE 顺序是「写盘
+    /// （提交点）→ 应用内存」。旧实现把验签/解码判定留在 `activate_staged`
+    /// 内，于是**任何**激活失败（坏签名/代次不前进/载荷不可解码）都已经把
+    /// 那串字节写进了 ConfigActive 区段——下次启动 `load_disk_active` 拒绝
+    /// 该槽并**静默回退嵌入基线**，即「一次失败的激活把盘上配置回退掉」。
+    /// 现在预检先跑，判定不过 = 零盘写。
+    ///
+    /// 注：`apply_bundle_unverified`（消费者应用面）仍留在激活步内——它
+    /// 的输入前置已由 `stage_commit` 的 scratch 全量应用证明，且「盘已写、
+    /// 应用失败」在提交点语义下是显式缺陷面（服务侧 panic 级），不再叠加
+    /// 盘写。
+    pub fn validate_staged(&self, staged: &[u8]) -> Result<u64, &'static str> {
+        if staged.len() > CONFIG_BUNDLE_MAX {
+            return Err("bundle-size");
+        }
+        let pk = self.verify_pubkey.as_ref().ok_or("no-verify-pubkey")?;
+        let bundle = eneros_config_bundle::decode_bundle_full(staged).map_err(|_| "decode")?;
+        if bundle.generation <= self.generation() {
+            return Err("generation-not-advancing");
+        }
+        eneros_config_bundle::verify_bundle_startup(&bundle, pk, None).map_err(|_| "verify")?;
+        Ok(bundle.generation)
+    }
+
     /// 提交激活（调用方先把信封写入盘上 active 区段——提交点=盘写成功，
     /// 再应用内存；顺序对调则崩溃窗内出现"内存新/盘旧"漂移）。
     /// 验签 = 启动级单次（bundle 签名；TCG 纪律），随后免重验应用。
+    ///
+    /// **调用方契约（70.7 复查）**：先 [`Self::validate_staged`] 通过再写盘，
+    /// 绝不能让被本方法拒绝的字节进 ConfigActive（见 validate_staged 文档）。
     pub fn activate_staged(&mut self, staged: &[u8]) -> Result<(u64, Digest), &'static str> {
         let pk = self.verify_pubkey.as_ref().ok_or("no-verify-pubkey")?;
         let bundle = eneros_config_bundle::decode_bundle_full(staged).map_err(|_| "decode")?;

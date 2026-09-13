@@ -102,3 +102,79 @@ pub fn test_config(seed: TestConfigSeed) -> DispatchConfig {
     }
     .assemble()
 }
+
+/// 测试轨装配（迁移/差分轨道：旧派生身份放行）。生产装配不经本函数。
+pub fn test_config_legacy(seed: TestConfigSeed) -> DispatchConfig {
+    with_fixture_certifier(legacy_rail(test_config(seed)))
+}
+
+/// 测试轨可信输入策略（**显式声明**）：迁移/差分轨允许旧派生身份。
+/// 生产装配（control-services `dispatch_assembly`）走 `Required`。
+pub fn legacy_rail(config: DispatchConfig) -> DispatchConfig {
+    DispatchConfig {
+        trusted_input: eneros_control_dispatch::TrustedInputPolicy::LegacyMigration,
+        ..config
+    }
+}
+
+// ============================================================================
+// 蓝图 70.9：测试夹具认证来源（真实评估器出证 + 真实验签环）
+// ============================================================================
+
+/// 夹具认证来源（与生产 `TrustedInputCertifier` 同契约）。
+///
+/// 证书由 `eneros_certifier::FixtureCertifier` 用**真实**评估器签发
+/// （逐约束记录 + HMAC）；身份输入取自被认证的计划。
+pub struct FixtureCertifier {
+    inner: eneros_certifier::FixtureCertifier,
+}
+
+impl FixtureCertifier {
+    /// 构造（key 材）。
+    pub fn new(key: &[u8]) -> Self {
+        Self {
+            inner: eneros_certifier::FixtureCertifier::new(key, 100.0, -500.0, 500.0, 0.5),
+        }
+    }
+
+    /// 验方环（引擎 `certifier_ring` 注入）。
+    pub fn ring(&self) -> eneros_certifier::proof::CertifierKeyRing {
+        self.inner.ring().clone()
+    }
+}
+
+impl eneros_control_dispatch::CertificateSource for FixtureCertifier {
+    fn certify(
+        &mut self,
+        plan_wire: &[u8],
+        now_ms: u64,
+    ) -> Result<eneros_control_dispatch::CertifierReply, eneros_control_dispatch::CertifyReject>
+    {
+        let plan = eneros_decision_contract::CandidatePlan::decode_v1(plan_wire)
+            .map_err(|e| eneros_control_dispatch::CertifyReject::Rejected(format!("{e:?}")))?;
+        let r = self
+            .inner
+            .certify(&plan, now_ms)
+            .map_err(|e| eneros_control_dispatch::CertifyReject::Rejected(format!("{e:?}")))?;
+        Ok(eneros_control_dispatch::CertifierReply {
+            certificate: r.certificate,
+            key_id: r.key_id,
+            key_version: r.key_version,
+            mac: r.mac,
+        })
+    }
+}
+
+/// 夹具 key 材（测试固定值；生产走 KMS 域分隔派生）。
+pub const FIXTURE_CERT_KEY: &[u8] = b"fixture-cert-key-0123456789abcdef";
+
+/// 给已装配的配置注入夹具认证来源 + 验方环（测试单源）。
+pub fn with_fixture_certifier(config: DispatchConfig) -> DispatchConfig {
+    let cert = FixtureCertifier::new(FIXTURE_CERT_KEY);
+    let ring = cert.ring();
+    DispatchConfig {
+        certifier: Box::new(cert),
+        certifier_ring: ring,
+        ..config
+    }
+}

@@ -76,7 +76,7 @@ fn canonical_intent() -> eneros_decision_contract::CommandIntent {
     .unwrap()
 }
 
-#[cfg(feature = "transition-certifier")]
+#[cfg(feature = "certifier")]
 fn canonical_cert() -> eneros_decision_contract::CertifiedPlan {
     eneros_decision_contract::CertifiedPlan::decode_v1(&unhex(&read("certified-plan-v1.golden")))
         .expect("cert golden decode")
@@ -106,7 +106,7 @@ fn command_intent_v1_golden() {
 }
 
 #[test]
-#[cfg(feature = "transition-certifier")]
+#[cfg(feature = "certifier")]
 fn certified_plan_v1_golden_and_binding() {
     let c = canonical_cert();
     // 语义锁定：证书字段与规范值一致。

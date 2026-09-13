@@ -192,10 +192,7 @@ pub fn handle_boot_cmd(
             let mut inst = crate::boot_install::BootInstall::new(install);
             match inst.read_current() {
                 Ok((c, _)) => {
-                    match crate::boot_install::format_update_status(
-                        &c,
-                        &mut resp.payload[..],
-                    ) {
+                    match crate::boot_install::format_update_status(&c, &mut resp.payload[..]) {
                         Ok(n) => {
                             resp.payload_len = n as u16;
                             resp.status = ST_OK;

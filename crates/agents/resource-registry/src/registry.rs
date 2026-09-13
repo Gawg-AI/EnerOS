@@ -217,6 +217,10 @@ impl ResourceRegistry {
         // 合同范围作为最终收紧项（授权范围不得超合同）。
         let until = env.valid_until_ns;
         env = env.intersect("contract", view.contract_id, (view.min, view.max), until);
+        // 合同爬坡同为运行限值（最终收紧项）：铭牌爬坡是物理能力，可宽于
+        // 运行合同——缺此求交则认证器的 RampUp/RampDown 界恒等于物理能力，
+        // 与执行侧 `ramp-limit`（合同值）不一致（复查修复）。
+        env = env.intersect_ramp("contract-ramp", view.contract_id, view.ramp_kw_per_s, until);
         Ok(env)
     }
 
@@ -239,6 +243,101 @@ impl ResourceRegistry {
     pub fn asset_ids(&self) -> impl Iterator<Item = u64> + '_ {
         self.descriptors.keys().copied()
     }
+}
+
+/// 目录装配报告（蓝图 70.8 WP-70.8.3：登记 = 可控池；跳过原因必须可数）。
+///
+/// 计数恒等式（每个遍历到的目录 ID 恰好落入一个桶）：
+/// `assets_seen == registered + skipped_no_contract + skipped_no_nameplate
+/// + skipped_unknown_kind + skipped_tombstoned + skipped_capacity`。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CatalogRegistryReport {
+    /// 遍历到的目录资产 ID 数（`asset_ids()` 全集——`CatalogRepository`
+    /// 语义下 tombstone 不进 `asset_ids()`，故墓碑不在此计数）。
+    pub assets_seen: u32,
+    /// 成功登记（有控制合同 + 铭牌 + 已知种类）。
+    pub registered: u32,
+    /// 跳过：无控制合同。
+    pub skipped_no_contract: u32,
+    /// 跳过：无铭牌（物理参数缺失 = 不可控，fail-closed）。
+    pub skipped_no_nameplate: u32,
+    /// 跳过：未知资源种类。
+    pub skipped_unknown_kind: u32,
+    /// 跳过：资产不可用——`asset()` 返回 None（tombstone/版本不符/
+    /// 未登记）或描述带 tombstone 标志（`is_tombstone()`）。
+    pub skipped_tombstoned: u32,
+    /// 跳过：注册表超容（`upsert` 拒绝；registry.overflow_rejected 同源计数）。
+    pub skipped_capacity: u32,
+}
+
+/// 由目录 + 物理参数铭牌装配注册表（**生产装配单源**）。
+///
+/// 登记条件（缺一不可，fail-closed）：
+/// 1. 资产存活（非 tombstone）；
+/// 2. 有控制合同（可观测不可控不进入可控池）；
+/// 3. 有物理参数铭牌（容量/效率/功率窗/爬坡——包络与认证的物理输入）；
+/// 4. 资源种类在 [`crate::kinds`] 闭枚举内。
+///
+/// 铭牌能力窗与合同价值域的交集在 [`ResourceRegistry::evaluate`] 内以
+/// 合同为最终收紧项完成（此处只装配输入，不做裁决）。
+pub fn registry_from_catalog(
+    catalog: &dyn eneros_semantic_catalog::SemanticCatalog,
+    cap: usize,
+) -> (ResourceRegistry, CatalogRegistryReport) {
+    let mut reg = ResourceRegistry::new(cap);
+    let mut report = CatalogRegistryReport::default();
+    let vs = catalog.version_set();
+    let mut ids: alloc::vec::Vec<u64> = catalog.asset_ids();
+    ids.sort_unstable();
+    for asset_id in ids {
+        report.assets_seen += 1;
+        let Some(asset) = catalog.asset(asset_id, vs.asset_version) else {
+            // 不可查（tombstone/版本不符/未登记）——计入跳过，恒等式不破。
+            report.skipped_tombstoned += 1;
+            continue;
+        };
+        if asset.is_tombstone() {
+            report.skipped_tombstoned += 1;
+            continue;
+        }
+        let Some(contract) = catalog.asset_control_contract(asset_id, vs.contract_version) else {
+            report.skipped_no_contract += 1;
+            continue;
+        };
+        let Some(np) = catalog.nameplate(asset_id) else {
+            report.skipped_no_nameplate += 1;
+            continue;
+        };
+        if !crate::kinds::known(asset.kind) {
+            report.skipped_unknown_kind += 1;
+            continue;
+        }
+        let desc = ResourceDescriptor {
+            asset_id,
+            site_id: asset.site_id,
+            resource_kind: asset.kind,
+            control_contract_id: contract.contract_id,
+            topology_node_id: asset.topology_node_id,
+            capability_model_id: 0,
+            owner_tenant_id: asset.tenant_id,
+        };
+        let base = NameplateBase {
+            p_min_kw: np.p_min_kw,
+            p_max_kw: np.p_max_kw,
+            q_min_kvar: np.q_min_kvar,
+            q_max_kvar: np.q_max_kvar,
+            energy_max_kwh: np.energy_max_kwh,
+            ramp_up_kw_s: np.ramp_up_kw_s,
+            ramp_down_kw_s: np.ramp_down_kw_s,
+        };
+        if reg.upsert(desc, base) {
+            report.registered += 1;
+        } else {
+            // 超容拒绝可见（registry.overflow_rejected 同源）。
+            report.skipped_capacity += 1;
+        }
+    }
+    (reg, report)
 }
 
 /// planner 只读视图（实现 decision-contract::ResourceRegistry——命令批
@@ -340,7 +439,10 @@ impl eneros_decision_contract::ResourceRegistry for PlannerView {
 
 #[cfg(test)]
 mod tests {
-    use eneros_semantic_catalog::SemanticCatalog;
+    use eneros_semantic_catalog::{
+        AssetDescriptor, CatalogError, CatalogErrorKind, ControlContract, ObservationKey,
+        ObservationSemantics, SemanticCatalog, TopologyView, VersionSet,
+    };
 
     use super::*;
     use crate::kinds;
@@ -349,6 +451,175 @@ mod tests {
         let toml = include_str!("../../../../configs/catalog.toml");
         let compiled = eneros_config_bundle::toml_compile::compile_catalog(toml).unwrap();
         eneros_semantic_catalog::open(&compiled.payload).unwrap()
+    }
+
+    /// 生产目录 + 测试变体（仅测试内编译，不改生产 TOML）：
+    /// - grid(10) 补控制合同但**无铭牌** → 锁 `skipped_no_nameplate` 桶；
+    /// - 追加第二块可控电池(2)（合同 + 铭牌）→ 锁超容拒绝可数。
+    fn cat_variant() -> eneros_semantic_catalog::CatalogRepository {
+        let toml = include_str!("../../../../configs/catalog.toml");
+        let extra = r#"
+[[asset]]
+asset_id = 2
+site_id = 1
+tenant_id = 1
+kind = "battery"
+
+[[point_semantics]]
+point_id = 20
+asset_id = 2
+schema_id = 1
+unit = "kW"
+role = "control"
+readback_point_id = 1003
+
+[[point_semantics]]
+point_id = 1003
+asset_id = 2
+schema_id = 1
+unit = "kW"
+role = "measurement"
+
+[[control_contract]]
+contract_id = 3
+asset_id = 2
+point_id = 20
+unit = "kW"
+class = "setpoint"
+min = -200.0
+max = 200.0
+readback_point_id = 1003
+priority = "remote"
+safe_state = "hold"
+lost_link = "hold"
+
+[[nameplate]]
+asset_id = 2
+capacity_kwh = 50.0
+eta_c = 0.9
+eta_d = 0.9
+energy_max_kwh = 50.0
+p_min_kw = -200.0
+p_max_kw = 200.0
+q_min_kvar = 0.0
+q_max_kvar = 0.0
+ramp_up_kw_s = 1.0
+ramp_down_kw_s = 1.0
+soc_min = 0.05
+soc_max = 0.95
+
+# grid(10) 补控制合同（仍无铭牌）。
+[[point_semantics]]
+point_id = 11
+asset_id = 10
+schema_id = 1
+unit = "kW"
+role = "control"
+readback_point_id = 1002
+
+[[point_semantics]]
+point_id = 1002
+asset_id = 10
+schema_id = 1
+unit = "kW"
+role = "measurement"
+
+[[control_contract]]
+contract_id = 2
+asset_id = 10
+point_id = 11
+unit = "kW"
+class = "setpoint"
+min = -100.0
+max = 100.0
+readback_point_id = 1002
+priority = "remote"
+safe_state = "hold"
+lost_link = "hold"
+"#;
+        let compiled =
+            eneros_config_bundle::toml_compile::compile_catalog(&alloc::format!("{toml}{extra}"))
+                .unwrap();
+        eneros_semantic_catalog::open(&compiled.payload).unwrap()
+    }
+
+    /// 报告恒等式辅助（每个遍历到的 ID 恰好落入一个桶）。
+    fn assert_report_reconciles(report: &CatalogRegistryReport) {
+        assert_eq!(
+            report.assets_seen,
+            report.registered
+                + report.skipped_no_contract
+                + report.skipped_no_nameplate
+                + report.skipped_unknown_kind
+                + report.skipped_tombstoned
+                + report.skipped_capacity,
+            "seen == registered + skipped_* 恒等式: {report:?}"
+        );
+    }
+
+    /// 最小目录替身（非 `CatalogRepository`）：`asset_ids()` 暴露墓碑与
+    /// 查询不可得 ID——锁报告在「枚举 ≠ 可查」实现上的可数性。
+    #[derive(Default)]
+    struct SurfacingCatalog {
+        assets: alloc::collections::BTreeMap<u64, AssetDescriptor>,
+        unreadable: alloc::vec::Vec<u64>,
+    }
+
+    impl SemanticCatalog for SurfacingCatalog {
+        fn version_set(&self) -> VersionSet {
+            VersionSet::ZERO
+        }
+
+        fn resolve_observation(
+            &self,
+            _key: &ObservationKey,
+            _versions: VersionSet,
+        ) -> Result<ObservationSemantics, CatalogError> {
+            Err(CatalogError::new(
+                CatalogErrorKind::UnknownPoint,
+                "unused".into(),
+            ))
+        }
+
+        fn asset(&self, asset_id: u64, _version: u64) -> Option<&AssetDescriptor> {
+            self.assets.get(&asset_id)
+        }
+
+        fn topology_view(
+            &self,
+            _site_id: u32,
+            _version: u64,
+        ) -> Result<TopologyView, CatalogError> {
+            Err(CatalogError::new(
+                CatalogErrorKind::TopologyUnavailable,
+                "unused".into(),
+            ))
+        }
+
+        fn control_contract(
+            &self,
+            _id: u32,
+            _version: u64,
+        ) -> Result<&ControlContract, CatalogError> {
+            Err(CatalogError::new(
+                CatalogErrorKind::UnknownContract,
+                "unused".into(),
+            ))
+        }
+
+        fn asset_control_contract(
+            &self,
+            _asset_id: u64,
+            _version: u64,
+        ) -> Option<&ControlContract> {
+            None
+        }
+
+        fn asset_ids(&self) -> alloc::vec::Vec<u64> {
+            let mut ids: alloc::vec::Vec<u64> = self.assets.keys().copied().collect();
+            ids.extend(self.unreadable.iter().copied());
+            ids
+        }
     }
 
     fn snapshot(
@@ -601,6 +872,192 @@ mod tests {
             .evaluate(10, now, &repo, &snap, &ResilienceInputs::default())
             .unwrap_err();
         assert_eq!(err.kind, RegistryErrorKind::NoControlContract);
+    }
+
+    /// 目录变体：只替换铭牌爬坡两行（生产目录 = 3.3333；合同
+    /// `ramp_kw_per_s` 不动——用于验证「合同是最终收紧项」在爬坡维成立）。
+    fn cat_with_nameplate_ramp(ramp: &str) -> eneros_semantic_catalog::CatalogRepository {
+        let toml = include_str!("../../../../configs/catalog.toml");
+        let patched = toml
+            .replace(
+                "ramp_up_kw_s = 3.3333",
+                &alloc::format!("ramp_up_kw_s = {ramp}"),
+            )
+            .replace(
+                "ramp_down_kw_s = 3.3333",
+                &alloc::format!("ramp_down_kw_s = {ramp}"),
+            );
+        let compiled = eneros_config_bundle::toml_compile::compile_catalog(&patched).unwrap();
+        eneros_semantic_catalog::open(&compiled.payload).unwrap()
+    }
+
+    /// 蓝图 70.8 WP-70.8.3（复查修复）：**爬坡维也必须被合同收紧**。
+    ///
+    /// 铭牌 = 物理能力（可宽于运行合同），合同 = 运行限值（最终收紧项，
+    /// 生产目录注释原文）。包络是二者求交：合同爬坡 < 铭牌爬坡时取合同，
+    /// 反之取铭牌（两侧对称，绝不放宽）。
+    ///
+    /// 变异靶：`evaluate` 不把合同 `ramp_kw_per_s` 求交进包络 → 宽铭牌
+    /// 形态返回 10.0 → 本测红（且认证器的 RampUp/RampDown 界随之放宽，
+    /// 执行侧 `ramp-limit` 与证书证据不一致）。
+    #[test]
+    fn contract_ramp_tightens_nameplate_ramp() {
+        let wide = cat_with_nameplate_ramp("10.0");
+        let (reg, _report) = registry_from_catalog(&wide, 16);
+        let snap = snapshot(&wide, 0.6, 0.0, 0.0, 1.0, 1_000_000);
+        let env = reg
+            .evaluate(1, 1_000_000, &wide, &snap, &ResilienceInputs::default())
+            .expect("电池包络");
+        assert!(
+            (env.ramp_up_kw_s - 3.3333).abs() < 1e-9,
+            "合同爬坡必须收紧宽铭牌（最终收紧项）：{}",
+            env.ramp_up_kw_s
+        );
+        assert!(
+            (env.ramp_down_kw_s - 3.3333).abs() < 1e-9,
+            "{}",
+            env.ramp_down_kw_s
+        );
+
+        // 对称面：铭牌更紧时不得被合同放宽（min 语义）。
+        let narrow = cat_with_nameplate_ramp("1.0");
+        let (reg2, _) = registry_from_catalog(&narrow, 16);
+        let env2 = reg2
+            .evaluate(1, 1_000_000, &narrow, &snap, &ResilienceInputs::default())
+            .expect("电池包络");
+        assert!(
+            (env2.ramp_up_kw_s - 1.0).abs() < 1e-9,
+            "铭牌更紧时取铭牌：{}",
+            env2.ramp_up_kw_s
+        );
+    }
+
+    /// 蓝图 70.8 WP-70.8.3：目录装配（铭牌 → 登记；缺铭牌 = 不可控）。
+    /// 生产目录（configs/catalog.toml）含电池铭牌 → 登记；删掉铭牌
+    /// （模拟旧目录）→ 同一资产跳过且包络不可得（fail-closed 证据）。
+    #[test]
+    fn registry_from_catalog_registers_nameplate_assets_only() {
+        let catalog = cat();
+        let (reg, report) = registry_from_catalog(&catalog, 16);
+        assert_eq!(report.assets_seen, 2, "目录资产 = battery(1) + grid(10)");
+        assert_eq!(report.registered, 1, "仅电池有控制合同 + 铭牌");
+        assert_eq!(report.skipped_no_contract, 1, "grid 无控制合同");
+        assert_eq!(reg.len(), 1);
+        assert!(reg.asset_ids().any(|a| a == 1));
+
+        // 铭牌 → 包络（同代快照）：电池可用，能量窗随 SOC 收紧。
+        let snap = snapshot(&catalog, 0.6, 0.0, 0.0, 1.0, 1_000_000);
+        let env = reg
+            .evaluate(1, 1_000_000, &catalog, &snap, &ResilienceInputs::default())
+            .expect("电池包络");
+        assert_eq!(env.source_snapshot_id, snap.snapshot_id, "包络绑定快照身份");
+        assert_eq!(env.availability, Availability::Full);
+        // 铭牌 100 kWh × SOC 0.6 = 60 kWh（可放能量窗上界）。
+        assert!(
+            (env.energy_max_kwh - 60.0).abs() < 1e-6,
+            "{}",
+            env.energy_max_kwh
+        );
+        assert_eq!(env.p_max_kw, 500.0, "铭牌功率窗 ∩ 合同");
+
+        // —— 负例：无铭牌资产不可控 ——
+        let mut no_np = ResourceRegistry::new(16);
+        let desc = ResourceDescriptor {
+            asset_id: 1,
+            site_id: 1,
+            resource_kind: kinds::BATTERY,
+            control_contract_id: 1,
+            topology_node_id: 2,
+            capability_model_id: 0,
+            owner_tenant_id: 1,
+        };
+        // 手工登记（绕过 catalog 铭牌）仍可 evaluate——但 registry_from_catalog
+        // 不会登记无铭牌资产，故生产不可达；此处锁"装配判据"。
+        assert!(no_np.upsert(
+            desc,
+            NameplateBase {
+                p_min_kw: -500.0,
+                p_max_kw: 500.0,
+                q_min_kvar: 0.0,
+                q_max_kvar: 0.0,
+                energy_max_kwh: 100.0,
+                ramp_up_kw_s: 3.3333,
+                ramp_down_kw_s: 3.3333,
+            }
+        ));
+        assert_eq!(no_np.len(), 1);
+        assert_eq!(catalog.nameplate(10), None, "grid 无铭牌（跳过理由可核）");
+    }
+
+    /// 生产目录（configs/catalog.toml）的报告恒等式：
+    /// 每个遍历到的 ID 恰好落入一个桶；tombstone 99 不进 `asset_ids()`
+    ///（`assets_seen` 语义 = 活资产全集），grid(10) 无合同先于无铭牌命中。
+    #[test]
+    fn report_counters_reconcile_on_production_catalog() {
+        let catalog = cat();
+        let (reg, report) = registry_from_catalog(&catalog, 16);
+        assert_report_reconciles(&report);
+        assert_eq!(report.assets_seen, 2, "battery(1) + grid(10)");
+        assert_eq!(report.registered, 1);
+        assert_eq!(report.skipped_no_contract, 1, "grid 无控制合同");
+        assert_eq!(report.skipped_no_nameplate, 0, "grid 无合同先命中");
+        assert_eq!(report.skipped_unknown_kind, 0);
+        assert_eq!(report.skipped_tombstoned, 0);
+        assert_eq!(report.skipped_capacity, 0);
+        // grid 无铭牌（跳过理由可核）；tombstone 99 不可见（枚举面语义）。
+        assert_eq!(catalog.nameplate(10), None);
+        assert!(!catalog.asset_ids().contains(&99));
+        assert_eq!(reg.len(), 1);
+    }
+
+    /// 恒等式 + 分桶负例（变体目录）：grid(10) 有合同无铭牌 →
+    /// `skipped_no_nameplate`；cap=1 时第二块可控电池 → `skipped_capacity`
+    ///（超容拒绝不静默，与 registry.overflow_rejected 同源）。
+    #[test]
+    fn report_counts_no_nameplate_and_capacity_rejections() {
+        let catalog = cat_variant();
+        let (reg, report) = registry_from_catalog(&catalog, 16);
+        assert_report_reconciles(&report);
+        assert_eq!(report.assets_seen, 3);
+        assert_eq!(report.registered, 2, "两块电池合同 + 铭牌齐全");
+        assert_eq!(report.skipped_no_nameplate, 1, "grid 有合同但无铭牌");
+        assert_eq!(report.skipped_capacity, 0);
+        assert_eq!(reg.len(), 2);
+
+        // cap=1：id 升序（1,2,10）先登记 battery(1)；battery(2) 超容拒绝。
+        let (reg1, report1) = registry_from_catalog(&catalog, 1);
+        assert_report_reconciles(&report1);
+        assert_eq!(report1.registered, 1);
+        assert_eq!(report1.skipped_capacity, 1, "超容拒绝必须可数");
+        assert_eq!(reg1.overflow_rejected, 1, "与 registry 自身计数同源");
+        assert_eq!(reg1.len(), 1);
+    }
+
+    /// `asset_ids()` 暴露墓碑/不可查 ID 的目录实现（旧/破损语义）：
+    /// 两条跳过路径都必须计入 `skipped_tombstoned`，恒等式不破。
+    #[test]
+    fn report_counts_tombstoned_and_unreadable_ids() {
+        let mut c = SurfacingCatalog::default();
+        c.assets.insert(
+            1,
+            AssetDescriptor {
+                asset_id: 1,
+                site_id: 1,
+                tenant_id: 1,
+                kind: kinds::BATTERY,
+                device_id: 0,
+                topology_node_id: 0,
+                flags: eneros_semantic_catalog::decode::ASSET_FLAG_TOMBSTONE,
+            },
+        );
+        // 枚举面返回但 asset() 查无（版本不符/未登记）：不得静默跳过。
+        c.unreadable.push(2);
+        let (reg, report) = registry_from_catalog(&c, 16);
+        assert_report_reconciles(&report);
+        assert_eq!(report.assets_seen, 2);
+        assert_eq!(report.skipped_tombstoned, 2, "墓碑 + 不可查各计一次");
+        assert_eq!(report.registered, 0);
+        assert!(reg.is_empty());
     }
 
     #[test]

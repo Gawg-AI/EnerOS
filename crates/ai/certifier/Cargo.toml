@@ -14,12 +14,16 @@ eneros-telemetry-model = { path = "../../protocols/telemetry-model" }
 # business-services 的同款声明移 [dev-dependencies] 保留——其 src 零使用
 # R-63.e 重验坐实，集成测试面真实消费）。
 eneros-snapshot-service = { path = "../../agents/snapshot-service" }
+# 蓝图 70.9 WP-70.9.2：可信输入 → 认证上下文装配（目录 + 资源注册表 +
+# 配置闭枚举常量）——生产依赖（context 模块真实消费）。
+eneros-semantic-catalog = { path = "../../agents/semantic-catalog" }
+eneros-config-bundle = { path = "../../runtime/config-bundle" }
 sha2 = { version = "0.10.9", default-features = false }
 
 [dev-dependencies]
-eneros-semantic-catalog = { path = "../../agents/semantic-catalog" }
 # WP-68.4.4 可达性冒烟（测试面）：prod catalog 编译源（真实 SnapshotModule
-# 产物喂 certifier shadow 路径）——不构成生产依赖。
+# 产物喂 certifier shadow 路径）——生产面已随 context 模块转正依赖，此
+# 处只保留 compile feature 供测试构造 payload。
 eneros-config-bundle = { path = "../../runtime/config-bundle", features = ["compile"] }
 # shadow 认证（[09] §4.5 步骤 5）：仅测试面消费 planner 产物——不构成
 # 生产依赖（[16] §3.9 依赖纪律针对生产面）。
@@ -27,3 +31,7 @@ eneros-planner = { path = "../planner" }
 eneros-solver-core = { path = "../solver-core", features = ["highs-ffi"] }
 # dev 面走 test-util fixture 缝（WP-64.3.2.1，生产面零 feature）
 eneros-objective-engine = { path = "../objective-engine", features = ["test-util"] }
+
+[features]
+# 测试缝（夹具认证器；生产 build 不含）——precedent: objective-engine test-util。
+test-util = []

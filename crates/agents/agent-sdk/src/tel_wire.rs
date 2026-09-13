@@ -24,6 +24,14 @@ pub const TEL_REQ_INGEST: u8 = 1;
 pub const TEL_REQ_SNAPSHOT: u8 = 2;
 /// 请求：epoch 推进（断线重连）。
 pub const TEL_REQ_ADVANCE_EPOCH: u8 = 3;
+/// 请求：**可信快照输入**（蓝图 70.8 WP-70.8.1）——应答 = 快照身份 +
+/// 144B 遥测载荷的 [`crate::snap_input_wire::TrustedInput`] wire，
+/// 或 `[TEL_RESP_ERR, 快照拒绝码]`。旧 `TEL_REQ_SNAPSHOT`（评估器直出）
+/// 自此只作差分/迁移轨，不再具备新控制资格。
+pub const TEL_REQ_SNAPSHOT_INPUT: u8 = 5;
+/// 请求：**已冻结快照 blob**（蓝图 70.8.2/70.9.1）——按当前冻结快照 ID
+/// 取回 `encode_snapshot_v1` 字节（certifier 独立读取可信输入用）。
+pub const TEL_REQ_SNAPSHOT_BLOB: u8 = 6;
 
 /// 应答：受理（INGEST 路径下第二字节 = accepted 样本数）。
 pub const TEL_RESP_OK: u8 = 0;
@@ -67,6 +75,15 @@ mod tests {
         assert_eq!(TEL_REQ_INGEST, 1);
         assert_eq!(TEL_REQ_SNAPSHOT, 2);
         assert_eq!(TEL_REQ_ADVANCE_EPOCH, 3);
+        // 蓝图 70.8：新增码（旧码零变化——冻结面只增不改）。码 4 属
+        // agent-sdk `obs_batch_wire::OPCODE_TEL_INGEST_OBS`（同请求空间
+        // 另一模块），此处从 5 起分配并与之互斥。
+        assert_eq!(TEL_REQ_SNAPSHOT_INPUT, 5);
+        assert_eq!(TEL_REQ_SNAPSHOT_BLOB, 6);
+        assert_ne!(
+            TEL_REQ_SNAPSHOT_INPUT,
+            crate::obs_batch_wire::OPCODE_TEL_INGEST_OBS
+        );
         assert_eq!(TEL_RESP_OK, 0);
         assert_eq!(TEL_RESP_ERR, 0xFF);
     }

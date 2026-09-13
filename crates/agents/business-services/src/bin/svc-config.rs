@@ -254,6 +254,16 @@ impl eneros_control_services::ControlServiceHandler for ConfigHandler {
                 } else {
                     &full
                 };
+                // 70.7 复查修复：**准入先于盘写**。旧顺序「写盘 → 激活」在
+                // 激活被拒（坏签名/代次不前进/载荷不可解码）时已经把无效
+                // 字节写进 ConfigActive 区段——下次启动 load_disk_active 拒绝
+                // 该槽并静默回退嵌入基线 = 一次**失败**的激活把盘上配置
+                // 回退掉。预检与 activate_staged 前三门同源、零副作用。
+                if let Err(word) = self.service.validate_staged(staged) {
+                    resp.extend_from_slice(b"ERR:");
+                    resp.extend_from_slice(word.as_bytes());
+                    return false;
+                }
                 // 提交点顺序：先盘后内存——盘写成功后崩溃，下次启动经
                 // CONFIG-DISK 路径恢复新代次（内存应用失败 = 服务缺陷）。
                 let Ok(envelope) = envelope_encode(&staged) else {

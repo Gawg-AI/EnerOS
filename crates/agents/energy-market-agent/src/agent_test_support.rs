@@ -216,6 +216,22 @@ impl ControlDispatch for RecordingDispatch {
         }
     }
 
+    /// 蓝图 70.8 WP-70.8.4：带可信输入身份的 typed 提交。测试 double
+    /// 与 [`submit_typed`](Self::submit_typed) 同语义（市场链路不消费
+    /// 该路径——可信输入准入由引擎实现执法）。
+    fn submit_trusted(
+        &mut self,
+        plan: &eneros_decision_contract::CandidatePlan,
+        trusted: &eneros_agent_sdk::snap_input_wire::TrustedInput,
+        target_device: &str,
+        telemetry: &TrustedTelemetry,
+        actor: &AuthenticatedActor,
+        deadline_ms: u64,
+    ) -> Result<DispatchReceipt, DispatchError> {
+        let _ = (trusted,);
+        self.submit_typed(plan, target_device, telemetry, actor, deadline_ms)
+    }
+
     /// 47（WP-47.1）：协议写意图提交。测试 double 记录轨迹并返回
     /// 配置结果（与 [`submit`](Self::submit) 同语义——市场链路不消费
     /// 意图路径）。

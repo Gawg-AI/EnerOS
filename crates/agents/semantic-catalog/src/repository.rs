@@ -38,6 +38,8 @@ pub struct CatalogRepository {
     safety: Vec<SafetyConstraint>,
     aliases: BTreeMap<(u8, u64), u64>,
     tombstones: BTreeSet<u64>,
+    /// 蓝图 70.8 WP-70.8.3：物理参数铭牌（asset_id → 参数）。
+    nameplates: BTreeMap<u64, Nameplate>,
     /// 目录整体摘要（配置 digest 派生；证据/审计用）。
     digest: [u8; 32],
 }
@@ -52,6 +54,9 @@ impl CatalogRepository {
             header: Some(header),
             ..Self::default()
         };
+        for np in bundle.nameplates {
+            repo.nameplates.insert(np.asset_id, np);
+        }
         for s in bundle.schemas {
             repo.schemas.insert(s.id, s);
         }
@@ -175,6 +180,17 @@ impl CatalogRepository {
     pub fn control_contract_for_asset(&self, asset_id: u64) -> Option<&ControlContract> {
         let id = self.contract_by_asset.get(&asset_id)?;
         self.contracts.get(id)
+    }
+
+    /// 资产物理参数铭牌（蓝图 70.8 WP-70.8.3：包络/认证的物理输入；
+    /// 无铭牌 → None——调用方按不可控处理，不从别处补值）。
+    pub fn nameplate(&self, asset_id: u64) -> Option<&Nameplate> {
+        self.nameplates.get(&asset_id)
+    }
+
+    /// 全部铭牌（确定性枚举；asset_id 升序——认证输入装配用）。
+    pub fn nameplates(&self) -> impl Iterator<Item = &Nameplate> {
+        self.nameplates.values()
     }
 
     /// 全部控制合同（枚举序 = 合同 id 升序；WP-5.1 装配侧编译合同
@@ -336,6 +352,18 @@ impl EnergizedView {
 impl SemanticCatalog for CatalogRepository {
     fn version_set(&self) -> VersionSet {
         self.header.map(|h| h.versions).unwrap_or(VersionSet::ZERO)
+    }
+
+    fn asset_ids(&self) -> Vec<u64> {
+        self.assets.keys().copied().collect()
+    }
+
+    fn nameplate(&self, asset_id: u64) -> Option<Nameplate> {
+        // asset_id=0 不是合法资产（UNQUALIFIED）——显式不返回。
+        if asset_id == 0 {
+            return None;
+        }
+        self.nameplates.get(&asset_id).copied()
     }
 
     fn resolve_observation(

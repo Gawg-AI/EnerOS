@@ -199,6 +199,18 @@ pub trait SemanticCatalog {
     fn feedback_slots(&self) -> Option<model::FeedbackSlots> {
         None
     }
+
+    /// 资产物理参数铭牌（蓝图 70.8 WP-70.8.3；无铭牌 → None——资产
+    /// 不可控，不从 host fixture 补值）。默认实现 = None（不含铭牌的
+    /// 目录实现如实不可用）。
+    fn nameplate(&self, _asset_id: u64) -> Option<model::Nameplate> {
+        None
+    }
+
+    /// 全部资产 ID（确定性升序；装配侧登记遍历用）。默认空。
+    fn asset_ids(&self) -> alloc::vec::Vec<u64> {
+        alloc::vec::Vec::new()
+    }
 }
 
 /// 目录公开查询的保守错误（无 `std`；`Vec<u8>` 承载诊断是可打印的）。
@@ -209,8 +221,10 @@ pub use repository::CatalogRepository;
 pub use repository::CatalogSet;
 pub use units::UnitConverter;
 
-/// 目录 bundle 原始字节 ≥ 0 的约束（防御性上界，[08] §2.3 封闭）。
-pub const CATALOG_PAYLOAD_MAX: usize = 1664;
+/// 目录 bundle 原始字节上界（单源 = 编码面
+/// `eneros_config_bundle::schema::catalog::PAYLOAD_MAX`；编译面超限即
+/// 拒绝产出，本解码面同限拒载——禁止第二份独立字面量）。
+pub const CATALOG_PAYLOAD_MAX: usize = eneros_config_bundle::schema::catalog::PAYLOAD_MAX;
 pub(crate) fn sanity_len(len: usize) -> bool {
     len <= CATALOG_PAYLOAD_MAX
 }

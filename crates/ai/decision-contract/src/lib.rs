@@ -28,6 +28,8 @@
 extern crate alloc;
 
 pub mod batch;
+// 蓝图 70.8 WP-70.8.4：候选身份绑定公式（生成者/验证者单源）。
+pub mod binding;
 pub mod candidate;
 pub mod certificate;
 pub mod error;
@@ -38,12 +40,16 @@ pub mod objective;
 pub mod wire;
 
 pub use batch::{CommandBatch, EmptyResourceRegistry, ResourceRegistry, MAX_BATCH_SIZE};
+pub use binding::{objective_binding_v1, OBJECTIVE_BINDING_DOMAIN};
 pub use candidate::{Assignment, CandidatePlan, CandidatePlanParts, SolveStatusKind};
 pub use certificate::{CertifiedPlan, CertifiedPlanFields, CertifierSeal};
 pub use error::ContractError;
 pub use ids::{CertificateId, IntentId, PlanId, ReasonCode, SnapshotId};
 pub use intent::{CommandIntent, CommandIntentParts, CompensationHint, Precondition};
-pub use objective::{DecisionRequest, IntentCandidate, ObjectiveSpec};
+pub use objective::{
+    Constraint, ConstraintKind, DecisionRequest, IntentCandidate, ObjectiveKind, ObjectiveSource,
+    ObjectiveSpec,
+};
 
 /// 合同 wire 版本（V1；[06] §4.3 兼容矩阵 N-1 读窗口一个版本）。
 pub const CONTRACT_WIRE_V1: u16 = 1;

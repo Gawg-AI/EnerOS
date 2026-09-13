@@ -29,9 +29,13 @@ pub mod ai_worker;
 // 注入路径等价性分析与锁定测试见模块头）。
 pub mod ai_handler;
 pub mod cfg_bindings;
+// 蓝图 70.9 WP-70.9.1/70.9.2：生产独立认证来源（引擎只持接缝；本模块
+// 独立读快照 + 目录派生包络/电池/硬约束 → CertifierModule::certify）。
+pub mod certifier_service;
 // 蓝图 61 v0.314.33：SemanticCatalog 生产装载窄口（反馈槽/覆盖/控制
 // 绑定自目录派生；三服务共用）。
 pub mod catalog_gateway;
+pub mod catalog_spec_source;
 // SPEC-B（WP-B.2）：svc-control-dispatch 装配面下沉（fail-closed 阶梯 +
 // 出站通道；bin 退化为装配接线）。阶梯核心 host 可测（DoD B1：seL4 叶子
 // 以 closure seam 注入）；EIPC 通道/引擎装配限目标构建（cfg(none) 项级门）。
@@ -58,6 +62,7 @@ pub mod service;
 mod service_slots;
 #[cfg(test)]
 pub mod snapshot_diff;
+pub mod structured_plan;
 pub mod telemetry;
 // SPEC-C（WP-C.1）：TSDB 磁盘历史适配（D-TSDB-2 方案 A 句柄让渡）。
 pub mod telemetry_history;

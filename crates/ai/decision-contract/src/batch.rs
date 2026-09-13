@@ -370,22 +370,22 @@ impl CommandBatch {
 mod tests {
     #![allow(clippy::disallowed_macros)]
 
-    #[cfg(feature = "transition-certifier")]
+    #[cfg(feature = "certifier")]
     use super::*;
-    #[cfg(feature = "transition-certifier")]
+    #[cfg(feature = "certifier")]
     use crate::certificate::CertifierSeal;
-    #[cfg(feature = "transition-certifier")]
+    #[cfg(feature = "certifier")]
     use crate::ids::{CertificateId, IntentId, SnapshotId};
-    #[cfg(feature = "transition-certifier")]
+    #[cfg(feature = "certifier")]
     use crate::intent::{CompensationHint, Precondition};
 
     // 以下夹具仅被 transition-certifier 门控的测试使用（默认 feature
     // 下不存在，避免 dead-code 警告）。
 
-    #[cfg(feature = "transition-certifier")]
+    #[cfg(feature = "certifier")]
     struct SinglePcs;
 
-    #[cfg(feature = "transition-certifier")]
+    #[cfg(feature = "certifier")]
     impl ResourceRegistry for SinglePcs {
         fn asset_exists(&self, asset_id: u64) -> bool {
             asset_id == 1
@@ -402,10 +402,10 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "transition-certifier")]
+    #[cfg(feature = "certifier")]
     fn cert() -> CertifiedPlan {
         CertifiedPlan::new_sealed(
-            CertifierSeal::issue_transition(),
+            CertifierSeal::issue(),
             crate::certificate::CertifiedPlanFields {
                 certificate_id: CertificateId([9u8; 16]),
                 plan_id: PlanId([1u8; 16]),
@@ -425,7 +425,7 @@ mod tests {
 
     /// Parts 基座（蓝图 65 复查：4 处 12 字段字面重复收敛——struct
     /// update 只重声明所变字段，对齐 candidate.rs `neg()` 先例）。
-    #[cfg(feature = "transition-certifier")]
+    #[cfg(feature = "certifier")]
     fn intent_base() -> crate::intent::CommandIntentParts {
         crate::intent::CommandIntentParts {
             intent_id: IntentId([3u8; 16]),
@@ -443,7 +443,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "transition-certifier")]
+    #[cfg(feature = "certifier")]
     fn intent() -> CommandIntent {
         CommandIntent::from_parts(intent_base()).unwrap()
     }
@@ -451,7 +451,7 @@ mod tests {
     /// 已删免检构造门的测试调用点显式化形态（蓝图 65 WP-65.2.3
     /// 死默认显式化）：compile_meta 四参字面 `(vec![], 1, 0, [0u8;32])`
     /// 即原免检构造门的隐藏零值——不再有免检构造门。
-    #[cfg(feature = "transition-certifier")]
+    #[cfg(feature = "certifier")]
     fn compile_default(
         c: &CertifiedPlan,
         intents: Vec<CommandIntent>,
@@ -465,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "transition-certifier")]
+    #[cfg(feature = "certifier")]
     fn batch_requires_cert_and_registry() {
         let c = cert();
         let b = compile_default(&c, vec![intent()], 2_000).unwrap();
@@ -474,7 +474,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "transition-certifier")]
+    #[cfg(feature = "certifier")]
     fn batch_scope_and_binding_negatives() {
         let c = cert();
         // 意图绑定别的 plan digest → 拒绝。
@@ -511,7 +511,7 @@ mod tests {
 
     // ---- [10] §2.2 批级编译元数据（.41 PlanCompiler 卷）----
 
-    #[cfg(feature = "transition-certifier")]
+    #[cfg(feature = "certifier")]
     fn two_intents() -> (CommandIntent, CommandIntent) {
         let a = CommandIntent::from_parts(intent_base()).unwrap();
         let b = CommandIntent::from_parts(crate::intent::CommandIntentParts {
@@ -525,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "transition-certifier")]
+    #[cfg(feature = "certifier")]
     fn compiled_batch_digest_deterministic_and_metadata_sensitive() {
         let c = cert();
         let (a, b) = two_intents();
@@ -564,7 +564,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "transition-certifier")]
+    #[cfg(feature = "certifier")]
     fn compiled_batch_edge_and_cycle_negatives() {
         let c = cert();
         let (a, b) = two_intents();

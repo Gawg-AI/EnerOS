@@ -103,15 +103,24 @@ pub struct CertificateEnvelope {
     pub mac: [u8; 32],
 }
 
-/// certifier key ring（生命周期：rotate/retire/回滚）。
+/// certifier key ring（生命周期：rotate/retire）。
 ///
-/// - `rotate`：新 key 成为活跃；旧 key 降为前代（N-1 验证窗口内仍可验）。
-/// - `retire`：立即撤销（活跃或前代）——**回滚裁决**：被 retire 的 key
-///   其一切证书验证失败。
+/// - `rotate`：新 key 成为活跃；旧活跃 key 降为前代，**前代窗口 = N-1
+///   （1 个）**——更早的 key 到期退出（蓝图 WP-70.9.3「N-1 窗口」）。
+/// - 版本（`key_version`）= **轮换代数**（ring 级单调计数，不随 id 归零）：
+///   审计可区分代际；退役后复用同一 id 也不会让旧代证书复活（版本已前进）。
+/// - `retire`：立即撤销（活跃或前代）——被 retire 的 key 其一切证书验证
+///   失败。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CertifierKeyRing {
     active: Option<(u16, u32, Vec<u8>)>,
     predecessors: Vec<(u16, u32, Vec<u8>)>,
+    /// 轮换代数（`key_version` 单源；`new` 起于 1，`empty` 为 0）。
+    generation: u32,
 }
+
+/// N-1 验证窗口：保留的前代数（最老先出）。
+pub const KEY_PREDECESSOR_WINDOW: usize = 1;
 
 impl CertifierKeyRing {
     /// 以活跃 key 构建首代 ring。
@@ -119,12 +128,26 @@ impl CertifierKeyRing {
         Self {
             active: Some((key_id, 1, Vec::from(key))),
             predecessors: Vec::new(),
+            generation: 1,
         }
     }
 
-    /// 轮换：新 id 的 key 接管；旧活跃 key 降前代（版本 +1 语义为同 id
-    /// 换代；新 id 从版本 1 起）。**同 id 复用（含历史前代）拒绝**——
-    /// 否则 (id, version) 二义，旧代证书不可验且审计无法区分代际。
+    /// 空 ring（无活跃 key、无前代）——**验方失败即拒**（fail-closed）。
+    ///
+    /// 用途：装配期缺 key 时的显式初值（不是"跳过验签"的开关）；发放方
+    /// 不得用空 ring 出证（[`crate::CertifierModule::certify`] 对空
+    /// `active()` 恒拒绝）。
+    pub fn empty() -> Self {
+        Self {
+            active: None,
+            predecessors: Vec::new(),
+            generation: 0,
+        }
+    }
+
+    /// 轮换：新 key 接管，版本 = 轮换代数（单调 +1），旧活跃降前代并
+    /// 裁到 N-1。**同 id 复用（含历史前代）拒绝**——否则 (id, version)
+    /// 二义，旧代证书不可验且审计无法区分代际。
     pub fn rotate(&mut self, new_key_id: u16, key: &[u8]) -> Result<(), CertifierError> {
         if key.is_empty() {
             return Err(CertifierError::InvalidInput("empty key"));
@@ -142,11 +165,19 @@ impl CertifierKeyRing {
         if let Some((old_id, old_ver, old_key)) = self.active.take() {
             self.predecessors.push((old_id, old_ver, old_key));
         }
-        self.active = Some((new_key_id, 1, Vec::from(key)));
+        // N-1 窗口：最老的前代先出（保留最近 N_MINUS_ONE 个）。
+        while self.predecessors.len() > KEY_PREDECESSOR_WINDOW {
+            self.predecessors.remove(0);
+        }
+        self.generation = self.generation.saturating_add(1);
+        self.active = Some((new_key_id, self.generation, Vec::from(key)));
         Ok(())
     }
 
     /// 立即撤销（回滚）：验证面即刻失效。
+    ///
+    /// 退役后 id 可被后续 `rotate` 复用，但**不会复活**旧代证书：版本 =
+    /// 轮换代数且只前进，复用后的 key 版本必然高于旧证书携带的版本。
     pub fn retire(&mut self, key_id: u16) -> bool {
         let mut retired = false;
         if self.active.as_ref().map(|(id, _, _)| *id) == Some(key_id) {
@@ -165,7 +196,12 @@ impl CertifierKeyRing {
             .map(|(id, v, k)| (*id, *v, k.as_slice()))
     }
 
-    /// 按 id 查 key（活跃 + 前代；retired 不可达）。
+    /// 当前轮换代数（`key_version` 读出；`empty` = 0）。
+    pub fn generation(&self) -> u32 {
+        self.generation
+    }
+
+    /// 按 id 查 key（活跃 + N-1 前代；retired/超窗不可达）。
     pub fn key(&self, key_id: u16) -> Option<(u16, u32, &[u8])> {
         if let Some((id, v, k)) = self.active.as_ref().filter(|(id, _, _)| *id == key_id) {
             return Some((*id, *v, k.as_slice()));
@@ -233,10 +269,12 @@ mod tests {
     fn keyring_lifecycle() {
         let mut ring = CertifierKeyRing::new(1, b"key-one");
         assert!(ring.key(1).is_some());
-        // 轮换：旧 key 仍可验（前代）。
+        assert_eq!(ring.generation(), 1);
+        // 轮换：旧 key 仍可验（N-1 前代窗口）。
         ring.rotate(2, b"key-two").unwrap();
         assert!(ring.key(1).is_some());
         assert_eq!(ring.active().map(|(id, _, _)| id), Some(2));
+        assert_eq!(ring.generation(), 2, "版本 = 轮换代数（单调）");
         // 同 id 复用拒绝（active 或历史前代均已占用 id 1/2）。
         assert!(ring.rotate(1, b"key-one-again").is_err());
         assert!(ring.rotate(2, b"key-two-again").is_err());
@@ -248,7 +286,44 @@ mod tests {
         // 撤销活跃：回滚——无活跃 key。
         assert!(ring.retire(2));
         assert!(ring.active().is_none());
-        // retire 后 id 释放可复用（版本从 1 重起——回滚语义即重置）。
-        assert!(ring.rotate(1, b"key-one-new").is_ok());
+        // 退役后 id 可复用（回滚语义），但版本只前进——旧代证书不复活。
+        assert_eq!(ring.generation(), 2);
+        ring.rotate(1, b"key-one-new").unwrap();
+        assert_eq!(
+            ring.active().map(|(_, v, _)| v),
+            Some(3),
+            "复用 id 的版本必须高于退役前的旧证书版本（防复活）"
+        );
+    }
+
+    /// 蓝图 WP-70.9.3「N-1 窗口」：只保留最近 1 个前代，更早的 key 退出
+    /// 验证面；`generation` 单调（审计可辨代际）。
+    ///
+    /// 变异靶：去掉 rotate 里的 `truncate/remove` → 第 1 个 key 仍可验 → 红。
+    #[test]
+    fn keyring_keeps_only_n_minus_one_predecessor() {
+        let mut ring = CertifierKeyRing::new(1, b"k1");
+        ring.rotate(2, b"k2").unwrap();
+        assert!(ring.key(1).is_some(), "N-1 窗口内仍可验");
+        ring.rotate(3, b"k3").unwrap();
+        assert!(ring.key(1).is_none(), "超出 N-1 窗口的 key 必须退出验证面");
+        assert!(ring.key(2).is_some(), "最近前代仍在窗口内");
+        assert_eq!(ring.active().map(|(id, _, _)| id), Some(3));
+        assert_eq!(ring.generation(), 3);
+        assert_eq!(ring.active().map(|(_, v, _)| v), Some(3));
+    }
+
+    /// 退役后复用 id 不得复活旧代证书（版本单调的单向性实证）。
+    #[test]
+    fn retired_key_id_reuse_cannot_resurrect_old_version() {
+        let mut ring = CertifierKeyRing::new(1, b"same-material");
+        let old_version = ring.active().expect("active").1;
+        assert!(ring.retire(1));
+        ring.rotate(1, b"same-material").expect("id reuse allowed");
+        let new_version = ring.active().expect("active").1;
+        assert!(
+            new_version > old_version,
+            "复用 id 必须拿到更高的版本号（旧证书版本失配 → 拒绝）: {old_version} -> {new_version}"
+        );
     }
 }

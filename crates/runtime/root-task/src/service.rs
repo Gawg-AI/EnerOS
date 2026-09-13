@@ -577,9 +577,9 @@ impl Orchestration {
                     .map(|s| s.lifecycle_state() == crate::supervisor::LifecycleState::Ready)
                     .unwrap_or(false)
         });
-        let mut verdict = self
-            .mgmt
-            .handle(&req, self.tick, service_names, required_ready, &ready_of);
+        let mut verdict =
+            self.mgmt
+                .handle(&req, self.tick, service_names, required_ready, &ready_of);
         // 70.7.5：OTA1 单程中继（0x06 status / 0x07 rollback）——root 是
         // OTA1 唯一可信调用方（无 (*, svc-ota) 授予边，agent-sdk 红灯锁）；
         // OTA1 响应字节原样回填 MGT2 响应（失败 → ERR:ota-relay 不伪造）。
@@ -1231,9 +1231,16 @@ pub fn run_ipc_loop(
         orch.identity_push_step(&ota_handle);
 
         // 70.6（WP-70.6.5）：MGT1 管理动作链探针（qemu-test-synth 专属）。
+        // 门控与 `mgt_probe_step` 定义同源：生产 profile（sel4-eipc 无
+        // qemu-test-synth）下本调用点必须一并消失，否则 E0599 编译断裂
+        //（70.7 门只构建 qemu-test profile，未暴露——回归锁见
+        // `.github`/feature-matrix 的 root-task 生产面构建）。
+        #[cfg(feature = "qemu-test-synth")]
         if crate::wiring::periodic_due(crate::wiring::PeriodicTask::MgtProbe, orch.tick) {
             orch.mgt_probe_step(&mut supervisor, handles, &service_names);
         }
+        #[cfg(not(feature = "qemu-test-synth"))]
+        let _ = (&mut supervisor, handles, &service_names);
 
         // 蓝图 40 收尾：心跳监控（WP-40.4）——poll 受监控服务心跳 ntfn；
         // "发过请求却无进展超限" → suspend + restart（无 fault 卡死也终止，
@@ -1578,10 +1585,10 @@ fn restart_service(
     // 心跳超时路径：目标可能仍在运行（死循环无 fault）——先 suspend 再
     // 重写寄存器（fault 路径 TCB 已被内核挂起，suspend 幂等）。
     tcb_suspend(handle.tcb)?;
-    // count=spawn::INITIAL_REG_COUNT：与 spawn 一致（X5 供 svc-storage/net
-    // 设备移交，其他服务 X5=0；X6=SPEC-B 墙钟 epoch 秒；X7=SPEC-D UART
-    // MMIO vaddr；X8=70.7 svc-storage boot 池基址——count 按 aarch64 规范序
-    // 计，X8=索引 11 ⇒ count=12）。
+    // count=spawn::INITIAL_REG_COUNT（=11）：与 spawn 一致（X5 供 svc-storage/
+    // net 设备移交，其他服务 X5=0；X6=SPEC-B 墙钟 epoch 秒；X7=SPEC-D UART
+    // MMIO vaddr **或** 70.7 svc-storage boot 池基址——两集互斥；写入面到
+    // X7（规范索引 10）为止，无 X8（C-ABI 第 9 参不经寄存器，run12/13 实弹））。
     tcb_write_registers(handle.tcb, 0, crate::spawn::INITIAL_REG_COUNT as u64, &regs)?;
     tcb_resume(handle.tcb)
 }

@@ -30,6 +30,7 @@ extern crate alloc;
 
 pub mod adapter;
 pub mod arbiter;
+pub mod certify;
 pub mod channel;
 pub mod compiler;
 pub mod config_seed;
@@ -40,8 +41,10 @@ pub mod engine;
 pub mod feedback;
 pub mod intent;
 pub mod journal;
+pub mod plan_hold;
 pub mod saga;
 
+pub use certify::{CertificateSource, CertifierReply, CertifyReject, NoCertifier};
 #[cfg(feature = "sel4")]
 pub use channel::Sel4EipcChannel;
 pub use channel::{ChannelError, DeliveryChannel};
@@ -52,6 +55,7 @@ pub use dispatch::DispatchState;
 pub use dispatch::{AuthenticatedActor, ControlDispatch, DispatchError, DispatchReceipt};
 pub use engine::{
     AuditSinks, DeliveryBinding, DispatchConfig, DispatchEngine, IssuerIdentity, SafetyLimits,
+    TrustedInputPolicy,
 };
 pub use feedback::{FeedbackPointMapping, TrustedFeedbackBuilder, PROD_FEEDBACK_MAPPING};
 pub use intent::{InMemoryIntentStore, IntentRecord, IntentStore, IntentStoreError};

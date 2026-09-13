@@ -115,6 +115,13 @@ impl<S: EventStore> StoreSink<S> {
         &mut self.store
     }
 
+    /// 底层 store 只读访问（蓝图 70.8.2：保留判据需在删除前读一次消费
+    /// 位点——只读面不借走 `&mut`，避免与同轮 `store_mut` 交错借用；
+    /// 语义与 [`Self::store_mut`] 同一职责通道）。
+    pub fn store(&self) -> &S {
+        &self.store
+    }
+
     pub fn len(&self) -> usize {
         self.partitions.len()
     }

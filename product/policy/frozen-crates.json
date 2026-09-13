@@ -386,7 +386,7 @@
   },
   {
    "package": "eneros-certifier",
-   "reason": "ADR-051 §2 裁决：生产零消费者为过渡窗内事实（shadow/dev 测试消费；真发放面 feature 门锁）——certifier 接电前置=目标侧存储句柄移交（BLOCKED 登记）"
+   "reason": "蓝图 70.9 已接电：svc-control-dispatch 经 CertificateSource 消费（发放=TrustedInputCertifier，验真=CertifierKeyRing），control-services/control-dispatch 为生产消费者；本条仅为该包的 lib 面历史登记（2026-09-13 复查订正旧口径「生产零消费者」——过渡发放面已按 ADR-051 出口删除）"
   },
   {
    "package": "eneros-modbus-tcp-server",

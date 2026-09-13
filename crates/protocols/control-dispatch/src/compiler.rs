@@ -293,8 +293,12 @@ pub fn compile(
             return Err(CompileReject::NoReadback { asset_id });
         }
         // 单位换算走 UnitCatalog（SI 比例；量纲不兼容拒绝，不猜）。
-        // unbound assignment 单位码为 0 → 直接取绑定单位（无换算）。
-        let value_unit = if unbound { unit } else { a.unit_code };
+        // 单位码 0 = 未携带（生产者未声明）→ 取 registry 绑定单位（无换算）。
+        // 原判据按 `unbound`（资产占位）分支：引擎在认证前解析占位资产后
+        // 单位码仍是 0，故判据改按**单位码**本身（语义更直接，行为对旧
+        // 未绑定形态逐字节不变）。
+        let value_unit = if a.unit_code == 0 { unit } else { a.unit_code };
+        let _ = unbound;
         let value = match (
             unit_catalog::from_code(value_unit),
             unit_catalog::from_code(unit),
@@ -334,7 +338,7 @@ pub fn compile(
         let (valid_from, valid_until) = if plan.step_ns() == 0 {
             (cert.certified_at_ms(), cert.valid_until_ms())
         } else {
-            let step_len_ms = (plan.step_ns() / 1_000_000).max(1);
+            let step_len_ms = plan.step_len_ms();
             let step_ms = u64::from(a.step_index.saturating_sub(1)).saturating_mul(step_len_ms);
             let raw_from = plan.horizon_start_ms().saturating_add(step_ms);
             let raw_to = raw_from.saturating_add(step_len_ms);

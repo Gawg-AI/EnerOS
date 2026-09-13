@@ -294,7 +294,7 @@ fn engine_with() -> (DispatchEngine, Rc<RefCell<u64>>) {
         devices: Rc::clone(&devices),
         delivered: Rc::clone(&delivered),
     };
-    let config = support::test_config(support::TestConfigSeed {
+    let config = support::test_config_legacy(support::TestConfigSeed {
         chain: build_chain(),
         key: KEY.to_vec(),
         profile: test_profile(),

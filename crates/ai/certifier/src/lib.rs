@@ -27,12 +27,18 @@
 //! - 充放/购售互斥在净功率合同面上**不可观测**（Assignment 只携带净
 //!   功率）：同向抵消无物理危害（设备命令为净量）、能量守恒仍被独立
 //!   校验——互斥由 planner 模型 binary 约束保证，登记为模型侧性质。
-//! - control-dispatch 的过渡 seal 发放面（`transition-certifier`）
-//!   在目标侧快照/包络输入具备前保留（Phase 5 PlanCompiler 替代），
-//!   见 ADR-051；CertifiedPlan 的**规范生产者** = control-dispatch
-//!   transition seal 过渡发放面（ADR-051 订正口径，与 decision-contract
-//!   `certificate.rs` 模块头对齐——蓝图 67 WP-67.6；本 crate 生产零
-//!   消费者是裁决内事实非疏漏）。
+//! - 发放面（蓝图 70.9 起，复查订正旧文）：**唯一**发放点 = 本 crate 的
+//!   [`CertifierModule::certify`]（`CertifiedPlan::new_certified` +
+//!   `CertifierSeal::issue`）；`control-dispatch` 的过渡发放面
+//!   （`transition-certifier` / `CertifierSeal::issue_transition`）已按
+//!   ADR-051 出口条件**删除**。生产消费者 = `svc-control-dispatch`
+//!   （经 `CertificateSource` 接缝：发放 `TrustedInputCertifier`、验真
+//!   `CertifierKeyRing`），故"生产零消费者"不再是事实。
+//!   注意：`CertifierSeal` 是 **feature 门**（Cargo feature 在同图内
+//!   合并）——凡依赖本 crate 的构建图都会打开 `certifier` feature，
+//!   于是 `issue()` 在语法上可达；发放面唯一性由**源码扫描门**执法
+//!   （`tests/integration.rs::seal_issuance_source_scan_rejects_third_party_callers`），
+//!   不是类型系统事实。
 //! - min on/off 与工艺状态机类约束：净功率面可校验包络与能量，启停
 //!   状态机依赖合同拓扑外的历史状态（登记待 Phase 5/6 输入源）。
 //! - 控制合同与可读回条件（[09] §4.2）：回读合格性由 registry 合同
@@ -48,15 +54,16 @@
 #![no_std]
 
 // 蓝图 69.4 WP-69.4.3（方案 B1）：原 `#![cfg_attr(not(test), allow(dead_code))]`
-// 全 crate 豁免已删——「暂不接电」不该永久静音编译器。本 crate 生产零
-// 消费者（ADR-051 §2 / 蓝图 67 WP-67.6 裁决内事实）：接电前必须先复核
-// ①本头「偏离登记」第 2 条解冻条件（目标侧快照/包络输入齐备）；
-// ②接电时以 `cargo build -p eneros-certifier 2>&1 | grep dead_code` 重取
-// 未消费面清单，逐面确认未被腐坏后再消费（v0.329.0 时点该清单为空，
-// 见卷 69.4 执行卡）。
+// 全 crate 豁免已删——「暂不接电」不该永久静音编译器。
+// 蓝图 70.9（复查订正）：本 crate **已接电**（发放 TrustedInputCertifier /
+// 验真 CertifierKeyRing，生产消费者 = svc-control-dispatch）。此后新增
+// dead_code 即真实腐坏信号：以 `cargo build -p eneros-certifier 2>&1 |
+// grep dead_code` 复核，不得以"暂不接电"为由放行。
 
 extern crate alloc;
 
+// 蓝图 70.9 WP-70.9.2：可信输入 → 认证上下文装配（纯函数）。
+pub mod context;
 pub mod eval;
 pub mod proof;
 
@@ -113,7 +120,11 @@ impl EvalContext<'_> {
         if plan.snapshot_id().0 != self.spec.snapshot_id().0 {
             return Err(CertifierError::PlanMismatch("spec_snapshot"));
         }
-        if plan.step_ns() != self.horizon_step_ns || plan.step_count() != self.horizon_step_count {
+        // 步长比对走**有效步长**（单源 [`effective_step_ns`]）：迁移窗
+        // 单时段（step_ns = 0）以 TTL 为等效步长，上下文必须同值。
+        if self.horizon_step_ns != effective_step_ns(plan)
+            || plan.step_count() != self.horizon_step_count
+        {
             return Err(CertifierError::PlanMismatch("horizon"));
         }
         if plan.horizon_start_ms() != self.horizon_start_ms {
@@ -128,6 +139,17 @@ impl EvalContext<'_> {
             return Err(CertifierError::PlanExpired);
         }
         Ok(())
+    }
+}
+
+/// **有效步长**（迁移窗单时段语义单源）：`step_ns == 0` 表示"单步覆盖
+/// 计划有效期"，评估器以计划 TTL 为步长（与 dispatch 编译期的 legacy
+/// 窗口语义同域）。严格轨迹形态（step_ns > 0）原值返回。
+pub fn effective_step_ns(plan: &eneros_decision_contract::CandidatePlan) -> u64 {
+    if plan.step_ns() == 0 {
+        plan.ttl_ms().max(1).saturating_mul(1_000_000)
+    } else {
+        plan.step_ns()
     }
 }
 
@@ -283,4 +305,217 @@ impl CertifierModule {
             Err(CertifierError::DigestMismatch("mac"))
         }
     }
+}
+
+// ============================================================================
+// 测试缝：真实评估器驱动的证书夹具（`test-util` 门）
+// ============================================================================
+
+/// 夹具证书（与 `control-dispatch::CertifierReply` 同形；本 crate 不依赖
+/// control-dispatch——调用方映射）。
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixtureReply {
+    pub certificate: alloc::vec::Vec<u8>,
+    pub key_id: u16,
+    pub key_version: u32,
+    pub mac: [u8; 32],
+}
+
+/// 单资产夹具认证器（**真实** `CertifierModule::certify`——证据/约束记录
+/// /MAC 全真；输入是夹具值）。生产代码不得使用：由 `test-util` feature
+/// 门控（未启用时本模块不存在）。
+///
+/// 身份输入**全部取自被认证的计划**（快照 ID / 目录版本 / 时域三元组），
+/// 因此一个夹具实例可服务任意计划；夹具固定：单资产（asset 1）、容量
+/// `capacity_kwh`、功率窗 `[p_min, p_max]`、初始 SOC `soc`。
+#[cfg(any(test, feature = "test-util"))]
+pub struct FixtureCertifier {
+    capacity_kwh: f64,
+    p_min_kw: f64,
+    p_max_kw: f64,
+    soc: f64,
+    ring: proof::CertifierKeyRing,
+    tolerance_profile_id: u32,
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl FixtureCertifier {
+    /// 构造（key 材 + 资产参数）。
+    pub fn new(key: &[u8], capacity_kwh: f64, p_min_kw: f64, p_max_kw: f64, soc: f64) -> Self {
+        Self {
+            capacity_kwh,
+            p_min_kw,
+            p_max_kw,
+            soc,
+            ring: proof::CertifierKeyRing::new(1, key),
+            tolerance_profile_id: 2,
+        }
+    }
+
+    /// 验方 key 环（引擎验真用）。
+    pub fn ring(&self) -> &proof::CertifierKeyRing {
+        &self.ring
+    }
+
+    /// 认证（真实评估器；身份取自计划）。
+    pub fn certify(
+        &self,
+        plan: &eneros_decision_contract::CandidatePlan,
+        now_ms: u64,
+    ) -> Result<FixtureReply, CertifierError> {
+        use eneros_decision_contract::{
+            Constraint, ConstraintKind, ObjectiveKind, ObjectiveSource, ObjectiveSpec, ReasonCode,
+            SnapshotId,
+        };
+        use eneros_resource_registry::capability::{Availability, CapabilityEnvelope};
+        use eneros_snapshot_service::{CompletenessReport, TrustedSnapshot};
+        let snapshot_id = plan.snapshot_id().0;
+        let now_ns = plan.horizon_start_ms().saturating_mul(1_000_000);
+        let snapshot = TrustedSnapshot {
+            snapshot_id,
+            tenant_id: 1,
+            site_id: 1,
+            cut_time_ns: now_ns,
+            produced_at_ns: now_ns,
+            policy_version: 1,
+            version_set: eneros_semantic_catalog::VersionSet::ZERO,
+            observations: alloc::vec::Vec::new(),
+            source_watermarks: alloc::vec::Vec::new(),
+            completeness: CompletenessReport {
+                required: alloc::vec::Vec::new(),
+                accepted: alloc::vec::Vec::new(),
+                missing: alloc::vec::Vec::new(),
+                stale: alloc::vec::Vec::new(),
+                bad: alloc::vec::Vec::new(),
+                conflict: alloc::vec::Vec::new(),
+                substituted: alloc::vec::Vec::new(),
+            },
+            conflicts: alloc::vec::Vec::new(),
+            derived: alloc::vec::Vec::new(),
+            provenance_root: [0x11; 32],
+        };
+        let envelope = CapabilityEnvelope {
+            asset_id: 1,
+            valid_from_ns: 0,
+            valid_until_ns: u64::MAX / 2,
+            p_min_kw: self.p_min_kw,
+            p_max_kw: self.p_max_kw,
+            q_min_kvar: 0.0,
+            q_max_kvar: 0.0,
+            energy_min_kwh: 0.0,
+            energy_max_kwh: self.capacity_kwh,
+            ramp_up_kw_s: 1_000_000.0,
+            ramp_down_kw_s: 1_000_000.0,
+            min_on_ns: 0,
+            min_off_ns: 0,
+            availability: Availability::Full,
+            derating_reason: eneros_resource_registry::capability::DeratingReason::None,
+            source_snapshot_id: snapshot_id,
+            tightenings: alloc::vec::Vec::new(),
+            generation: 1,
+        };
+        let battery = EvalBattery {
+            asset_id: 1,
+            capacity_kwh: self.capacity_kwh,
+            eta_c: 0.95,
+            eta_d: 0.95,
+            initial_kwh: self.capacity_kwh * self.soc.clamp(0.0, 1.0),
+        };
+        // 有效步长单源（迁移窗单时段 ⇒ TTL 等效步长）。
+        let step_ns = effective_step_ns(plan);
+        let spec = ObjectiveSpec::builder(SnapshotId(snapshot_id))
+            .constraints(
+                alloc::vec![
+                    Constraint {
+                        kind: ConstraintKind::MinSoc,
+                        bound: 0.05,
+                    },
+                    Constraint {
+                        kind: ConstraintKind::MaxSoc,
+                        bound: 0.95,
+                    },
+                ],
+                alloc::vec::Vec::new(),
+            )
+            .objective(
+                ObjectiveKind::SelfConsume,
+                1,
+                ObjectiveSource::Contract,
+                ReasonCode::PriceArbitrage,
+            )
+            .window(
+                plan.horizon_start_ms().max(1),
+                plan.horizon_start_ms()
+                    .max(1)
+                    .saturating_add(plan.ttl_ms().max(1)),
+            )
+            .build()
+            .map_err(|_| CertifierError::InvalidInput("fixture-spec"))?;
+        let envelopes = [(1u64, envelope)];
+        let batteries = [battery];
+        // 步骤域对齐：`EvalContext::bind` 逐字段比对计划的 step_ns/count。
+        // 计划 step_ns = 0（迁移单时段）时以等效步长评估，但 bind 会因
+        // 步长不等拒绝——故夹具对该形态直接以计划值构造 ctx（评估器对
+        // step_ns = 0 拒绝 InvalidInput，故此处改为声明式：把等效步长
+        // 写回计划**不可行**（wire 绑定）——因此夹具只服务 step_ns > 0
+        // 的形态；迁移单时段形态由调用方先归一）。
+        let ctx = EvalContext {
+            snapshot: &snapshot,
+            spec: &spec,
+            envelopes: &envelopes,
+            batteries: &batteries,
+            horizon_step_ns: step_ns,
+            horizon_step_count: plan.step_count(),
+            horizon_start_ms: plan.horizon_start_ms(),
+            grid_asset_id: 0,
+            tolerance_profile_id: self.tolerance_profile_id,
+            constraint_catalog_version: plan.resource_catalog_version(),
+        };
+        let out = CertifierModule::certify(&ctx, plan, now_ms, &self.ring)?;
+        Ok(FixtureReply {
+            certificate: out.certificate.encode_v1(),
+            key_id: out.key_envelope.key_id,
+            key_version: out.key_envelope.key_version,
+            mac: out.key_envelope.mac,
+        })
+    }
+}
+
+/// 夹具证书（**只供编译器/接线测试**：不做独立重算，`hard_constraint_count`
+/// 为给定值）。引擎验真会拒（零约束记录/摘要不符）——这正是测试要区分
+/// 的"结构合法证书"与"真认证证书"。
+#[cfg(any(test, feature = "test-util"))]
+pub fn fixture_certificate(
+    plan: &eneros_decision_contract::CandidatePlan,
+    plan_sha: [u8; 32],
+    now_ms: u64,
+    hard_constraint_count: u32,
+) -> Result<eneros_decision_contract::CertifiedPlan, CertifierError> {
+    use eneros_decision_contract::{
+        CertificateId, CertifiedPlan, CertifiedPlanFields, CertifierSeal,
+    };
+    let certificate_id = CertificateId::new(
+        plan_sha[..16]
+            .try_into()
+            .map_err(|_| CertifierError::InvalidInput("cert-id"))?,
+    )
+    .map_err(|_| CertifierError::InvalidInput("cert-id"))?;
+    CertifiedPlan::new_certified(
+        CertifierSeal::issue(),
+        CertifiedPlanFields {
+            certificate_id,
+            plan_id: *plan.id(),
+            plan_sha256: plan_sha,
+            snapshot_id: plan.snapshot_id(),
+            certifier_version: CERTIFIER_VERSION,
+            constraint_catalog_version: plan.resource_catalog_version(),
+            tolerance_profile_id: 2,
+            certified_at_ms: now_ms,
+            valid_until_ms: now_ms.saturating_add(plan.ttl_ms()),
+            hard_constraint_count,
+            proof_digest: [0xCD; 32],
+        },
+    )
+    .map_err(|_| CertifierError::InvalidInput("cert-fields"))
 }

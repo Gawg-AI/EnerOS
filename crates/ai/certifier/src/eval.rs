@@ -272,8 +272,14 @@ pub fn evaluate_trajectories(
                 asset_id: b.asset_id,
             });
         }
-        let mut soc_lo = benv.energy_min_kwh.max(0.0);
-        let mut soc_hi = benv.energy_max_kwh.min(b.capacity_kwh).max(soc_lo);
+        // 存储水位窗 = 铭牌容量 ∩ 规格 SOC 窗。**包络能量域不参与**：
+        // registry 的 `energy_min/max_kwh` 语义 = 当前**可移动能量**
+        // （放电侧 `总量 × SOC`、充电侧另计），不是存储水位——把它当
+        // SOC 上界会误拒充电计划（容量 100 kWh、SOC 0.6 时 60 kWh 被当
+        // 存储天花板，充 0.475 kWh 即"越界"）。包络仍是**功率**窗与
+        // 可用性（controllable）的权威，见上方包络覆盖检查。
+        let mut soc_lo = 0.0f64;
+        let mut soc_hi = b.capacity_kwh;
         for c in ctx.spec.hard() {
             match c.kind {
                 ConstraintKind::MinSoc => soc_lo = soc_lo.max(c.bound * b.capacity_kwh),
@@ -281,6 +287,7 @@ pub fn evaluate_trajectories(
                 _ => {}
             }
         }
+        let _ = benv.energy_min_kwh;
         if soc_lo > soc_hi {
             return Err(CertifierError::InvalidInput("empty soc window"));
         }

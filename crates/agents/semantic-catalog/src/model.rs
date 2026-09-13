@@ -192,6 +192,34 @@ pub struct AliasEntry {
     pub asset_id: u64,
 }
 
+/// 物理参数铭牌（蓝图 70.8 WP-70.8.3：容量/效率/功率/爬坡的可追溯来源）。
+///
+/// 与目录同代（generation/contract_version）——包络求交、认证电池参数与
+/// 计划模型都从这里取值；缺铭牌的资产**不可控**（fail-closed，不从 host
+/// fixture 补值）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Nameplate {
+    pub asset_id: u64,
+    /// 额定容量（kWh）——SOC → 能量的换算基准。
+    pub capacity_kwh: f64,
+    /// 充电效率（0,1]。
+    pub eta_c: f64,
+    /// 放电效率（0,1]。
+    pub eta_d: f64,
+    /// 可调度能量上界（kWh；通常 ≤ capacity_kwh）。
+    pub energy_max_kwh: f64,
+    pub p_min_kw: f64,
+    pub p_max_kw: f64,
+    pub q_min_kvar: f64,
+    pub q_max_kvar: f64,
+    pub ramp_up_kw_s: f64,
+    pub ramp_down_kw_s: f64,
+    /// 可用 SOC 下限（0..1 分数）——认证 MinSoc 硬约束的物理来源。
+    pub soc_min: f64,
+    /// 可用 SOC 上限（0..1 分数）——认证 MaxSoc 硬约束的物理来源。
+    pub soc_max: f64,
+}
+
 /// 解码后的封闭目录（`decode::decode_catalog` 产物）。
 #[derive(Debug, Clone, Default)]
 pub struct CatalogBundle {
@@ -208,6 +236,8 @@ pub struct CatalogBundle {
     pub safety: Vec<SafetyConstraint>,
     pub aliases: Vec<AliasEntry>,
     pub tombstones: Vec<u64>,
+    /// 蓝图 70.8：物理参数铭牌（字段 14；缺省空表 = 无铭牌资产不可控）。
+    pub nameplates: Vec<Nameplate>,
 }
 
 impl CatalogBundle {

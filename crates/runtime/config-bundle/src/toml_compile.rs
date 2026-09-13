@@ -939,6 +939,8 @@ pub fn compile_catalog(toml: &str) -> Result<CompiledConfig, ConfigError> {
             "safety_constraint",
             "alias",
             "tombstone",
+            // 蓝图 70.8 WP-70.8.3：物理参数铭牌（容量/效率/功率/爬坡）。
+            "nameplate",
         ],
     )?;
     // 目录头（64B = 8 × u64）。
@@ -1865,6 +1867,158 @@ pub fn compile_catalog(toml: &str) -> Result<CompiledConfig, ConfigError> {
         tombstones_payload.extend_from_slice(&0u16.to_le_bytes()); // flags
     }
 
+    // [[nameplate]] 物理参数铭牌（蓝图 70.8 WP-70.8.3：容量/效率/功率/
+    // 爬坡与目录同代；包络求交与认证电池参数的唯一来源）。
+    let mut nameplates: BTreeSet<u64> = BTreeSet::new();
+    let mut nameplates_payload: Vec<u8> = Vec::new();
+    let np_arr = optional_array(&root, &config, "nameplate")?;
+    // 与解码面同源上界（schema::catalog::MAX_NAMEPLATES）：超限拒编。
+    if np_arr.len() as u32 > catalog::MAX_NAMEPLATES {
+        return Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "nameplate",
+            reason: alloc::format!(
+                "too-many-nameplates:{}>{}",
+                np_arr.len(),
+                catalog::MAX_NAMEPLATES
+            ),
+        });
+    }
+    nameplates_payload.extend_from_slice(&(np_arr.len() as u32).to_le_bytes());
+    for (idx, nv) in np_arr.iter().enumerate() {
+        let ctx = alloc::format!("nameplate[{idx}]");
+        let nt = nv.as_table().ok_or_else(|| ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "nameplate",
+            reason: alloc::format!("{ctx}:expected-table"),
+        })?;
+        reject_unknown_keys(
+            nt,
+            &config,
+            &[
+                "asset_id",
+                "capacity_kwh",
+                "eta_c",
+                "eta_d",
+                "energy_max_kwh",
+                "p_min_kw",
+                "p_max_kw",
+                "q_min_kvar",
+                "q_max_kvar",
+                "ramp_up_kw_s",
+                "ramp_down_kw_s",
+                "soc_min",
+                "soc_max",
+            ],
+        )?;
+        let asset_id = get_u64(nt, &config, "asset_id")?;
+        if asset_id == 0 || !nameplates.insert(asset_id) {
+            return Err(ConfigError::DuplicateField {
+                config: config.clone(),
+                field: catalog::FIELD_NAMEPLATES,
+            });
+        }
+        if !assets.contains(&asset_id) {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "nameplate",
+                reason: alloc::format!("{ctx}:unknown-asset:{asset_id}"),
+            });
+        }
+        if tombstones.contains(&asset_id) {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "nameplate",
+                reason: alloc::format!("{ctx}:asset-tombstoned:{asset_id}"),
+            });
+        }
+        let capacity_kwh = get_f64_req(nt, &config, "capacity_kwh")?;
+        let eta_c = get_f64_req(nt, &config, "eta_c")?;
+        let eta_d = get_f64_req(nt, &config, "eta_d")?;
+        let energy_max_kwh = get_f64_req(nt, &config, "energy_max_kwh")?;
+        if !capacity_kwh.is_finite()
+            || capacity_kwh <= 0.0
+            || !energy_max_kwh.is_finite()
+            || energy_max_kwh <= 0.0
+        {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "nameplate",
+                reason: alloc::format!("{ctx}:invalid-energy-params"),
+            });
+        }
+        if !eta_c.is_finite() || eta_c <= 0.0 || eta_c > 1.0 {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "eta_c",
+                reason: alloc::format!("{ctx}:eta-out-of-range"),
+            });
+        }
+        if !eta_d.is_finite() || eta_d <= 0.0 || eta_d > 1.0 {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "eta_d",
+                reason: alloc::format!("{ctx}:eta-out-of-range"),
+            });
+        }
+        let p_min_kw = get_f64_req(nt, &config, "p_min_kw")?;
+        let p_max_kw = get_f64_req(nt, &config, "p_max_kw")?;
+        let q_min_kvar = get_f64_req(nt, &config, "q_min_kvar")?;
+        let q_max_kvar = get_f64_req(nt, &config, "q_max_kvar")?;
+        let ramp_up_kw_s = get_f64_req(nt, &config, "ramp_up_kw_s")?;
+        let ramp_down_kw_s = get_f64_req(nt, &config, "ramp_down_kw_s")?;
+        if !p_min_kw.is_finite()
+            || !p_max_kw.is_finite()
+            || p_min_kw > p_max_kw
+            || !q_min_kvar.is_finite()
+            || !q_max_kvar.is_finite()
+            || q_min_kvar > q_max_kvar
+            || !ramp_up_kw_s.is_finite()
+            || ramp_up_kw_s < 0.0
+            || !ramp_down_kw_s.is_finite()
+            || ramp_down_kw_s < 0.0
+        {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "nameplate",
+                reason: alloc::format!("{ctx}:invalid-power-params"),
+            });
+        }
+        // 储能可用 SOC 窗（0..1 分数；0 ≤ min < max ≤ 1）——认证硬约束
+        // 的物理来源（量程 coverage 不是运行安全窗，禁止顶替）。
+        let soc_min = get_f64_req(nt, &config, "soc_min")?;
+        let soc_max = get_f64_req(nt, &config, "soc_max")?;
+        if !soc_min.is_finite()
+            || !soc_max.is_finite()
+            || soc_min < 0.0
+            || soc_max > 1.0
+            || soc_min >= soc_max
+        {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "nameplate",
+                reason: alloc::format!("{ctx}:invalid-soc-window"),
+            });
+        }
+        nameplates_payload.extend_from_slice(&asset_id.to_le_bytes());
+        for v in [
+            capacity_kwh,
+            eta_c,
+            eta_d,
+            energy_max_kwh,
+            p_min_kw,
+            p_max_kw,
+            q_min_kvar,
+            q_max_kvar,
+            ramp_up_kw_s,
+            ramp_down_kw_s,
+            soc_min,
+            soc_max,
+        ] {
+            nameplates_payload.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+
     let fields: Vec<(u8, Vec<u8>)> = vec![
         (catalog::FIELD_HEADER, header),
         (catalog::FIELD_SCHEMAS, schemas_payload),
@@ -1879,7 +2033,29 @@ pub fn compile_catalog(toml: &str) -> Result<CompiledConfig, ConfigError> {
         (catalog::FIELD_SAFETY_CONSTRAINTS, constraints_payload),
         (catalog::FIELD_ALIASES, aliases_payload),
         (catalog::FIELD_TOMBSTONES, tombstones_payload),
+        (catalog::FIELD_NAMEPLATES, nameplates_payload),
     ];
+    // 目标读面容量闸（同源常量，禁止产出 target 必拒载的 bundle）：
+    // 1. 单字段长度域 = u16（encode_payload 写 u16 LE；超限即截断）；
+    // 2. payload 总长 ≤ schema::catalog::PAYLOAD_MAX（semantic-catalog
+    //    解码面同源引用——1081/1664 的生产余量由此显式化）。
+    for (id, value) in fields.iter() {
+        if value.len() > u16::MAX as usize {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "payload",
+                reason: alloc::format!("field-{id}-len-over-u16:{}", value.len()),
+            });
+        }
+    }
+    let payload_len: usize = fields.iter().map(|(_, v)| 3 + v.len()).sum();
+    if payload_len > catalog::PAYLOAD_MAX {
+        return Err(ConfigError::InvalidValue {
+            config: config.clone(),
+            field: "payload",
+            reason: alloc::format!("payload-too-large:{payload_len}>{}", catalog::PAYLOAD_MAX),
+        });
+    }
     Ok(CompiledConfig {
         payload: encode_payload(fields),
         config_id: config,
@@ -2393,6 +2569,11 @@ pub fn compile_ai_peer(
             "ttl_secs",
             "learn_enabled",
             "degrade_lease_ttl_secs",
+            // 蓝图 70.10：结构化计划参数（可选；给则四键齐备）。
+            "plan_step_ns",
+            "plan_steps",
+            "plan_objective",
+            "plan_prices_per_kwh",
         ],
     )?;
     let timeout_ms = get_u64(t, &config, "timeout_ms")?;
@@ -2473,29 +2654,113 @@ pub fn compile_ai_peer(
             field: "degrade_lease_key",
         });
     }
+    // 蓝图 70.10 WP-70.10.2：结构化计划参数（**可选**；部分给 = 配置错）。
+    let plan_keys = [
+        t.get("plan_step_ns").is_some(),
+        t.get("plan_steps").is_some(),
+        t.get("plan_objective").is_some(),
+        t.get("plan_prices_per_kwh").is_some(),
+    ];
+    let plan_present = plan_keys.iter().filter(|p| **p).count();
+    let plan_field: Option<(u8, alloc::vec::Vec<u8>)> = match plan_present {
+        0 => None,
+        4 => {
+            let step_ns = get_u64(t, &config, "plan_step_ns")?;
+            let steps = get_u32(t, &config, "plan_steps")?;
+            let objective_word = get_str_req(t, &config, "plan_objective")?;
+            let objective = match objective_word {
+                "min_cost" => 1u8,
+                "max_revenue" => 2u8,
+                other => {
+                    return Err(ConfigError::InvalidValue {
+                        config: config.clone(),
+                        field: "plan_objective",
+                        reason: alloc::format!("unknown-objective:{other}"),
+                    })
+                }
+            };
+            let prices = {
+                let arr = t
+                    .get("plan_prices_per_kwh")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| ConfigError::InvalidValue {
+                        config: config.clone(),
+                        field: "plan_prices_per_kwh",
+                        reason: "expected-array".into(),
+                    })?;
+                let mut out: alloc::vec::Vec<f64> = alloc::vec::Vec::with_capacity(arr.len());
+                for v in arr {
+                    let f = v.as_float().ok_or_else(|| ConfigError::InvalidValue {
+                        config: config.clone(),
+                        field: "plan_prices_per_kwh",
+                        reason: "expected-float".into(),
+                    })?;
+                    out.push(f);
+                }
+                out
+            };
+            if step_ns == 0 || steps == 0 || steps > 64 || prices.len() != steps as usize {
+                return Err(ConfigError::InvalidValue {
+                    config: config.clone(),
+                    field: "plan_params",
+                    reason: alloc::format!(
+                        "range: step_ns={step_ns} steps={steps} prices={}",
+                        prices.len()
+                    ),
+                });
+            }
+            if prices.iter().any(|p| !p.is_finite()) {
+                return Err(ConfigError::InvalidValue {
+                    config: config.clone(),
+                    field: "plan_prices_per_kwh",
+                    reason: "non-finite".into(),
+                });
+            }
+            let mut buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+            buf.extend_from_slice(&step_ns.to_le_bytes());
+            buf.extend_from_slice(&steps.to_le_bytes());
+            buf.push(objective);
+            buf.extend_from_slice(&(prices.len() as u32).to_le_bytes());
+            for p in &prices {
+                buf.extend_from_slice(&p.to_le_bytes());
+            }
+            Some((ai_peer::FIELD_PLAN_PARAMS, buf))
+        }
+        n => {
+            return Err(ConfigError::InvalidValue {
+                config: config.clone(),
+                field: "plan_params",
+                reason: alloc::format!("partial-plan-keys:{n}/4（要么全给要么全缺）"),
+            })
+        }
+    };
+    let mut fields: alloc::vec::Vec<(u8, alloc::vec::Vec<u8>)> = alloc::vec![
+        (ai_peer::FIELD_TIMEOUT_MS, timeout_ms.to_le_bytes().to_vec()),
+        (
+            ai_peer::FIELD_UNHEALTHY_AFTER,
+            unhealthy_after.to_le_bytes().to_vec(),
+        ),
+        (
+            ai_peer::FIELD_PROBE_EVERY,
+            probe_every.to_le_bytes().to_vec(),
+        ),
+        (
+            ai_peer::FIELD_MAX_POWER_KW,
+            max_power_kw.to_le_bytes().to_vec(),
+        ),
+        (ai_peer::FIELD_TTL_SECS, ttl_secs.to_le_bytes().to_vec()),
+        (ai_peer::FIELD_LEARN_ENABLED, alloc::vec![learn_enabled]),
+        (ai_peer::FIELD_DEGRADE_LEASE_KEY, lease_key.to_vec()),
+        (
+            ai_peer::FIELD_DEGRADE_LEASE_TTL_SECS,
+            lease_ttl_secs.to_le_bytes().to_vec(),
+        ),
+    ];
+    if let Some(f) = plan_field {
+        fields.push(f);
+    }
     Ok(CompiledConfig {
-        payload: encode_payload(&[
-            (ai_peer::FIELD_TIMEOUT_MS, timeout_ms.to_le_bytes().to_vec()),
-            (
-                ai_peer::FIELD_UNHEALTHY_AFTER,
-                unhealthy_after.to_le_bytes().to_vec(),
-            ),
-            (
-                ai_peer::FIELD_PROBE_EVERY,
-                probe_every.to_le_bytes().to_vec(),
-            ),
-            (
-                ai_peer::FIELD_MAX_POWER_KW,
-                max_power_kw.to_le_bytes().to_vec(),
-            ),
-            (ai_peer::FIELD_TTL_SECS, ttl_secs.to_le_bytes().to_vec()),
-            (ai_peer::FIELD_LEARN_ENABLED, alloc::vec![learn_enabled]),
-            (ai_peer::FIELD_DEGRADE_LEASE_KEY, lease_key.to_vec()),
-            (
-                ai_peer::FIELD_DEGRADE_LEASE_TTL_SECS,
-                lease_ttl_secs.to_le_bytes().to_vec(),
-            ),
-        ]),
+        payload: encode_payload(&fields),
         config_id: config,
     })
 }
@@ -2564,6 +2829,60 @@ pub fn compile_by_id(
         catalog::CONFIG_ID => compile_catalog(toml).map(Some),
         id if crate::protocol::known_keys(id).is_some() => compile_protocol(id, toml).map(Some),
         _ => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod injected_secret_manifest_tests {
+    use super::*;
+
+    /// 70.7 复查回归锁：`SECRET_BEARING_CONFIGS`（运维面脱敏判据单源）与
+    /// 注入面（`compile_entry` 消费 `injected_*` 密钥形参的三条分支）必须
+    /// 逐项一致。缺陷形态 = 新增一条带注入密钥的配置却漏登脱敏表 →
+    /// `svc-mgmt` ConfigGet 原样回载荷（`ai-peer.degrade_lease_key` 泄露
+    /// 实弹；ota/security 之外无人登记）。
+    ///
+    /// 断言两侧：① 注入面每条目都在脱敏表内；② 脱敏表内每条目确实消费
+    /// 注入密钥（无僵尸条目）。新增注入面时本锁即红——迫使两侧同波次。
+    #[test]
+    fn secret_bearing_covers_every_injected_config() {
+        const INJECTED: [&str; 3] = [ota::CONFIG_ID, security::CONFIG_ID, ai_peer::CONFIG_ID];
+        for id in INJECTED {
+            assert!(
+                crate::SECRET_BEARING_CONFIGS.contains(&id),
+                "'{id}' 携带构建期注入密钥，必须在 SECRET_BEARING_CONFIGS 内（否则 ConfigGet 泄露）"
+            );
+        }
+        for id in crate::SECRET_BEARING_CONFIGS {
+            assert!(
+                INJECTED.contains(&id),
+                "'{id}' 不在注入面——脱敏表条目已腐化"
+            );
+        }
+    }
+
+    /// 前提锁：注入密钥**确实**落在 payload 里（否则脱敏表本身空转）。
+    /// 若哪天注入改为只存句柄/指纹，本锁即红——届时脱敏口径须连同复核。
+    #[test]
+    fn injected_key_material_is_present_in_payload() {
+        let key = [7u8; 32];
+        const AI_PEER_TOML: &str = "[ai_peer]\ntimeout_ms = 30000\nunhealthy_after = 3\n\
+probe_every = 5\nmax_power_kw = 5.0\nttl_secs = 60\nlearn_enabled = true\n\
+degrade_lease_ttl_secs = 86400\n";
+        let ai = compile_by_id(ai_peer::CONFIG_ID, AI_PEER_TOML, None, None, Some(&key))
+            .expect("compile")
+            .expect("entry");
+        assert!(
+            ai.payload.windows(key.len()).any(|w| w == key),
+            "降级租约密钥必须出现在 ai-peer payload 中（脱敏判据的前提）"
+        );
+        let sec = compile_by_id(security::CONFIG_ID, "[security]\n", None, Some(&key), None)
+            .expect("compile")
+            .expect("entry");
+        assert!(
+            sec.payload.windows(key.len()).any(|w| w == key),
+            "控制链密钥必须出现在 security payload 中"
+        );
     }
 }
 
@@ -2905,6 +3224,7 @@ mod security_tests {
 
 #[cfg(test)]
 mod catalog_compile_tests {
+    #![allow(clippy::disallowed_macros)] // 测试内判定 panic（clippy.toml 测试模块豁免）
     use super::*;
 
     /// 可编译的最小合法目录（覆盖全部表；负面测试以此为基底做单点变异）。
@@ -3054,8 +3374,8 @@ kind = 1
         let compiled = compile_catalog(GOOD).expect("good catalog");
         let decoded = crate::points::decode_points; // 无关（类型占位）
         let _ = decoded;
-        // payload 长度有界（agent-sdk 分页 1664B——catalog 必须可配置下发）。
-        assert!(compiled.payload.len() <= crate::schema::catalog::MAX_FIELD as usize * 300);
+        // payload 长度有界（目标读面硬上界 = 编码面同源常量）。
+        assert!(compiled.payload.len() <= crate::schema::catalog::PAYLOAD_MAX);
     }
 
     fn with_section(base: &str, section: &str, replacement: &str) -> String {
@@ -3141,5 +3461,114 @@ kind = 1
     fn rejects_zero_generation() {
         let bad = GOOD.replace("generation = 1", "generation = 0");
         assert!(compile_catalog(&bad).is_err());
+    }
+
+    /// 生成 n 个「资产 + 铭牌」的目录（最小骨架：grid 节点 + 5 反馈槽
+    /// 点位）——锁编码面容量闸（payload 上限 / u16 长度域 / 条数上限）。
+    fn catalog_toml_with_nameplates(n: usize) -> String {
+        let mut s = String::from(
+            "generation = 1\nvalid_from_ns = 0\nvalid_until_ns = 0\nmapping_version = 1\n\
+             topology_version = 1\nasset_version = 1\ncontract_version = 1\nsafety_version = 1\n\
+             \n[[schema]]\nid = 1\nversion = 1\n\n[[topology_node]]\nid = 1\nkind = \"grid\"\n",
+        );
+        for i in 0..n {
+            let a = i + 1;
+            s.push_str(&format!(
+                "\n[[asset]]\nasset_id = {a}\nsite_id = 1\ntenant_id = 1\nkind = \"battery\"\n"
+            ));
+        }
+        // 反馈槽 5 点（挂 asset 1；asset 1 必然存在）。
+        for (pid, unit) in [
+            (1u32, "V"),
+            (4, "ratio"),
+            (5, "ratio"),
+            (6, "ratio"),
+            (7, "ratio"),
+        ] {
+            s.push_str(&format!(
+                "\n[[point_semantics]]\npoint_id = {pid}\nasset_id = 1\nschema_id = 1\n\
+                 unit = \"{unit}\"\nrole = \"measurement\"\n"
+            ));
+        }
+        for (slot, pid) in [
+            ("grid_up", 5u32),
+            ("soc", 4),
+            ("dc_bus_v", 1),
+            ("overcurrent", 6),
+            ("overtemp", 7),
+        ] {
+            s.push_str(&format!(
+                "\n[[feedback_slot]]\nslot = \"{slot}\"\npoint_id = {pid}\n"
+            ));
+        }
+        for i in 0..n {
+            let a = i + 1;
+            s.push_str(&format!(
+                "\n[[nameplate]]\nasset_id = {a}\ncapacity_kwh = 100.0\neta_c = 0.95\n\
+                 eta_d = 0.95\nenergy_max_kwh = 100.0\np_min_kw = -500.0\np_max_kw = 500.0\n\
+                 q_min_kvar = 0.0\nq_max_kvar = 0.0\nramp_up_kw_s = 1.0\nramp_down_kw_s = 1.0\n\
+                 soc_min = 0.05\nsoc_max = 0.95\n"
+            ));
+        }
+        s
+    }
+
+    /// 目标读面 payload 硬上界 = 编译面硬上界（同源 `PAYLOAD_MAX`）：
+    /// 超限拒编（具体错误），不产出 target 必拒载的目录。
+    #[test]
+    fn rejects_catalog_payload_over_limit() {
+        // 最小骨架 ~340B + 资产/点位 ~90B/条 + 铭牌 104B/条（含 SOC 窗）；
+        // 取 20 条确定越 1664B（余量足够，不与骨架细节耦合）。
+        let big = catalog_toml_with_nameplates(20);
+        let err = compile_catalog(&big).unwrap_err();
+        match err {
+            ConfigError::InvalidValue {
+                field, ref reason, ..
+            } => {
+                assert_eq!(field, "payload");
+                assert!(reason.starts_with("payload-too-large:"), "{reason}");
+            }
+            other => panic!("expected payload-too-large, got {other:?}"),
+        }
+        // 上限内的最小目录照常编译（闸门不误杀）。
+        assert!(compile_catalog(&catalog_toml_with_nameplates(1)).is_ok());
+    }
+
+    /// 单字段长度域 = u16（`encode_payload` 写 u16 LE）：铭牌表
+    /// 4 + 88n 越过 65535 时拒绝（不得静默截断长度字节）。
+    #[test]
+    fn rejects_oversized_field_not_truncated() {
+        // 4 + 104×631 = 65628 > u16::MAX。
+        let big = catalog_toml_with_nameplates(631);
+        let err = compile_catalog(&big).unwrap_err();
+        let prefix = format!(
+            "field-{}-len-over-u16:",
+            crate::schema::catalog::FIELD_NAMEPLATES
+        );
+        match err {
+            ConfigError::InvalidValue {
+                field, ref reason, ..
+            } => {
+                assert_eq!(field, "payload");
+                assert!(reason.starts_with(&prefix), "{reason}");
+            }
+            other => panic!("expected field-len-over-u16, got {other:?}"),
+        }
+    }
+
+    /// 铭牌条数上限与解码面同源（`MAX_NAMEPLATES`）：超限拒编。
+    #[test]
+    fn rejects_too_many_nameplates() {
+        let big = catalog_toml_with_nameplates(crate::schema::catalog::MAX_NAMEPLATES as usize + 1);
+        let err = compile_catalog(&big).unwrap_err();
+        match err {
+            ConfigError::InvalidValue {
+                field, ref reason, ..
+            } => {
+                assert_eq!(field, "nameplate");
+                assert!(reason.starts_with("too-many-nameplates:"), "{reason}");
+            }
+            other => panic!("expected too-many-nameplates, got {other:?}"),
+        }
     }
 }

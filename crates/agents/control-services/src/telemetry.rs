@@ -54,6 +54,116 @@ pub const DEFAULT_CONTROL_HORIZON_MS: u64 = 30_000;
 pub const SNAPSHOT_OK: u8 = 0;
 pub const SNAPSHOT_REJECTED: u8 = 1;
 
+/// 状态绑定单一事实（点 1-4 = 电压/电流/频率/SOC；评估器配置与
+/// 冻结快照 → 决策输入派生共用——蓝图 70.8.1 两侧同点，禁止分叉）。
+pub const STATE_BINDINGS: eneros_safety_validator::StateBindings =
+    eneros_safety_validator::StateBindings {
+        voltage: 1,
+        current: 2,
+        frequency: 3,
+        soc: 4,
+    };
+
+/// 输入新鲜度**策略窗**（蓝图 [08] §9：**待实测冻结**的设计输入，不是
+/// 性能承诺）。**不是**输入可否用于控制的唯一判据——载荷自身的控制
+/// 有效期（`TrustedTelemetry::valid_until_ms` = 产刻 + 控制窗 30s，下游
+/// dispatch 以同一字段裁决）是第一上界；本窗只能更紧，不得更松
+/// （放宽到超过载荷有效期只会把"输入过期"变成 dispatch 的
+/// `TelemetryExpired`，EA 按 `DispatchRejected` 记账并烧错误预算——复查
+/// 修复前的 60s 即此形态）。
+///
+/// 派生依据（单一来源 = 生产冻结节奏）：决策输入是 svc-telemetry 每
+/// `SNAP_EVERY_BATCHES`(=8) 个 OBS 批构建一次的**冻结快照**。实测刷新
+/// 周期 ≈18–45s（70.5 窗：859 EA tick / 4 次 SNAP-BUILT）——**比载荷
+/// 控制窗（30s）更长**，故当前形态下每个冻结周期只有窗内那部分 tick 能
+/// 取得可用输入（其余为 `SNAP_REJECT_STALE` 诚实拒绝：零推理零新写、
+/// 不计失败）。真正的收紧（缩短冻结节奏或放大控制窗使二者相容）是站点
+/// 侧决策，见执行卡"输入新鲜度与冻结节奏的紧耦合"登记。
+pub const DEFAULT_INPUT_FRESHNESS_MS: u64 = 60_000;
+
+/// 快照输入拒绝（结构化；调用方必须零决策、零新写）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotInputReject {
+    /// 无已冻结快照（冷启动/窗口未到/事件面不可用）。
+    NoFrozenSnapshot,
+    /// 快照不完整（缺必需点）或身份未绑定。
+    Incomplete,
+    /// 快照超出输入新鲜度窗。
+    Stale { age_ms: u64 },
+    /// 保留背压（消费者落后，容量压力未释放）。
+    Backpressure,
+}
+
+/// 冻结快照 → 可信输入（蓝图 70.8.1 唯一派生点）。
+///
+/// 身份段（snapshot_id/provenance_root/cut/produced/目录版本与 digest）
+/// 全部取自快照本体；144B 遥测载荷由**同一快照**的观测派生
+/// （`samples` 全点 + `SystemState` 四字段）——两侧同源，不允许调用方
+/// 自行拼接。快照不完整时仍产出（完整度码如实标注），由输入侧拒绝。
+pub fn input_from_snapshot(
+    snap: &eneros_snapshot_service::TrustedSnapshot,
+    catalog_version: u64,
+    catalog_digest8: [u8; 8],
+    horizon_ms: u64,
+) -> eneros_agent_sdk::snap_input_wire::TrustedInput {
+    use eneros_agent_sdk::snap_input_wire::{SnapshotFacts, TrustedInput, COMPLETE, INCOMPLETE};
+    use eneros_telemetry_model::event::ObservationValue;
+    let mut samples = alloc::collections::BTreeMap::new();
+    let mut max_epoch = 0u64;
+    let mut max_mapping = 0u64;
+    for o in &snap.observations {
+        if let ObservationValue::F64(v) = o.event.value {
+            if v.is_finite() {
+                samples.insert(o.event.point_id, v);
+            }
+            max_epoch = max_epoch.max(o.event.source_epoch);
+            max_mapping = max_mapping.max(o.event.mapping_version);
+        }
+    }
+    let b = STATE_BINDINGS;
+    let state = eneros_safety_validator::SystemState {
+        voltage_v: samples.get(&b.voltage).copied().unwrap_or(f64::NAN),
+        current_a: samples.get(&b.current).copied().unwrap_or(f64::NAN),
+        frequency_hz: samples.get(&b.frequency).copied().unwrap_or(f64::NAN),
+        soc_pct: samples.get(&b.soc).copied().unwrap_or(f64::NAN),
+        timestamp_ms: snap.cut_time_ns / 1_000_000,
+    };
+    let produced_ms = snap.produced_at_ns / 1_000_000;
+    let trusted = TrustedTelemetry {
+        state,
+        coverage: eneros_control_dispatch::feedback::safety_coverage(),
+        valid_until_ms: produced_ms.saturating_add(horizon_ms),
+        // 身份摘要 = 快照 provenance root（比样本 SM3 更强：覆盖来源/序/
+        // 事件摘要，且与证书引用同一根）。
+        provenance_digest: snap.provenance_root,
+        generated_at_ms: produced_ms,
+        source_epoch: max_epoch,
+        mapping_version: max_mapping,
+        samples,
+    };
+    let payload = encode_trusted(&trusted);
+    let mut telemetry = [0u8; eneros_agent_sdk::snap_input_wire::SNAP_INPUT_TELEMETRY_LEN];
+    let n = core::cmp::min(telemetry.len(), payload.len());
+    telemetry[..n].copy_from_slice(&payload[..n]);
+    let c = &snap.completeness;
+    let facts = SnapshotFacts {
+        snapshot_id: snap.snapshot_id,
+        provenance_root: snap.provenance_root,
+        cut_time_ns: snap.cut_time_ns,
+        produced_at_ns: snap.produced_at_ns,
+        catalog_version,
+        catalog_digest8,
+        accepted: u16::try_from(snap.observations.len()).unwrap_or(u16::MAX),
+        missing: u16::try_from(c.missing.len()).unwrap_or(u16::MAX),
+        completeness: if c.is_complete() {
+            COMPLETE
+        } else {
+            INCOMPLETE
+        },
+    };
+    TrustedInput::new(facts, telemetry)
+}
+
 /// 69.3 WP-69.3.2 T1：safe 评估器配置**单源构造器**（原 svc-telemetry bin
 /// `:36-52` 装配初值与 `:217-230` 生产重建两处双抄收编——五项恒同字段
 /// （coverage/bindings/max_skew_ms/require_integrity/control_horizon_ms）
@@ -64,12 +174,7 @@ pub const SNAPSHOT_REJECTED: u8 = 1;
 pub fn evaluator_config(mapping_version: u64, allowed_sources: Vec<u32>) -> EvaluatorConfig {
     EvaluatorConfig {
         coverage: eneros_control_dispatch::feedback::safety_coverage(),
-        bindings: eneros_safety_validator::StateBindings {
-            voltage: 1,
-            current: 2,
-            frequency: 3,
-            soc: 4,
-        },
+        bindings: STATE_BINDINGS,
         mapping_version,
         max_skew_ms: 1000,
         allowed_sources,
@@ -123,6 +228,8 @@ pub struct TelemetryService {
     /// 版本一致）。失败语义与历史接缝同律：计数/串口行可见，**绝不反向
     /// 影响 ingest ack**（采集与事件面是两条独立生死线）。
     event_face: Option<Box<dyn crate::event_face::ObsEventFace>>,
+    /// 蓝图 70.8：输入新鲜度窗（冻结快照 produced_at → now；超龄拒绝）。
+    input_freshness_ms: u64,
 }
 
 /// SPEC-C：历史介质标签（随 sink 装配指定；影响判定行词形与统计语义）。
@@ -152,6 +259,7 @@ impl TelemetryService {
             rejected_reported: 0,
             obs: None,
             event_face: None,
+            input_freshness_ms: DEFAULT_INPUT_FRESHNESS_MS,
         }
     }
 
@@ -539,6 +647,10 @@ impl TelemetryService {
 
     /// 评估当前缓冲（快照原子冻结：评估器在拷贝上执行，不因并发 ingest
     /// 变化——单线程服务循环内天然原子；provenance 覆盖全部样本）。
+    ///
+    /// 蓝图 70.8：本路径自此为**差分/迁移轨**（`TEL_REQ_SNAPSHOT`）——
+    /// 产物仍带 provenance_digest，但**没有** snapshot_id/目录代次，
+    /// 生产决策输入不再消费它（走 [`Self::snapshot_input`]）。
     pub fn snapshot(&mut self, now_ms: u64) -> Result<TrustedTelemetry, TrustRejection> {
         let samples: Vec<TelemetrySample> = self.buffer.iter().copied().collect();
         let t = self.evaluator.evaluate(&samples, now_ms)?;
@@ -548,6 +660,61 @@ impl TelemetryService {
             obs.compare_production(&t);
         }
         Ok(t)
+    }
+
+    /// 蓝图 70.8 WP-70.8.1：**可信快照输入**（生产决策输入唯一入口）。
+    ///
+    /// 身份与载荷都取自事件面最近一次成功构建的冻结快照；不完整、超龄
+    /// 或保留背压一律拒绝（零决策、零新写——绝不回退评估器伪造身份）。
+    pub fn snapshot_input(
+        &mut self,
+        now_ms: u64,
+    ) -> Result<eneros_agent_sdk::snap_input_wire::TrustedInput, SnapshotInputReject> {
+        let Some(input) = self.event_face.as_ref().and_then(|f| f.current_input()) else {
+            return Err(SnapshotInputReject::NoFrozenSnapshot);
+        };
+        if !input.facts().is_complete() {
+            return Err(SnapshotInputReject::Incomplete);
+        }
+        let produced_ms = input.facts().produced_at_ns / 1_000_000;
+        let age_ms = now_ms.saturating_sub(produced_ms);
+        // **载荷自身的控制有效期是第一上界**（单源 = `valid_until_ms`：
+        // 下游 dispatch 以同一字段裁决 `TrustedTelemetry::is_valid_at`）。
+        // 超出它的输入在此必须拒绝——否则 dispatch 以 `TelemetryExpired`
+        // 拒绝，EA 按 `DispatchRejected` 记账（连续 3 次 → EscalateToHuman
+        // + 冷却），把"输入已过期"伪装成"决策被拒"并烧错误预算。
+        // 策略窗（`input_freshness_ms`）是**额外**（只可更紧）的上界——
+        // 蓝图 §9 的"输入新鲜度"意图由此承担，不得替代载荷有效期。
+        let Some(payload) = decode_trusted(input.telemetry()) else {
+            // 载荷不可解 = 状态不可信（构造缺陷/介质损坏）——不放行。
+            return Err(SnapshotInputReject::Incomplete);
+        };
+        if now_ms > payload.valid_until_ms || age_ms > self.input_freshness_ms {
+            return Err(SnapshotInputReject::Stale { age_ms });
+        }
+        if self
+            .event_face
+            .as_ref()
+            .map(|f| f.retention_blocked())
+            .unwrap_or(false)
+        {
+            return Err(SnapshotInputReject::Backpressure);
+        }
+        Ok(input)
+    }
+
+    /// 蓝图 70.8.2/70.9.1：按 ID 取回已冻结快照 blob（certifier 独立读
+    /// 可信输入的通道；身份不匹配 → None）。
+    pub fn snapshot_blob(&mut self, id: &[u8; 16]) -> Option<Vec<u8>> {
+        self.event_face.as_mut().and_then(|f| f.snapshot_blob(id))
+    }
+
+    /// 蓝图 70.8.2：登记计划输入保留持有（被证书/执行证据引用的记录
+    /// 不得先删）。
+    pub fn hold_input_offset(&mut self, partition: u32, offset: u64) {
+        if let Some(f) = self.event_face.as_mut() {
+            f.hold_offset(partition, offset);
+        }
     }
 }
 
@@ -845,6 +1012,52 @@ pub fn handle_request(svc: &mut TelemetryService, req: &[u8], now_ms: u64) -> Ve
             svc.advance_epoch();
             vec![0]
         }
+        // 蓝图 70.8 WP-70.8.1：可信快照输入（生产决策输入唯一入口）。
+        eneros_agent_sdk::tel_wire::TEL_REQ_SNAPSHOT_INPUT => match svc.snapshot_input(now_ms) {
+            Ok(input) => {
+                let mut out = vec![SNAPSHOT_OK];
+                out.extend_from_slice(&input.encode());
+                out
+            }
+            Err(e) => {
+                let code = match e {
+                    SnapshotInputReject::NoFrozenSnapshot => {
+                        eneros_agent_sdk::snap_input_wire::SNAP_REJECT_NO_FROZEN
+                    }
+                    SnapshotInputReject::Incomplete => {
+                        eneros_agent_sdk::snap_input_wire::SNAP_REJECT_INCOMPLETE
+                    }
+                    SnapshotInputReject::Stale { .. } => {
+                        eneros_agent_sdk::snap_input_wire::SNAP_REJECT_STALE
+                    }
+                    SnapshotInputReject::Backpressure => {
+                        eneros_agent_sdk::snap_input_wire::SNAP_REJECT_BACKPRESSURE
+                    }
+                };
+                eneros_runtime::println!(
+                    "[svc-telemetry] SNAPSHOT-INPUT-REJECT reason={} now={}",
+                    eneros_agent_sdk::snap_input_wire::reject_word(code),
+                    now_ms
+                );
+                eneros_agent_sdk::snap_input_wire::encode_reject(code)
+            }
+        },
+        // 蓝图 70.8.2/70.9.1：已冻结快照 blob（certifier 独立读取通道）。
+        eneros_agent_sdk::tel_wire::TEL_REQ_SNAPSHOT_BLOB => {
+            if req.len() != 17 {
+                return vec![eneros_agent_sdk::tel_wire::TEL_RESP_ERR];
+            }
+            let mut id = [0u8; 16];
+            id.copy_from_slice(&req[1..17]);
+            match svc.snapshot_blob(&id) {
+                Some(bytes) => {
+                    let mut out = vec![SNAPSHOT_OK];
+                    out.extend_from_slice(&bytes);
+                    out
+                }
+                None => vec![SNAPSHOT_REJECTED],
+            }
+        }
         TEL_INGEST_OBS => {
             // 蓝图 61 v0.314.27；蓝图 62 卷 62.2（WP-62.2.2）：请求解析
             // 单源 agent-sdk obs_batch_wire（布局校验失败 → 0xFF 拒绝语义不变）。
@@ -865,6 +1078,114 @@ mod tests {
     };
 
     use super::*;
+
+    /// 事件面替身：只承载 `snapshot_input` 依赖的两个读面（当前冻结输入 +
+    /// 保留背压）——其余面（OBS/目录/blob/持有）在本测为无操作。
+    struct StubFace {
+        input: Option<eneros_agent_sdk::snap_input_wire::TrustedInput>,
+        blocked: bool,
+    }
+
+    impl crate::event_face::ObsEventFace for StubFace {
+        fn on_obs_batch(
+            &mut self,
+            _events: &[eneros_telemetry_model::event::ObservationEvent],
+            _now_ms: u64,
+        ) {
+        }
+        fn set_snapshot_catalog(
+            &mut self,
+            _repo: eneros_semantic_catalog::CatalogRepository,
+            _now_ms: u64,
+        ) {
+        }
+        fn current_input(&self) -> Option<eneros_agent_sdk::snap_input_wire::TrustedInput> {
+            self.input
+        }
+        fn snapshot_blob(&mut self, _id: &[u8; 16]) -> Option<Vec<u8>> {
+            None
+        }
+        fn hold_offset(&mut self, _partition: u32, _offset: u64) {}
+        fn retention_blocked(&self) -> bool {
+            self.blocked
+        }
+    }
+
+    /// 冻结输入构造（payload 有效期显式给定——单源 = `valid_until_ms`）。
+    fn frozen_input(
+        produced_ms: u64,
+        valid_until_ms: u64,
+    ) -> eneros_agent_sdk::snap_input_wire::TrustedInput {
+        use eneros_agent_sdk::snap_input_wire::{
+            SnapshotFacts, TrustedInput, COMPLETE, SNAP_INPUT_TELEMETRY_LEN,
+        };
+        let mut t = crate::ai_worker::tests_helpers::minimal_trusted_at(produced_ms);
+        t.valid_until_ms = valid_until_ms;
+        let payload = encode_trusted(&t);
+        let mut telemetry = [0u8; SNAP_INPUT_TELEMETRY_LEN];
+        telemetry.copy_from_slice(&payload);
+        TrustedInput::new(
+            SnapshotFacts {
+                snapshot_id: [0x5C; 16],
+                provenance_root: t.provenance_digest,
+                cut_time_ns: produced_ms.saturating_mul(1_000_000),
+                produced_at_ns: produced_ms.saturating_mul(1_000_000),
+                catalog_version: 1,
+                catalog_digest8: [1, 2, 3, 4, 5, 6, 7, 8],
+                accepted: 7,
+                missing: 0,
+                completeness: COMPLETE,
+            },
+            telemetry,
+        )
+    }
+
+    fn service_with_input(
+        input: eneros_agent_sdk::snap_input_wire::TrustedInput,
+    ) -> TelemetryService {
+        let mut svc = service();
+        svc.set_event_face(alloc::boxed::Box::new(StubFace {
+            input: Some(input),
+            blocked: false,
+        }));
+        svc
+    }
+
+    /// 复查修复：**输入新鲜度必须以载荷自身的控制有效期为准**（单源 =
+    /// `TrustedTelemetry::valid_until_ms`，dispatch 端以同一字段裁决）。
+    ///
+    /// 修复前：策略窗（60s）宽于载荷有效期（控制窗 30s）→ 40s 龄的输入
+    /// 在此被受理，而后由 dispatch 以 `TelemetryExpired` 拒绝，EA 按
+    /// `DispatchRejected` 记账（连续 3 次 → EscalateToHuman + 30s 冷却，
+    /// 见 `TickPolicy::record`）——把"输入已过期"伪装成"决策被拒"并烧掉
+    /// 错误预算。修复后：同一形态在输入面即以 `Stale` 诚实拒绝（
+    /// `NoTrustedInput` 路径：零推理、零新写、不计失败）。
+    ///
+    /// 变异靶：新鲜度判定只看策略窗（忽略载荷有效期）→ ② 变绿 → 本测红。
+    #[test]
+    #[allow(clippy::disallowed_macros)] // 负例断言用 panic!（仓例先例）
+    fn snapshot_input_rejects_beyond_payload_validity() {
+        let produced = 1_700_000_000_000u64;
+        let valid_until = produced + DEFAULT_CONTROL_HORIZON_MS; // 控制窗内有效
+        let mut svc = service_with_input(frozen_input(produced, valid_until));
+
+        // ① 载荷仍有效（龄 20s < 30s）→ 受理。
+        assert!(svc.snapshot_input(produced + 20_000).is_ok());
+
+        // ② 载荷已过期（龄 40s：仍在 60s 策略窗内）→ 必须 Stale。
+        match svc.snapshot_input(produced + 40_000) {
+            Err(SnapshotInputReject::Stale { age_ms }) => assert_eq!(age_ms, 40_000),
+            other => panic!("超出载荷有效期必须 Stale（不得受理给 dispatch 拒）: {other:?}"),
+        }
+
+        // ③ 策略窗更紧时同样拒绝（两侧上界都生效：min(策略窗, 载荷有效期)）。
+        let mut narrow = service_with_input(frozen_input(produced, produced + 120_000));
+        narrow.input_freshness_ms = 10_000;
+        match narrow.snapshot_input(produced + 20_000) {
+            Err(SnapshotInputReject::Stale { .. }) => {}
+            other => panic!("策略窗内超出必须 Stale: {other:?}"),
+        }
+    }
 
     fn service() -> TelemetryService {
         TelemetryService::new(EvaluatorConfig {

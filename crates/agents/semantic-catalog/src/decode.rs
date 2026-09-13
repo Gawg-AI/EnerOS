@@ -551,6 +551,82 @@ pub fn decode_catalog(payload: &[u8]) -> Result<CatalogBundle, CatalogError> {
         }
     }
 
+    // ---- 物理参数铭牌（蓝图 70.8 WP-70.8.3）----
+    if let Some(v) = field(&fields, catalog::FIELD_NAMEPLATES) {
+        let mut r = TableReader::new(v, catalog::FIELD_NAMEPLATES, catalog::NAMEPLATE_REC_LEN)?;
+        while let Some(rec) = r.next()? {
+            if rec.len() != catalog::NAMEPLATE_REC_LEN {
+                return Err(r.bad_len());
+            }
+            let f =
+                |i: usize| -> f64 { f64::from_le_bytes(rec[i * 8..i * 8 + 8].try_into().unwrap()) };
+            let asset_id = u64::from_le_bytes(rec[0..8].try_into().unwrap());
+            let np = Nameplate {
+                asset_id,
+                capacity_kwh: f(1),
+                eta_c: f(2),
+                eta_d: f(3),
+                energy_max_kwh: f(4),
+                p_min_kw: f(5),
+                p_max_kw: f(6),
+                q_min_kvar: f(7),
+                q_max_kvar: f(8),
+                ramp_up_kw_s: f(9),
+                ramp_down_kw_s: f(10),
+                soc_min: f(11),
+                soc_max: f(12),
+            };
+            if asset_id == 0 {
+                return Err(r.bad_value("nameplate-zero-asset"));
+            }
+            if out.nameplates.iter().any(|n| n.asset_id == asset_id) {
+                return Err(r.bad_value("nameplate-duplicate"));
+            }
+            if !out.assets.iter().any(|a| a.asset_id == asset_id) {
+                return Err(r.bad_value("nameplate-unknown-asset"));
+            }
+            if out.tombstones.contains(&asset_id) {
+                return Err(r.bad_value("nameplate-asset-tombstoned"));
+            }
+            // 物理参数必须有限且自洽（不猜、不默认）。
+            let base = [np.capacity_kwh, np.eta_c, np.eta_d, np.energy_max_kwh];
+            if base.iter().any(|v| !v.is_finite())
+                || np.eta_c <= 0.0
+                || np.eta_c > 1.0
+                || np.eta_d <= 0.0
+                || np.eta_d > 1.0
+                || np.capacity_kwh <= 0.0
+                || np.energy_max_kwh <= 0.0
+            {
+                return Err(r.bad_value("nameplate-invalid-energy-params"));
+            }
+            // 可用 SOC 窗（0..1 分数；0 ≤ min < max ≤ 1）——量程 coverage
+            // 不是运行安全窗，故本窗必须由铭牌显式给出。
+            if !np.soc_min.is_finite()
+                || !np.soc_max.is_finite()
+                || np.soc_min < 0.0
+                || np.soc_max > 1.0
+                || np.soc_min >= np.soc_max
+            {
+                return Err(r.bad_value("nameplate-invalid-soc-window"));
+            }
+            if !np.p_min_kw.is_finite()
+                || !np.p_max_kw.is_finite()
+                || !np.q_min_kvar.is_finite()
+                || !np.q_max_kvar.is_finite()
+                || !np.ramp_up_kw_s.is_finite()
+                || !np.ramp_down_kw_s.is_finite()
+                || np.p_min_kw > np.p_max_kw
+                || np.q_min_kvar > np.q_max_kvar
+                || np.ramp_up_kw_s < 0.0
+                || np.ramp_down_kw_s < 0.0
+            {
+                return Err(r.bad_value("nameplate-invalid-power-params"));
+            }
+            out.nameplates.push(np);
+        }
+    }
+
     // ---- 静态可达性（孤岛规则）----
     validate_reachability(&out)?;
 
@@ -693,6 +769,7 @@ fn max_records(field_id: u8) -> u32 {
         catalog::FIELD_SAFETY_CONSTRAINTS => catalog::MAX_SAFETY_CONSTRAINTS,
         catalog::FIELD_ALIASES => catalog::MAX_ALIASES,
         catalog::FIELD_TOMBSTONES => catalog::MAX_TOMBSTONES,
+        catalog::FIELD_NAMEPLATES => catalog::MAX_NAMEPLATES,
         _ => u32::MAX,
     }
 }

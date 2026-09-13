@@ -308,7 +308,7 @@ fn fetch_control_write(
 /// 按目标名解析本服务的授予槽（agent-sdk 单一事实源）；未授予 → None
 /// （fail-closed）。
 #[cfg(all(target_os = "none", feature = "sel4"))]
-fn granted_slot(eipc_mask: u64, target: &'static str) -> Option<u64> {
+pub(crate) fn granted_slot(eipc_mask: u64, target: &'static str) -> Option<u64> {
     eneros_agent_sdk::eipc_granted_slot("svc-control-dispatch", eipc_mask, target)
 }
 
@@ -840,6 +840,10 @@ impl DispatchHandler {
             contracts,
         }
         .assemble();
+        #[cfg(all(target_os = "none", feature = "sel4"))]
+        let (certifier_source, certifier_ring) = Self::build_certifier(key, catalog, eipc_mask);
+        #[cfg(not(all(target_os = "none", feature = "sel4")))]
+        let (certifier_source, certifier_ring) = Self::build_certifier(key, catalog);
         let config = DispatchConfig {
             gate: eneros_dual_brain::gate::DecisionGate::new(rate_per_hour, 1000.0, 3_600_000),
             // SPEC-E WP-E.2：决策审计链真持久（audit 区段 + boot 校验；
@@ -869,9 +873,82 @@ impl DispatchHandler {
                 feedback_mapping: views.feedback,
                 ..base.delivery_binding
             },
+            // 蓝图 70.9 WP-70.9.1/70.9.3：**独立认证来源**装配。过渡发放面
+            // 已删除——无本装配则计划路径 fail-closed（无回退分支）。
+            // 输入：冻结快照 blob（svc-telemetry EIPC）+ 同代目录（catalog
+            // 装载结果）+ 认证 key（控制链注入材域分隔派生；独立 KMS 条目
+            // 为外部欠账，见执行卡）。
+            certifier: certifier_source,
+            certifier_ring,
             ..base
         };
         eneros_control_dispatch::DispatchEngine::new(config)
+    }
+
+    /// 独立认证来源构造（catalog 缺失 → 无来源：计划路径 fail-closed）。
+    #[cfg(not(all(target_os = "none", feature = "sel4")))]
+    fn build_certifier(
+        key: &[u8; 32],
+        catalog: Option<&crate::catalog_gateway::LoadedCatalog>,
+    ) -> (
+        alloc::boxed::Box<dyn eneros_control_dispatch::CertificateSource>,
+        eneros_certifier::proof::CertifierKeyRing,
+    ) {
+        let _ = catalog;
+        eneros_runtime::println!(
+            "[svc-control-dispatch] CERTIFIER-UNAVAILABLE reason=host-or-target-without-eipc（计划路径 fail-closed）"
+        );
+        (
+            alloc::boxed::Box::new(eneros_control_dispatch::NoCertifier),
+            crate::certifier_service::verifier_ring(key),
+        )
+    }
+
+    #[cfg(all(target_os = "none", feature = "sel4"))]
+    fn build_certifier(
+        key: &[u8; 32],
+        catalog: Option<&crate::catalog_gateway::LoadedCatalog>,
+        mask: u64,
+    ) -> (
+        alloc::boxed::Box<dyn eneros_control_dispatch::CertificateSource>,
+        eneros_certifier::proof::CertifierKeyRing,
+    ) {
+        let Some(cat) = catalog else {
+            eneros_runtime::println!(
+                "[svc-control-dispatch] CERTIFIER-UNAVAILABLE reason=no-catalog（计划路径 fail-closed）"
+            );
+            return (
+                alloc::boxed::Box::new(eneros_control_dispatch::NoCertifier),
+                crate::certifier_service::verifier_ring(key),
+            );
+        };
+        let ring = crate::certifier_service::verifier_ring(key);
+        match crate::certifier_service::eipc_blob_source(mask) {
+            Some(src) => {
+                eneros_runtime::println!(
+                    "[svc-control-dispatch] CERTIFIER-ACTIVE catalog_version={} key_id=1",
+                    cat.generation
+                );
+                (
+                    alloc::boxed::Box::new(crate::certifier_service::TrustedInputCertifier::new(
+                        src,
+                        cat.repo.clone(),
+                        key,
+                        2,
+                    )),
+                    ring,
+                )
+            }
+            None => {
+                eneros_runtime::println!(
+                    "[svc-control-dispatch] CERTIFIER-UNAVAILABLE reason=no-eipc（计划路径 fail-closed）"
+                );
+                (
+                    alloc::boxed::Box::new(eneros_control_dispatch::NoCertifier),
+                    ring,
+                )
+            }
+        }
     }
 
     /// 47（WP-47.1）：取受信任遥测快照（svc-telemetry TEL_SNAPSHOT →

@@ -286,7 +286,7 @@ fn device_side() -> (
 }
 
 fn engine_with(channel: Box<dyn DeliveryChannel>) -> DispatchEngine {
-    let config = support::test_config(support::TestConfigSeed {
+    let config = support::test_config_legacy(support::TestConfigSeed {
         chain: build_chain(),
         key: KEY.to_vec(),
         profile: test_profile(),
@@ -509,7 +509,7 @@ fn typed_multi_step_plan_delivers_due_commands_per_tick() {
         delivered: delivered.clone(),
     };
     // 与 engine_with 同构，仅时钟可推进。
-    let config = support::test_config(support::TestConfigSeed {
+    let config = support::test_config_legacy(support::TestConfigSeed {
         chain: build_chain(),
         key: KEY.to_vec(),
         profile: test_profile(),
@@ -610,7 +610,7 @@ fn append_failure_terminates_journal_and_resubmission_not_arbiter_locked() {
         inner: InMemoryIntentStore::new(64),
         fail_append: std::cell::Cell::new(true),
     };
-    let base = support::test_config(support::TestConfigSeed {
+    let base = support::test_config_legacy(support::TestConfigSeed {
         chain: build_chain(),
         key: KEY.to_vec(),
         profile,
@@ -654,97 +654,223 @@ fn append_failure_terminates_journal_and_resubmission_not_arbiter_locked() {
     assert_eq!(*delivered.borrow(), 0, "Failed 重放零投递");
 }
 
-// ---- 蓝图 66 WP-66.2.2：过渡 proof keyed MAC（v2）正负例 ----
+// ============================================================================
+// 蓝图 70.8 WP-70.8.4：可信输入准入（只验证、不改写）
+// ============================================================================
 
-/// 正例（发证成功 + Gateway 侧可验绑定）：正确信封密钥 → typed 链发证并
-/// Committed；持钥 Gateway 侧以同钥重算 HMAC-SHA256(
-/// "eneros.transition-proof.v2" ‖ plan_wire_sha256) 可复现发证侧派生
-/// （keyed 单源确定性），错钥重算必不匹配（任何错钥 Gateway 必拒），
-/// 且 MAC ≠ 裸 plan_sha（v1「无钥可伪造」形态已关闭）。
-/// 注：proof_digest 的生产读者仍为 0（ADR-051 窗口内登记事实）——
-/// Gateway 在线验证随 certifier 接电自然获得；本测锁「可验性」的
-/// 密钥绑定性质本身。
-#[test]
-fn transition_proof_v2_keyed_mac_issuance_and_gateway_binding() {
-    let (ingress, devices) = device_side();
-    let delivered = Rc::new(RefCell::new(0u64));
-    let channel = CountingChannel {
-        ingress,
-        devices,
-        delivered: delivered.clone(),
-    };
-    let mut engine = engine_with(Box::new(channel));
-
-    let p = proposal(50.0);
-    let c = proposal_to_candidate(&p, (1, 1, 10, 6), 6, 1).expect("adapter");
-    // 正例：正确 key → 发证成功（过渡证书被 compile 绑定校验接受 → Committed）。
-    let r = engine
-        .submit_typed(&c, "pcs", &trusted_telemetry(), &actor(), 5_000)
-        .expect("正确钥发证成功");
-    assert!(r.final_state.is_committed(), "receipt: {:?}", r.final_state);
-
-    // Gateway 侧重算（持钥验证面）：发证侧 digest（engine 观测面）==
-    // 同钥重算；错钥必不匹配；≠ 裸 plan_sha。
-    let plan_sha = eneros_decision_contract::CandidatePlan::plan_wire_sha256(&c);
-    let issued = engine
-        .last_transition_proof_digest()
-        .expect("发证后必有过渡 proof digest（观测面）");
-    let issued_form = gateway_recompute(KEY, &plan_sha);
-    assert_eq!(
-        issued, issued_form,
-        "Gateway 持钥重算必须逐字节等于发证侧 digest"
-    );
-    let wrong = gateway_recompute(b"typed-chain-wrong-key", &plan_sha);
-    assert_ne!(issued, wrong, "错钥重算必不匹配（验签面区分度）");
-    assert_ne!(issued, plan_sha, "MAC ≠ 裸 plan_sha（v1 可伪造形态已关闭）");
+/// 冻结快照身份事实（测试：与计划身份逐字段同代）。
+fn trusted_facts(
+    snapshot_id: [u8; 16],
+    catalog_version: u64,
+    produced_at_ns: u64,
+) -> eneros_agent_sdk::snap_input_wire::SnapshotFacts {
+    eneros_agent_sdk::snap_input_wire::SnapshotFacts {
+        snapshot_id,
+        provenance_root: [0x5A; 32],
+        cut_time_ns: produced_at_ns,
+        produced_at_ns,
+        catalog_version,
+        catalog_digest8: [1, 2, 3, 4, 5, 6, 7, 8],
+        accepted: 7,
+        missing: 0,
+        completeness: eneros_agent_sdk::snap_input_wire::COMPLETE,
+    }
 }
 
-/// 负例（错 key → 拒，词形登记）：engine 无信封密钥（装配面
-/// CHAIN-KEY-MISSING 形态）→ 过渡认证 fail-closed 拒绝，错误词形
-/// `transition proof key missing`（keyed 原语契约：生产调用方必须拒绝空 key）。
+/// 由冻结快照身份构造的**绑定**候选（生产形态：身份 + 摘要同源）。
+fn bound_plan(
+    snapshot_id: [u8; 16],
+    catalog_version: u64,
+    horizon_ms: u64,
+) -> eneros_decision_contract::CandidatePlan {
+    use eneros_control_dispatch::adapter::{proposal_to_candidate_bound, CandidateInputs};
+    use eneros_dual_brain::ProposedControlPlan;
+    let p = ProposedControlPlan::single_entry(
+        String::from("bound-1"),
+        DecisionPath::Fast,
+        -30.0,
+        0.5,
+        eneros_energy_lp_model::result::SolveStatus::Optimal,
+        60,
+        horizon_ms,
+        Some([0xAB; 32]),
+    );
+    let inputs = CandidateInputs::from_snapshot(snapshot_id, catalog_version, horizon_ms, 0, 1);
+    proposal_to_candidate_bound(&p, &inputs, (1, 1, 10, 6), 6).expect("绑定候选构造")
+}
+
+/// 生产策略（Required）下：绑定候选 + 同代事实 → 通过准入并提交成功。
 #[test]
-fn transition_proof_v2_missing_key_rejected_fail_closed() {
+fn trusted_input_admission_accepts_same_generation_candidate() {
     let (ingress, devices) = device_side();
-    let delivered = Rc::new(RefCell::new(0u64));
     let channel = CountingChannel {
         ingress,
         devices,
-        delivered: delivered.clone(),
+        delivered: Rc::new(RefCell::new(0u64)),
     };
-    let config = support::test_config(support::TestConfigSeed {
+    let config = support::with_fixture_certifier(support::test_config(support::TestConfigSeed {
         chain: build_chain(),
-        key: Vec::new(), // 错 key 形态一：缺钥（装配面 fetch 失败的 None 注入面）
+        key: KEY.to_vec(),
         profile: test_profile(),
         issuer_service: ISSUER,
         fencing_token: 1 + EPOCH_SEED,
         now_fn: now_ms,
-        intent_log: Box::new(eneros_control_dispatch::InMemoryIntentStore::new(64)),
+        intent_log: Box::new(InMemoryIntentStore::new(64)),
         delivery: Box::new(channel),
-    });
-    let mut engine = DispatchEngine::new(DispatchConfig {
-        audit_sinks: eneros_control_dispatch::AuditSinks {
-            audit: Some(DecisionAudit::new([0x40; 32])),
-            ..config.audit_sinks
-        },
-        ..config
-    });
-
-    let p = proposal(50.0);
-    let c = proposal_to_candidate(&p, (1, 1, 10, 6), 6, 1).expect("adapter");
-    let err = engine
-        .submit_typed(&c, "pcs", &trusted_telemetry(), &actor(), 5_000)
-        .unwrap_err();
-    assert!(
-        matches!(err, DispatchError::ProposalInvalid(ref m) if m.contains("transition proof key missing")),
-        "缺钥必须 fail-closed 拒绝且词形匹配，得：{err:?}"
+    }));
+    assert_eq!(
+        config.trusted_input,
+        eneros_control_dispatch::TrustedInputPolicy::Required,
+        "生产缺省 = Required（fail-closed）"
     );
-    assert_eq!(*delivered.borrow(), 0, "拒发证零投递");
+    let mut engine = DispatchEngine::new(config);
+    let produced_at_ns = now_ms() * 1_000_000;
+    let facts = trusted_facts([0x33; 16], 1, produced_at_ns);
+    let plan = bound_plan([0x33; 16], 1, now_ms());
+    let input = eneros_agent_sdk::snap_input_wire::TrustedInput::new(facts, [0u8; 144]);
+    let r = engine
+        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .expect("同代候选必须准入");
+    assert!(r.final_state.is_committed());
 }
 
-/// Gateway 侧重算：HMAC-SHA256("eneros.transition-proof.v2" ‖ plan_sha)。
-fn gateway_recompute(key: &[u8], plan_sha: &[u8]) -> [u8; 32] {
-    let mut input = Vec::with_capacity(32 + plan_sha.len());
-    input.extend_from_slice(b"eneros.transition-proof.v2");
-    input.extend_from_slice(plan_sha);
-    eneros_decision_contract::keyed::hmac_sha256(key, &input)
+/// 负例族（任一不匹配 → 整批拒绝、零投递）：
+/// ① 无身份（Required）；② 快照不同代；③ 目录版本不同代；④ 时域起点
+/// 不符；⑤ 摘要被篡改；⑥ 快照不完整。
+#[test]
+fn trusted_input_admission_rejects_mismatch_family() {
+    fn engine_required() -> DispatchEngine {
+        let (ingress, devices) = device_side();
+        let channel = CountingChannel {
+            ingress,
+            devices,
+            delivered: Rc::new(RefCell::new(0u64)),
+        };
+        DispatchEngine::new(support::test_config(support::TestConfigSeed {
+            chain: build_chain(),
+            key: KEY.to_vec(),
+            profile: test_profile(),
+            issuer_service: ISSUER,
+            fencing_token: 1 + EPOCH_SEED,
+            now_fn: now_ms,
+            intent_log: Box::new(InMemoryIntentStore::new(64)),
+            delivery: Box::new(channel),
+        }))
+    }
+    let produced_at_ns = now_ms() * 1_000_000;
+    let good = || {
+        eneros_agent_sdk::snap_input_wire::TrustedInput::new(
+            trusted_facts([0x33; 16], 1, produced_at_ns),
+            [0u8; 144],
+        )
+    };
+
+    // ① 无身份（legacy submit_typed 在 Required 下必须拒绝）。
+    let mut e = engine_required();
+    let plan = bound_plan([0x33; 16], 1, now_ms());
+    let err = e
+        .submit_typed(&plan, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .expect_err("缺可信输入必须拒绝");
+    assert!(
+        matches!(err, DispatchError::ProposalInvalid(ref m) if m.contains("缺可信输入身份")),
+        "{err:?}"
+    );
+
+    // ② 快照不同代。
+    let mut e = engine_required();
+    let input = eneros_agent_sdk::snap_input_wire::TrustedInput::new(
+        trusted_facts([0x44; 16], 1, produced_at_ns),
+        [0u8; 144],
+    );
+    let err = e
+        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .expect_err("跨代快照必须拒绝");
+    assert!(
+        matches!(err, DispatchError::ProposalInvalid(ref m) if m.contains("不同代")),
+        "{err:?}"
+    );
+
+    // ③ 目录版本不同代。
+    let mut e = engine_required();
+    let input = eneros_agent_sdk::snap_input_wire::TrustedInput::new(
+        trusted_facts([0x33; 16], 2, produced_at_ns),
+        [0u8; 144],
+    );
+    let err = e
+        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .expect_err("跨目录版本必须拒绝");
+    assert!(
+        matches!(err, DispatchError::ProposalInvalid(ref m) if m.contains("目录版本")),
+        "{err:?}"
+    );
+
+    // ④ 时域起点不符（快照产出时刻 ≠ 计划时域起点）。
+    let mut e = engine_required();
+    let input = eneros_agent_sdk::snap_input_wire::TrustedInput::new(
+        trusted_facts([0x33; 16], 1, produced_at_ns + 5_000_000_000),
+        [0u8; 144],
+    );
+    let err = e
+        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .expect_err("时域不符必须拒绝");
+    assert!(
+        matches!(err, DispatchError::ProposalInvalid(ref m) if m.contains("时域起点")),
+        "{err:?}"
+    );
+
+    // ⑤ 摘要被篡改（同快照但 objective_digest 与公式不符）。
+    let mut e = engine_required();
+    // 直接经 from_parts 构造同身份但摘要错误的计划（绕过构造器自检，
+    // 模拟"伪造/陈旧摘要"到达入口）。
+    let tampered = {
+        let mut parts = eneros_decision_contract::CandidatePlanParts {
+            id: *plan.id(),
+            snapshot_id: plan.snapshot_id(),
+            objective_digest: [0xEE; 32],
+            resource_catalog_version: plan.resource_catalog_version(),
+            horizon_start_ms: plan.horizon_start_ms(),
+            step_ns: plan.step_ns(),
+            step_count: plan.step_count(),
+            solver_status: plan.solver_status(),
+            objective_value: plan.objective_value(),
+            relative_gap: plan.relative_gap(),
+            max_primal_residual: plan.max_primal_residual(),
+            elapsed_ms: plan.elapsed_ms(),
+            model_digest: *plan.model_digest(),
+            input_digest: *plan.input_digest(),
+            assignments: plan.assignments().to_vec(),
+            issued_at_ms: plan.issued_at_ms(),
+            ttl_ms: plan.ttl_ms(),
+        };
+        parts.objective_digest = [0xEE; 32];
+        eneros_decision_contract::CandidatePlan::from_parts(parts).expect("篡改摘要计划可构造")
+    };
+    let err = e
+        .submit_trusted(
+            &tampered,
+            &good(),
+            "pcs",
+            &trusted_telemetry(),
+            &actor(),
+            5_000,
+        )
+        .expect_err("摘要篡改必须拒绝");
+    assert!(
+        matches!(err, DispatchError::ProposalInvalid(ref m) if m.contains("目标摘要")),
+        "{err:?}"
+    );
+
+    // ⑥ 快照不完整。
+    let mut e = engine_required();
+    let mut facts = trusted_facts([0x33; 16], 1, produced_at_ns);
+    facts.missing = 1;
+    facts.completeness = eneros_agent_sdk::snap_input_wire::INCOMPLETE;
+    let input = eneros_agent_sdk::snap_input_wire::TrustedInput::new(facts, [0u8; 144]);
+    let err = e
+        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .expect_err("不完整快照必须拒绝");
+    assert!(
+        matches!(err, DispatchError::ProposalInvalid(ref m) if m.contains("不完整")),
+        "{err:?}"
+    );
 }

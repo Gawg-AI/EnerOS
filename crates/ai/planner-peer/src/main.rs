@@ -21,7 +21,10 @@
 use std::process::exit;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use eneros_intent_contract::peer::{parse_and_validate, PeerRequest, ResponseChecks};
+use eneros_intent_contract::peer::{
+    parse_and_validate, parse_and_validate_v2, PeerRequest, PeerRequestV2, PlanBinds,
+    ResponseChecks, PEER_CONTRACT_VERSION_V2,
+};
 use eneros_planner::tolerance::ToleranceProfile;
 use eneros_planner::Planner;
 use eneros_planner_peer::{PeerPlannerConfig, BACKEND_TAG};
@@ -137,13 +140,36 @@ fn main() {
 /// 单请求处理：解析 → 求解 → 组装 → 发布。任何失败 = PLANNER-SKIP +
 /// **不应答**（目标侧超时降级——诚实语义）。发布失败由
 /// [`PeerSession::respond`] 内部重连（publish-failed 词形在会话侧落）。
-fn handle_request(
+fn handle_request<T: crate::mqtt::PeerTransport>(
     json: &str,
     cfg: &PeerPlannerConfig,
     planner: &mut Planner,
     highs: &mut HighsSolver,
-    session: &mut PeerSession,
+    session: &mut PeerSession<T>,
 ) {
+    // 版本判别：**先探 `v` 再分派**（v1/v2 schema 不同——v1 解析器带
+    // `deny_unknown_fields` 且要求 `telemetry`，v2 请求在 v1 解析器下
+    // 必然失败，靠解析失败猜版本无法区分"版本不同"与"真坏包"）。
+    //
+    // 蓝图 70.10 复查修复：本 bin 原只走 v1 ——目标侧一旦配置结构化计划
+    // 参数（`ai-peer` 字段 9）就发 v2 请求，host 侧恒 PLANNER-SKIP，
+    // 目标每周期超时降级（结构化通道**端到端不可用**）。v2 与 v1 共用
+    // 同一求解器常驻实例（seq/状态文件面同源）。
+    match route_version(json) {
+        VersionRoute::V2 => {
+            handle_request_v2(json, planner, highs, session);
+            return;
+        }
+        VersionRoute::V1 => {}
+        VersionRoute::Unsupported(other) => {
+            println!("[planner-peer] PLANNER-SKIP reason=unsupported-version ({other})");
+            return;
+        }
+        VersionRoute::Malformed(e) => {
+            println!("[planner-peer] PLANNER-SKIP reason=parse ({e})");
+            return;
+        }
+    }
     // 不受信输入：schema/域全检在 solve_request 内（求解权威域检）；此处
     // 仅反序列化预检——坏请求不值得一次求解。
     let req: PeerRequest = match serde_json::from_str(json) {
@@ -213,4 +239,157 @@ fn handle_request(
     };
     let (bytes, tag_ok) = meta_out.into_inner().unwrap_or((0, false));
     println!("[planner-peer] PEER-RESP seq={seqn} bytes={bytes} backend-tag-ok={tag_ok}");
+}
+
+/// 请求版本路由（**单点**；复查修复：v2 必须在此可达，否则目标侧配置
+/// 结构化计划参数后 host 恒 SKIP = 通道端到端不可用）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum VersionRoute {
+    /// v1 迁移轨（单值提案）。
+    V1,
+    /// v2 结构化全计划。
+    V2,
+    /// 其他版本号（闭集之外——不应答）。
+    Unsupported(u64),
+    /// 无法解析/无 `v` 字段。
+    Malformed(String),
+}
+
+/// `v` 探测与路由判定（纯函数；bin 单测锁在此）。
+fn route_version(json: &str) -> VersionRoute {
+    #[derive(serde::Deserialize)]
+    struct VersionProbe {
+        v: u64,
+    }
+    match serde_json::from_str::<VersionProbe>(json) {
+        Ok(p) if p.v == PEER_CONTRACT_VERSION_V2 => VersionRoute::V2,
+        Ok(p) if p.v == 1 => VersionRoute::V1,
+        Ok(p) => VersionRoute::Unsupported(p.v),
+        Err(e) => VersionRoute::Malformed(e.to_string()),
+    }
+}
+
+/// 结构化（v2）请求处理（蓝图 70.10）：解析 → 求解 → 组装 → 自检 → 发布。
+///
+/// 与 v1 同律：任何失败 = PLANNER-SKIP + **不应答**（目标侧超时降级），
+/// 发布失败由 `respond_reserved` 内部重连。出站自检走目标侧同链
+/// （`parse_and_validate_v2` + 请求侧绑定）——发一条必被拒的应答只会烧
+/// 目标侧坏应答计数。
+fn handle_request_v2<T: crate::mqtt::PeerTransport>(
+    json: &str,
+    planner: &mut Planner,
+    highs: &mut HighsSolver,
+    session: &mut PeerSession<T>,
+) {
+    let req: PeerRequestV2 = match serde_json::from_str(json) {
+        Ok(r) => r,
+        Err(e) => {
+            println!("[planner-peer] PLANNER-SKIP reason=parse-v2 ({e})");
+            return;
+        }
+    };
+    println!(
+        "[planner-peer] PEER-REQ-V2 req_id={} assets={} steps={} prices={} objective={}",
+        req.req_id,
+        req.assets.len(),
+        req.step_count,
+        req.prices_per_kwh.len(),
+        req.objective_kind
+    );
+    let (plan, meta) = match eneros_planner_peer::solve_request_v2(planner, highs, &req, now_ms()) {
+        Ok(out) => out,
+        Err(e) => {
+            println!("[planner-peer] PLANNER-SKIP reason={}", e.0);
+            return;
+        }
+    };
+    println!(
+        "[planner-peer] PLANNER-SOLVE-V2 status={} assignments={} model={} elapsed={}ms obj={:.4}",
+        meta.status_word,
+        plan.assignments.len(),
+        meta.model_digest_hex,
+        meta.elapsed_ms,
+        meta.objective_value
+    );
+    // 请求侧绑定（自检用；与目标侧 `PendingReq.binds` 同源公式）。
+    let sid = match eneros_hex::decode_vec(&req.snapshot_id_hex) {
+        Some(v) if v.len() == 16 => v,
+        _ => {
+            println!("[planner-peer] PLANNER-SKIP reason=snapshot_id_hex");
+            return;
+        }
+    };
+    let mut snapshot_id = [0u8; 16];
+    snapshot_id.copy_from_slice(&sid);
+    let binds = PlanBinds {
+        snapshot_id,
+        catalog_version: req.catalog_version,
+        horizon_start_ms: req.horizon_start_ms,
+        step_ns: req.step_ns,
+        step_count: req.step_count,
+    };
+    let req_id = req.req_id;
+    let meta_out: std::cell::RefCell<Option<(usize, bool)>> = std::cell::RefCell::new(None);
+    let seqn = match session.respond_reserved(|seq| {
+        let resp = eneros_planner_peer::build_response_v2(req_id, seq, plan.clone(), &meta);
+        let out = serde_json::to_string(&resp).map_err(|e| format!("encode: {e}"))?;
+        let checks = ResponseChecks {
+            expect_req_id: req_id,
+            expect_seq_gt: None,
+            budget: &req.budget,
+        };
+        parse_and_validate_v2(&out, &checks, &binds).map_err(|e| format!("self-check: {e:?}"))?;
+        *meta_out.borrow_mut() = Some((out.len(), resp.reason.starts_with(BACKEND_TAG)));
+        Ok(out.into_bytes())
+    }) {
+        Ok(seqn) => seqn,
+        Err(RespondError::Compose(e)) => {
+            println!("[planner-peer] PEER-RESP-ABANDONED reason={e}（序号间隙，如实记账）");
+            return;
+        }
+        Err(RespondError::Persist(e)) => {
+            println!("[planner-peer] PLANNER-SKIP reason=seq-persist ({e})——未发布");
+            return;
+        }
+        Err(RespondError::Publish(e)) => {
+            println!("[planner-peer] PLANNER-SKIP reason=publish ({e})");
+            return;
+        }
+    };
+    let (bytes, tag_ok) = meta_out.into_inner().unwrap_or((0, false));
+    println!("[planner-peer] PEER-RESP-V2 seq={seqn} bytes={bytes} backend-tag-ok={tag_ok}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 蓝图 70.10 复查修复锁：**v2 请求必须被路由到结构化处理器**。
+    ///
+    /// 缺陷形态（修复前）：`handle_request` 只解析 v1 → 目标侧配置
+    /// `ai-peer` 计划参数后发出的 v2 请求恒 `PLANNER-SKIP reason=parse`
+    /// （v1 schema 要求 `telemetry`/拒绝未知字段）→ host 永不应答 →
+    /// 目标每周期超时降级 = 结构化通道端到端不可用。
+    ///
+    /// 变异靶：删 `Route::V2` 臂（或把 v2 归入 V1）→ 本测红。
+    #[test]
+    fn v2_request_routes_to_structured_handler() {
+        let v1 = r#"{"v":1,"req_id":7,"seq":0,"telemetry":{"soc_pct":0.5},"budget":{"max_power_kw":5.0,"ttl_secs":60},"assets":[]}"#;
+        let v2 = r#"{"v":2,"req_id":7,"snapshot_id_hex":"5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"}"#;
+        assert_eq!(route_version(v1), VersionRoute::V1, "v1 迁移轨");
+        assert_eq!(
+            route_version(v2),
+            VersionRoute::V2,
+            "v2 结构化请求必须路由（修复前 v2 请求在 v1 解析器下必失败）"
+        );
+        assert_eq!(
+            route_version(r#"{"v":3,"req_id":1}"#),
+            VersionRoute::Unsupported(3),
+            "闭集外版本不得猜"
+        );
+        assert!(matches!(
+            route_version("not json"),
+            VersionRoute::Malformed(_)
+        ));
+    }
 }

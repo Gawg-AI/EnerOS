@@ -18,7 +18,6 @@ default = []
 # CertifierSeal。真 certifier crate（.38）已落地（eneros-certifier，
 # feature "certifier"）；本过渡面在目标侧快照/包络输入具备前保留
 # （Phase 5 PlanCompiler 替换），偏离登记见 ADR-051。
-transition-certifier = []
 # 真认证器发放面（.38）：仅 eneros-certifier 启用（rg 门 + compile-fail）。
 certifier = []
 

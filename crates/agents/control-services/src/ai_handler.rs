@@ -153,11 +153,7 @@ pub(crate) fn log_ai_decision(audit: &mut DecisionAudit, intent: &str, lp: &str,
 /// format 分配在 64KiB 服务堆上碎片化，~478KB 串口输出后 OOM 挂起
 /// （fail-closed 设计）并级联阻塞 root 的 EIPC Call → 全系统静默冻结）。
 /// 返回写入字节数；缓冲不足时截断到安全前缀。
-fn write_degrade_obs_line(
-    obs: &DegradeObservation,
-    now_ms: u64,
-    buf: &mut [u8],
-) -> usize {
+fn write_degrade_obs_line(obs: &DegradeObservation, now_ms: u64, buf: &mut [u8]) -> usize {
     use core::fmt::Write as _;
     struct W<'a> {
         buf: &'a mut [u8],
@@ -530,6 +526,21 @@ where
         resp.extend_from_slice(&obs.deadband_frozen_skips.to_le_bytes());
         debug_assert_eq!(resp.len(), learn_wire::DEGRADE_OBS_WIRE_LEN);
     }
+
+    /// propose 编排单点（蓝图 70.8：`AI_PROPOSE` 与 `AI_PROPOSE_SNAP`
+    /// **两个入口共用**同一次序——阈值注入 → propose → 留痕 → observe）。
+    ///
+    /// 两臂唯一差异是 SOC 来源（旧：裸 144B 遥测；新：`TrustedInput` 内嵌
+    /// 载荷），由调用方提取后传入；order/旁路差异会破坏红线 2
+    /// ([`tests::tick_n_observe_tick_n_plus_1_uses_learned_thresholds`])。
+    fn propose_tick(&mut self, req: &[u8], resp: &mut Vec<u8>, now_ms: u64, soc: Option<f64>) {
+        self.apply_learn_thresholds();
+        *resp = self.worker.propose(req, now_ms);
+        if resp.first() == Some(&AI_OK) {
+            self.audit.on_proposal_ok(self.worker.backend_mut(), now_ms);
+        }
+        self.learn_observe(soc);
+    }
 }
 
 impl<B, Io, A> ControlServiceHandler for AiTickHandler<'_, B, Io, A>
@@ -546,12 +557,21 @@ where
                     .get(1..)
                     .and_then(crate::telemetry::decode_trusted)
                     .map(|t| t.state.soc_pct);
-                self.apply_learn_thresholds();
-                *resp = self.worker.propose(req, now_ms);
-                if resp.first() == Some(&AI_OK) {
-                    self.audit.on_proposal_ok(self.worker.backend_mut(), now_ms);
-                }
-                self.learn_observe(soc);
+                self.propose_tick(req, resp, now_ms, soc);
+                true
+            }
+            // 蓝图 70.8 WP-70.8.1：生产形态入口（身份 + 状态一体的
+            // `TrustedInput`；EA 每 tick 发出的就是本形态）。与旧臂同一
+            // 编排单点——**必须**路由，否则请求落入 0xFF 兜底，EA 会把
+            // 空提案体当"有提案"提交（`short trusted request`），
+            // 生产链静默停摆。
+            Some(&crate::ai_worker::AI_PROPOSE_SNAP) => {
+                let soc = req
+                    .get(1..)
+                    .and_then(eneros_agent_sdk::snap_input_wire::TrustedInput::decode)
+                    .and_then(|input| crate::telemetry::decode_trusted(input.telemetry()))
+                    .map(|t| t.state.soc_pct);
+                self.propose_tick(req, resp, now_ms, soc);
                 true
             }
             Some(&learn_wire::AI_LEARN_STATUS) => {
@@ -676,6 +696,12 @@ pub mod target {
         mqtt: Sel4IpcClient,
         learn: Option<TargetLearner>,
         catalog_version: u64,
+        // 蓝图 70.10 WP-70.10.2：目录派生**结构化计划输入源**（
+        // `(repo, plan_params)`；缺省 None = 无结构化输入源 → v1 迁移轨）。
+        plan_source: Option<(
+            eneros_semantic_catalog::CatalogRepository,
+            eneros_config_bundle::ai_peer::PlanParams,
+        )>,
     ) -> ! {
         // 决策审计（ADR-0042 边界：dual-brain/audit 为决策语义门面）。
         // 蓝图 54 WP-54.1：同源魔数 [0x47;32] → 唯一入口按本服务域派生。
@@ -689,12 +715,36 @@ pub mod target {
             mqtt,
             correlation: 0,
         };
-        let brain = RemoteBrain::with_catalog_ver(
+        let mut brain = RemoteBrain::with_catalog_ver(
             HeuristicBackend::new().with_catalog_version(catalog_version),
             link,
             cfg,
             catalog_version,
         );
+        if let Some((repo, params)) = plan_source {
+            let objective_word = params.objective_word();
+            eneros_runtime::println!(
+                "[svc-ai-worker] PLAN-SPEC-ACTIVE steps={} step_ns={} objective={} prices={}",
+                params.step_count,
+                params.step_ns,
+                objective_word,
+                params.prices_per_kwh.len()
+            );
+            brain.set_plan_spec_source(alloc::boxed::Box::new(
+                crate::catalog_spec_source::CatalogPlanSpecSource::new(
+                    repo,
+                    params.prices_per_kwh,
+                    objective_word,
+                    params.step_ns,
+                    params.step_count,
+                    cfg.max_power_kw,
+                ),
+            ));
+        } else {
+            eneros_runtime::println!(
+                "[svc-ai-worker] PLAN-SPEC-NONE reason=no-plan-params（结构化通道停用；远端提案走 v1 迁移轨）"
+            );
+        }
         let mut worker = AiWorkerService::new(brain, [0x41; 16]);
         let mut handler = AiTickHandler::new(&mut worker, RemoteAudit { audit: &mut audit }, learn);
         crate::control_service_main(
@@ -813,6 +863,87 @@ mod tests {
         let mut req = alloc::vec![AI_PROPOSE];
         req.extend_from_slice(&encode_trusted(&t));
         req
+    }
+
+    /// 蓝图 70.8 生产形态请求构造：`AI_PROPOSE_SNAP` + `TrustedInput`
+    /// wire（身份 + 144B 状态一体；EA 实际发出的字节形态）。
+    fn propose_snap_req(soc: f64, snapshot_id: [u8; 16], catalog_version: u64) -> Vec<u8> {
+        use eneros_agent_sdk::snap_input_wire::{SnapshotFacts, TrustedInput, COMPLETE};
+        let mut t = minimal_trusted();
+        t.state.soc_pct = soc;
+        let facts = SnapshotFacts {
+            snapshot_id,
+            provenance_root: [0x11; 32],
+            cut_time_ns: 1_700_000_000_000_000_000,
+            produced_at_ns: 1_700_000_000_000_000_000,
+            catalog_version,
+            catalog_digest8: [1, 2, 3, 4, 5, 6, 7, 8],
+            accepted: 7,
+            missing: 0,
+            completeness: COMPLETE,
+        };
+        let mut tel = [0u8; eneros_agent_sdk::snap_input_wire::SNAP_INPUT_TELEMETRY_LEN];
+        tel.copy_from_slice(&encode_trusted(&t));
+        let input = TrustedInput::new(facts, tel);
+        let mut req = alloc::vec![crate::ai_worker::AI_PROPOSE_SNAP];
+        req.extend_from_slice(&input.encode());
+        req
+    }
+
+    /// 蓝图 70.8 WP-70.8.1 接入面（红测先行）：生产形态 `AI_PROPOSE_SNAP`
+    /// 必须被 target 唯一入口 [`AiTickHandler::handle`] 路由进 propose
+    /// 编排——EA 每 tick 发送的就是这一形态（身份 + 状态一体）。
+    ///
+    /// 缺口语义（修复前实况）：handler 只路由 `AI_PROPOSE`(=1)，`AI_PROPOSE_SNAP`
+    /// (=4) 落入 `_` 兜底 → `0xFF`；EA 视其为"有提案"（既非 UNAVAILABLE 也非
+    /// NOACTION）→ 提交空候选体 → dispatch `short trusted request`。host 全绿
+    /// 是因为 EA 用例用 StubWorker、dispatch 用例直呼 `worker.propose`。
+    ///
+    /// 变异靶：去掉 handler 的 `AI_PROPOSE_SNAP` 臂 → 本测红（resp=0xFF）。
+    #[test]
+    fn t8_ai_propose_snap_is_routed_and_binds_identity() {
+        let mut audit = DecisionAudit::new(eneros_audit::genesis(b"ai-handler-test"));
+        let mut worker =
+            AiWorkerService::new(HeuristicBackend::new().with_catalog_version(3), [0x41; 16]);
+        let learner = DeadbandLearner::open(true, MemIo::new()).expect("learner open");
+        let mut handler = AiTickHandler::new(
+            &mut worker,
+            HeuristicAudit { audit: &mut audit },
+            Some(learner),
+        );
+        let mut resp = Vec::new();
+        let snapshot_id = [0x5Au8; 16];
+        let produced_ms = 1_700_000_000_000u64;
+
+        assert!(handler.handle(&propose_snap_req(0.60, snapshot_id, 3), &mut resp, 1_000));
+        assert_eq!(
+            resp.first(),
+            Some(&AI_OK),
+            "AI_PROPOSE_SNAP 必须被路由（修复前为 0xFF 兜底）"
+        );
+        assert_eq!(&resp[1..5], b"CAND");
+        let cand = eneros_decision_contract::CandidatePlan::decode_v1(&resp[1..]).expect("cand");
+        assert_eq!(cand.snapshot_id().0, snapshot_id, "候选身份 = 输入快照身份");
+        assert_eq!(cand.resource_catalog_version(), 3);
+        assert_eq!(
+            cand.objective_digest(),
+            &eneros_decision_contract::objective_binding_v1(&snapshot_id, 3, produced_ms, 0, 1),
+            "目标摘要 = 绑定公式（验证方重算即判同代）"
+        );
+
+        // 同一输入携带的 SOC 必须进入学习观测（身份与状态一体：不是第二次取样）。
+        resp.clear();
+        assert!(handler.handle(&propose_snap_req(0.90, snapshot_id, 3), &mut resp, 2_000));
+        assert_eq!(resp.first(), Some(&AI_OK));
+        resp.clear();
+        assert!(handler.handle(&alloc::vec![learn_wire::AI_LEARN_STATUS], &mut resp, 2_001));
+        // 学习态读出：samples 非零即证明受信 SOC 进入了 observe（首帧
+        // 只锚定不计样本）。若 SOC 提取断链（None），samples 恒 0。
+        let samples = u64::from_le_bytes(resp[26..34].try_into().expect("50B"));
+        assert!(
+            samples >= 1,
+            "受信 SOC 必须进入学习观测（Extraction 断链则恒 0）: {samples}"
+        );
     }
 
     /// 时序不变式（WP-B.3 红线 2 的化身）：tick N 观测 → tick N decide
@@ -951,11 +1082,33 @@ mod tests {
         // 同 SOC 判定逐条一致：0.52 ∈ 加宽带 → 双双死区；0.6 ≥ 0.54 → 双双放电。
         let mut t = minimal_trusted();
         t.state.soc_pct = 0.52;
-        assert!(direct.decide(&t, 1_000).is_err());
-        assert!(worker.backend_mut().local_mut().decide(&t, 1_000).is_err());
+        assert!(direct
+            .decide(
+                &crate::ai_worker::DecisionInput {
+                    telemetry: &t,
+                    facts: &eneros_agent_sdk::snap_input_wire::SnapshotFacts::ZERO,
+                },
+                1_000
+            )
+            .is_err());
+        assert!(worker
+            .backend_mut()
+            .local_mut()
+            .decide(
+                &crate::ai_worker::DecisionInput {
+                    telemetry: &t,
+                    facts: &eneros_agent_sdk::snap_input_wire::SnapshotFacts::ZERO,
+                },
+                1_000
+            )
+            .is_err());
         t.state.soc_pct = 0.6;
-        assert!(direct.decide(&t, 1_001).is_ok());
-        assert!(worker.backend_mut().local_mut().decide(&t, 1_001).is_ok());
+        assert!(direct.decide(&crate::ai_worker::dinp(&t), 1_001).is_ok());
+        assert!(worker
+            .backend_mut()
+            .local_mut()
+            .decide(&crate::ai_worker::dinp(&t), 1_001)
+            .is_ok());
     }
 
     /// heuristic 全 tick：AI_OK 提案入决策审计链（actor/target/intent 词形

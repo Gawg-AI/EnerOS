@@ -1137,6 +1137,81 @@ fn seal_issuance_feature_rg_gate() {
     assert!(gated, "issue() 必须被 certifier feature 门控：{issue_line}");
 }
 
+/// 方向 5 出口「生成者拿不到证书发放能力」的**可执行守卫**（复查补口）。
+///
+/// 事实订正：`CertifierSeal` 的门是 **Cargo feature 门**，而 feature 在同一
+/// 构建图内**合并**——70.9 起 `eneros-control-dispatch` 依赖
+/// `eneros-certifier`（验证面：key ring + verify），该图内 `certifier`
+/// feature 必然打开，于是 `CertifierSeal::issue()` /
+/// `CertifiedPlan::new_certified` 在**语法上可达**。所以
+/// 「发放面唯一性」不能只靠 compile-fail（它只覆盖无 feature 的图）。
+///
+/// 本测把规则降为源码扫描（rg 门同律）：除**定义面**
+///（`ai/decision-contract`，seal 类型与构造器本体）与**唯一发放面**
+///（`ai/certifier`）外，任何 crate 的源码不得出现发放构造调用。
+///
+/// 变异靶：在 planner/control-dispatch 任一源文件写入
+/// `CertifierSeal::issue()` → 本测红（`new_certified(` 同理）。
+#[test]
+fn seal_issuance_source_scan_rejects_third_party_callers() {
+    use std::path::{Path, PathBuf};
+
+    /// 调用形态字面（**带括号**——注释/文档里提到符号名不算调用；
+    /// `certify.rs` 的过渡面缺席锁以拼接构造针，也不含这两个字面）。
+    const NEEDLES: [&str; 2] = ["CertifierSeal::issue()", "new_certified("];
+
+    fn walk_src(dir: &Path, offenders: &mut Vec<(PathBuf, &'static str)>, checked: &mut usize) {
+        let entries =
+            std::fs::read_dir(dir).unwrap_or_else(|e| panic!("rg 门必须读到目录 {dir:?}: {e}"));
+        for entry in entries {
+            let path = entry
+                .unwrap_or_else(|e| panic!("rg 门目录项读取失败: {e}"))
+                .path();
+            if path.is_dir() {
+                walk_src(&path, offenders, checked);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let src = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("rg 门必须读到 {path:?}: {e}"));
+                *checked += 1;
+                for needle in NEEDLES {
+                    if src.contains(needle) {
+                        offenders.push((path.clone(), needle));
+                    }
+                }
+            }
+        }
+    }
+
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(3)
+        .expect("workspace root")
+        .to_path_buf();
+    // 豁免：定义面（类型/构造器本体 + 其自身单测）与唯一发放面。
+    let exempt = [
+        workspace.join("crates/ai/decision-contract"),
+        workspace.join("crates/ai/certifier"),
+    ];
+    let mut offenders: Vec<(PathBuf, &'static str)> = Vec::new();
+    let mut checked = 0usize;
+    for root in [workspace.join("crates"), workspace.join("xtask")] {
+        walk_src(&root, &mut offenders, &mut checked);
+    }
+    assert!(
+        checked >= 400,
+        "walk 只覆盖了 {checked} 个源文件——遍历失效假绿防护"
+    );
+    let offenders: Vec<_> = offenders
+        .into_iter()
+        .filter(|(p, _)| !exempt.iter().any(|e| p.starts_with(e)))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "发放构造只能在 eneros-certifier（唯一发放面）与 decision-contract（定义面）内出现；\
+         生成者/验证者一律不得构造：{offenders:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // WP-65.2.5 组合链测（蓝图 65）：签名 RuleBundle → **真**
 // ObjectiveCompiler::compile → Planner::plan → CertifierModule::certify。

@@ -202,7 +202,7 @@ pub mod points {
 pub mod ai_peer {
     pub const CONFIG_ID: &str = "ai-peer";
     pub const SCHEMA: u16 = 1;
-    pub const MAX_FIELD: u8 = 8;
+    pub const MAX_FIELD: u8 = 9;
     /// 1：在途请求超时毫秒 u64（值域 [100, 60000]）。
     pub const FIELD_TIMEOUT_MS: u8 = 1;
     /// 2：连续超时→Unhealthy 阈值 u32（[1, 10]）。
@@ -223,6 +223,13 @@ pub mod ai_peer {
     pub const FIELD_DEGRADE_LEASE_KEY: u8 = 7;
     /// 8：D3 降级 lease 有效时长秒 u32（[60, 86400]；toml 可载非密）。
     pub const FIELD_DEGRADE_LEASE_TTL_SECS: u8 = 8;
+    /// 蓝图 70.10 WP-70.10.2：**结构化计划参数**（可选字段）。
+    ///
+    /// 布局：step_ns u64 ‖ step_count u32 ‖ objective u8（1=min_cost
+    /// 2=max_revenue）‖ prices_len u32 ‖ prices f64×len。
+    /// 缺该字段 ⇒ 无结构化计划输入源（走 v1 迁移轨，产物不具新控制资格）；
+    /// 有 ⇒ 目标侧装配 [`CatalogPlanSpecSource`]（价格/时域为站点侧事实）。
+    pub const FIELD_PLAN_PARAMS: u8 = 9;
 
     pub const TIMEOUT_MS_MIN: u64 = 100;
     pub const TIMEOUT_MS_MAX: u64 = 60_000;
@@ -322,8 +329,8 @@ pub mod catalog {
     pub const CONFIG_ID: &str = "catalog";
     /// payload schema 版本。
     pub const SCHEMA: u16 = 1;
-    /// 允许的最大字段 id。
-    pub const MAX_FIELD: u8 = 13;
+    /// 允许的最大字段 id（蓝图 70.8：14 = 物理参数铭牌）。
+    pub const MAX_FIELD: u8 = 14;
 
     /// 1：目录头（64B 定长：generation u64 ‖ valid_from_ns u64 ‖
     /// valid_until_ns u64 ‖ mapping_version u64 ‖ topology_version u64 ‖
@@ -371,6 +378,16 @@ pub mod catalog {
     /// 13：tombstone 登记（删除走墓碑；ID 永不复用）；记录 =
     /// asset_id u64 ‖ kind u16 ‖ flags u16（12B）。
     pub const FIELD_TOMBSTONES: u8 = 13;
+    /// 14：**物理参数铭牌**（蓝图 70.8 WP-70.8.3）；记录 = asset_id u64 ‖
+    /// capacity_kwh f64 ‖ eta_c f64 ‖ eta_d f64 ‖ energy_max_kwh f64 ‖
+    /// p_min_kw f64 ‖ p_max_kw f64 ‖ q_min_kvar f64 ‖ q_max_kvar f64 ‖
+    /// ramp_up_kw_s f64 ‖ ramp_down_kw_s f64 ‖ soc_min f64 ‖ soc_max f64
+    /// （104B）。容量/效率/SOC 可用窗是认证与包络的物理输入——与目录
+    /// 同代（generation/contract_version）装配，不从 host fixture 补值。
+    /// `soc_min/soc_max`（0..1 分数）是**储能可用 SOC 窗**：认证器据此
+    /// 逐资产重算 MinSoc/MaxSoc 硬约束（缺失即不可控——不得拿量程 coverage
+    /// 顶替：那是遥测测量范围，不是运行安全窗）。
+    pub const FIELD_NAMEPLATES: u8 = 14;
 
     /// 头部定长（字段 1）。
     pub const HEADER_LEN: usize = 64;
@@ -398,6 +415,8 @@ pub mod catalog {
     pub const ALIAS_REC_LEN: usize = 18;
     /// 单条 tombstone 记录长（字段 13）。
     pub const TOMBSTONE_REC_LEN: usize = 12;
+    /// 单条铭牌记录长（字段 14）。
+    pub const NAMEPLATE_REC_LEN: usize = 104;
 
     /// 表项防御性上界（封闭 payload 无界拒绝）。
     pub const MAX_SCHEMAS: u32 = 64;
@@ -412,6 +431,13 @@ pub mod catalog {
     pub const MAX_SAFETY_CONSTRAINTS: u32 = 1024;
     pub const MAX_ALIASES: u32 = 1024;
     pub const MAX_TOMBSTONES: u32 = 1024;
+    pub const MAX_NAMEPLATES: u32 = 1024;
+
+    /// 目录 payload 硬上界（字节；编码面与解码面单一事实——agent-sdk
+    /// chunk 逻辑预算 1664B = 16 × 104，目录必须可单次分页下发）。
+    /// `compile_catalog` 超限拒绝产出；semantic-catalog 解码面以
+    /// `CATALOG_PAYLOAD_MAX` 同源引用本常量并同限拒载。
+    pub const PAYLOAD_MAX: usize = 1664;
 
     /// 资产 flags：位 0 = tombstone（已删除，ID 不复用）。
     pub const ASSET_FLAG_TOMBSTONE: u16 = 1 << 0;

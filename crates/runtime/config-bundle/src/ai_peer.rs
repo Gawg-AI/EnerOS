@@ -6,7 +6,7 @@ use crate::payload::decode_fields;
 use crate::{ConfigError, ConfigId};
 
 /// 解码后的 ai-peer 配置。
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AiPeerConfig {
     /// 在途请求超时毫秒（产品缺省 5000——经配置显式给出，非代码缺省）。
     pub timeout_ms: u64,
@@ -26,6 +26,33 @@ pub struct AiPeerConfig {
     pub degrade_lease_key: [u8; 32],
     /// D3 降级 lease 有效时长秒（到期不复位即拒降级维持——D3 fail-closed）。
     pub degrade_lease_ttl_secs: u32,
+    /// 蓝图 70.10 WP-70.10.2：结构化计划参数（**可选**——缺省 = 无结构化
+    /// 输入源，走 v1 迁移轨；有 = 目标侧装配目录派生规格源）。
+    pub plan: Option<PlanParams>,
+}
+
+/// 结构化计划参数（时域 + 目标引用）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlanParams {
+    /// 步长 ns（>0）。
+    pub step_ns: u64,
+    /// 步数（1..=64）。
+    pub step_count: u32,
+    /// 目标种类：1=min_cost 2=max_revenue。
+    pub objective: u8,
+    /// 每步电价 元/kWh（len == step_count；有限）。
+    pub prices_per_kwh: alloc::vec::Vec<f64>,
+}
+
+impl PlanParams {
+    /// 目标种类词形（host 契约闭集）。
+    pub fn objective_word(&self) -> &'static str {
+        if self.objective == 2 {
+            "max_revenue"
+        } else {
+            "min_cost"
+        }
+    }
 }
 
 impl AiPeerConfig {
@@ -42,8 +69,9 @@ impl AiPeerConfig {
             learn_enabled: false,
             degrade_lease_key: [0u8; 32],
             degrade_lease_ttl_secs: 0,
+            plan: None,
         };
-        let mut seen = [false; 9];
+        let mut seen = [false; 10];
         for (id, value) in fields {
             match id {
                 crate::schema::ai_peer::FIELD_TIMEOUT_MS => {
@@ -143,6 +171,68 @@ impl AiPeerConfig {
                         u32::from_le_bytes(value.try_into().expect("checked len"));
                     seen[id as usize] = true;
                 }
+                crate::schema::ai_peer::FIELD_PLAN_PARAMS => {
+                    // step_ns(8) + step_count(4) + objective(1) + len(4) + prices(8n)
+                    if value.len() < 17 {
+                        return Err(ConfigError::InvalidValue {
+                            config: config.clone(),
+                            field: "plan_params",
+                            reason: "len".into(),
+                        });
+                    }
+                    let step_ns = u64::from_le_bytes(value[0..8].try_into().expect("checked len"));
+                    let step_count =
+                        u32::from_le_bytes(value[8..12].try_into().expect("checked len"));
+                    let objective = value[12];
+                    let n = u32::from_le_bytes(value[13..17].try_into().expect("checked len"));
+                    let expect = 17usize
+                        .checked_add((n as usize).saturating_mul(8))
+                        .ok_or_else(|| ConfigError::InvalidValue {
+                            config: config.clone(),
+                            field: "plan_params",
+                            reason: "len-overflow".into(),
+                        })?;
+                    if value.len() != expect {
+                        return Err(ConfigError::InvalidValue {
+                            config: config.clone(),
+                            field: "plan_params",
+                            reason: "len".into(),
+                        });
+                    }
+                    if step_ns == 0
+                        || step_count == 0
+                        || step_count > 64
+                        || n != step_count
+                        || !(objective == 1 || objective == 2)
+                    {
+                        return Err(ConfigError::InvalidValue {
+                            config: config.clone(),
+                            field: "plan_params",
+                            reason: "range".into(),
+                        });
+                    }
+                    let mut prices_per_kwh = alloc::vec::Vec::with_capacity(n as usize);
+                    for i in 0..n as usize {
+                        let o = 17 + i * 8;
+                        let f =
+                            f64::from_le_bytes(value[o..o + 8].try_into().expect("checked len"));
+                        if !f.is_finite() {
+                            return Err(ConfigError::InvalidValue {
+                                config: config.clone(),
+                                field: "plan_params",
+                                reason: "non-finite-price".into(),
+                            });
+                        }
+                        prices_per_kwh.push(f);
+                    }
+                    out.plan = Some(PlanParams {
+                        step_ns,
+                        step_count,
+                        objective,
+                        prices_per_kwh,
+                    });
+                    seen[id as usize] = true;
+                }
                 other => {
                     return Err(ConfigError::InvalidValue {
                         config: config.clone(),
@@ -152,9 +242,11 @@ impl AiPeerConfig {
                 }
             }
         }
-        // 全必配：缺任一字段即拒绝。
+        // 全必配：缺任一字段即拒绝（**字段 9 = 结构化计划参数例外**——
+        // 可选：缺省 = 无结构化输入源，走 v1 迁移轨）。
+        let optional = crate::schema::ai_peer::FIELD_PLAN_PARAMS as usize;
         for (i, ok) in seen.iter().enumerate() {
-            if i == 0 {
+            if i == 0 || i == optional {
                 continue;
             }
             if !ok && i <= crate::schema::ai_peer::MAX_FIELD as usize {
@@ -302,8 +394,47 @@ mod tests {
                 learn_enabled: true,
                 degrade_lease_key: TEST_LEASE_KEY,
                 degrade_lease_ttl_secs: 3600,
+                plan: None,
             }
         );
+    }
+
+    /// 蓝图 70.10：结构化计划参数（可选字段）往返 + 值域拒绝。
+    /// 缺字段（既有 payload）⇒ `plan = None`（v1 迁移轨，行为不变）。
+    #[test]
+    fn plan_params_optional_roundtrip_and_range() {
+        let base = compile_payload(5_000, 3, 5, 5.0, 60);
+        assert!(AiPeerConfig::decode(&base).expect("decode").plan.is_none());
+        // 追加字段 9：step_ns 60e9 ‖ steps 2 ‖ objective 2 ‖ len 2 ‖ [0.5, 1.5]
+        let mut raw = base.clone();
+        let mut v: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+        v.extend_from_slice(&60_000_000_000u64.to_le_bytes());
+        v.extend_from_slice(&2u32.to_le_bytes());
+        v.push(2);
+        v.extend_from_slice(&2u32.to_le_bytes());
+        v.extend_from_slice(&0.5f64.to_le_bytes());
+        v.extend_from_slice(&1.5f64.to_le_bytes());
+        raw.push(crate::schema::ai_peer::FIELD_PLAN_PARAMS);
+        raw.extend_from_slice(&(v.len() as u16).to_le_bytes());
+        raw.extend_from_slice(&v);
+        let cfg = AiPeerConfig::decode(&raw).expect("decode with plan");
+        let plan = cfg.plan.expect("plan present");
+        assert_eq!(plan.step_ns, 60_000_000_000);
+        assert_eq!(plan.step_count, 2);
+        assert_eq!(plan.objective_word(), "max_revenue");
+        assert_eq!(plan.prices_per_kwh, alloc::vec![0.5, 1.5]);
+        // 价格长度与步数不符 → 拒。
+        let mut bad: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+        bad.extend_from_slice(&60_000_000_000u64.to_le_bytes());
+        bad.extend_from_slice(&2u32.to_le_bytes());
+        bad.push(1);
+        bad.extend_from_slice(&1u32.to_le_bytes());
+        bad.extend_from_slice(&0.5f64.to_le_bytes());
+        let mut raw_bad = base.clone();
+        raw_bad.push(crate::schema::ai_peer::FIELD_PLAN_PARAMS);
+        raw_bad.extend_from_slice(&(bad.len() as u16).to_le_bytes());
+        raw_bad.extend_from_slice(&bad);
+        assert!(AiPeerConfig::decode(&raw_bad).is_err(), "长度不符必须拒");
     }
 
     /// 68.5 WP-68.5.3：lease 键全零拒绝 + TTL 值域（[60, 86400]）。

@@ -488,6 +488,332 @@ pub fn build_response(
     }
 }
 
+// ============================================================================
+// 蓝图 70.10 WP-70.10.2：**结构化全计划**求解（无第一步投影、无钳制）
+// ============================================================================
+
+/// v2 求解：**消费请求携带的目标侧事实**（快照身份/目录代次/时域/逐资产
+/// 规格/价格），返回**全部资源 × 全部时段**的分配。
+///
+/// 与 v1 的差异（蓝图 70.10 的核心）：
+/// - 不再从 host 自持配置取电池规格/价格/envelope——一切来自请求；
+/// - 不再取 `net_kw.first()`（有损投影）；
+/// - **不钳制**：越预算/越包络即 `SolveError`（不应答）——钳制后计划已
+///   不是被求解证明覆盖的那一份，v2 拒绝"钳制后仍声称原证明"。
+pub fn solve_request_v2(
+    planner: &mut Planner,
+    backend: &mut eneros_solver_core::highs::HighsSolver,
+    req: &eneros_intent_contract::peer::PeerRequestV2,
+    now_ms: u64,
+) -> Result<(eneros_intent_contract::peer::PeerPlanV2, SolveMeta), SolveError> {
+    use eneros_intent_contract::peer::{
+        validate_request_v2, PeerAssignment, PeerPlanV2, PEER_CONTRACT_VERSION_V2,
+    };
+    validate_request_v2(req).map_err(|e| SolveError(format!("request: {e:?}")))?;
+
+    let sid = eneros_hex::decode_vec(&req.snapshot_id_hex)
+        .ok_or_else(|| SolveError(String::from("snapshot_id_hex 非 hex")))?;
+    if sid.len() != 16 {
+        return Err(SolveError(format!("snapshot_id {}B ≠ 16B", sid.len())));
+    }
+    let mut snapshot_id = [0u8; 16];
+    snapshot_id.copy_from_slice(&sid);
+    let root = eneros_hex::decode_vec(&req.provenance_hex)
+        .ok_or_else(|| SolveError(String::from("provenance_hex 非 hex")))?;
+    if root.len() != 32 {
+        return Err(SolveError(format!("provenance {}B ≠ 32B", root.len())));
+    }
+    let mut provenance_root = [0u8; 32];
+    provenance_root.copy_from_slice(&root);
+
+    // —— 目标文档：由请求事实派生（硬约束 = 逐资产 SOC 窗）——
+    let mut constraints: Vec<Constraint> = Vec::new();
+    for a in &req.assets {
+        constraints.push(Constraint {
+            kind: ConstraintKind::MinSoc,
+            bound: a.soc_min,
+        });
+        constraints.push(Constraint {
+            kind: ConstraintKind::MaxSoc,
+            bound: a.soc_max,
+        });
+    }
+    let spec = ObjectiveSpec::builder(SnapshotId(snapshot_id))
+        .constraints(constraints, Vec::new())
+        .objective(
+            if req.objective_kind == "min_cost" {
+                ObjectiveKind::MinCost
+            } else {
+                ObjectiveKind::MaxRevenue
+            },
+            1,
+            ObjectiveSource::Contract,
+            ReasonCode::PriceArbitrage,
+        )
+        .window(req.horizon_start_ms, u64::MAX)
+        .build()
+        .map_err(|e| SolveError(format!("spec: {e:?}")))?;
+
+    let compiled = CompiledObjective::compile_fixture(CompiledObjectiveParts {
+        spec: spec.clone(),
+        prices_per_kwh: req.prices_per_kwh.clone(),
+        min_on_steps: 0,
+        min_off_steps: 0,
+        registry_generation: req.catalog_version,
+        bundle_version: 1,
+        // 请求实际携带的证据摘要（不再是 host 常量占位）。
+        bundle_digest: input_digest_v2(req),
+        horizon_step_ns: req.step_ns,
+        horizon_step_count: req.step_count,
+    });
+
+    let mut request_id = [b'p'; 16];
+    request_id[..8].copy_from_slice(&req.req_id.to_le_bytes());
+    let dr = DecisionRequest::new(
+        request_id,
+        spec,
+        req.catalog_version,
+        5_000,
+        u64::from(req.step_count),
+    )
+    .map_err(|e| SolveError(format!("decision-request: {e:?}")))?;
+
+    let mut envelopes: Vec<(u64, CapabilityEnvelope)> = Vec::new();
+    let mut batteries: Vec<BatterySpec> = Vec::new();
+    let mut bindings: Vec<AssetBinding> = Vec::new();
+    for a in &req.assets {
+        envelopes.push((
+            a.asset_id,
+            CapabilityEnvelope {
+                asset_id: a.asset_id,
+                valid_from_ns: 0,
+                valid_until_ns: u64::MAX,
+                p_min_kw: a.p_min_kw,
+                p_max_kw: a.p_max_kw,
+                q_min_kvar: 0.0,
+                q_max_kvar: 0.0,
+                energy_min_kwh: a.capacity_kwh * a.soc_min,
+                energy_max_kwh: a.capacity_kwh * a.soc_max,
+                ramp_up_kw_s: a.ramp_up_kw_s,
+                ramp_down_kw_s: a.ramp_down_kw_s,
+                min_on_ns: 0,
+                min_off_ns: 0,
+                availability: Availability::Full,
+                derating_reason: DeratingReason::None,
+                source_snapshot_id: snapshot_id,
+                tightenings: Vec::new(),
+                generation: req.catalog_version,
+            },
+        ));
+        batteries.push(BatterySpec {
+            asset_id: a.asset_id,
+            capacity_kwh: a.capacity_kwh,
+            eta_c: a.eta_c,
+            eta_d: a.eta_d,
+            initial_kwh: a.initial_kwh,
+        });
+        bindings.push(AssetBinding {
+            asset_id: a.asset_id,
+            device_id: a.device_id,
+            point_id: a.point_id,
+            unit_code: a.unit_code,
+        });
+    }
+    if req.grid_asset_id != 0 && !req.assets.iter().any(|a| a.asset_id == req.grid_asset_id) {
+        envelopes.push((
+            req.grid_asset_id,
+            CapabilityEnvelope {
+                asset_id: req.grid_asset_id,
+                p_min_kw: -req.budget.max_power_kw,
+                p_max_kw: req.budget.max_power_kw,
+                ..envelopes_pcc_template(snapshot_id)
+            },
+        ));
+        bindings.push(AssetBinding {
+            asset_id: req.grid_asset_id,
+            device_id: 0,
+            point_id: 0,
+            unit_code: 0,
+        });
+    }
+
+    let input = PlanInput {
+        objective: &compiled,
+        snapshot_id,
+        provenance_root,
+        registry_generation: req.catalog_version,
+        now_ms,
+        site_node_id: 1,
+        envelopes,
+        batteries,
+        renewables: Vec::new(),
+        loads: Vec::new(),
+        grid: (req.grid_asset_id != 0).then_some(GridSpec {
+            asset_id: req.grid_asset_id,
+        }),
+        dispatchable: Vec::new(),
+        bindings,
+    };
+    let out = planner
+        .solve_document(backend, &dr, &input)
+        .map_err(|e| SolveError(format!("solve: {e:?}")))?;
+    let status_word = match out.solver_status {
+        eneros_decision_contract::SolveStatusKind::Optimal => "optimal",
+        eneros_decision_contract::SolveStatusKind::Suboptimal => "suboptimal",
+    };
+
+    // —— 全量分配装配（资源 × 步；**不取 first**）——
+    let mut assignments: Vec<PeerAssignment> = Vec::new();
+    for a in &req.assets {
+        let res = out
+            .resources
+            .iter()
+            .find(|r| r.asset_id == a.asset_id)
+            .ok_or_else(|| SolveError(format!("解缺资源 {}", a.asset_id)))?;
+        if res.net_kw.len() != req.step_count as usize {
+            return Err(SolveError(format!(
+                "资源 {} 轨迹 {} 步 ≠ 时域 {} 步",
+                a.asset_id,
+                res.net_kw.len(),
+                req.step_count
+            )));
+        }
+        for (i, p) in res.net_kw.iter().enumerate() {
+            if !p.is_finite() {
+                return Err(SolveError(String::from("解非有限")));
+            }
+            assignments.push(PeerAssignment {
+                asset_id: a.asset_id,
+                device_id: a.device_id,
+                point_id: a.point_id,
+                unit_code: a.unit_code,
+                step_index: (i as u32) + 1,
+                power_kw: *p,
+            });
+        }
+    }
+    // 预算自检（**越界即拒，绝无钳制路径**——钳制后计划已不是被求解证明
+    // 覆盖的那一份，见 [08] §7 WP-70.10.2 失败语义）。
+    assert_within_budget(&assignments, req.budget.max_power_kw)?;
+    if assignments.len() > eneros_intent_contract::peer::PEER_PLAN_MAX_ASSIGNMENTS {
+        return Err(SolveError(format!(
+            "分配 {} 条越上限 {}",
+            assignments.len(),
+            eneros_intent_contract::peer::PEER_PLAN_MAX_ASSIGNMENTS
+        )));
+    }
+
+    let plan = PeerPlanV2 {
+        snapshot_id_hex: eneros_intent_contract::peer::hex16(&snapshot_id),
+        catalog_version: req.catalog_version,
+        horizon_start_ms: req.horizon_start_ms,
+        step_ns: req.step_ns,
+        step_count: req.step_count,
+        solver_status: String::from(status_word),
+        model_digest_hex: eneros_hex::encode_lower(&out.model_digest),
+        input_digest_hex: eneros_intent_contract::peer::hex32(&input_digest_v2(req)),
+        objective_value: out.objective_value,
+        relative_gap: out.relative_gap,
+        elapsed_ms: out.elapsed_ms,
+        assignments,
+        target_device: String::from("pcs"),
+        ttl_secs: req.budget.ttl_secs,
+    };
+    // 出站自检：目标侧同链预演（发一条必被拒的应答只会烧对端 bad 计数）。
+    let binds = eneros_intent_contract::peer::PlanBinds {
+        snapshot_id,
+        catalog_version: req.catalog_version,
+        horizon_start_ms: req.horizon_start_ms,
+        step_ns: req.step_ns,
+        step_count: req.step_count,
+    };
+    eneros_intent_contract::peer::validate_response_v2(
+        &eneros_intent_contract::peer::PeerResponseV2 {
+            v: PEER_CONTRACT_VERSION_V2,
+            req_id: req.req_id,
+            seq: 0,
+            plan: plan.clone(),
+            reason: String::from("self-check"),
+        },
+        &eneros_intent_contract::peer::ResponseChecks {
+            expect_req_id: req.req_id,
+            expect_seq_gt: None,
+            budget: &req.budget,
+        },
+        &binds,
+    )
+    .map_err(|e| SolveError(format!("outbound-self-check: {e:?}")))?;
+
+    let meta = SolveMeta {
+        status_word,
+        model_digest_hex: eneros_hex::encode_lower(&out.model_digest),
+        elapsed_ms: out.elapsed_ms,
+        objective_value: out.objective_value,
+    };
+    Ok((plan, meta))
+}
+
+/// 分配预算域自检（纯函数；v2 **不提供**钳制通路）。
+///
+/// 返回 Err 的调用方语义 = 不应答（目标侧超时降级），绝不"改小一点再发"。
+pub fn assert_within_budget(
+    assignments: &[eneros_intent_contract::peer::PeerAssignment],
+    budget_kw: f64,
+) -> Result<(), SolveError> {
+    for a in assignments {
+        if !a.power_kw.is_finite() {
+            return Err(SolveError(format!(
+                "资源 {} 步 {} 功率非有限",
+                a.asset_id, a.step_index
+            )));
+        }
+        if a.power_kw.abs() > budget_kw {
+            return Err(SolveError(format!(
+                "资源 {} 步 {} 功率 {:.3} 越预算 {:.3}（v2 不钳制）",
+                a.asset_id, a.step_index, a.power_kw, budget_kw
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// 输入摘要（域分隔；可被目标侧/复验方从请求事实重算）。
+pub fn input_digest_v2(req: &eneros_intent_contract::peer::PeerRequestV2) -> [u8; 32] {
+    use eneros_decision_contract::keyed::hmac_sha256;
+    let mut buf: Vec<u8> = Vec::new();
+    buf.extend_from_slice(b"eneros.peer-input.v2");
+    buf.extend_from_slice(req.snapshot_id_hex.as_bytes());
+    buf.extend_from_slice(&req.catalog_version.to_le_bytes());
+    buf.extend_from_slice(&req.horizon_start_ms.to_le_bytes());
+    buf.extend_from_slice(&req.step_ns.to_le_bytes());
+    buf.extend_from_slice(&req.step_count.to_le_bytes());
+    for p in &req.prices_per_kwh {
+        buf.extend_from_slice(&p.to_le_bytes());
+    }
+    buf.extend_from_slice(req.objective_kind.as_bytes());
+    // 无钥摘要域（输入摘要不是认证材料；域分隔前缀防跨上下文复用）。
+    hmac_sha256(&[], &buf)
+}
+
+/// 组装 v2 应答（schema 闭集逐字段；`reason` 前缀 = BACKEND_TAG）。
+pub fn build_response_v2(
+    req_id: u64,
+    seq: u64,
+    plan: eneros_intent_contract::peer::PeerPlanV2,
+    meta: &SolveMeta,
+) -> eneros_intent_contract::peer::PeerResponseV2 {
+    eneros_intent_contract::peer::PeerResponseV2 {
+        v: eneros_intent_contract::peer::PEER_CONTRACT_VERSION_V2,
+        req_id,
+        seq,
+        plan,
+        reason: format!(
+            "{BACKEND_TAG} status={} model={} obj={:.4}",
+            meta.status_word, meta.model_digest_hex, meta.objective_value
+        ),
+    }
+}
+
 /// 请求摘要（host 日志对账行；WP-68.5.4 判据 1 抽查面）。
 pub fn request_summary(req: &PeerRequest) -> String {
     let PeerTelemetry {
@@ -512,7 +838,10 @@ pub fn request_summary(req: &PeerRequest) -> String {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::disallowed_macros)]
-    use eneros_intent_contract::peer::{budget as peer_budget, parse_and_validate, ResponseChecks};
+    use eneros_intent_contract::peer::{
+        budget as peer_budget, parse_and_validate, parse_and_validate_v2, PeerAssetSpec,
+        PeerRequestV2, PlanBinds, ResponseChecks, PEER_CONTRACT_VERSION_V2,
+    };
     use eneros_planner::tolerance::ToleranceProfile;
 
     use super::*;
@@ -626,6 +955,128 @@ budget_ms = 5000
         assert!(r.reason.starts_with(BACKEND_TAG), "{}", r.reason);
         assert!(r.reason.contains("status=optimal"), "{}", r.reason);
         assert_eq!(meta.model_digest_hex.len(), 64);
+    }
+
+    // ========================================================================
+    // 蓝图 70.10 WP-70.10.2：v2 全计划（真 HiGHS；无投影无钳制）
+    // ========================================================================
+
+    fn spec_v2(asset_id: u64, cap: f64, init: f64, p_max: f64) -> PeerAssetSpec {
+        PeerAssetSpec {
+            asset_id,
+            capacity_kwh: cap,
+            eta_c: 0.95,
+            eta_d: 0.95,
+            initial_kwh: init,
+            soc_min: 0.05,
+            soc_max: 0.95,
+            p_min_kw: -p_max,
+            p_max_kw: p_max,
+            ramp_up_kw_s: 1e6,
+            ramp_down_kw_s: 1e6,
+            device_id: 2,
+            point_id: 10,
+            unit_code: 6,
+        }
+    }
+
+    fn req_v2(assets: Vec<PeerAssetSpec>, steps: u32, prices: Vec<f64>) -> PeerRequestV2 {
+        PeerRequestV2 {
+            v: PEER_CONTRACT_VERSION_V2,
+            req_id: 7,
+            ts_ms: 1_700_000_000_000,
+            snapshot_id_hex: eneros_intent_contract::peer::hex16(&[0x5A; 16]),
+            provenance_hex: eneros_intent_contract::peer::hex32(&[0x3D; 32]),
+            catalog_version: 3,
+            horizon_start_ms: 1_700_000_000_000,
+            step_ns: 3_600_000_000_000,
+            step_count: steps,
+            assets,
+            grid_asset_id: 10,
+            objective_kind: String::from("max_revenue"),
+            prices_per_kwh: prices,
+            budget: peer_budget(20.0, 60),
+        }
+    }
+
+    /// t3（红测先行）：3 资源 × 4 时段全轨迹贯穿——非零条数 = 3×4 = 12、
+    /// 每资产 4 步齐、过目标侧 v2 全量校验链（含逐字段绑定）。
+    /// 变异靶：回到 `net_kw.first()` 投影（只出 1 条）→ 本测红。
+    #[test]
+    fn t3_v2_full_plan_three_assets_four_steps() {
+        let mut planner = Planner::new(ToleranceProfile::l2(), 100);
+        let mut hb = eneros_solver_core::highs::HighsSolver::new().expect("HiGHS");
+        let req = req_v2(
+            vec![
+                spec_v2(1, 10.0, 5.0, 5.0),
+                spec_v2(2, 8.0, 4.0, 4.0),
+                spec_v2(3, 6.0, 3.0, 3.0),
+            ],
+            4,
+            vec![1.0, 1.0, 10.0, 10.0],
+        );
+        // now_ms 与请求时域同刻（生产：请求构造与求解同 tick）。
+        let (plan, meta) =
+            solve_request_v2(&mut planner, &mut hb, &req, 1_700_000_000_000).expect("solve v2");
+        assert_eq!(meta.status_word, "optimal");
+        assert_eq!(plan.assignments.len(), 12, "3 资源 × 4 时段全量（无投影）");
+        for asset in [1u64, 2, 3] {
+            let n = plan
+                .assignments
+                .iter()
+                .filter(|a| a.asset_id == asset)
+                .count();
+            assert_eq!(n, 4, "资产 {asset} 轨迹必须完整");
+            let steps: Vec<u32> = plan
+                .assignments
+                .iter()
+                .filter(|a| a.asset_id == asset)
+                .map(|a| a.step_index)
+                .collect();
+            assert_eq!(steps, vec![1, 2, 3, 4], "步序连续");
+        }
+        // 目标侧同一校验链（逐字段绑定 + 轨迹完整性 + 预算域）。
+        let binds = PlanBinds {
+            snapshot_id: [0x5A; 16],
+            catalog_version: 3,
+            horizon_start_ms: 1_700_000_000_000,
+            step_ns: 3_600_000_000_000,
+            step_count: 4,
+        };
+        let resp = build_response_v2(7, 5, plan.clone(), &meta);
+        let json = resp.encode().expect("encode v2");
+        let back = parse_and_validate_v2(&json, &checks_for(7, Some(4), &req.budget), &binds)
+            .expect("目标侧全链通过");
+        assert_eq!(back.plan.assignments.len(), 12);
+        // 输入摘要可复算（复验方从请求事实重算即得）。
+        assert_eq!(
+            plan.input_digest_hex,
+            eneros_intent_contract::peer::hex32(&input_digest_v2(&req))
+        );
+    }
+
+    /// t3b：越预算**不钳制**（纯函数级，直击判据面）：越界/非有限一律
+    /// 返回 Err——调用方语义即"不应答"，没有"改小一点再发"的通路。
+    ///
+    /// 变异靶：把判据换成 `clamp`（或删除 Err 分支）→ 本测红。
+    #[test]
+    fn t3b_v2_budget_guard_rejects_and_never_clamps() {
+        use eneros_intent_contract::peer::PeerAssignment;
+        let a = |step: u32, power: f64| PeerAssignment {
+            asset_id: 1,
+            device_id: 2,
+            point_id: 10,
+            unit_code: 6,
+            step_index: step,
+            power_kw: power,
+        };
+        assert!(assert_within_budget(&[a(1, -5.0), a(2, 20.0)], 20.0).is_ok());
+        match assert_within_budget(&[a(1, 20.5)], 20.0) {
+            Err(SolveError(ref s)) => assert!(s.contains("越预算"), "{s}"),
+            other => panic!("越预算必须 Err（不得钳制）: {other:?}"),
+        }
+        assert!(assert_within_budget(&[a(1, -20.5)], 20.0).is_err());
+        assert!(assert_within_budget(&[a(1, f64::NAN)], 20.0).is_err());
     }
 
     /// t2（红测先行）：真 HiGHS 求解——非 mock：状态 Optimal（L2 门）、

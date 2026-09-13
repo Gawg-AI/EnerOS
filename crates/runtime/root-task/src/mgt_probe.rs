@@ -222,7 +222,6 @@ pub fn update_rollback_frame() -> alloc::vec::Vec<u8> {
     f
 }
 
-
 #[cfg(target_os = "none")]
 pub mod driver {
     use alloc::format;
@@ -258,11 +257,7 @@ pub mod driver {
 
     /// chunked Call 并返回响应字节（70.7.5 MGT2 OTA 中继；`call_chunked`
     /// 只取成败，本函数供状态/回退的响应回填）。None = 传输失败。
-    pub(crate) fn call_chunked_resp(
-        ep: u64,
-        frame: &[u8],
-        epoch: &mut u64,
-    ) -> Option<Vec<u8>> {
+    pub(crate) fn call_chunked_resp(ep: u64, frame: &[u8], epoch: &mut u64) -> Option<Vec<u8>> {
         let mut session = eneros_agent_sdk::endpoint::ChunkedSession::bind_shared_const(
             "root-mgt-relay",
             ep,
@@ -494,9 +489,7 @@ pub mod driver {
                 // bootctrl 基线取证。
                 let f = update_status_frame();
                 let r = call_chunked(svc_ota_ep, &f, &mut epoch);
-                eneros_runtime::println!(
-                    "[eneros-root-task] MGT-PROBE: boot status probed ok={r}"
-                );
+                eneros_runtime::println!("[eneros-root-task] MGT-PROBE: boot status probed ok={r}");
                 advance!(ProbeState::BootTrial);
                 ProbeDirective::None
             }

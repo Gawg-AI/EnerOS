@@ -87,6 +87,11 @@ impl ConfigSeed {
             compiler_policy: crate::compiler::CompilerPolicy::default(),
             control_mode: crate::arbiter::ControlMode::Auto,
             now_fn: self.now_fn,
+            trusted_input: crate::engine::TrustedInputPolicy::default(),
+            // 蓝图 70.9：缺省 = 无认证来源（fail-closed）+ 空 key 环。
+            // 生产/测试装配方以结构更新语法注入真实来源与环。
+            certifier: alloc::boxed::Box::new(crate::certify::NoCertifier),
+            certifier_ring: eneros_certifier::proof::CertifierKeyRing::empty(),
         }
     }
 }

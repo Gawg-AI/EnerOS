@@ -460,6 +460,8 @@ impl PeerSession<std::net::TcpStream> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_macros)] // 测试内负例断言（仓例先例）
+
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
     use std::rc::Rc;
@@ -520,12 +522,18 @@ mod tests {
             // 70.4：QoS1 PUBLISH 自动回 PUBACK（pid 回显——真 broker 同律；
             // 使 respond_reserved 测试不必手工预置 ACK，且注入写失败仍在
             // PUBACK 之前生效）。
-            if !buf.is_empty() && (buf[0] >> 4) == 3 && (buf[0] >> 1) & 0x03 > 0 && buf.len() >= 4 {
-                let mut ack = vec![0x40, 0x02];
-                let tlen = u16::from_be_bytes([buf[2], buf[3]]) as usize;
-                if buf.len() >= 4 + tlen + 2 {
-                    ack.extend_from_slice(&buf[4 + tlen..6 + tlen]);
-                    bus.inbox.extend(ack);
+            // QoS1 PUBLISH 自动回 PUBACK（pid 回显）。修复（70.10 复查）：
+            // 原实现把剩余长度当**单字节**（`buf[2..4]` = topic 长度），
+            // >127B 载荷（多字节 varint）下 pid 定位错位 → 不回 ACK →
+            // 调用方等 PUBACK 永久挂起（正是"大载荷测试不存在"的第二处
+            // 构造性原因）。此处按 varint 正确定位。
+            if !buf.is_empty() && (buf[0] >> 4) == 3 && (buf[0] >> 1) & 0x03 > 0 {
+                if let Some(pid_off) = publish_pid_offset(buf) {
+                    if buf.len() >= pid_off + 2 {
+                        let mut ack = vec![0x40, 0x02];
+                        ack.extend_from_slice(&buf[pid_off..pid_off + 2]);
+                        bus.inbox.extend(ack);
+                    }
                 }
             }
             Ok(())
@@ -540,10 +548,44 @@ mod tests {
         }
     }
 
-    // ---- 帧构造（body ≤127B，varint 单字节） ----------------------------
+    /// MQTT 帧（header + varint 剩余长度 + body）。
+    ///
+    /// 修复（70.10 复查）：原实现 `body.len() as u8` 把 >127B 的载荷静默
+    /// 截断成畸形帧——正是"bin 级 v2（大载荷）测试不存在"的构造性原因
+    /// （v2 请求 ~600B）。>127B 走多字节 varint（与真 broker 同律）。
+    /// QoS1 PUBLISH 的 pid 偏移（varint 剩余长度 + topic 长度域之后）。
+    fn publish_pid_offset(frame: &[u8]) -> Option<usize> {
+        let mut i = 1usize;
+        let mut shift = 0;
+        loop {
+            let b = *frame.get(i)?;
+            i += 1;
+            shift += 7;
+            if b & 0x80 == 0 {
+                break;
+            }
+            if shift > 21 {
+                return None;
+            }
+        }
+        let tlen = u16::from_be_bytes([*frame.get(i)?, *frame.get(i + 1)?]) as usize;
+        Some(i + 2 + tlen)
+    }
 
     fn frame(hdr: u8, body: &[u8]) -> Vec<u8> {
-        let mut v = vec![hdr, body.len() as u8];
+        let mut v = vec![hdr];
+        let mut len = body.len();
+        loop {
+            let mut b = (len % 128) as u8;
+            len /= 128;
+            if len > 0 {
+                b |= 0x80;
+            }
+            v.push(b);
+            if len == 0 {
+                break;
+            }
+        }
         v.extend_from_slice(body);
         v
     }
@@ -1095,5 +1137,98 @@ mod tests {
         ] {
             assert!(src.contains(w), "词形漂移：{w}");
         }
+    }
+
+    /// 蓝图 70.10 复查修复端到端（bin 级）：**v2 请求 → 结构化求解 →
+    /// 发布目标侧可接纳的 v2 应答**。
+    ///
+    /// 修复前：`handle_request` 只解析 v1，v2 请求恒
+    /// `PLANNER-SKIP reason=parse`（v1 schema 要求 `telemetry` 且拒未知
+    /// 字段）→ 零发布 → 目标每周期超时降级 = 通道端到端不可用且无任何
+    /// bin 级测试（lib 单测直呼 `solve_request_v2`，绕过 bin 路由）。
+    ///
+    /// 变异靶：删 bin 的 v2 路由臂 → 本测红（outbox 零 PUBLISH）。
+    #[test]
+    fn v2_request_end_to_end_publishes_target_valid_response() {
+        use eneros_intent_contract::peer::{
+            budget as peer_budget, parse_and_validate_v2, PlanBinds, ResponseChecks,
+        };
+        use eneros_planner::tolerance::ToleranceProfile;
+        use eneros_planner::Planner;
+        use eneros_solver_core::highs::HighsSolver;
+        let c = ctx();
+        let mut s = make_session(&c);
+        let now = crate::now_ms();
+        let req_json = format!(
+            r#"{{"v":2,"req_id":7,"ts_ms":{now},"snapshot_id_hex":"{}","provenance_hex":"{}","catalog_version":3,"horizon_start_ms":{now},"step_ns":3600000000000,"step_count":2,"assets":[{{"asset_id":1,"capacity_kwh":10.0,"eta_c":0.95,"eta_d":0.95,"initial_kwh":5.0,"soc_min":0.05,"soc_max":0.95,"p_min_kw":-5.0,"p_max_kw":5.0,"ramp_up_kw_s":1000000.0,"ramp_down_kw_s":1000000.0,"device_id":2,"point_id":10,"unit_code":6}}],"grid_asset_id":0,"objective_kind":"max_revenue","prices_per_kwh":[1.0,10.0],"budget":{{"max_power_kw":20.0,"ttl_secs":60}}}}"#,
+            eneros_intent_contract::peer::hex16(&[0x5A; 16]),
+            eneros_intent_contract::peer::hex32(&[0x3D; 32]),
+        );
+        c.bus
+            .borrow_mut()
+            .inbox
+            .extend(publish_inbound(REQUEST_TOPIC, None, req_json.as_bytes()));
+        let json = match s.next_event() {
+            Some(PeerEvent::Request { json }) => json,
+            other => unreachable!("须交付请求事件，got {other:?}"),
+        };
+        let mut planner = Planner::new(ToleranceProfile::l2(), 100);
+        let mut highs = HighsSolver::new().expect("HiGHS");
+        crate::handle_request_v2(&json, &mut planner, &mut highs, &mut s);
+
+        // 断言：outbox 里必须有一条 PUBLISH（v2 应答），且载荷通过目标侧
+        // 同链校验（`parse_and_validate_v2` + 请求派生的绑定）。
+        let frame = c
+            .outbox()
+            .into_iter()
+            .find(|p| p.first().map(|b| b >> 4) == Some(3))
+            .expect("v2 请求必须产生应答（修复前恒 PLANNER-SKIP/零发布）");
+        let (topic, payload) = publish_payload(&frame);
+        assert_eq!(topic, crate::DEFAULT_RESPONSE_TOPIC);
+        let binds = PlanBinds {
+            snapshot_id: [0x5A; 16],
+            catalog_version: 3,
+            horizon_start_ms: now,
+            step_ns: 3_600_000_000_000,
+            step_count: 2,
+        };
+        let budget = peer_budget(20.0, 60);
+        let checks = ResponseChecks {
+            expect_req_id: 7,
+            expect_seq_gt: None,
+            budget: &budget,
+        };
+        let body = String::from_utf8(payload).expect("utf8");
+        let resp = parse_and_validate_v2(&body, &checks, &binds).expect("目标侧同链校验");
+        assert_eq!(
+            resp.plan.assignments.len(),
+            2,
+            "1 资产 × 2 时段全量轨迹（无投影）"
+        );
+    }
+
+    /// PUBLISH 帧 → (topic, payload)（假 broker 的 outbox 是原始字节流）。
+    fn publish_payload(frame: &[u8]) -> (String, Vec<u8>) {
+        assert_eq!(frame[0] >> 4, 3, "须为 PUBLISH");
+        let mut i = 1usize;
+        let mut rem = 0usize;
+        let mut shift = 0;
+        loop {
+            let b = frame[i];
+            rem |= ((b & 0x7F) as usize) << shift;
+            i += 1;
+            shift += 7;
+            if b & 0x80 == 0 {
+                break;
+            }
+        }
+        assert_eq!(rem, frame.len() - i, "剩余长度自洽");
+        let tlen = u16::from_be_bytes([frame[i], frame[i + 1]]) as usize;
+        let topic = String::from_utf8(frame[i + 2..i + 2 + tlen].to_vec()).expect("topic utf8");
+        let mut off = i + 2 + tlen;
+        if (frame[0] >> 1) & 0x03 > 0 {
+            off += 2; // QoS1 pid
+        }
+        (topic, frame[off..].to_vec())
     }
 }

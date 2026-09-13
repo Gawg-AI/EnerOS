@@ -229,13 +229,16 @@ where
 
 /// 启动盘后端：第二 VirtioBlkDriver 实例（slot 0 GPT 产品盘）+ 非活动槽
 /// 写守卫。MMIO = 数据盘移交页 + slot 0 偏移 0（页覆盖 slot 0-7，零新增
-/// 映射）；DMA 池 = spawn 独立连续分配的 9 页，基址经 **X8** 直传（root
+/// 映射）；DMA 池 = spawn 独立连续分配的 9 页，基址经 **X7** 直传（root
 /// `initial_registers` 单源；禁止 "+N 页" 派生——REG-70.7-BOOT-BACKEND-
 /// ZEROSIZE 根因：first-fit 落位不保证紧邻，派生地址写 ghost 页 FAULT）。
 /// 泛型参数供宿主仿真测试注入（SimMmio/TestPool）；生产装配 =
 /// `BootSlotBackend<VolatileMmio, SvcDmaPool, NoopCache>`。
-pub struct BootSlotBackend<M: eneros_storage::driver::virtio_blk::VirtioMmio, P: DmaPool, C: eneros_storage::driver::virtio_blk::ArmCache>
-{
+pub struct BootSlotBackend<
+    M: eneros_storage::driver::virtio_blk::VirtioMmio,
+    P: DmaPool,
+    C: eneros_storage::driver::virtio_blk::ArmCache,
+> {
     inner: VirtioBlkBackend<M, P, C>,
     guard: crate::boot_guard::BootWriteGuard,
     /// 启动盘 DMA 池基址（svc VSpace 1:1 虚拟 = 物理）。
@@ -246,15 +249,22 @@ pub struct BootSlotBackend<M: eneros_storage::driver::virtio_blk::VirtioMmio, P:
     /// 定位）；事务写成功后同步更新影子。定长数组（零堆——处理链上
     /// 禁 alloc）。
     shadow: core::cell::RefCell<[u8; 8192]>,
+    /// 影子与介质一致性（70.7 复查）：部分/错位 BOOTCTRL 写会使其失效，
+    /// 此后 bootctrl 读面显式 Err 而非回陈旧记录。整条 4096B 记录写
+    /// （唯一生产形态）恢复有效。
+    shadow_valid: core::cell::Cell<bool>,
 }
 
-impl<M: eneros_storage::driver::virtio_blk::VirtioMmio, P: DmaPool, C: eneros_storage::driver::virtio_blk::ArmCache>
-    BootSlotBackend<M, P, C>
+impl<
+        M: eneros_storage::driver::virtio_blk::VirtioMmio,
+        P: DmaPool,
+        C: eneros_storage::driver::virtio_blk::ArmCache,
+    > BootSlotBackend<M, P, C>
 {
     /// 初始化（svc-storage 启动时一次）：
     ///
     /// - `boot_mmio_vaddr` = 数据盘移交页基址（slot 0 偏移 0）；
-    /// - `boot_dma_vaddr/phys` = boot 池 1:1 基址（spawn X8 直传）。
+    /// - `boot_dma_vaddr/phys` = boot 池 1:1 基址（spawn X7 直传）。
     ///
     /// BOOTCTRL 双副本解析失败 → Err（守卫不可得 = 写面整体禁用；
     /// 每次安装会话由 svc-ota 经 BLK_BOOT_GUARD 重查）。
@@ -268,11 +278,7 @@ impl<M: eneros_storage::driver::virtio_blk::VirtioMmio, P: DmaPool, C: eneros_st
 }
 
 /// 生产装配专用构造（具体 Mmio/Pool 类型；宿主测试经泛型直接构造结构体）。
-impl BootSlotBackend<
-    VolatileMmio,
-    SvcDmaPool,
-    eneros_storage::driver::virtio_blk::NoopCache,
-> {
+impl BootSlotBackend<VolatileMmio, SvcDmaPool, eneros_storage::driver::virtio_blk::NoopCache> {
     pub fn try_new_boot(
         boot_mmio_vaddr: u64,
         boot_dma_vaddr: u64,
@@ -284,8 +290,7 @@ impl BootSlotBackend<
         // 起步 = device reset + 重配 + 重读），最多 3 轮。
         let mut last_err = "bootctrl-read";
         for attempt in 1..=3u8 {
-            match Self::try_new_boot_once(boot_mmio_vaddr, boot_dma_vaddr, boot_dma_phys, attempt)
-            {
+            match Self::try_new_boot_once(boot_mmio_vaddr, boot_dma_vaddr, boot_dma_phys, attempt) {
                 Ok(boot) => return Ok(boot),
                 Err(e) => {
                     last_err = e;
@@ -331,21 +336,23 @@ impl BootSlotBackend<
                 .read((bc_lba + 8) * 512, second)
                 .map_err(|_| "bootctrl-read")?;
         }
-        let guard =
-            crate::boot_guard::BootWriteGuard::resolve(&shadow[..4096], &shadow[4096..])?;
+        let guard = crate::boot_guard::BootWriteGuard::resolve(&shadow[..4096], &shadow[4096..])?;
         // 影子副本 = 上述双副本本身（运行期 bootctrl 读零驱动 I/O）。
         Ok(BootSlotBackend {
             inner,
             guard,
             boot_dma_vaddr,
             shadow: core::cell::RefCell::new(shadow),
+            shadow_valid: core::cell::Cell::new(true),
         })
     }
-
 }
 
-impl<M: eneros_storage::driver::virtio_blk::VirtioMmio, P: DmaPool, C: eneros_storage::driver::virtio_blk::ArmCache> crate::block_cmd::InstallBackend
-    for BootSlotBackend<M, P, C>
+impl<
+        M: eneros_storage::driver::virtio_blk::VirtioMmio,
+        P: DmaPool,
+        C: eneros_storage::driver::virtio_blk::ArmCache,
+    > crate::block_cmd::InstallBackend for BootSlotBackend<M, P, C>
 {
     fn install_ranges(&self) -> (u64, u64, u64, u64) {
         let g = &self.guard;
@@ -356,8 +363,11 @@ impl<M: eneros_storage::driver::virtio_blk::VirtioMmio, P: DmaPool, C: eneros_st
     }
 }
 
-impl<M: eneros_storage::driver::virtio_blk::VirtioMmio, P: DmaPool, C: eneros_storage::driver::virtio_blk::ArmCache> crate::block_cmd::BlockBackend
-    for BootSlotBackend<M, P, C>
+impl<
+        M: eneros_storage::driver::virtio_blk::VirtioMmio,
+        P: DmaPool,
+        C: eneros_storage::driver::virtio_blk::ArmCache,
+    > crate::block_cmd::BlockBackend for BootSlotBackend<M, P, C>
 {
     fn read(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
         // boot 面单位契约 = **512B 扇区 LBA**（boot_disk::lba_range_of 同
@@ -370,6 +380,16 @@ impl<M: eneros_storage::driver::virtio_blk::VirtioMmio, P: DmaPool, C: eneros_st
         );
         let rec0 = bc_lba * 512;
         let rec1 = (bc_lba + 8) * 512;
+        let is_bootctrl_record_read = (off == rec0 || off == rec1) && buf.len() == 4096;
+        if is_bootctrl_record_read && !self.shadow_valid.get() {
+            // 影子已因部分写失效——回陈旧记录 = 事务基于错误基线规划；
+            // 显式失败（fail-closed），等待下次服务重启重新填充。
+            #[cfg(target_os = "none")]
+            eneros_runtime::println!(
+                "[svc-storage] BOOTCTRL read refused: shadow invalidated by partial write"
+            );
+            return Err(());
+        }
         let shadow = self.shadow.borrow();
         if off == rec0 && buf.len() == 4096 {
             buf.copy_from_slice(&shadow[..4096]);
@@ -392,14 +412,42 @@ impl<M: eneros_storage::driver::virtio_blk::VirtioMmio, P: DmaPool, C: eneros_st
         let off = lba.checked_mul(512).ok_or(())?;
         crate::block_cmd::BlockBackend::write(&mut self.inner, off, data)?;
         // 影子同步（仅 BOOTCTRL 双副本区间；写守卫已限定范围）。
+        //
+        // 形状契约：**整条 4096B 记录落在副本基址** = 快速路径（生产唯一
+        // 形态：`BootInstall` 四个事务与 `BLK_BOOT_INSTALL_WRITE` 的载荷
+        // 生成都只产这一种），直接写影子。
+        //
+        // 部分/错位写（守卫放行的合法范围，但非事务形态）：**落盘后回读
+        // 整条记录重建影子**——70.7 复查：旧版对这类写返回 Ok 却静默跳过
+        // 同步，后续 `read_current` 会把**旧影子**当权威、事务基于陈旧记录
+        // 规划（无提示的状态分叉）。重建失败（驱动读不回）才置失效位，
+        // 此后 bootctrl 读面显式 Err（fail-closed，不回陈旧记录）。
         let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
             eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
         );
-        let mut shadow = self.shadow.borrow_mut();
-        for (rec, base) in [(0usize, bc_lba * 512), (1usize, (bc_lba + 8) * 512)] {
-            if off == base && data.len() == 4096 {
-                let dst = if rec == 0 { 0 } else { 4096 };
+        let span_lo = bc_lba * 512;
+        if off >= span_lo && off < span_lo + 8192 {
+            let dst = (off - span_lo) as usize;
+            if data.len() == 4096 && dst % 4096 == 0 {
+                let mut shadow = self.shadow.borrow_mut();
                 shadow[dst..dst + 4096].copy_from_slice(data);
+            } else {
+                let rec = dst / 4096;
+                let rec_off = span_lo + (rec as u64) * 4096;
+                let mut fresh = [0u8; 4096];
+                let refresh =
+                    crate::block_cmd::BlockBackend::read(&mut self.inner, rec_off, &mut fresh);
+                if refresh.is_ok() {
+                    let mut shadow = self.shadow.borrow_mut();
+                    shadow[rec * 4096..(rec + 1) * 4096].copy_from_slice(&fresh);
+                } else {
+                    self.shadow_valid.set(false);
+                    #[cfg(target_os = "none")]
+                    eneros_runtime::println!(
+                        "[svc-storage] BOOTCTRL partial write off={off} len={} —— 影子重建失败，读面 fail-closed",
+                        data.len()
+                    );
+                }
             }
         }
         Ok(())
@@ -486,17 +534,23 @@ mod tests {
                 let start = (sector as usize) * 512;
                 match kind {
                     0 => {
-                        // READ：data 描述符写 512B
+                        // READ：**按请求长度**（d1.len）回填——旧实现恒拷
+                        // 512B，多块读的调用方缓冲尾部停在调用前内容（测试
+                        // 假绿：读到的是零缓冲区而非介质）。调用方
+                        // （VirtioBlkBackend）逐 512B 块发起，故此处
+                        // 512 ≤ d1.len 恒成立。
                         let disk = self.disk.borrow();
-                        queue[data_off..data_off + d1.len as usize]
-                            .copy_from_slice(&disk[start..start + 512]);
+                        let n = d1.len as usize;
+                        assert!(n <= 512 && start + 512 <= disk.len());
+                        queue[data_off..data_off + n].copy_from_slice(&disk[start..start + n]);
                         queue[status_off] = 0;
                     }
                     1 => {
-                        // WRITE：data 描述符读入磁盘
+                        // WRITE：**按请求长度**写入（同读侧，旧实现恒 512B）。
                         let mut d = self.disk.borrow_mut();
-                        d[start..start + 512]
-                            .copy_from_slice(&queue[data_off..data_off + d1.len as usize]);
+                        let n = d1.len as usize;
+                        assert!(n <= 512 && start + 512 <= d.len());
+                        d[start..start + n].copy_from_slice(&queue[data_off..data_off + n]);
                         queue[status_off] = 0;
                     }
                     4 => {
@@ -659,6 +713,7 @@ mod tests {
             guard,
             boot_dma_vaddr: 0,
             shadow: core::cell::RefCell::new([0u8; 8192]),
+            shadow_valid: core::cell::Cell::new(true),
         };
         use crate::block_cmd::BlockBackend as _;
         // 扇区 LBA 100 → 字节 51200（换算生效）；扇区 0 保持零。
@@ -710,5 +765,92 @@ mod tests {
         let mut back = [0u8; 4096];
         boot.read(bs_ + 8, &mut back).expect("读回副本 1");
         assert_eq!(back, rec, "记录写→影子/介质读回一致");
+    }
+
+    /// 70.7 复查回归锁：BOOTCTRL 的**部分写**不得让影子与介质分叉。
+    ///
+    /// 缺陷形态（旧实现）：`write` 只在「整条 4096B 落在副本基址」时同步
+    /// 影子，其余形状返回 `Ok` 却静默跳过——后续 `read_current`（走影子）
+    /// 把**旧记录**当权威，`write_bootctrl_trial` 基于陈旧基线规划事务
+    /// （旧活跃槽/旧序列），写出的记录与介质实际状态不符。
+    ///
+    /// 本锁：① 预置记录 A 的双副本；② 对副本 0 做 1B 部分写 → 读回必须
+    /// 反映「介质现状」（A 被改后的字节），而不是被跳过同步后的旧值；
+    /// ③ 整条记录写仍按新内容生效。
+    #[test]
+    fn bootctrl_partial_write_refreshes_shadow_not_stale() {
+        let _seq = TEST_SEQ.lock().unwrap();
+        let blocks = 40000u64;
+        let mmio = SimMmio::new(blocks);
+        let pool = TestPool::new();
+        TEST_POOL.store(
+            pool.arena.as_ptr() as u64,
+            core::sync::atomic::Ordering::Relaxed,
+        );
+        let driver = VirtioBlkDriver::new(
+            mmio,
+            pool,
+            eneros_storage::driver::virtio_blk::NoopCache,
+            eneros_storage::StorageConfig::default(),
+        )
+        .expect("驱动初始化（仿真设备）");
+        let mut inner: VirtioBlkBackend<SimMmio, TestPool, _> = VirtioBlkBackend {
+            driver: RefCell::new(driver),
+            block_size: 512,
+        };
+        // 记录 A：可解析（双 successful 稳态）——经真实驱动写入两副本。
+        let id = [9u8; 16];
+        let mut ctl = eneros_boot_protocol::BootControl::factory(id, 1, id);
+        ctl.slot_a = eneros_boot_protocol::SlotState::successful(15, 1, id);
+        ctl.slot_b = eneros_boot_protocol::SlotState::successful(14, 1, id);
+        let rec_a = ctl.encode().expect("encode A");
+        use crate::block_cmd::BlockBackend as _;
+        inner.write(18432 * 512, &rec_a).expect("写副本 0");
+        inner.write(18440 * 512, &rec_a).expect("写副本 1");
+
+        let guard = crate::boot_guard::BootWriteGuard::resolve(&rec_a, &rec_a).expect("resolve");
+        let mut boot = BootSlotBackend {
+            inner,
+            guard,
+            boot_dma_vaddr: 0,
+            // 影子 = init 期读入的双副本（与 try_new_boot_once 同形态）。
+            shadow: core::cell::RefCell::new({
+                let mut s = [0u8; 8192];
+                s[..4096].copy_from_slice(&rec_a);
+                s[4096..].copy_from_slice(&rec_a);
+                s
+            }),
+            shadow_valid: core::cell::Cell::new(true),
+        };
+
+        // install_ranges = (非活动槽基址, 非活动槽扇区数, BOOTCTRL 基址, BOOTCTRL 扇区数)
+        let (_, _, bs_, _) = crate::block_cmd::InstallBackend::install_ranges(&boot);
+        assert_eq!(bs_, 18432, "qemu-v1 BOOTCTRL 基址");
+        boot.write(bs_, &[0xEE, 0xEE, 0xEE])
+            .expect("部分写必须放行");
+        // ② 读回副本 0：必须看到介质现状（含 0xEE），而不是旧影子。
+        let mut back = [0u8; 4096];
+        boot.read(bs_, &mut back).expect("读回副本 0");
+        assert_eq!(
+            &back[..3],
+            &[0xEE, 0xEE, 0xEE],
+            "部分写后影子必须反映介质现状（旧实现此处回陈旧记录）"
+        );
+        // 记录中段本身多为零（BootControl 头部保留区/槽间隙），故取
+        // **尾部实测非零字节**作「未被清零」的判据（CRC 域 4092..4096）。
+        for i in 3..64usize {
+            assert_eq!(
+                back[i], rec_a[i],
+                "字节 {i}: 部分写后影子必须保持记录 A 的该字节（旧实现整记录陈旧/被清零）"
+            );
+        }
+        assert_ne!(&back[4092..4096], &[0u8; 4], "CRC 域不得被清零");
+        assert_eq!(&back[4092..4096], &rec_a[4092..4096], "CRC 与记录 A 一致");
+        // ③ 整条记录写（生产唯一形态）仍直接生效。
+        let rec_b = [0x5Au8; 4096];
+        boot.write(bs_, &rec_b).expect("整条记录写");
+        let mut back2 = [0u8; 4096];
+        boot.read(bs_, &mut back2).expect("读回副本 0");
+        assert_eq!(back2, rec_b, "整条记录写覆盖影子");
     }
 }

@@ -81,6 +81,20 @@ pub trait ObsEventFace {
     /// SnapshotModule 与快照政策（重复调用以最新 catalog 为准；政策
     /// 版本/目录版本自 repo 单源，无外部 generation 入参）。
     fn set_snapshot_catalog(&mut self, repo: CatalogRepository, now_ms: u64);
+    /// 当前**已冻结**快照输入（蓝图 70.8 WP-70.8.1：身份 + 由同一快照
+    /// 派生的 144B 状态）。`None` = 尚无可用冻结快照（冷启动/窗口未到/
+    /// catalog 未到）——调用方必须拒绝该轮决策，不得回退评估器伪造身份。
+    fn current_input(&self) -> Option<eneros_agent_sdk::snap_input_wire::TrustedInput>;
+    /// 按 ID 取回已冻结快照 blob（`encode_snapshot_v1` 字节；蓝图 70.8.2
+    /// /70.9.1——certifier 独立读取可信输入的唯一通道）。ID 不匹配当前
+    /// 冻结快照 → `None`（绝不返回"另一代"的字节）。
+    fn snapshot_blob(&mut self, id: &[u8; 16]) -> Option<Vec<u8>>;
+    /// 登记保留持有（蓝图 70.8.2：被证书/执行证据引用的计划输入不得先
+    /// 删）。`offset` = 该分区仍需保留的最小 offset（含）。
+    fn hold_offset(&mut self, partition: u32, offset: u64);
+    /// 保留背压：容量水位越线且受保护记录阻塞删除（消费落后）→ 调用方
+    /// 必须停发新决策（不得继续发新证书）。
+    fn retention_blocked(&self) -> bool;
 }
 
 /// 打开后的内面（sink + 可选模块 + 快照 LFS 卷）。
@@ -96,6 +110,30 @@ struct SnapshotCore {
     module: eneros_snapshot_service::SnapshotModule,
     /// 距上次快照构建的批数（窗口计数）。
     batches_since_snap: u64,
+    /// 目录合同版本（catalog 单源；快照身份段引用）。
+    catalog_version: u64,
+    /// 目录 digest 前 8B（代次证据）。
+    catalog_digest8: [u8; 8],
+    /// 最近一次成功构建的冻结快照输入（蓝图 70.8.1：决策输入引用的同一
+    /// 冻结产物；身份 + 由该快照派生的 144B 状态，234B 定长零堆）。
+    last_input: Option<eneros_agent_sdk::snap_input_wire::TrustedInput>,
+    /// 已交付给快照模块的分区消费位置（蓝图 70.8.2：提交位点的**唯一**
+    /// 依据——只记"真的进了快照模块的 offset"，不猜）。
+    consumed: Vec<(u32, u64)>,
+}
+
+impl SnapshotCore {
+    /// 记录一条事件已被快照模块吸收（分区内单调推进）。
+    fn mark_consumed(&mut self, partition: u32, offset: u64) {
+        match self.consumed.iter_mut().find(|(p, _)| *p == partition) {
+            Some((_, o)) => {
+                if offset > *o {
+                    *o = offset;
+                }
+            }
+            None => self.consumed.push((partition, offset)),
+        }
+    }
 }
 
 /// 事件面装配体（svc-telemetry bin 持有；构造零 I/O）。
@@ -122,6 +160,17 @@ pub struct EventFace<C: EipcSend + Clone + 'static> {
     pub snap_stored: u64,
     /// 快照构建/落盘跳过数（SNAP-SKIP）。
     pub snap_skipped: u64,
+    // —— 蓝图 70.8.2：消费位点 / 保留持有 / 背压 ——
+    /// 消费位点提交成功次数（每次成功快照构建后一次）。
+    pub consumer_commits: u64,
+    /// 保留压力路径执行次数（水位 ≥850‰ 的窗口数）。
+    pub retention_prune_passes: u64,
+    /// 最近一次修剪中「计划输入持有是约束方」的分区数（证据，不静默）。
+    pub retention_hold_limited: u64,
+    /// 保留背压标志（容量越线 + 本轮删除未释放任何段）。
+    retention_blocked: bool,
+    /// 计划输入保留持有（分区 → 需保留的最小 offset；`hold_offset` 登记）。
+    holds: Vec<(u32, u64)>,
 }
 
 enum FaceState<C: EipcSend + Clone + 'static> {
@@ -156,6 +205,11 @@ impl<C: EipcSend + Clone + 'static> EventFace<C> {
             pruned_segments: 0,
             snap_stored: 0,
             snap_skipped: 0,
+            consumer_commits: 0,
+            retention_prune_passes: 0,
+            retention_hold_limited: 0,
+            retention_blocked: false,
+            holds: Vec::new(),
         }
     }
 
@@ -251,11 +305,17 @@ impl<C: EipcSend + Clone + 'static> ObsEventFace for EventFace<C> {
         let mut fail = 0u64;
         for ev in events {
             match face.sink.append(ev) {
-                Ok(_) => {
+                Ok(ack) => {
                     ok += 1;
                     self.appended += 1;
                     if let Some(core) = face.module.as_mut() {
                         core.module.apply_event(*ev);
+                        // 蓝图 70.8.2：消费位置只记「真的进了快照模块」的
+                        // offset（apply_event 之后）——提交位点即由此派生。
+                        core.mark_consumed(
+                            eneros_event_store::ingest_bridge::partition_of(ev),
+                            ack.offset,
+                        );
                     }
                 }
                 Err(_) => {
@@ -286,6 +346,11 @@ impl<C: EipcSend + Clone + 'static> ObsEventFace for EventFace<C> {
                 &mut self.pruned_segments,
                 &mut self.snap_stored,
                 &mut self.snap_skipped,
+                &mut self.consumer_commits,
+                &mut self.retention_prune_passes,
+                &mut self.retention_hold_limited,
+                &mut self.retention_blocked,
+                &self.holds,
                 now_ms,
             );
         }
@@ -308,49 +373,76 @@ impl<C: EipcSend + Clone + 'static> ObsEventFace for EventFace<C> {
             FaceState::Failed => {}
         }
     }
+
+    fn current_input(&self) -> Option<eneros_agent_sdk::snap_input_wire::TrustedInput> {
+        let FaceState::Open(face) = &self.state else {
+            return None;
+        };
+        face.module.as_ref().and_then(|c| c.last_input)
+    }
+
+    fn snapshot_blob(&mut self, id: &[u8; 16]) -> Option<Vec<u8>> {
+        let FaceState::Open(face) = &mut self.state else {
+            return None;
+        };
+        let fs = face.snap_fs.as_mut()?;
+        // 蓝图 70.8.2：**按 ID 服务保留代次**（`SNAP_KEEP_BLOBS` 份）——
+        // 在本卷 = 已接纳计划/在途认证引用的那一代，不是"最新一代"。安全
+        // 性来自**身份复核**（解码后 snapshot_id 必须等于请求 ID）：绝不
+        // 返回另一代的字节，也绝不返回解不开的字节。当前冻结代次由
+        // `current_input` 单独承担（opcode 5 只服务最新一代）。
+        let path = alloc::format!("{}/{}.snap", SNAP_DIR, snapshot_file_stem(id));
+        let bytes = read_snap_file(fs, &path).ok()?;
+        match eneros_snapshot_service::decode_snapshot_v1(&bytes) {
+            Ok(snap) if snap.snapshot_id == *id => Some(bytes),
+            _ => {
+                eneros_runtime::println!("[svc-telemetry] SNAP-BLOB-REJECT id-mismatch-or-corrupt");
+                None
+            }
+        }
+    }
+
+    fn hold_offset(&mut self, partition: u32, offset: u64) {
+        match self.holds.iter_mut().find(|(p, _)| *p == partition) {
+            Some((_, o)) => {
+                // 持有只收紧（保留更强的一侧）——登记更小 offset 才生效。
+                if offset < *o {
+                    *o = offset;
+                }
+            }
+            None => self.holds.push((partition, offset)),
+        }
+    }
+
+    fn retention_blocked(&self) -> bool {
+        self.retention_blocked
+    }
 }
 
 impl<C: EipcSend + Clone + 'static> EventFace<C> {
-    /// 窗口批任务：保留修剪 → 快照构建 → blob 落盘。失败逐级显式
-    /// （SNAP-SKIP reason），不伪装成功。借用序：sink（修剪）→ module
-    /// （构建，产出 owned 快照）→ snap_fs（落盘）。计数器以字段指针
-    /// 传入（face 已借走 self.state——拆借同一 self 的不相交字段）。
+    /// 窗口批任务：快照构建 → 消费位点提交 → 受保护保留修剪 → blob 落盘。
+    ///
+    /// 蓝图 70.8.2 顺序理由：保留判据必须用**本窗口刚提交**的消费位点
+    /// （先删后建会用一代前的位点，把仍被本轮快照引用的记录提前删掉）。
+    /// 失败逐级显式（SNAP-SKIP reason），不伪装成功。借用序：module
+    /// （构建，产出 owned 快照）→ sink（位点提交 + 修剪）→ snap_fs（落盘）。
+    /// 计数器/持有以字段指针传入（face 已借走 self.state——拆借同一 self
+    /// 的不相交字段）。
+    #[allow(clippy::too_many_arguments)] // 计数器/持有以字段指针拆借传入
+                                         //（face 已借走 self.state——同一 self 的不相交字段无法成束借用）。
     fn window_tasks(
         face: &mut OpenFace<C>,
         pruned_segments: &mut u64,
         snap_stored: &mut u64,
         snap_skipped: &mut u64,
+        consumer_commits: &mut u64,
+        retention_prune_passes: &mut u64,
+        retention_hold_limited: &mut u64,
+        retention_blocked: &mut bool,
+        holds: &[(u32, u64)],
         now_ms: u64,
     ) {
-        // 1. 保留：全局水位 ≥850‰ → 删全部完整段。
-        let wm: WatermarkReport = face.sink.store_mut().watermarks();
-        if wm.used_permille >= RETAIN_PERMILLE {
-            let partitions: Vec<_> = face.sink.store_mut().partitions().into_iter().collect();
-            for p in partitions {
-                match face
-                    .sink
-                    .store_mut()
-                    .delete_full_segments_before(p, u64::MAX)
-                {
-                    Ok(deleted) if !deleted.is_empty() => {
-                        *pruned_segments += deleted.len() as u64;
-                        eneros_runtime::println!(
-                            "[svc-telemetry] EVENT-PRUNE n={} partition={}",
-                            deleted.len(),
-                            p
-                        );
-                    }
-                    Ok(_) => {}
-                    Err(_) => {
-                        eneros_runtime::println!(
-                            "[svc-telemetry] EVENT-PRUNE-FAIL partition={}",
-                            p
-                        );
-                    }
-                }
-            }
-        }
-        // 2. 快照构建（owned 产出后立刻释放 module 借用）。
+        // 1. 快照构建（owned 产出后立刻释放 module 借用）。
         let request = eneros_snapshot_service::SnapshotRequest {
             tenant_id: 1,
             site_id: 1,
@@ -364,37 +456,171 @@ impl<C: EipcSend + Clone + 'static> EventFace<C> {
             .module
             .as_mut()
             .map(|core| core.module.build(request, now_ns));
-        let snap = match built {
-            Some(Ok(snap)) => Some(snap),
+        let (snap, consumed) = match built {
+            Some(Ok(snap)) => {
+                // 身份 + 已消费位置（快照成功 = 这批事件真的进了冻结产物）。
+                let core = face.module.as_ref().expect("module present（上一步 Ok）");
+                let input = crate::telemetry::input_from_snapshot(
+                    &snap,
+                    core.catalog_version,
+                    core.catalog_digest8,
+                    crate::telemetry::DEFAULT_CONTROL_HORIZON_MS,
+                );
+                let consumed = core.consumed.clone();
+                (Some((snap, input)), consumed)
+            }
             Some(Err(e)) => {
                 *snap_skipped += 1;
+                *retention_blocked = false; // 无新快照 → 不得因此冻结保留
                 eneros_runtime::println!("[svc-telemetry] SNAP-SKIP {}", e);
-                None
+                (None, Vec::new())
             }
-            None => None,
+            None => (None, Vec::new()),
         };
-        let Some(snap) = snap else { return };
-        let bytes = eneros_snapshot_service::encode_snapshot_v1(&snap);
-        eneros_runtime::println!(
-            "[svc-telemetry] SNAP-BUILT pts={} bytes={}",
-            snap.observations.len(),
-            bytes.len()
-        );
-        match face.snap_fs.as_mut() {
-            Some(fs) => match store_snap_blob(fs, &snap, &bytes) {
-                Ok(kept) => {
-                    *snap_stored += 1;
-                    eneros_runtime::println!("[svc-telemetry] SNAP-STORED kept={}", kept);
+        // 2. blob 落盘（**先于**发布与位点提交）。顺序即不变式：冻结输入
+        // 可用 ⇒ 其工件可取回；消费位点前进 ⇒ 被吸收的记录必有可检索的
+        // 冻结产物。落盘失败 ⇒ 本窗口不发布输入、不提交位点（保留判据
+        // 因此不会越过"无工件"的记录——蓝图 70.8.2 失败语义）。
+        let stored = match &snap {
+            Some((snap, _)) => {
+                let bytes = eneros_snapshot_service::encode_snapshot_v1(snap);
+                eneros_runtime::println!(
+                    "[svc-telemetry] SNAP-BUILT pts={} bytes={}",
+                    snap.observations.len(),
+                    bytes.len()
+                );
+                match face.snap_fs.as_mut() {
+                    Some(fs) => match store_snap_blob(fs, snap, &bytes) {
+                        Ok(kept) => {
+                            *snap_stored += 1;
+                            eneros_runtime::println!("[svc-telemetry] SNAP-STORED kept={}", kept);
+                            true
+                        }
+                        Err(()) => {
+                            *snap_skipped += 1;
+                            eneros_runtime::println!("[svc-telemetry] SNAP-SKIP store-fail");
+                            false
+                        }
+                    },
+                    None => {
+                        *snap_skipped += 1;
+                        eneros_runtime::println!("[svc-telemetry] SNAP-SKIP store-unavailable");
+                        false
+                    }
                 }
-                Err(()) => {
-                    *snap_skipped += 1;
-                    eneros_runtime::println!("[svc-telemetry] SNAP-SKIP store-fail");
-                }
-            },
-            None => {
-                *snap_skipped += 1;
-                eneros_runtime::println!("[svc-telemetry] SNAP-SKIP store-unavailable");
             }
+            None => false,
+        };
+        // 3. 发布冻结输入 + 4. 消费位点提交（**仅当工件已落盘**——位点即
+        // "已被可检索的冻结产物吸收"）。
+        if stored {
+            let (_, input) = snap.expect("stored ⇒ snap 存在");
+            if let Some(core) = face.module.as_mut() {
+                core.last_input = Some(input);
+            }
+            let facts = input.facts();
+            eneros_runtime::println!(
+                "[svc-telemetry] SNAP-INPUT-BOUND id={:02x}{:02x}{:02x}{:02x} pts={} complete={} catalog={}",
+                facts.snapshot_id[0],
+                facts.snapshot_id[1],
+                facts.snapshot_id[2],
+                facts.snapshot_id[3],
+                facts.accepted,
+                facts.is_complete(),
+                facts.catalog_version
+            );
+            if !consumed.is_empty() {
+                let offsets: Vec<eneros_event_store::PartitionOffset> = consumed
+                    .iter()
+                    .map(|(p, o)| eneros_event_store::PartitionOffset::new(*p, o.saturating_add(1)))
+                    .collect();
+                match face.sink.store_mut().commit_consumer(
+                    eneros_snapshot_service::consumer::SNAPSHOT_CONSUMER_GROUP,
+                    &offsets,
+                ) {
+                    Ok(()) => {
+                        *consumer_commits += 1;
+                    }
+                    Err(_) => {
+                        // 位点提交失败 = 保留判据无依据 → 下一轮全量保护
+                        // （绝不因提交失败而删掉未吸收的记录）。
+                        eneros_runtime::println!("[svc-telemetry] EVENT-CONSUMER-COMMIT-FAIL");
+                    }
+                }
+            }
+        }
+        // 5. 受保护保留修剪：keep_after_offset = min(消费位点, 计划输入持有)。
+        let wm_before: WatermarkReport = face.sink.store_mut().watermarks();
+        if wm_before.used_permille >= RETAIN_PERMILLE {
+            *retention_prune_passes += 1;
+            // 冷启动/复用盘保护：本会话尚未物化任何冻结工件时**零删除**——
+            // 复用盘上恢复出的消费位点指向的是上一会话的工件，不构成本次
+            // 删除的依据（蓝图 70.8.2："不凭 0/最大值编造已消费"；此处同理
+            // "不凭上一会话的位点删除本会话尚无工件覆盖的记录"）。
+            let materialized = face.module.as_ref().and_then(|c| c.last_input).is_some();
+            let partitions: Vec<_> = face.sink.store_mut().partitions().into_iter().collect();
+            let mut deleted_total = 0u64;
+            let mut hold_limited = 0u64;
+            for p in partitions {
+                // 界 = min(已提交消费位点, 计划输入持有的最小 offset)。
+                // 无位点、无持有 → 0 = 全保护（不凭 0/最大值编造"已消费"）。
+                let committed = if materialized {
+                    face.sink
+                        .store()
+                        .committed_offset(
+                            eneros_snapshot_service::consumer::SNAPSHOT_CONSUMER_GROUP,
+                            p,
+                        )
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                let hold = holds
+                    .iter()
+                    .filter(|(hp, _)| *hp == p)
+                    .map(|(_, o)| *o)
+                    .min()
+                    .unwrap_or(u64::MAX);
+                let keep = core::cmp::min(committed, hold);
+                if hold < committed {
+                    hold_limited += 1; // 计划输入持有是此刻的约束方（证据）
+                }
+                match face.sink.store_mut().delete_full_segments_before(p, keep) {
+                    Ok(deleted) if !deleted.is_empty() => {
+                        deleted_total += deleted.len() as u64;
+                        *pruned_segments += deleted.len() as u64;
+                        eneros_runtime::println!(
+                            "[svc-telemetry] EVENT-PRUNE n={} partition={} keep={}",
+                            deleted.len(),
+                            p,
+                            keep
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(_) => {
+                        eneros_runtime::println!(
+                            "[svc-telemetry] EVENT-PRUNE-FAIL partition={}",
+                            p
+                        );
+                    }
+                }
+            }
+            *retention_hold_limited = hold_limited;
+            // 背压：水位仍越线且本轮一个段都没能释放 → 保留受保护记录
+            // 阻塞容量（消费落后/持有未释放）——调用方必须停发新决策。
+            let wm_after: WatermarkReport = face.sink.store_mut().watermarks();
+            let blocked = wm_after.used_permille >= RETAIN_PERMILLE && deleted_total == 0;
+            if blocked != *retention_blocked {
+                eneros_runtime::println!(
+                    "[svc-telemetry] EVENT-RETENTION blocked={} permille={} keep_limited_by_hold={}",
+                    blocked,
+                    wm_after.used_permille,
+                    hold_limited
+                );
+            }
+            *retention_blocked = blocked;
+        } else if *retention_blocked {
+            *retention_blocked = false;
         }
     }
 }
@@ -567,11 +793,16 @@ fn build_policy(
 }
 
 /// catalog → (模块核, required 点数)。投影容量 64 点 ×4 事件（内存审计
-/// 表 68.4 执行卡：SnapshotModule 上界 ~48KiB 的依据）。
+/// 表 68.4 执行卡：SnapshotModule 上界 ~48KiB 的依据）。目录版本/digest
+/// 前 8B 在本点捕获（repo 随后被 module 消费——身份事实不留悬空引用）。
 fn build_module(repo: CatalogRepository, now_ms: u64) -> (SnapshotCore, usize) {
     use eneros_control_dispatch::feedback::safety_coverage;
     let coverage_points: Vec<u32> = safety_coverage().points.iter().map(|p| p.point).collect();
     let n = coverage_points.len();
+    let catalog_version = repo.version_set().contract_version;
+    let repo_digest = repo.digest();
+    let mut catalog_digest8 = [0u8; 8];
+    catalog_digest8.copy_from_slice(&repo_digest[..8]);
     let mut policies = eneros_snapshot_service::SnapshotPolicyRegistry::new();
     policies.register(build_policy(&repo, coverage_points));
     let module = eneros_snapshot_service::module_from_catalog(
@@ -590,6 +821,10 @@ fn build_module(repo: CatalogRepository, now_ms: u64) -> (SnapshotCore, usize) {
         SnapshotCore {
             module,
             batches_since_snap: 0,
+            catalog_version,
+            catalog_digest8,
+            last_input: None,
+            consumed: Vec::new(),
         },
         n,
     )
@@ -855,7 +1090,8 @@ mod tests {
         }
     }
 
-    /// 保留策略：低水位不修剪；高水位（≥850‰）删完整段、开放段保持。
+    /// 保留策略：低水位不修剪；高水位（≥850‰）**且已物化到冻结快照**
+    /// 的完整段可删、开放段保持（蓝图 70.8.2 新判据）。
     /// 以小盘逼近水位（128KiB 区段 → ~580 事件触发）。
     #[test]
     fn t5_retention_prunes_full_segments_only() {
@@ -867,7 +1103,135 @@ mod tests {
         // -4KiB trailer 块 = 12,224B → 74 记录/段（164B/条）；7 槽容量
         // 518。8 批 × 64 = 512 ≤ 518（零 Full），7 槽全占 → used =
         // (12,288 + 7×16,384)/131,072 = 968‰ ≥ 850‰——窗口批必须修剪
-        // 且零丢失。
+        // 且零丢失。每批含 7 个必需点（快照可物化）+ 填充点。
+        let mut seq = 0u64;
+        for round in 0..8u64 {
+            let now = 2_000 + round * 46_000;
+            let mut events: Vec<ObservationEvent> = (1u32..=7)
+                .map(|p| {
+                    seq += 1;
+                    obs(p, seq, now, p as f64 * 10.0)
+                })
+                .collect();
+            for i in 0..57u64 {
+                seq += 1;
+                events.push(obs(100 + (i % 4) as u32, seq, now, i as f64));
+            }
+            face.on_obs_batch(&events, now);
+        }
+        assert!(
+            face.append_failures == 0,
+            "滚动保留下不得出现静默丢失（fail={}）",
+            face.append_failures
+        );
+        assert!(
+            face.snap_stored >= 1,
+            "窗口必须产出冻结快照（删除判据前提）"
+        );
+        assert!(face.consumer_commits >= 1, "快照物化后必须提交消费位点");
+        assert!(
+            face.pruned_segments >= 1,
+            "高水位 + 已物化必须发生修剪（pruned={}）",
+            face.pruned_segments
+        );
+    }
+
+    /// 70.8.1：冻结快照身份可被决策侧读取，且与落盘 blob 同源
+    /// （snapshot_id / provenance_root 一致）；冷启动（无 catalog/无窗）
+    /// 为空——绝不伪造身份。
+    #[test]
+    fn t6_frozen_snapshot_input_identity() {
+        let disk_len = (DISK_END * 512) as usize;
+        let storage = FakeStorage::new(disk_len);
+        let mut face = make_face(&storage);
+        // 冷启动：未装配 catalog → 无冻结快照。
+        assert!(face.current_input().is_none(), "冷启动不得有冻结快照");
+        face.set_snapshot_catalog(prod_module_catalog(), 1_000);
+        let mut seq = 0u64;
+        for round in 0..SNAP_EVERY_BATCHES {
+            let now = 2_000 + round * 46_000;
+            let events: Vec<ObservationEvent> = (1u32..=7)
+                .map(|p| {
+                    seq += 1;
+                    obs(p, seq, now, p as f64 * 10.0)
+                })
+                .collect();
+            face.on_obs_batch(&events, now);
+        }
+        let input = face.current_input().expect("窗满批必须有冻结快照输入");
+        assert!(!input.facts().is_unbound(), "身份绑定（snapshot_id 非零）");
+        assert!(input.facts().is_complete(), "必需点齐 → 完整");
+        assert_eq!(input.facts().accepted, 7, "快照观测 = 必需点集");
+        assert!(input.catalog_version() > 0, "目录合同版本随身份携带");
+        // 载荷派生自同一快照：电压 = 点 1 的值（10.0 ≤ v ≤ 70.0 区间内）。
+        let v = input
+            .telemetry_f64(eneros_agent_sdk::snap_input_wire::TELEMETRY_OFF_V)
+            .expect("payload");
+        assert!((10.0..=70.0).contains(&v), "v={v}");
+        // blob 读回：身份一致（同源）。
+        let bytes = face
+            .snapshot_blob(&input.facts().snapshot_id)
+            .expect("blob");
+        let stored = eneros_snapshot_service::decode_snapshot_v1(&bytes).expect("decode");
+        assert_eq!(stored.snapshot_id, input.facts().snapshot_id);
+        assert_eq!(stored.provenance_root, input.facts().provenance_root);
+        // 身份不匹配 → 拒绝（绝不返回另一代的字节）。
+        assert!(face.snapshot_blob(&[0xEE; 16]).is_none());
+    }
+
+    /// 蓝图 70.8.2 保留代次可达性（t6 追加牙）：blob 通道按 ID 服务
+    /// **保留代次**（`SNAP_KEEP_BLOBS` 份），不是只有最新一代——已接纳
+    /// 计划/在途认证引用的那一代必须可取回（70.11 计划持有的前置）。
+    /// 未知/不存在的 ID 仍拒绝（绝不返回另一代字节，也绝不返回解不开的
+    /// 字节）。
+    ///
+    /// 变异靶：改回"只服务当前冻结快照" → 本测第一代取回断言红。
+    #[test]
+    fn t6b_blob_serves_retained_generations_by_id() {
+        let disk_len = (DISK_END * 512) as usize;
+        let storage = FakeStorage::new(disk_len);
+        let mut face = make_face(&storage);
+        face.set_snapshot_catalog(prod_module_catalog(), 1_000);
+        let mut seq = 0u64;
+        let mut ids: Vec<[u8; 16]> = Vec::new();
+        // 两个快照窗（各 8 批）→ 两代冻结快照，皆在保留窗内。
+        for round in 0..(SNAP_EVERY_BATCHES * 2) {
+            let now = 2_000 + round * 46_000;
+            let events: Vec<ObservationEvent> = (1u32..=7)
+                .map(|p| {
+                    seq += 1;
+                    obs(p, seq, now, p as f64 * 10.0 + round as f64)
+                })
+                .collect();
+            face.on_obs_batch(&events, now);
+            if let Some(input) = face.current_input() {
+                let id = *input.snapshot_id();
+                if ids.last() != Some(&id) {
+                    ids.push(id);
+                }
+            }
+        }
+        assert_eq!(ids.len(), 2, "两个窗必须产出两代不同的冻结快照");
+        // 当前输入 = 最新一代；两代 blob 都必须按 ID 可取回。
+        let current = *face.current_input().expect("current").snapshot_id();
+        assert_eq!(current, ids[1], "current_input 只服务最新一代");
+        for id in &ids {
+            let bytes = face.snapshot_blob(id).expect("保留代次必须按 ID 可取回");
+            let decoded = eneros_snapshot_service::decode_snapshot_v1(&bytes).expect("decode");
+            assert_eq!(decoded.snapshot_id, *id, "取回的必须是所请求的那一代");
+        }
+        assert!(face.snapshot_blob(&[0xEE; 16]).is_none(), "未知 ID 拒绝");
+    }
+
+    /// 70.8.2：未物化（无有效快照）时保留不释放——记录留在盘上；
+    /// 计划输入持有同样阻塞删除；两者都不得造成"删了还声称可追溯"。
+    #[test]
+    fn t7_retention_blocked_without_materialization_and_by_hold() {
+        let disk_len = (DISK_END * 512) as usize;
+        let storage = FakeStorage::new(disk_len);
+        let mut face = make_face(&storage);
+        face.set_snapshot_catalog(prod_module_catalog(), 1_000);
+        // 全部为非法点（100+）：快照无法物化（缺必需点）→ 消费位点永不提交。
         let mut seq = 0u64;
         for round in 0..8u64 {
             let now = 2_000 + round * 46_000;
@@ -879,12 +1243,54 @@ mod tests {
                 .collect();
             face.on_obs_batch(&events, now);
         }
+        assert_eq!(face.snap_stored, 0, "非法点集不得产出快照");
+        assert_eq!(face.consumer_commits, 0, "无物化 → 零消费位点提交");
+        assert_eq!(face.pruned_segments, 0, "无物化 → 零删除（全保护）");
         assert!(
-            face.append_failures == 0,
-            "滚动保留下不得出现静默丢失（fail={}）",
-            face.append_failures
+            face.retention_blocked(),
+            "高水位 + 无物化 → 背压（调用方必须停发新决策）"
         );
-        assert!(face.pruned_segments >= 1, "高水位必须发生修剪");
+
+        // —— 持有阻塞：物化路径下登记更早的持有 → 删除界收紧 ——
+        let storage2 = FakeStorage::new(disk_len);
+        let mut face2 = make_face(&storage2);
+        face2.set_snapshot_catalog(prod_module_catalog(), 1_000);
+        // 持有该分区 offset 0（保护一切）——即使快照物化也不得删。
+        // 分区键 = event-store 单源 `partition_of`（tenant/site/source 散列）。
+        let part = eneros_event_store::ingest_bridge::partition_of(&obs(1, 1, 2_000, 0.0));
+        face2.hold_offset(part, 0);
+        let mut seq = 0u64;
+        for round in 0..8u64 {
+            let now = 2_000 + round * 46_000;
+            let mut events: Vec<ObservationEvent> = (1u32..=7)
+                .map(|p| {
+                    seq += 1;
+                    obs(p, seq, now, p as f64 * 10.0)
+                })
+                .collect();
+            for i in 0..57u64 {
+                seq += 1;
+                events.push(obs(100 + (i % 4) as u32, seq, now, i as f64));
+            }
+            face2.on_obs_batch(&events, now);
+        }
+        assert!(
+            face2.consumer_commits >= 1,
+            "物化仍然发生（持有只影响保留）"
+        );
+        assert!(
+            face2.retention_hold_limited >= 1,
+            "持有必须是此刻的约束方（证据计数）"
+        );
+        // 持有 → 删除界收紧的**耦合**断言（复查补口：原测只断言计数，
+        // 忽略持有仍可全绿）：持有 offset 0 = 保护一切 → 零删除。
+        //
+        // 变异靶：`let keep = committed;`（持有不参与 min）→ face2 修剪出段
+        // → 本断言红。
+        assert_eq!(
+            face2.pruned_segments, 0,
+            "持有 offset=0 时必须零删除（持有必须真的进入 min 判据）"
+        );
     }
 
     /// 栈诊断（telemetry_history diag 同法）：打开+追加全链在服务栈供给

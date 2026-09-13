@@ -105,6 +105,18 @@ jobs:
             echo "target/sel4 already present, skipping seL4 rebuild"
           fi
 
+      - name: root-task production feature profile compiles (70.7 P0 lock)
+        run: |
+          # 70.7 复查：qemu-test-synth 门控的仅有探针调用点曾无门控 → 生产
+          # profile（sel4-eipc 无 qemu-test-synth：qemu-prod/qemu-prod-sv2/
+          # board-prod/recovery/factory）E0599 编译断裂。出口门只构建
+          # qemu-test，`xtask build all` 对 sel4: 选择器提前返回——两处均
+          # 未覆盖。本步钉死生产特征集在 aarch64-none 目标可编译（与镜像
+          # 工厂 image_factory.rs 的特征解析同源）。
+          export PATH="${{ runner.tool_cache }}/sel4/xpack-aarch64-none-elf-gcc-15.2.1-1.1/bin:$PATH"
+          cargo check --locked --offline -p eneros-root-task \
+            --target aarch64-unknown-none --features sel4-eipc
+
       - name: QEMU seL4 boot evidence (eneros.sel4.v1, fail-closed)
         run: |
           set -euo pipefail

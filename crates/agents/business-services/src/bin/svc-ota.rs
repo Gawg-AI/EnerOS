@@ -514,8 +514,8 @@ fn handle_boot_install(
     io: &mut eneros_business_services::block_io::BlockIo<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
 ) -> bool {
     use eneros_agent_sdk::block_io::{
-        BLK_BOOT_CANCEL, BLK_BOOT_CONFIRM, BLK_BOOT_FLUSH, BLK_BOOT_GUARD,
-        BLK_BOOT_INSTALL_WRITE, BLK_BOOT_READ, BLK_BOOT_STATUS, BLK_BOOT_TRIAL,
+        BLK_BOOT_CANCEL, BLK_BOOT_CONFIRM, BLK_BOOT_FLUSH, BLK_BOOT_GUARD, BLK_BOOT_INSTALL_WRITE,
+        BLK_BOOT_READ, BLK_BOOT_STATUS, BLK_BOOT_TRIAL,
     };
     let _ = (BLK_BOOT_INSTALL_WRITE, BLK_BOOT_FLUSH);
     // 70.7.5（事务下沉）：事务臂 = **单次** guard 式 IPC 到 svc-storage

@@ -724,10 +724,9 @@ mod tests {
     /// 线程 abort（红，无优雅断言——帧预算回归一律红）。
     #[test]
     fn decode_fits_service_stack_budget() {
-        let record: &'static [u8; BOOT_CONTROL_RECORD_SIZE] =
-            std::boxed::Box::leak(std::boxed::Box::new(
-                BootControl::factory(id(1), 1, id(3)).encode().unwrap(),
-            ));
+        let record: &'static [u8; BOOT_CONTROL_RECORD_SIZE] = std::boxed::Box::leak(
+            std::boxed::Box::new(BootControl::factory(id(1), 1, id(3)).encode().unwrap()),
+        );
         let h = std::thread::Builder::new()
             .stack_size(16 * 1024)
             .spawn(move || {
@@ -747,10 +746,7 @@ mod tests {
     /// `encode_into` 与 `encode` 逐字节等价（目标侧栈预算路径 = 前者）。
     #[test]
     fn encode_into_matches_by_value_encode() {
-        let control = control(
-            state(15, 3, false, id(5)),
-            state(1, 0, true, id(6)),
-        );
+        let control = control(state(15, 3, false, id(5)), state(1, 0, true, id(6)));
         let mut into = [0u8; BOOT_CONTROL_RECORD_SIZE];
         control.encode_into(&mut into).unwrap();
         assert_eq!(into, control.encode().unwrap());
