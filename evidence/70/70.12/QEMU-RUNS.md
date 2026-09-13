@@ -104,3 +104,28 @@ round=37 / agent tick）⇒ console 未死。三处插桩字符串经
 自增再打印"，由 root 心跳读计数器即判定。
 
 证据：`trial-instr-{a,b,c,d}.qemu-serial.log` + `*.trial-chain.txt`。
+
+### 第六轮（窗 M）：console 路径排除 + 探针闭环可用
+
+探针改造（`BOOT_WRITE_PRE_PROBES` 原子计数 + svc-ota 侧读取）闭环跑通：
+
+```
+[svc-ota] BOOT-TRIAL: begin len=29
+[svc-ota] BOOT-TRIAL-PROBE pre_count=0          ← storage 侧探针计数（进入本次 trial 前）
+[svc-ota] BOOT-TRIAL: TX-SENT slot_req=0x09 t=66427 body=24
+[svc-storage] BOOT-TRIAL: RX req_len=25 (slot 0x09)
+[svc-storage] BOOT-TRIAL: write0 lba=18432 len=4096 rec_lba=18432
+[svc-storage] boot-write lba=18432 len=4096 allowed=true
+[svc-storage] boot-write inner pre off=9437184 len=4096      ← 探针自增之后，打印**成功**
+```
+
+**判定（新事实）**：`boot-write inner pre` 行的**原子自增与打印都发生了**
+（该行打印即证明自增先执行且打印成功）⇒ **console 打印路径未被阻塞**；
+阻塞发生在**该行之后、驱动方法体第一条语句之前**，且只在本线程/本调用
+（同窗其它服务持续打印、宿主 %CPU=0）。⇒ 排除"console 锁"这一可能，剩余
+唯一嫌疑面 = **`BlockBackend::write(&mut self.inner, …)` 这一调用边界**
+（trait 分派目标或其内部的首个内核操作）。
+
+下一步（可直接执行，无需再改判定语义）：给 `VirtioBlkBackend::write` 方法体
+**首行**加同样的"原子计数 + 打印"（而不是只打印），或对 `inner` 调用做
+"调用前计数 / 调用后计数"两枚探针——两者都只需一次构建 + 一次窗口即可定论。

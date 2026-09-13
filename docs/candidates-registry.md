@@ -401,9 +401,18 @@
 可能：①**该线程的 console 打印路径被阻塞**（打印持有/等待某把锁，而锁持有者
 同在该线程栈上）②**调用边界本身阻塞**（`BlockBackend::write` 的 trait 分派
 落到另一个实现/另一实例，其内部在等待）。
-**下一步定位（5 行内）**：把该行的 `println!` 换成"先写一个普通静态计数器
-（`AtomicU32::fetch_add`）再打印"，然后由 root 心跳读该计数器——计数递增而串口
-无输出 ⇒ 是 console 路径阻塞；计数不递增 ⇒ 是调用边界阻塞。**原始定位（同会话前两轮）**：trial 臂加"进入/退出"两行日志或超时，再看是 storage 未回还是 ota 未收。**追加（运行期 QMP 观测，run F，2026-09-13 同会话）**：停滞时刻**四个 CPU 的 PC 全部落在 `idle_thread`**（`0xffffff8040011118`，`wfi` + 回跳自旋；用 `aarch64-none-elf-nm -n target/sel4/kernel.elf` 逐地址判定），PSTATE=EL1h ⇒ seL4 内**没有任何可运行线程**：这不是互等自旋型死锁，而是"所有 EL0 线程都阻塞在 IPC 上、内核无事可做"。嫌疑因此收窄为**某个 `Call` 的发方在等一个永不到来的 reply**（收方被停/被重启/卡在别的 `Call` 上），而非两方互等 | 本表 / 执行卡 §5.1 |
+**第六轮（探针闭环，窗 M）——console 路径已排除**：按上一轮建议把该行改为
+"先 `AtomicU32::fetch_add`（`BOOT_WRITE_PRE_PROBES`）再打印"，并在 svc-ota
+trial 臂读取该计数（`BOOT-TRIAL-PROBE pre_count=`）。实测链
+`begin` → `PROBE pre_count=0` → `TX-SENT` → `RX req_len=25` → `write0` →
+`boot-write … allowed=true` → `boot-write inner pre off=9437184 len=4096`，
+**该行打印成功**（打印即证明自增先执行且 console 可用）⇒ **console 打印路径
+未被阻塞**。阻塞点在**该行之后、驱动方法体首条语句之前**，只在本线程/本调用。
+⇒ 唯一剩余嫌疑面 = `BlockBackend::write(&mut self.inner, …)` 这个**调用边界**
+（trait 分派目标或其内部首个内核操作）。
+**下一步（一次构建 + 一次窗口即可定论）**：给 `VirtioBlkBackend::write` 方法体
+**首行**加"原子计数 + 打印"（不要只打印），或对 inner 调用做"调用前/调用后"
+两枚探针。**原始定位（同会话前两轮）**：trial 臂加"进入/退出"两行日志或超时，再看是 storage 未回还是 ota 未收。**追加（运行期 QMP 观测，run F，2026-09-13 同会话）**：停滞时刻**四个 CPU 的 PC 全部落在 `idle_thread`**（`0xffffff8040011118`，`wfi` + 回跳自旋；用 `aarch64-none-elf-nm -n target/sel4/kernel.elf` 逐地址判定），PSTATE=EL1h ⇒ seL4 内**没有任何可运行线程**：这不是互等自旋型死锁，而是"所有 EL0 线程都阻塞在 IPC 上、内核无事可做"。嫌疑因此收窄为**某个 `Call` 的发方在等一个永不到来的 reply**（收方被停/被重启/卡在别的 `Call` 上），而非两方互等 | 本表 / 执行卡 §5.1 |
 | REG-70.12-DESC-DIGEST-VOLATILE | `crates/product/board-facts/src/digest.rs::description_digest`、`crates/runtime/root-task/src/board_select.rs`（`ENEROS_BOARD_DESCRIPTION_DIGEST`） | **Open（本会话实弹暴露的设计约束）**：同一镜像五次启动的运行时 DTB **字节非确定** ⇒ `desc_digest` 每次不同（实测 5 组：`0a8057b2…`/`9e077f5b…`/`ac882e03…`/`adb086f3…`/…）。因此**构建期常量绑定 `ENEROS_BOARD_DESCRIPTION_DIGEST` 会逐次误拒**（`platform-description-mismatch`）。可选修法：① 启动期算摘要、与已置备基线比对；② 对 DTB 做**规范化**（剔除 volatile 字段）后再摘要；③ 改为绑定 manifest/镜像身份而非描述字节。本会话仅登记（未选型） | 本表 / 执行卡 §5.1 |
 | REG-70.12-S7-AUDIT-FIXES | `crates/product/board-facts/*`、`xtask/src/{board,soak}.rs`、`tests/soak/*.sh` | **Done（S7 独立复查：23 条可用发现全部复现→修复→红测）**：P1×4 = ①产品能力覆盖只查 `verified`（13 族用仓库占位事实即可拿资格，`is_hardware_evidence` 是死代码）②`schema=v2` + `entries: []` 绕过全部账本判据 ③浸泡 PANIC 扫描遇非 UTF-8 整文件跳过 ④资格记录里的 run 从不过 soak 判据（qemu scope 的 manifest 也能支撑 72h 资格）。P2/P3 = 摘要漏缺失登记/版本、键侧无长度前缀（摘要撞车）、`record_digest`/账本身份从不参与判定、只给描述摘要的绑定被静默忽略、注册项不校验摘要与修订、`parse_size` 高位溢出、`looks_numeric` 漏分隔形态、未知 kind 静默退化、v2 可省 revision、chosen 报错指错族、`phy` 让 USB PHY 冒充网卡、RFC3339 接受非法日历且极年 overflow panic、零字节原始证据/绝对路径/`..` 逃逸/缺必需产物角色、协议覆盖可 60 秒 1 样本、影响映射只哈希顶层、matrix 读失败静默、shell 零字节算已采集、campaign 取 `values()` 第一个、空执行器检测可绕过 | 本表 / 执行卡 §5.2 |
 | REG-70.14-JUDGE-POLICY-OVERRIDE | `xtask/src/soak.rs::command_run_check`（`--min-hours` / `--max-heap-slope` / `--control-limit-ms` / `--max-heartbeat-gap-s`） | **Open（S7 审计 P2，登记不修）**：阈值可由调用方放宽且**不写入判据产物** ⇒ "放水后的 PASS"与"资格 PASS"字节不可区分。修法属判据策略签名设计面（谁有权放宽、如何留痕、是否双人签署），本会话只登记 | 本表 / 执行卡 §5.2 |

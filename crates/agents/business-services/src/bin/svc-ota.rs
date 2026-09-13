@@ -571,6 +571,18 @@ fn handle_boot_install(
             //   `TX-SENT` 之后无 `RX-ERR/RX-OK` ⇒ 卡在 Call（收方未回）
             //   `TX-SENT` 出现且 `RX-*` 出现 ⇒ 回程问题（不再是本缺陷）
             // 判据位置：插桩行只在串口证据里，不改任何 wire/判定语义。
+            //
+            // 70.14（第六轮）：另读 boot 面写探针计数——它由 **svc-storage**
+            // 侧在"进入驱动调用前"自增。同一窗口内比较同一时刻两份证据：
+            //   trials 计数递增而串口无 `boot-write inner pre` ⇒ console 路径阻塞
+            //   计数不递增 ⇒ 阻塞在调用边界（打印之前）
+            // 实测打印（供下轮对照）：`BOOT-TRIAL-PROBE pre={}`。
+            #[cfg(target_os = "none")]
+            eneros_runtime::println!(
+                "[svc-ota] BOOT-TRIAL-PROBE pre_count={}",
+                eneros_drv_svc::block_cmd::BOOT_WRITE_PRE_PROBES
+                    .load(core::sync::atomic::Ordering::Relaxed)
+            );
             let t0 = eneros_drv_svc::now_ms();
             eneros_runtime::println!(
                 "[svc-ota] BOOT-TRIAL: TX-SENT slot_req=0x{:02x} t={} body={}",
