@@ -185,6 +185,17 @@ where
         if data.is_empty() {
             return Ok(());
         }
+        // 70.14 插桩（REG-70.12-PROBE-BOOT-TRIAL-STALL）：storage 侧 `write0`
+        // 之后不再有日志 ⇒ 阻塞点就在这条 write 内部。本行给出"进入 write /
+        // 每个 512B 块循环"的可见性，直接区分"卡在驱动 I/O"与"卡在服务端
+        // 队列"。纯观测，不改语义。
+        #[cfg(target_os = "none")]
+        eneros_runtime::println!(
+            "[svc-storage] blk-write enter lba={} len={} bs={}",
+            lba,
+            data.len(),
+            bs
+        );
         let mut off = lba;
         let mut src = data;
         while !src.is_empty() {
@@ -203,10 +214,23 @@ where
                     .map_err(|_| ())?;
             }
             tmp[within..within + take].copy_from_slice(&src[..take]);
-            self.driver
+            #[cfg(target_os = "none")]
+            eneros_runtime::println!("[svc-storage] blk-write blk={} take={}", block, take);
+            match self
+                .driver
                 .borrow_mut()
                 .write_block(block, &tmp[..bs as usize])
-                .map_err(|_| ())?;
+            {
+                Ok(()) => {}
+                Err(_e) => {
+                    #[cfg(target_os = "none")]
+                    eneros_runtime::println!(
+                        "[svc-storage] blk-write FAILED blk={} err={_e:?}",
+                        block
+                    );
+                    return Err(());
+                }
+            }
             src = &src[take..];
             off += take as u64;
         }
@@ -406,11 +430,22 @@ impl<
         // 不变量**（深度防御）——非活动槽 ∪ BOOTCTRL 之外零写。扇区→字节
         // 换算后落 inner。单位换算单源 = `InstallBackend::write_allowed`
         // （run54 实弹：旧内联式把字节当扇区 → BOOTCTRL 记录写恒拒）。
-        if !crate::block_cmd::InstallBackend::write_allowed(self, lba, data.len()) {
+        let allowed = crate::block_cmd::InstallBackend::write_allowed(self, lba, data.len());
+        // 70.14 插桩：boot 面写的分支可见（守卫放行？进 inner？）
+        #[cfg(target_os = "none")]
+        eneros_runtime::println!(
+            "[svc-storage] boot-write lba={} len={} allowed={}",
+            lba,
+            data.len(),
+            allowed
+        );
+        if !allowed {
             return Err(());
         }
         let off = lba.checked_mul(512).ok_or(())?;
         crate::block_cmd::BlockBackend::write(&mut self.inner, off, data)?;
+        #[cfg(target_os = "none")]
+        eneros_runtime::println!("[svc-storage] boot-write inner done lba={}", lba);
         // 影子同步（仅 BOOTCTRL 双副本区间；写守卫已限定范围）。
         //
         // 形状契约：**整条 4096B 记录落在副本基址** = 快速路径（生产唯一

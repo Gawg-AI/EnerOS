@@ -126,9 +126,23 @@ impl<'a> BootInstall<'a> {
         } else {
             ((bc_lba + 8, &rec), (bc_lba, &rec))
         };
+        // 70.14 插桩：事务三步各自可见（阻塞点定位：write0 / write1 / flush）。
+        #[cfg(target_os = "none")]
+        eneros_runtime::println!(
+            "[svc-storage] BOOT-TRIAL: write0 lba={} len={} rec_lba={}",
+            first.0,
+            first.1.len(),
+            bc_lba
+        );
         self.face.write(first.0, first.1).map_err(|_| "write0")?;
+        #[cfg(target_os = "none")]
+        eneros_runtime::println!("[svc-storage] BOOT-TRIAL: write1 lba={}", second.0);
         self.face.write(second.0, second.1).map_err(|_| "write1")?;
+        #[cfg(target_os = "none")]
+        eneros_runtime::println!("[svc-storage] BOOT-TRIAL: flush");
         self.face.flush().map_err(|_| "flush")?;
+        #[cfg(target_os = "none")]
+        eneros_runtime::println!("[svc-storage] BOOT-TRIAL: done seq={}", next.sequence);
         Ok(next.sequence)
     }
 

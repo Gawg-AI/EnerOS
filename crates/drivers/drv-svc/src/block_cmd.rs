@@ -141,6 +141,14 @@ pub fn handle_boot_cmd(
         // 零 IPC 搬运（run16-22 实弹：事务拆多次 BLK_BOOT_READ/WRITE 时
         // 同客户端第二次调用稳定挂死于 seL4 Call）。
         BLK_BOOT_TRIAL => {
+            // 70.14（REG-70.12-PROBE-BOOT-TRIAL-STALL 定位插桩）：storage 侧
+            // 是否真的收到 trial 请求——与 svc-ota 侧 `TX-SENT/RX-*` 两行配对，
+            // 一眼分出"请求没到 storage"与"storage 回了但 ota 没收"。
+            #[cfg(target_os = "none")]
+            eneros_runtime::println!(
+                "[svc-storage] BOOT-TRIAL: RX req_len={} (slot 0x09)",
+                req.payload_len
+            );
             if req.payload_len < 25 {
                 resp.status = ST_INVALID;
                 return;

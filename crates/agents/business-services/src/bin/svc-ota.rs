@@ -564,25 +564,52 @@ fn handle_boot_install(
                 u64::from_le_bytes(secver_bytes),
                 &image_id,
             );
+            // 70.14（REG-70.12-PROBE-BOOT-TRIAL-STALL 定位插桩）：trial 分支
+            // 曾"进得去、出不来"且无任何失败词形（`drv_call` 的 timeout 只在
+            // `seL4_Call` **返回后**才检查 ⇒ 阻塞在 Call 上时超时形同不存在）。
+            // 两行日志把"storage 未回"与"ota 未收"分开：
+            //   `TX-SENT` 之后无 `RX-ERR/RX-OK` ⇒ 卡在 Call（收方未回）
+            //   `TX-SENT` 出现且 `RX-*` 出现 ⇒ 回程问题（不再是本缺陷）
+            // 判据位置：插桩行只在串口证据里，不改任何 wire/判定语义。
+            let t0 = eneros_drv_svc::now_ms();
+            eneros_runtime::println!(
+                "[svc-ota] BOOT-TRIAL: TX-SENT slot_req=0x{:02x} t={} body={}",
+                BLK_BOOT_TRIAL,
+                t0,
+                p.len()
+            );
             match io.raw_command(BLK_BOOT_TRIAL, &p) {
-                Ok(r) if r.len() == 8 => {
-                    let seq = u64::from_le_bytes(r[..8].try_into().unwrap());
+                // 退出插桩（成功/失败两臂各一行；`now_ms` 与 `BOOT-STATUS`
+                // 同源单调计数，用于给出"实际阻塞时长"）。
+                Ok(v) => {
+                    let dt = eneros_drv_svc::now_ms().saturating_sub(t0);
                     eneros_runtime::println!(
-                        "[svc-ota] BOOT-TRIAL: tx committed seq={seq} target_secver={}",
-                        u64::from_le_bytes(req[5..13].try_into().unwrap())
+                        "[svc-ota] BOOT-TRIAL: RX-OK resp={} blocked_ms={}",
+                        v.len(),
+                        dt
                     );
-                    resp.extend_from_slice(&seq.to_le_bytes());
-                    true
-                }
-                Ok(_) => {
+                    if v.len() == 8 {
+                        let seq = u64::from_le_bytes(v[..8].try_into().unwrap_or([0u8; 8]));
+                        eneros_runtime::println!(
+                            "[svc-ota] BOOT-TRIAL: tx committed seq={seq} target_secver={}",
+                            u64::from_le_bytes(secver_bytes)
+                        );
+                        resp.extend_from_slice(&seq.to_le_bytes());
+                        return true;
+                    }
                     eneros_runtime::println!("[svc-ota] BOOT-TRIAL: rejected (len)");
                     resp.extend_from_slice(b"ERR:len");
-                    false
+                    return false;
                 }
-                Err(_) => {
+                Err(e) => {
+                    let dt = eneros_drv_svc::now_ms().saturating_sub(t0);
+                    eneros_runtime::println!(
+                        "[svc-ota] BOOT-TRIAL: RX-ERR {e:?} blocked_ms={}",
+                        dt
+                    );
                     eneros_runtime::println!("[svc-ota] BOOT-TRIAL: rejected (io)");
                     resp.extend_from_slice(b"ERR:trial-io");
-                    false
+                    return false;
                 }
             }
         }

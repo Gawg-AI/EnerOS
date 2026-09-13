@@ -1,0 +1,5 @@
+[svc-ota] BOOT-TRIAL: begin len=29
+[svc-ota] BOOT-TRIAL: TX-SENT slot_req=0x09 t=66448 body=24
+[svc-storage] BOOT-TRIAL: RX req_len=25 (slot 0x09)
+[svc-storage] BOOT-TRIAL: write0 lba=18432 len=4096 rec_lba=18432
+[svc-storage] boot-write lba=18432 len=4096 allowed=true

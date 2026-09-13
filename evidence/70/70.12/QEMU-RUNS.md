@@ -55,3 +55,35 @@ grep -a "CONTROL-CHAIN" <log> | tail -1
 - 运行时 DTB 字节非确定 ⇒ `desc_digest` 逐次不同（`REG-70.12-DESC-DIGEST-VOLATILE`）：
   构建期 `ENEROS_BOARD_DESCRIPTION_DIGEST` 绑定会误拒，需改启动期比对或规范化摘要。
 - 空载荷越界 panic 已修（`REG-70.12-PROBE-EMPTY-BUNDLE-PANIC` → Done）。
+
+## 追加：BOOT-TRIAL 停摆的插桩定位（2026-09-13 第四轮，三窗 G/H/I）
+
+按 `REG-70.12-PROBE-BOOT-TRIAL-STALL` 的定位建议加了两侧插桩（纯观测，不改语义）：
+
+- `svc-ota.rs`（trial 臂）：`BOOT-TRIAL: TX-SENT slot_req=0x09 …` +
+  退出臂 `RX-OK resp=… blocked_ms=…` / `RX-ERR …`
+- `drv-svc/src/boot_install.rs`：`write0 lba=… len=… rec_lba=…` /
+  `write1 lba=…` / `flush` / `done seq=…`
+- `drv-svc/src/blk_backend.rs`：`BootSlotBackend::write` 的
+  `boot-write lba=… len=… allowed=…` + `inner done`；
+  `VirtioBlkBackend::write` 的 `blk-write enter lba=… len=… bs=…`
+- `drv-svc/src/block_cmd.rs`：`BOOT-TRIAL: RX req_len=… (slot 0x09)`
+
+三窗（`trial-instr-a/b/c`）输出**逐行一致**，链在第四行截断：
+
+```
+[svc-ota] BOOT-TRIAL: begin len=29
+[svc-ota] BOOT-TRIAL: TX-SENT slot_req=0x09 t=… body=24
+[svc-storage] BOOT-TRIAL: RX req_len=25 (slot 0x09)
+[svc-storage] BOOT-TRIAL: write0 lba=18432 len=4096 rec_lba=18432
+[svc-storage] boot-write lba=18432 len=4096 allowed=true      ← 窗 B 有（该插桩后加），窗 A/C 无
+```
+
+**从此再无任何输出**：驱动面 `blk-write enter` 不打印、`write1/flush/done`
+全无、`RX-OK/RX-ERR` 全无、无 PANIC、无 `blk-wait TIMEOUT`。
+同期宿主 `%CPU=0.0`（10 次采样，窗 J）⇒ **不是自旋**。
+
+**判定**：trial 的 bootctrl **首写**（lba 18432 扇区 = 字节 9437184，4 KiB，
+守卫已放行）卡在"进入驱动写入循环之前的阻塞等待"；`svc-ota` 与 `svc-storage`
+都是被动等待者。下一步（10 行内）：在 `BootSlotBackend::write` 的 inner 调用
+前后各加一行，区分"调用边界阻塞"与"驱动内部阻塞"。
