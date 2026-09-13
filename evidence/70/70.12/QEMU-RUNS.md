@@ -87,3 +87,20 @@ grep -a "CONTROL-CHAIN" <log> | tail -1
 守卫已放行）卡在"进入驱动写入循环之前的阻塞等待"；`svc-ota` 与 `svc-storage`
 都是被动等待者。下一步（10 行内）：在 `BootSlotBackend::write` 的 inner 调用
 前后各加一行，区分"调用边界阻塞"与"驱动内部阻塞"。
+
+### 第五轮（窗 L）：pre/post 把边界收到最后一步
+
+插桩 `boot-write inner pre off=9437184 len=4096`（`BootSlotBackend::write` 的
+inner 调用**前**）→ **打印**；紧随其后 `BlockBackend::write(&mut self.inner, …)`
+进入 `VirtioBlkBackend::write` 首行的 `blk-write enter`（同字符串本窗更早已
+打印 30+ 次）→ **不打印**。同窗其它服务仍在打印（TSDB 批提交 / CONTROL-CHAIN
+round=37 / agent tick）⇒ console 未死。三处插桩字符串经
+`strings -a target/eneros/artifacts/qemu-test/eneros-qemu-test.raw` 各命中 3 次
+⇒ 插桩确实编入镜像。宿主 `%CPU=0.0`（10 次采样）⇒ 非自旋。
+
+**结论**：阻塞位于 `inner pre` 之后、驱动方法体首条语句之前，且只在本线程/
+本调用；其余服务不受影响。剩余可能：①该线程 console 打印路径阻塞
+②调用边界（trait 分派）阻塞。下一步（5 行内）：该行改为"先 `AtomicU32`
+自增再打印"，由 root 心跳读计数器即判定。
+
+证据：`trial-instr-{a,b,c,d}.qemu-serial.log` + `*.trial-chain.txt`。
