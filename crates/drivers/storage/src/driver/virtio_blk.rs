@@ -667,7 +667,9 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> BlockDevice for VirtioBlkDriver<M, 
                 detail: "read buffer size != block size",
             });
         }
-        let mut data = [0u8; 4096];
+        // 70.14（REG-70.12-PROBE-BOOT-TRIAL-STALL 同族修复）：读路径同样是
+        // 4 KiB 栈帧——boot 安装的 `read_current` 也走本函数，一并改堆。
+        let mut data = alloc::vec![0u8; 4096];
         let len = self.issue(
             VIRTIO_BLK_T_IN,
             block_idx * (self.config.block_size as u64 / SECTOR_SIZE as u64),
@@ -694,7 +696,16 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> BlockDevice for VirtioBlkDriver<M, 
                 detail: "write buffer size != block size",
             });
         }
-        let mut data = [0u8; 4096];
+        // 70.14（REG-70.12-PROBE-BOOT-TRIAL-STALL 真根因修复）：旧实现用
+        // `let mut data = [0u8; 4096]` 在**栈上**再放一份 4 KiB，使本函数
+        // 帧 = 4096 B（实弹反汇编：`sub sp, sp, #0x1000`）。boot 安装路径的
+        // 调用链（block_cmd → boot_install → BootSlotBackend → 本函数）
+        // 在同一线程栈上叠加后越过 svc-storage 的 64 KiB 栈 ⇒ 栈访问触发
+        // seL4 fault、线程停在内核且无人应答 ⇒ 实测"整机 idle、四个 CPU
+        // 全落 idle_thread、trial 永不返回"。改为**堆缓冲**（本 crate 已
+        // `extern crate alloc`，且同一文件下方 erase_block 亦为 4 KiB 帧）：
+        // 帧降到数百字节，长链不再触碰栈上限。
+        let mut data = alloc::vec![0u8; 4096];
         data[..buf.len()].copy_from_slice(buf);
         self.issue(
             VIRTIO_BLK_T_OUT,
@@ -708,7 +719,8 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> BlockDevice for VirtioBlkDriver<M, 
     fn erase_block(&mut self, block_idx: u64) -> Result<(), StorageError> {
         // virtio-blk 无硬件 erase 命令；按 virtio-blk 惯例上层以零填充模拟
         // 擦除（littlefs 依赖 erase 语义）。写入全零块。
-        let zeros = [0u8; 4096];
+        // 同 write_block：4 KiB 走堆，避免同族栈帧叠加。
+        let zeros = alloc::vec![0u8; 4096];
         self.write_block(block_idx, &zeros[..self.config.block_size])
     }
 

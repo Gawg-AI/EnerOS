@@ -181,14 +181,22 @@ where
     }
 
     fn write(&mut self, lba: u64, data: &[u8]) -> Result<(), ()> {
+        // 70.14 探针（第七轮，REG-70.12-PROBE-BOOT-TRIAL-STALL）：**方法体首行**
+        // 先原子自增再打印。上一轮已证 PRE 探针（调用前）的自增与打印都发生、
+        // 而本函数旧的"进入"打印**不**出现；本轮把"自增"与"打印"都放到首行，
+        // 于是可直接判定：
+        //   本计数递增（串口可能无输出）⇒ 已进入驱动方法体 ⇒ 阻塞在驱动内部
+        //   本计数不递增 ⇒ 阻塞在 **trait 分派调用边界**
+        // 计数由 `driver_service_main` 之外的只读探针供 svc-ota 读回。
+        #[cfg(target_os = "none")]
+        {
+            crate::block_cmd::BLK_WRITE_ENTER_PROBES
+                .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
         let bs = self.block_size as u64;
         if data.is_empty() {
             return Ok(());
         }
-        // 70.14 插桩（REG-70.12-PROBE-BOOT-TRIAL-STALL）：storage 侧 `write0`
-        // 之后不再有日志 ⇒ 阻塞点就在这条 write 内部。本行给出"进入 write /
-        // 每个 512B 块循环"的可见性，直接区分"卡在驱动 I/O"与"卡在服务端
-        // 队列"。纯观测，不改语义。
         #[cfg(target_os = "none")]
         eneros_runtime::println!(
             "[svc-storage] blk-write enter lba={} len={} bs={}",
@@ -484,7 +492,14 @@ impl<
             } else {
                 let rec = dst / 4096;
                 let rec_off = span_lo + (rec as u64) * 4096;
-                let mut fresh = [0u8; 4096];
+                // 70.14（REG-70.12-PROBE-BOOT-TRIAL-STALL 真根因修复）：旧实现用
+                // `let mut fresh = [0u8; 4096]` —— 该局部使**本函数帧恒为 4 KiB**
+                // （实弹反汇编：函数入口 `sub sp, sp, #0x1000`），于是 trial 的
+                // 首写还没走到任何日志/原子探针，就在入口的栈指针下移处触发
+                // seL4 fault；线程停在内核、整机 idle（实测四 CPU 全 idle_thread、
+                // 宿主 %CPU=0、串口在此行之后完全静默）。改为**堆缓冲**：帧降到
+                // 数百字节，boot 安装长链不再触碰 svc-storage 的 64 KiB 栈上限。
+                let mut fresh = alloc::vec![0u8; 4096];
                 let refresh =
                     crate::block_cmd::BlockBackend::read(&mut self.inner, rec_off, &mut fresh);
                 if refresh.is_ok() {

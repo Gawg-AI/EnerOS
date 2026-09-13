@@ -42,6 +42,15 @@ pub const BLK_BOOT_TRIAL: u8 = 0x09;
 #[cfg(target_os = "none")]
 pub static BOOT_WRITE_PRE_PROBES: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(0);
+
+/// 70.14 探针（REG-70.12-PROBE-BOOT-TRIAL-STALL 第七轮）：**驱动面进入**
+/// 计数——由 `VirtioBlkBackend::write` 方法体首行自增。与
+/// [`BOOT_WRITE_PRE_PROBES`] 配对：若 PRE 递增而本计数**不**递增 ⇒ 阻塞在
+/// trait 分派调用边界；两者都递增 ⇒ 阻塞在驱动方法体内部（下一次可再细分为
+/// 「进入 write_block 前 / issue 内 / wait_used 内」）。
+#[cfg(target_os = "none")]
+pub static BLK_WRITE_ENTER_PROBES: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
 /// 70.7.5：启动确认（slot_is_a 1 + secver 8 + image_id 16 → seq 8）。
 pub const BLK_BOOT_CONFIRM: u8 = 0x0a;
 /// 70.7.5：取消未确认 trial（→ seq 8 ‖ word 文本）。

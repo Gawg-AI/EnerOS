@@ -1165,6 +1165,20 @@ pub fn run_ipc_loop(
                             ea,
                             disp
                         );
+                        // 70.14 探针读数（第七轮，REG-70.12-PROBE-BOOT-TRIAL-STALL）：
+                        // boot 面写两枚原子探针（调用前 / 驱动方法体首行）由 root
+                        // 每轮读出——trial 停摆后仍可判定"POST 是否递增"：
+                        //   pre 增 / enter 不增 ⇒ 阻塞在 trait 分派调用边界
+                        //   两者都增 ⇒ 阻塞在驱动方法体内部
+                        // 零行为影响（两个 Relaxed load）。
+                        #[cfg(feature = "qemu-test-synth")]
+                        eneros_runtime::println!(
+                            "[eneros-root-task] BOOT-WRITE-PROBE pre={} drv_enter={}",
+                            eneros_drv_svc::block_cmd::BOOT_WRITE_PRE_PROBES
+                                .load(core::sync::atomic::Ordering::Relaxed),
+                            eneros_drv_svc::block_cmd::BLK_WRITE_ENTER_PROBES
+                                .load(core::sync::atomic::Ordering::Relaxed)
+                        );
                     }
                     Err(e) => {
                         eneros_runtime::println!(

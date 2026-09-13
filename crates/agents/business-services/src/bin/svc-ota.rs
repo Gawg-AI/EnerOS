@@ -579,8 +579,10 @@ fn handle_boot_install(
             // 实测打印（供下轮对照）：`BOOT-TRIAL-PROBE pre={}`。
             #[cfg(target_os = "none")]
             eneros_runtime::println!(
-                "[svc-ota] BOOT-TRIAL-PROBE pre_count={}",
+                "[svc-ota] BOOT-TRIAL-PROBE pre_count={} drv_enter_count={}",
                 eneros_drv_svc::block_cmd::BOOT_WRITE_PRE_PROBES
+                    .load(core::sync::atomic::Ordering::Relaxed),
+                eneros_drv_svc::block_cmd::BLK_WRITE_ENTER_PROBES
                     .load(core::sync::atomic::Ordering::Relaxed)
             );
             let t0 = eneros_drv_svc::now_ms();
