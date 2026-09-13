@@ -401,6 +401,11 @@
 可能：①**该线程的 console 打印路径被阻塞**（打印持有/等待某把锁，而锁持有者
 同在该线程栈上）②**调用边界本身阻塞**（`BlockBackend::write` 的 trait 分派
 落到另一个实现/另一实例，其内部在等待）。
+**口径订正（同会话，重要）**：④⑤两条里的"客户端 5000ms `timeout_ms`"表述**失准**——
+`crates/agents/agent-sdk/src/ipc_sel4.rs::drv_call` 的实现是"先算 deadline → `seL4_Call`
+（同步阻塞）→ **返回后**才 `is_expired` 检查"，因此该 timeout **无法约束阻塞中的调用**：
+它只是"返回后判超时"，不是有界等待。故"未落错误分支"不能说明超时机制在生效，
+只能说该路径**根本没有有界等待**（这是本停摆的一个真实性质，非仅仅观测）。
 **第六轮（探针闭环，窗 M）——console 路径已排除**：按上一轮建议把该行改为
 "先 `AtomicU32::fetch_add`（`BOOT_WRITE_PRE_PROBES`）再打印"，并在 svc-ota
 trial 臂读取该计数（`BOOT-TRIAL-PROBE pre_count=`）。实测链
