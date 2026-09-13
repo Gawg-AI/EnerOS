@@ -334,19 +334,29 @@ pub mod driver {
                 let i = next_part;
                 if i >= total {
                     // 幂等回放步：重发 part1（同 rid 同 arg）→ 账本回放。
-                    let replay_arg = {
-                        let mut a = alloc::vec::Vec::with_capacity(3 + 512);
-                        a.push(b'S');
-                        a.push(1);
-                        a.push(total as u8);
-                        a.extend_from_slice(&bundle[..512]);
-                        a
-                    };
-                    let rf = build_frame(200, b"config-set", &replay_arg);
-                    let _ = call_chunked(svc_mgmt_ep, &rf, &mut epoch);
-                    eneros_runtime::println!(
-                        "[eneros-root-task] MGT-PROBE: part1 idempotent replay sent (step 3/13)"
-                    );
+                    // 70.12（本卷 QEMU 实弹暴露的次生缺陷修复）：**无载荷**
+                    // （`PROBE_BUNDLE` 为空 ⇒ `total == 0`）时原实现直接
+                    // `&bundle[..512]` → 越界 panic（实弹：`PANIC #1 at
+                    // mgt_probe.rs:342`，WDT 未映射 → 挂起），整条探针链在
+                    // step 3 断裂。空载荷是**探针前置缺失**，不是"发得出去"：
+                    // 显式拒绝并跳过回放（fail-closed 语义保留），探针链得以
+                    // 继续跑完其余步（配置事务/BOOT 守卫/trial 各步判据不依赖
+                    // 空载荷的回放）。
+                    let replay_arg = replay_arg_for(bundle, total as u64);
+                    match replay_arg {
+                        Some(arg) => {
+                            let rf = build_frame(200, b"config-set", &arg);
+                            let _ = call_chunked(svc_mgmt_ep, &rf, &mut epoch);
+                            eneros_runtime::println!(
+                                "[eneros-root-task] MGT-PROBE: part1 idempotent replay sent (step 3/13)"
+                            );
+                        }
+                        None => {
+                            eneros_runtime::println!(
+                                "[eneros-root-task] MGT-PROBE-REJECT reason=empty-bundle (step 3/13 skipped, need >=512B payload)"
+                            );
+                        }
+                    }
                     advance!(ProbeState::StageCommit);
                     return ProbeDirective::None;
                 }
@@ -558,5 +568,47 @@ pub mod driver {
         let _ = call_chunked(svc_mgmt_ep, &t, epoch);
         let g = build_forged_frame(0xBEEF + 1, b"reboot");
         let _ = call_chunked(svc_mgmt_ep, &g, epoch);
+    }
+}
+
+/// 幂等回放帧的参数字节（`None` = 载荷不足，调用方按显式拒绝处理）。
+///
+/// 纯逻辑（无 IPC/全局状态）：70.12 修复的越界 panic 由此函数的前置判据
+/// 兜住；host 可测，且与 `StageParts` 的正常分片路径共用 `CHUNK` 口径。
+pub const PROBE_CHUNK: usize = 512;
+
+pub fn replay_arg_for(bundle: &[u8], total_parts: u64) -> Option<alloc::vec::Vec<u8>> {
+    if bundle.len() < PROBE_CHUNK {
+        return None;
+    }
+    let mut a = alloc::vec::Vec::with_capacity(3 + PROBE_CHUNK);
+    a.push(b'S');
+    a.push(1);
+    a.push(total_parts as u8);
+    a.extend_from_slice(&bundle[..PROBE_CHUNK]);
+    Some(a)
+}
+
+#[cfg(test)]
+mod tests_70_12 {
+    use super::*;
+
+    #[test]
+    fn empty_bundle_is_refused_not_panicking() {
+        // 实弹形态：未注入 ENEROS_MGT_PROBE_BUNDLE ⇒ PROBE_BUNDLE 为空。
+        assert_eq!(replay_arg_for(&[], 0), None);
+        assert_eq!(replay_arg_for(&[0u8; 511], 1), None);
+    }
+
+    #[test]
+    fn full_chunk_builds_replay_arg() {
+        let bundle = alloc::vec![7u8; 1024];
+        let arg = replay_arg_for(&bundle, 2).expect("1024B 载荷可回放");
+        assert_eq!(arg.len(), 3 + 512);
+        assert_eq!(&arg[..3], &[b'S', 1, 2]);
+        assert!(arg[3..].iter().all(|b| *b == 7));
+        // 恰好一页（512B）也成立（边界）。
+        let one = replay_arg_for(&alloc::vec![1u8; 512], 1).expect("边界 512B");
+        assert_eq!(one.len(), 3 + 512);
     }
 }

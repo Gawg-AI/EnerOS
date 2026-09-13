@@ -1,0 +1,2 @@
+evidence/70/70.12/boot-window.qemu-serial.log:[eneros-root-task] 70.12 BOARD sku=qemu-virt-aarch64 revision=1.0.0 desc_digest=9e077f5b978786c2 bound=false devices=0
+evidence/70/70.12/probe-window.qemu-serial.log:[eneros-root-task] 70.12 BOARD sku=qemu-virt-aarch64 revision=1.0.0 desc_digest=0a8057b232a37d86 bound=false devices=0
