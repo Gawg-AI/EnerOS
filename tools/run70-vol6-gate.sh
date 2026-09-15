@@ -136,9 +136,8 @@ say "候选束 gen2=$(stat -c%s "$RUN/config-bundle-gen2.bin")B 基线束 gen1=$
 export ENEROS_MGT_PROBE_TOKEN="$(cat "$RUN/probe-token.hex")"
 export ENEROS_MGT_PROBE_SIG="$(cat "$RUN/probe-sig.hex")"
 export ENEROS_MGT_PROBE_BUNDLE="$RUN/config-bundle-gen2.bin"
-ROOT_TASK_FEATURES="sel4-eipc,qemu-test-synth" bash third_party/sel4-build-rust.sh \
-    > "$RUN/sel4-t.log" 2>&1 || { say "sel4 重链接失败"; exit 3; }
-gate_image_raw qemu-test "$RUN/image-t.log" || exit 3
+gate_relink_cached "$RUN/sel4-t.log" "sel4-eipc,qemu-test-synth" || { say "sel4 重链接失败"; exit 3; }
+gate_image_raw_cached qemu-test "$RUN/image-t.log" "sel4-eipc,qemu-test-synth" || exit 3
 IMG="$ROOT/target/eneros/artifacts/qemu-test/eneros-qemu-test.raw"
 sha256sum "$IMG" | awk '{print $1}' > "$EVROOT/image-t.sha256"
 TPL="$ROOT/target/evidence61/template.fd"
@@ -202,7 +201,13 @@ check R16 "负例：幂等冲突拒绝（同 rid 异参）" bash -c "grep -aq 'M
 check R18 "负例：幂等回放（同操作一次执行）" bash -c "grep -aq 'replay: config-stage-part' '$EVROOT/t1.qemu-serial.log'"
 check R19 "负例：短尾 v2 拒绝（REG-70.5 收口）" bash -c "grep -aq 'MGT-PRINCIPAL rejected (truncated v2 shape' '$EVROOT/t1.qemu-serial.log'"
 check R20 "负例：伪 principal 拒绝（70.5 R6 回归）" bash -c "grep -aq 'MGT-PRINCIPAL rejected' '$EVROOT/t1.qemu-serial.log'"
-check R21 "正例配对：合法 v2 签名过验签进授权（stage commit 执行）" bash -c "grep -aq 'rid=240 config-set -> Completed op=15 config-staged:digest=' '$EVROOT/t1.qemu-serial.log'"
+# 2026-09-14（蓝图 70.15 候选链复核）：`op=` 字段是**操作账本序号**（`mgmt_rpc.rs`
+# 的 `op={op_id}`），按窗内已发生的操作数递增——旧判据把它钉成字面 `op=15`，
+# 于是任何"前面少/多一次操作"（例：看门狗不再误杀 svc-telemetry 后账本序列平移）
+# 都会把**功能正常**的正例判负（实测：`rid=240 config-set -> Completed op=16
+# config-staged:digest=`，仅序号不同）。判据改为不钉序号、只钉**判据本体**
+# （rid + action + Completed + config-staged:digest 前缀）。
+check R21 "正例配对：合法 v2 签名过验签进授权（stage commit 执行）" bash -c "grep -aqE 'rid=240 config-set -> Completed op=[0-9]+ config-staged:digest=' '$EVROOT/t1.qemu-serial.log'"
 check R17 "维护外激活拒绝（探针步存在=宿主闸覆盖；QEMU 环形不安全）" bash -c "grep -aq 'MGT-PROBE: neg maint-required host-covered' '$EVROOT/t1.qemu-serial.log'"
 check R22 "操作账本持久化词形（MGMT-OPS persisted）" bash -c "grep -aq 'MGMT-OPS persisted' '$EVROOT/t1.qemu-serial.log'"
 

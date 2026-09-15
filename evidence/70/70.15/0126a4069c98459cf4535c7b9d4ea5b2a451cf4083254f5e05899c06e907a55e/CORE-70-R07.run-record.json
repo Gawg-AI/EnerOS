@@ -1,0 +1,52 @@
+{
+  "schema": "eneros.gate-run-record.v1",
+  "case_id": "CORE-70-R07",
+  "gate_id": "VOL70.6",
+  "command": "tools/run70-vol6-gate.sh（DL=700/DL_T2=420）",
+  "exit_code": 0,
+  "recorded_at": "2026-09-14T20:34:31Z",
+  "ran_artifact_sha256": "7c7df9e4e4d14fc17dbd38fae75468bd61a226474286ab440f793157ff0cf8b9",
+  "ran_artifact_sha256_source": "evidence/70/70.6/image-t.sha256",
+  "raw_log": {
+    "name": "vol6.log",
+    "bytes": 3843,
+    "sha256": "2d0db1bd320400e2f04e9dcc520920600a81a08f12e216de634cbe3b042e06ee",
+    "resident": "handoff-bundle",
+    "note": ".gitignore `*.log`：原始日志随移交包分发，本记录绑定其摘要"
+  },
+  "verdict_lines": [
+    "[✓][R1] 零 PANIC / 零分配失败",
+    "[✓][R2] PRODUCT-READY 达成",
+    "[✓][R3] config-get 载荷取回（gen=1）",
+    "[✓][R5] 维护进入实效（root 词形）",
+    "[✓][R6] 维护内控制写暂停词形",
+    "[✓][R7] 签名换包激活 gen=2（root 直驱 CFG1）",
+    "[✓][R8] 盘上提交词形（CONFIG-ACTIVATED）",
+    "[✓][R9] 消费者同代（config-get gen=2）",
+    "[✓][R10] 受控重启受理（root 词形）",
+    "[✓][R11] 实例代次变更 + 重启完成",
+    "[✓][R12] ready 重验完成",
+    "[✓][R14] 维护退出（健康门放行）",
+    "[✓][R15] 负例：保护服务重启拒绝（root 裁决词形）",
+    "[✓][R16] 负例：幂等冲突拒绝（同 rid 异参）",
+    "[✓][R18] 负例：幂等回放（同操作一次执行）",
+    "[✓][R19] 负例：短尾 v2 拒绝（REG-70.5 收口）",
+    "[✓][R20] 负例：伪 principal 拒绝（70.5 R6 回归）",
+    "[✓][R21] 正例配对：合法 v2 签名过验签进授权（stage commit 执行）",
+    "[✓][R17] 维护外激活拒绝（探针步存在=宿主闸覆盖；QEMU 环形不安全）",
+    "[✓][R22] 操作账本持久化词形（MGMT-OPS persisted）",
+    "[✓][R23] 窗T-2 冷启动 PRODUCT-READY",
+    "[✗][R24] 盘上配置冷启动恢复（CONFIG-DISK active gen=2）",
+    "[✓][R25] 操作账本跨重启恢复（MGMT-OPS ledger restored）",
+    "[✓][R26] 窗T-2 零 PANIC",
+    "VOL70.6-GATE: FAIL"
+  ],
+  "verdict": "FAIL",
+  "candidate": {
+    "candidate_id": "0126a4069c98459cf4535c7b9d4ea5b2a451cf4083254f5e05899c06e907a55e",
+    "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+    "dirty_tree_digest": "2175954fab5ed5ee40a2467ba3cbfacf573cd1e98d38c8053012a2e2d0c0193d",
+    "artifact_sha256": "ffd9543ecba0e8e8328fa773e1f74c84e208305ff040f321fcdd11ad8c81bae6",
+    "profile": "qemu-test"
+  }
+}

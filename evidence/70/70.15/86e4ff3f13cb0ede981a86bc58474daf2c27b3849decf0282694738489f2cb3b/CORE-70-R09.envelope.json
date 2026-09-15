@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-4205c69e3174",
+  "run_id": "run-18d57436d41d9309",
+  "nonce": "18d57436d41d9739",
+  "test_id": "CORE-70-R09",
+  "scope": "L3",
+  "started_at": "2026-09-15T09:23:25Z",
+  "ended_at": "2026-09-15T09:23:25Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "dce113d588e8562940f834561ad66a98c60ae91d12dc19826ada3a7d38c17eca",
+  "product_manifest_digest": "ab2de4e85cd5693c836be74f457de1c15ad949b3d4cb18be4727c9fa0c861d64",
+  "profile_digest": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6",
+  "artifact_sha256": "269396fe987bcfdea0c07c810f9a41d545c4f615259d5683cdeaefbcfd19490c",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol89-gate.sh（--negative-cycle + 影子收件箱批后排空 + 门尾窗/日志清理修正）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-test/product-manifest.normalized.json",
+      "sha256": "ab2de4e85cd5693c836be74f457de1c15ad949b3d4cb18be4727c9fa0c861d64"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-test.json",
+      "sha256": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "R09 负例面：v2 链激活（PEER-REQ-V2≥1 ∧ used=true≥1）∧ expired/crossgen/mutated 各拒绝 ≥1 ∧ unsigned Late ≥1 ∧ 恢复段 used=true 恢复 ∧ 零 PANIC"
+  },
+  "positive_results": [
+    {
+      "id": "activation",
+      "status": "PASS",
+      "detail": "R1 结构化 v2 请求 ✓、R1b used=true ×9（path=Slow [backend=planner] 远程计划全窗消费）✓、R2 expired ttl ×2 ✓、R3 crossgen ×1 ✓、R4 mutated 预算钳制 ×1 ✓、R5 unsigned Late ×1 ✓、R6 恢复段 used=true ×4（fail-closed 不楔死）✓、R7 零 PANIC ✓——四类负例同窗全部 fail-closed + 恢复实证"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "skip",
+      "status": "FAIL",
+      "detail": "门内无负例判据缺口；根因链（影子收件箱排空）红测锁定 obs_ingest_does_not_wedge_at_sink_capacity"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/86e4ff3f13cb0ede981a86bc58474daf2c27b3849decf0282694738489f2cb3b/CORE-70-R09.run-record.json",
+      "sha256": "551c8427cc7b658acf0fdcd60a7aba98097822960cbe6afa76f0b35fbbf562ae"
+    }
+  ],
+  "signer": "dev",
+  "signature": "2a6e43c96a3f38c975bc5500d1be2058e994ec0ef9f6982bae1e715b69c039b7f8697247fe0c07093c7551d11c07b112b7ba8b977bf24220e731c22a5144dc0c"
+}

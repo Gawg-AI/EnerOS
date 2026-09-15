@@ -1,0 +1,1282 @@
+UEFI firmware (version 2025.11-3ubuntu7 built at 11:11:58 on Mar 31 2026)
+[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;056;240t[2J[001;001HBdsDxe: loading Boot0002 "UEFI Misc Device" from VenHw(837DCA9E-E874-4D82-B29A-23FE0E23D1E2,0000000A00000000)
+BdsDxe: starting Boot0002 "UEFI Misc Device" from VenHw(837DCA9E-E874-4D82-B29A-23FE0E23D1E2,0000000A00000000)
+ENEROS stage=uefi-entry profile=qemu-prod secure=required
+ENEROS stage=bootctrl-target-written generation=1
+ENEROS stage=bootctrl-anchor-committed generation=1
+ENEROS stage=bootctrl-mirror-written generation=1
+ENEROS stage=config-table-entries count=9
+ENEROS stage=config-table-entry guid=fc1bcdb0-7d31-49aa-936a-a4600d9dd083
+ENEROS stage=config-table-entry guid=05ad34ba-6f02-4214-952e-4da0398e2bb9
+ENEROS stage=config-table-entry guid=7739f24c-93d7-11d4-9a3a-0090273fc14d
+ENEROS stage=config-table-entry guid=4c19049f-4137-4dd3-9c10-8b97a83ffdfa
+ENEROS stage=config-table-entry guid=49152e77-1ada-4764-b7a2-7afefed95e8b
+ENEROS stage=config-table-entry guid=f2fd1544-9794-4a2c-992e-e5bbcf20e394
+ENEROS stage=config-table-entry guid=b1b621d5-f19c-41a5-830b-d9152c69aae0
+ENEROS stage=config-table-entry guid=dcfa911d-26eb-469f-a220-38b7dc461220
+ENEROS stage=config-table-entry guid=d719b2cb-3d3a-4596-a3bc-dad00e67656f
+ENEROS stage=dtb-locate phys=0x47ef6000 len=1052672 max=2097152 init_media_length=6058928
+ENEROS stage=identity-capsule slot=A gen=1 secver=1 floor=1 ver=0.337.0
+ENEROS stage=verified slot=A security_version=1 bootctrl_generation=1 media_reads=13328 media_writes=16 kernel_bytes=704656 init_bytes=6058928
+{"schema":"eneros.boot-evidence.v1","result":"PASS","slot":"A","boot_reason":"UPDATE_TRIAL","security_version":1,"bootctrl_generation":1,"memory_map_count":125,"init_bytes":6058928,"source_date_epoch":1755523200,"manifest_sha256":"a7d43fce1e76e4fc0f59682a9efed37e8f0d17768ff3aaf7c2afe2bf2e3b3a43","measurement_root_sha256":"09831b3bac0a9bc736a7a587134eacdb2d34722bf8c6399bfe03ed2facc56e27","measurement_log_hex":"454e524d454153310100800000040000050008000000000000000000000000008ec14db28b261433b996a079f0f1049765756291709276dd13dbc129cdd5695909831b3bac0a9bc736a7a587134eacdb2d34722bf8c6399bfe03ed2facc56e27000000000000000000000000000000000000000000000000000000000000000001000100000000000100000000000000712b01b0402a500dc68a78949d60188d88b56c49f573f33f95fc2f81c515224a39841e5d8db12f3051f5bbd6e9d0b50b10298698c3c98b9635a20131c3b3edf8f37c45ff9285af5f73494f4a96d4fa310200010001000000010000000000000005bde426e0a2658ca36acf6dee1c43d3eba7c0949dd38cf1cd490f24973e1fac25aefc9096fa86393cc5f2742ca202947eb2959f98c77d5b22bfda2293f0af078ef9335453472c4f2114132ea5291fe80300010002000000010000000000000005bde426e0a2658ca36acf6dee1c43d3a7d43fce1e76e4fc0f59682a9efed37e8f0d17768ff3aaf7c2afe2bf2e3b3a437f0f0f65d1f5468476800c6126700cf82c2e306a6e03972660d49f91b35f11fa040001000300000001000000000000002dba3bd77226cf14145aacf465e870112dba3bd77226cf14145aacf465e870114c5aabd9696578707cb200b27ff91f388017c05d378881afc950ed8807a53b7607d3dcfaa456d412ac16e1e1fe04f59205000100040000000100000000000000a55a8a21349b6889f91ece8d125ac8faa55a8a21349b6889f91ece8d125ac8fa6a08f637b99f17f41cedcc89326441a109831b3bac0a9bc736a7a587134eacdb2d34722bf8c6399bfe03ed2facc56e270000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000019b37133"}
+
+ELF-loader started on CPU: ARM Ltd. Cortex-A57 r1p0
+  paddr=[41000000..410ac08f]
+No DTB passed in from boot loader.
+Looking for DTB in CPIO archive...found at 41038be0.
+Loaded DTB from 41038be0.
+   paddr=[40237000..40238fff]
+ELF-loading image 'kernel' to 40000000
+  paddr=[40000000..40236fff]
+  vaddr=[ffffff8040000000..ffffff8040236fff]
+  virt_entry=ffffff8040000000
+ELF-loading image 'rootserver' to 40239000
+  paddr=[40239000..407f7fff]
+  vaddr=[200000..7befff]
+  virt_entry=22145c
+Enabling MMU and jumping to entry point...
+
+Bootstrapping kernel
+available phys memory regions: 2
+  [40000000..42000000)
+  [44000000..80000000)
+reserved virt address space regions: 3
+  [ffffff8040000000..ffffff8040237000)
+  [ffffff8040237000..ffffff8040238ea8)
+  [ffffff8040239000..ffffff80407f8000)
+EnerOS: init bundle mapped [0x42000000..0x42800000) for initial thread
+Booting all finished, dropped to user space
+{"schema":"eneros.g2.v1","test":"kernel-init","result":"PASS"}
+
+{"schema":"eneros.g2.v1","test":"mmu","result":"PASS"}
+
+[eneros-root-task] Rust root task alive on seL4
+
+[eneros-root-task] G2 closure: bootinfo/cap/IPC (inherited from elfloader boot)
+
+[eneros-root-task] init_bundle @ paddr=0x42000000
+
+[eneros-root-task] DEV-UNTYPED[0] paddr=0x0 size_bits=27
+
+[eneros-root-task] DEV-UNTYPED[1] paddr=0x8001000 size_bits=12
+
+[eneros-root-task] DEV-UNTYPED[2] paddr=0x8002000 size_bits=13
+
+[eneros-root-task] DEV-UNTYPED[3] paddr=0x8004000 size_bits=14
+
+[eneros-root-task] DEV-UNTYPED[4] paddr=0x8008000 size_bits=15
+
+[eneros-root-task] DEV-UNTYPED[5] paddr=0x8011000 size_bits=12
+
+[eneros-root-task] DEV-UNTYPED[6] paddr=0x8012000 size_bits=13
+
+[eneros-root-task] DEV-UNTYPED[7] paddr=0x8014000 size_bits=14
+
+[eneros-root-task] DEV-UNTYPED[8] paddr=0x8018000 size_bits=15
+
+[eneros-root-task] DEV-UNTYPED[9] paddr=0x8020000 size_bits=17
+
+[eneros-root-task] DEV-UNTYPED[10] paddr=0x8040000 size_bits=18
+
+[eneros-root-task] DEV-UNTYPED[11] paddr=0x8080000 size_bits=19
+
+[eneros-root-task] DEV-UNTYPED[12] paddr=0x8100000 size_bits=20
+
+[eneros-root-task] DEV-UNTYPED[13] paddr=0x8200000 size_bits=21
+
+[eneros-root-task] DEV-UNTYPED[14] paddr=0x8400000 size_bits=22
+
+[eneros-root-task] DEV-UNTYPED[15] paddr=0x8800000 size_bits=23
+
+[eneros-root-task] DEV-UNTYPED[16] paddr=0x9000000 size_bits=24
+
+[eneros-root-task] DEV-UNTYPED[17] paddr=0xa000000 size_bits=25
+
+[eneros-root-task] DEV-UNTYPED[18] paddr=0xc000000 size_bits=26
+
+[eneros-root-task] DEV-UNTYPED[19] paddr=0x10000000 size_bits=28
+
+[eneros-root-task] DEV-UNTYPED[20] paddr=0x20000000 size_bits=29
+
+[eneros-root-task] DEV-UNTYPED[21] paddr=0x42000000 size_bits=25
+
+[eneros-root-task] DEV-UNTYPED[22] paddr=0x80000000 size_bits=31
+
+[eneros-root-task] DEV-UNTYPED[23] paddr=0x100000000 size_bits=32
+
+[eneros-root-task] DEV-UNTYPED[24] paddr=0x200000000 size_bits=33
+
+[eneros-root-task] DEV-UNTYPED[25] paddr=0x400000000 size_bits=34
+
+[eneros-root-task] DEV-UNTYPED[26] paddr=0x800000000 size_bits=35
+
+[eneros-root-task] DEV-UNTYPED[27] paddr=0x1000000000 size_bits=36
+
+[eneros-root-task] DEV-UNTYPED[28] paddr=0x2000000000 size_bits=37
+
+[eneros-root-task] DEV-UNTYPED[29] paddr=0x4000000000 size_bits=38
+
+[eneros-root-task] DEV-UNTYPED[30] paddr=0x8000000000 size_bits=43
+
+[eneros-root-task] DEV-UNTYPED[31] paddr=0x88000000000 size_bits=42
+
+[eneros-root-task] DEV-UNTYPED[32] paddr=0xc8000000000 size_bits=41
+
+[eneros-root-task] DEV-UNTYPED[33] paddr=0xe8000000000 size_bits=40
+
+[eneros-root-task] DEV-UNTYPED[34] paddr=0xf8000000000 size_bits=39
+
+[eneros-root-task] DBG untyped_start=3542 untyped_end=3603 count=61
+
+[eneros-root-task] BOOT-007 kernel-mapped bundle probe=454e52494e495432
+
+[eneros-root-task] 38 HAL: source=fdt cpus=4 enabled=4 mem=1 devices=44
+
+[eneros-root-task] 38 HAL: timer-freq=62500000 console=arm,pl011 entropy=none iommu=false
+
+[eneros-root-task] 70.12 BOARD sku=qemu-virt-aarch64 revision=1.0.0 desc_digest=f0f65a2512f7a8c4 bound=false devices=0
+
+[eneros-root-task] time: monotonic init via HAL timer freq=62500000 Hz
+
+[eneros-root-task] DBG bundle total_len=6058928 modules=34
+
+[eneros-root-task] DBG mod[0] kind=1 name='root-task' blob_len=433896 blob_magic=7f454c46
+
+[eneros-root-task] DBG mod[1] kind=2 name='svc-hello' blob_len=46056 blob_magic=7f454c46
+
+[eneros-root-task] tenant enforce: tenant=1 mem_kb=15756 cpu=100.0 — 记账生效
+
+[eneros-root-task] spawn plan: root=root-task services=33 (≥2 验收口径)
+
+[eneros-root-task]   spawn svc-hello entry=0x203100 stack_top=0x229000 ipc_ep=101 pages=32
+
+[eneros-root-task]   spawn svc-pi entry=0x203100 stack_top=0x229000 ipc_ep=102 pages=32
+
+[eneros-root-task]   spawn svc-hog entry=0x203100 stack_top=0x229000 ipc_ep=103 pages=32
+
+[eneros-root-task]   spawn svc-fault entry=0x203100 stack_top=0x229000 ipc_ep=104 pages=32
+
+[eneros-root-task]   spawn svc-hang entry=0x201008 stack_top=0x291000 ipc_ep=105 pages=136
+
+[eneros-root-task]   spawn svc-drv-rng entry=0x202014 stack_top=0x225000 ipc_ep=106 pages=28
+
+[eneros-root-task]   spawn svc-drv-blk entry=0x202014 stack_top=0x225000 ipc_ep=107 pages=28
+
+[eneros-root-task]   spawn svc-drv-net entry=0x202014 stack_top=0x225000 ipc_ep=108 pages=28
+
+[eneros-root-task]   spawn svc-drv-console entry=0x202018 stack_top=0x225000 ipc_ep=109 pages=28
+
+[eneros-root-task]   spawn svc-storage entry=0x2067b8 stack_top=0x22f000 ipc_ep=110 pages=38
+
+[eneros-root-task]   spawn svc-drv-fault entry=0x202014 stack_top=0x225000 ipc_ep=111 pages=28
+
+[eneros-root-task]   spawn svc-pie-a entry=0x212980 stack_top=0x258000 ipc_ep=112 pages=34
+
+[eneros-root-task]   spawn svc-pie-b entry=0x252980 stack_top=0x298000 ipc_ep=113 pages=34
+
+[eneros-root-task]   spawn svc-modbus-rtu entry=0x207618 stack_top=0x238000 ipc_ep=114 pages=47
+
+[eneros-root-task]   spawn svc-modbus-tcp entry=0x215b48 stack_top=0x270000 ipc_ep=115 pages=103
+
+[eneros-root-task]   spawn svc-iec104 entry=0x21772c stack_top=0x27b000 ipc_ep=116 pages=114
+
+[eneros-root-task]   spawn svc-mqtt entry=0x2159c0 stack_top=0x26f000 ipc_ep=117 pages=94
+
+[eneros-root-task]   spawn svc-mms entry=0x20c240 stack_top=0x24f000 ipc_ep=118 pages=70
+
+[eneros-root-task]   spawn svc-goose entry=0x20e8f8 stack_top=0x250000 ipc_ep=119 pages=71
+
+[eneros-root-task]   spawn svc-sv entry=0x20e858 stack_top=0x24e000 ipc_ep=120 pages=69
+
+[eneros-root-task]   spawn svc-telemetry entry=0x227fa8 stack_top=0x332000 ipc_ep=121 pages=289
+
+[eneros-root-task]   spawn svc-energy-agent entry=0x2072c4 stack_top=0x2a4000 ipc_ep=122 pages=155
+
+[eneros-root-task]   spawn svc-ai-worker entry=0x21e59c stack_top=0x308000 ipc_ep=123 pages=255
+
+[eneros-root-task]   spawn svc-control-dispatch entry=0x21a4c0 stack_top=0x32b000 ipc_ep=124 pages=290
+
+[eneros-root-task]   spawn svc-device-agent entry=0x212254 stack_top=0x2d8000 ipc_ep=125 pages=207
+
+[eneros-root-task] DEV-UNTYPED[31] paddr=0x88000000000 size_bits=42
+
+[eneros-root-task] DEV-UNTYPED[32] paddr=0xc8000000000 size_bits=41
+
+[eneros-root-task] DEV-UNTYPED[33] paddr=0xe8000000000 size_bits=40
+
+[eneros-root-task] DEV-UNTYPED[34] paddr=0xf8000000000 size_bits=39
+
+[eneros-root-task] DBG untyped_start=3542 untyped_end=3603 count=61
+
+[eneros-root-task] BOOT-007 kernel-mapped bundle probe=454e52494e495432
+
+[eneros-root-task] 38 HAL: source=fdt cpus=4 enabled=4 mem=1 devices=44
+
+[eneros-root-task] 38 HAL: timer-freq=62500000 console=arm,pl011 entropy=none iommu=false
+
+[eneros-root-task] 70.12 BOARD sku=qemu-virt-aarch64 revision=1.0.0 desc_digest=f0f65a2512f7a8c4 bound=false devices=0
+
+[eneros-root-task] time: monotonic init via HAL timer freq=62500000 Hz
+
+[eneros-root-task] DBG bundle total_len=6058928 modules=34
+
+[eneros-root-task] DBG mod[0] kind=1 name='root-task' blob_len=433896 blob_magic=7f454c46
+
+[eneros-root-task] DBG mod[1] kind=2 name='svc-hello' blob_len=46056 blob_magic=7f454c46
+
+[eneros-root-task] tenant enforce: tenant=1 mem_kb=15756 cpu=100.0 — 记账生效
+
+[eneros-root-task] spawn plan: root=root-task services=33 (≥2 验收口径)
+
+[eneros-root-task]   spawn svc-hello entry=0x203100 stack_top=0x229000 ipc_ep=101 pages=32
+
+[eneros-root-task]   spawn svc-pi entry=0x203100 stack_top=0x229000 ipc_ep=102 pages=32
+
+[eneros-root-task]   spawn svc-hog entry=0x203100 stack_top=0x229000 ipc_ep=103 pages=32
+
+[eneros-root-task]   spawn svc-fault entry=0x203100 stack_top=0x229000 ipc_ep=104 pages=32
+
+[eneros-root-task]   spawn svc-hang entry=0x201008 stack_top=0x291000 ipc_ep=105 pages=136
+
+[eneros-root-task]   spawn svc-drv-rng entry=0x202014 stack_top=0x225000 ipc_ep=106 pages=28
+
+[eneros-root-task]   spawn svc-drv-blk entry=0x202014 stack_top=0x225000 ipc_ep=107 pages=28
+
+[eneros-root-task]   spawn svc-drv-net entry=0x202014 stack_top=0x225000 ipc_ep=108 pages=28
+
+[eneros-root-task]   spawn svc-drv-console entry=0x202018 stack_top=0x225000 ipc_ep=109 pages=28
+
+[eneros-root-task]   spawn svc-storage entry=0x2067b8 stack_top=0x22f000 ipc_ep=110 pages=38
+
+[eneros-root-task]   spawn svc-drv-fault entry=0x202014 stack_top=0x225000 ipc_ep=111 pages=28
+
+[eneros-root-task]   spawn svc-pie-a entry=0x212980 stack_top=0x258000 ipc_ep=112 pages=34
+
+[eneros-root-task]   spawn svc-pie-b entry=0x252980 stack_top=0x298000 ipc_ep=113 pages=34
+
+[eneros-root-task]   spawn svc-modbus-rtu entry=0x207618 stack_top=0x238000 ipc_ep=114 pages=47
+
+[eneros-root-task]   spawn svc-modbus-tcp entry=0x215b48 stack_top=0x270000 ipc_ep=115 pages=103
+
+[eneros-root-task]   spawn svc-iec104 entry=0x21772c stack_top=0x27b000 ipc_ep=116 pages=114
+
+[eneros-root-task]   spawn svc-mqtt entry=0x2159c0 stack_top=0x26f000 ipc_ep=117 pages=94
+
+[eneros-root-task]   spawn svc-mms entry=0x20c240 stack_top=0x24f000 ipc_ep=118 pages=70
+
+[eneros-root-task]   spawn svc-goose entry=0x20e8f8 stack_top=0x250000 ipc_ep=119 pages=71
+
+[eneros-root-task]   spawn svc-sv entry=0x20e858 stack_top=0x24e000 ipc_ep=120 pages=69
+
+[eneros-root-task]   spawn svc-telemetry entry=0x227fa8 stack_top=0x332000 ipc_ep=121 pages=289
+
+[eneros-root-task]   spawn svc-energy-agent entry=0x2072c4 stack_top=0x2a4000 ipc_ep=122 pages=155
+
+[eneros-root-task]   spawn svc-ai-worker entry=0x21e59c stack_top=0x308000 ipc_ep=123 pages=255
+
+[eneros-root-task]   spawn svc-control-dispatch entry=0x21a4c0 stack_top=0x32b000 ipc_ep=124 pages=290
+
+[eneros-root-task]   spawn svc-device-agent entry=0x212254 stack_top=0x2d8000 ipc_ep=125 pages=207
+
+[eneros-root-task]   spawn svc-config entry=0x20f944 stack_top=0x2db000 ipc_ep=126 pages=210
+
+[eneros-root-task]   spawn svc-ledger entry=0x206420 stack_top=0x29f000 ipc_ep=127 pages=150
+
+[eneros-root-task]   spawn svc-market entry=0x213858 stack_top=0x2ba000 ipc_ep=128 pages=177
+
+[eneros-root-task]   spawn svc-ota entry=0x20f5d8 stack_top=0x2b5000 ipc_ep=129 pages=172
+
+[eneros-root-task]   spawn svc-observability entry=0x20e7b4 stack_top=0x2aa000 ipc_ep=130 pages=161
+
+[eneros-root-task]   spawn svc-cloud-sync entry=0x208c64 stack_top=0x2a3000 ipc_ep=131 pages=154
+
+[eneros-root-task]   spawn svc-agent-bus entry=0x206e6c stack_top=0x2a0000 ipc_ep=132 pages=151
+
+[eneros-root-task]   spawn svc-mgmt entry=0x211ec0 stack_top=0x2ba000 ipc_ep=133 pages=177
+
+[eneros-root-task] TIME-SOURCE bootstrapped: PL031 vaddr=0x9010000 (4K 逐页·QEMU virt 板级兜底，spawn 前)
+
+[eneros-root-task] DBG types tcb=1 vspace=6 cnode=4 pt=9 frame=7 ep=2 ntfn=3
+
+[eneros-root-task] DBG fault_ep=3623
+
+[eneros-root-task] TIME-EPOCH=1789310595 stage=spawn
+
+[eneros-root-task] DBG svc 'svc-hello' tcb=3624 vspace=3625 cnode=3626 tcb_type=12 vspace_type=9 cnode_type=10
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3630 vaddr=0x200000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3631 vaddr=0x201000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3632 vaddr=0x202000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3633 vaddr=0x203000 svc='svc-hello' frame_type=1 attr=0x3
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3634 vaddr=0x204000 svc='svc-hello' frame_type=1 attr=0x3
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3635 vaddr=0x205000 svc='svc-hello' frame_type=1 attr=0x3
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3636 vaddr=0x206000 svc='svc-hello' frame_type=1 attr=0x3
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3637 vaddr=0x207000 svc='svc-hello' frame_type=1 attr=0x3
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3638 vaddr=0x208000 svc='svc-hello' frame_type=1 attr=0x3
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3639 vaddr=0x209000 svc='svc-hello' frame_type=1 attr=0x3
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3640 vaddr=0x20a000 svc='svc-hello' frame_type=1 attr=0x3
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3641 vaddr=0x20b000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3642 vaddr=0x20c000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3643 vaddr=0x20d000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3644 vaddr=0x20e000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3645 vaddr=0x20f000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3646 vaddr=0x210000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3647 vaddr=0x211000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3648 vaddr=0x212000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3649 vaddr=0x213000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3650 vaddr=0x214000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3651 vaddr=0x215000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3652 vaddr=0x216000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3653 vaddr=0x217000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3654 vaddr=0x218000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3655 vaddr=0x219000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3656 vaddr=0x21a000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3657 vaddr=0x21b000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3658 vaddr=0x21c000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3659 vaddr=0x21d000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3660 vaddr=0x21e000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3625 frame=3661 vaddr=0x21f000 svc='svc-hello' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG stack_map vspace=3625 frame=3662 vaddr=0x228000 svc='svc-hello' attr=0x7
+
+[eneros-root-task] DBG stack_map vspace=3625 frame=3663 vaddr=0x227000 svc='svc-hello' attr=0x7
+
+[eneros-root-task] DBG stack_map vspace=3625 frame=3664 vaddr=0x226000 svc='svc-hello' attr=0x7
+
+[eneros-root-task] DBG stack_map vspace=3625 frame=3665 vaddr=0x225000 svc='svc-hello' attr=0x7
+
+[eneros-root-task] DBG stack_map vspace=3625 frame=3666 vaddr=0x224000 svc='svc-hello' attr=0x7
+
+[eneros-root-task] DBG stack_map vspace=3625 frame=3667 vaddr=0x223000 svc='svc-hello' attr=0x7
+
+[eneros-root-task] DBG stack_map vspace=3625 frame=3668 vaddr=0x222000 svc='svc-hello' attr=0x7
+
+[eneros-root-task] DBG stack_map vspace=3625 frame=3669 vaddr=0x221000 svc='svc-hello' attr=0x7
+
+[eneros-root-task] DBG buffer_map vspace=3625 frame=3670 vaddr=0x229000 svc='svc-hello' frame_type=1
+
+[eneros-root-task] DBG fault_mint svc='svc-hello' fault_ep=3623 ep_type=4
+
+[eneros-root-task] DBG ready_ntfn svc='svc-hello' root_slot=3675 badge=1
+
+[eneros-root-task] DBG svc 'svc-pi' tcb=3676 vspace=3677 cnode=3678 tcb_type=12 vspace_type=9 cnode_type=10
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3682 vaddr=0x200000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3683 vaddr=0x201000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3684 vaddr=0x202000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3685 vaddr=0x203000 svc='svc-pi' frame_type=1 attr=0x3
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3686 vaddr=0x204000 svc='svc-pi' frame_type=1 attr=0x3
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3687 vaddr=0x205000 svc='svc-pi' frame_type=1 attr=0x3
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3688 vaddr=0x206000 svc='svc-pi' frame_type=1 attr=0x3
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3689 vaddr=0x207000 svc='svc-pi' frame_type=1 attr=0x3
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3690 vaddr=0x208000 svc='svc-pi' frame_type=1 attr=0x3
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3691 vaddr=0x209000 svc='svc-pi' frame_type=1 attr=0x3
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3692 vaddr=0x20a000 svc='svc-pi' frame_type=1 attr=0x3
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3693 vaddr=0x20b000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3694 vaddr=0x20c000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3695 vaddr=0x20d000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3696 vaddr=0x20e000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3697 vaddr=0x20f000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3698 vaddr=0x210000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3699 vaddr=0x211000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3700 vaddr=0x212000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3701 vaddr=0x213000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3702 vaddr=0x214000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3703 vaddr=0x215000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3704 vaddr=0x216000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3705 vaddr=0x217000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3706 vaddr=0x218000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3707 vaddr=0x219000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3708 vaddr=0x21a000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3709 vaddr=0x21b000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3710 vaddr=0x21c000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3711 vaddr=0x21d000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3712 vaddr=0x21e000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG page_map vspace=3677 frame=3713 vaddr=0x21f000 svc='svc-pi' frame_type=1 attr=0x7
+
+[eneros-root-task] DBG stack_map vspace=3677 frame=3714 vaddr=0x228000 svc='svc-pi' attr=0x7
+
+[eneros-root-task] DBG stack_map vspace=3677 frame=3715 vaddr=0x227000 svc='svc-pi' attr=0x7
+
+[eneros-root-task] DBG stack_map vspace=3677 frame=3716 vaddr=0x226000 svc='svc-pi' attr=0x7
+
+[eneros-root-task] DBG stack_map vspace=3677 frame=3717 vaddr=0x225000 svc='svc-pi' attr=0x7
+
+[eneros-root-task] DBG stack_map vspace=3677 frame=3718 vaddr=0x224000 svc='svc-pi' attr=0x7
+
+[eneros-root-task] DBG stack_map vspace=3677 frame=3719 vaddr=0x223000 svc='svc-pi' attr=0x7
+
+[eneros-root-task] DBG stack_map vspace=3677 frame=3720 vaddr=0x222000 svc='svc-pi' attr=0x7
+
+[eneros-root-task] DBG stack_map vspace=3677 frame=3721 vaddr=0x221000 svc='svc-pi' attr=0x7
+
+[eneros-root-task] DBG buffer_map vspace=3677 frame=3722 vaddr=0x229000 svc='svc-pi' frame_type=1
+
+[eneros-root-task] DBG fault_mint svc='svc-pi' fault_ep=3623 ep_type=4
+
+[eneros-root-task] DBG ready_ntfn svc='svc-pi' root_slot=3727 badge=2
+
+[eneros-root-task]   probe unbound compatible= node=aliases
+
+[eneros-root-task]   probe unbound compatible= node=chosen
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a000000 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a000200 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a000400 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a000600 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a000800 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a000a00 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a000c00 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a000e00 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a001000 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a001200 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a001400 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a001600 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a001800 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a001a00 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a001c00 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a001e00 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a002000 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a002200 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a002400 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a002600 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a002800 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a002a00 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a002c00 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a002e00 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a003000 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a003200 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a003400 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a003600 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a003800 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a003a00 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a003c00 error=NotFound
+
+[eneros-root-task]   probe failed compatible=virtio,mmio node=virtio_mmio@a003e00 error=NotFound
+
+[eneros-root-task] ENEROS stage=probe-report-done bound=1 unbound=23 failed=32
+
+[eneros-root-task] ENEROS stage=driver-supervisor drivers=[pl011-pl011@9000000(healthy)] healthy=1
+
+[eneros-root-task]   lifecycle node=pl011@9000000 driver=pl011-pl011@9000000 state=healthy err=None
+
+[eneros-root-task] CAPABILITY: kind=monotonic-clock owner=arm64-generic-timer epoch=0
+
+[eneros-root-task] CAPABILITY: kind=console owner=pl011-pl011@9000000 epoch=0
+
+[eneros-root-task] CAPABILITY: kind=serial-bus owner=pl011-pl011@9000000 epoch=0
+
+[eneros-root-task] CAP-READY required=["console", "monotonic-clock"]
+
+[eneros-root-task]   probe irq-wired driver=pl011-pl011@9000000 irq=33 badge=2
+
+{"schema":"eneros.g2.v1","test":"dma-alloc","result":"PASS"}
+
+{"schema":"eneros.g2.v1","test":"system-ready","result":"PASS"}
+
+{"schema":"eneros.g2.v1","test":"root-heartbeat","result":"PASS"}
+
+[eneros-root-task] DBG hello.ep=3671 hello.tcb=3624 ep_type=4
+
+[eneros-root-task] DBG fault.ep=3827 fault.ntfn=3828
+
+[eneros-root-task] CAPS: svc-hello=ep-send,ep-recv
+
+[eneros-root-task] CAPS: svc-pi=ep-send,ep-recv
+
+[eneros-root-task] CAPS: svc-hog=ep-send,ep-recv
+
+[eneros-root-task] CAPS: svc-fault=ep-send,ep-recv
+
+[eneros-root-task] CAPS: svc-hang=ep-send,ep-recv
+
+[eneros-root-task] CAPS: svc-drv-rng=<none>
+
+[eneros-root-task] CAPS: svc-drv-blk=<none>
+
+[eneros-root-task] CAPS: svc-drv-net=<none>
+
+[eneros-root-task] CAPS: svc-drv-console=<none>
+
+[eneros-root-task] CAPS: svc-storage=<none>
+
+[eneros-root-task] CAPS: svc-drv-fault=<none>
+
+[eneros-root-task] CAPS: svc-pie-a=ep-send,ep-recv
+
+[eneros-root-task] CAPS: svc-pie-b=ep-send,ep-recv
+
+[eneros-root-task] CAPS: svc-modbus-rtu=ep-send,ep-recv
+
+[eneros-root-task] CAPS: svc-modbus-tcp=ep-send,ep-recv
+
+[eneros-root-task] CAPS: svc-iec104=ep-send,ep-recv
+
+[eneros-root-task] CAPS: svc-mqtt=ep-send,ep-recv
+
+[eneros-root-task] CAPS: svc-mms=ep-send,ep-recv
+
+[eneros-root-task] CAPS: svc-goose=ep-send,ep-recv
+
+[eneros-root-task] CAPS: svc-sv=ep-send,ep-recv
+
+[eneros-root-task] CAPS: svc-telemetry=ep-send,ep-recv
+
+[eneros-root-task] CAPS: svc-energy-agent=ep-send,ep-recv
+
+[eneros-root-task] CAPS: svc-ai-worker=ep-send,ep-recv
+
+[eneros-root-task] CAPS: svc-control-dispatch=ep-send,ep-recv
+
+[eneros-root-task] CAPS: svc-device-agent=ep-send,ep-recv
+
+[eneros-root-task] CAPS: svc-config=<none>
+
+[eneros-root-task] CAPS: svc-ledger=<none>
+
+[eneros-root-task] CAPS: svc-market=<none>
+
+[eneros-root-task] CAPS: svc-ota=<none>
+
+[eneros-root-task] CAPS: svc-observability=<none>
+
+[eneros-root-task] CAPS: svc-cloud-sync=<none>
+
+[eneros-root-task] CAPS: svc-agent-bus=<none>
+
+[eneros-root-task] CAPS: svc-mgmt=<none>
+
+[eneros-root-task] ENEROS stage=event-loop-drivers drivers=[pl011-pl011@9000000(healthy)] healthy=1
+
+[eneros-root-task] CONTROL-CHAIN: drivers bound telemetry.ep=5522 energy.ep=5697
+
+[eneros-root-task] IPC: send hello-req to svc-hello
+
+[svc-mgmt] config EIPC bound (svc-config)
+
+[svc-mgmt] management RPC up (session-authenticated; real actions only)
+
+[svc-mgmt] MGT station key deployed —— signed principal v2 enforced
+
+[svc-mgmt] history EIPC bound (svc-telemetry)
+
+[svc-mgmt] root-mgmt EIPC bound (restart/maintenance)
+
+[svc-observability] MQTT-EXPORTER EIPC bound (svc-mqtt)
+
+[svc-ota] block storage GRANTED (EIPC slot 3) —— trial 状态真落盘
+
+[svc-ota] config GRANTED (EIPC slot 4) —— OTA 策略取数待自检
+
+[svc-device-agent] _start entry ipc_buffer=2d8000
+
+[svc-device-agent] allocator initialized
+
+[svc-device-agent] constructing handler
+
+[svc-energy-agent] EIPC clients bound: 3/3 (X3=0x7)
+
+[protocol-service] sv plugin=iec61850-sv role=Sub interop=TargetPeerVerified
+
+[sv] TIME-EPOCH=1789310595
+
+[net] netstack-built mmio=0x40021a00
+
+[protocol-service] goose plugin=iec61850-goose role=PubSub interop=TargetPeerVerified
+
+[goose] TIME-EPOCH=1789310595
+
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-telemetry] TSDB-CHECKPOINT-DUR ms=8499 items=7 pending_batches=8
+
+[svc-telemetry] TSDB-DISK-COMMIT batch=8 items=7
+
+[telemetry] CHUNKED-SLOW call=FINAL dur_ms=8499
+
+[eneros-root-task] CONTROL-CHAIN: transport error (ingest transport: Transport (sent=5 recvd=1 err=1)) — fail-closed
+
+[drv-svc-modbus-tcp] IPC: corr=40 op=16 status=4
+
+[eneros-root-task] PROTO-EXEC svc-modbus-tcp status=0x04
+
+[drv-svc-mqtt] IPC: corr=40 op=16 status=4
+
+[eneros-root-task] PROTO-EXEC svc-mqtt status=0x04
+
+[eneros-root-task] IPC: send hello-req to svc-hello
+
+[svc-hello] IPC: recv req, replying 34 bytes
+
+[eneros-root-task] IPC: recv hello:eneros:tick=41
+
+[eneros-root-task] READINESS: svc-goose=Ready
+
+[eneros-root-task] READINESS: svc-sv=Ready
+
+[eneros-root-task] READINESS: svc-control-dispatch=Ready
+
+[eneros-root-task] PRODUCT-READY: true (degraded: ; required degraded: )
+
+[eneros-root-task] IPC: send hello-req to svc-hello
+
+[svc-hello] IPC: recv req, replying 34 bytes
+
+[eneros-root-task] IPC: recv hello:eneros:tick=42
+
+[eneros-root-task] IPC: send hello-req to svc-hello
+
+[svc-hello] IPC: recv req, replying 34 bytes
+
+[eneros-root-task] IPC: recv hello:eneros:tick=43
+
+[eneros-root-task] IPC: send hello-req to svc-hello
+
+[svc-hello] IPC: recv req, replying 34 bytes
+
+[eneros-root-task] IPC: recv hello:eneros:tick=44
+
+[eneros-root-task] IPC: send hello-req to svc-hello
+
+[svc-hello] IPC: recv req, replying 34 bytes
+
+[eneros-root-task] IPC: recv hello:eneros:tick=45
+
+[svc-telemetry] TSDB-DISK-COMMIT batch=9 items=7
+
+[telemetry] CHUNKED-PAGE-EVICTED slot=0
+
+[svc-telemetry] SNAPSHOT-INPUT-REJECT reason=no-frozen-snapshot now=19484
+
+[svc-energy-agent] tick=0 status=NOACTION
+
+[eneros-root-task] CONTROL-CHAIN: round=8 telemetry-ingest=7 agent=NOACTION dispatch=-
+
+[eneros-root-task] BOOT-WRITE-PROBE pre=0 drv_enter=0
+
+[svc-storage] blk-write enter lba=169024 len=452 bs=512
+
+[svc-storage] blk-write blk=330 take=448
+
+[svc-storage] blk-write blk=331 take=4
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-storage] blk-write enter lba=169476 len=452 bs=512
+
+[svc-storage] blk-write blk=331 take=452
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-storage] blk-write enter lba=169928 len=120 bs=512
+
+[svc-storage] blk-write blk=331 take=56
+
+[svc-storage] blk-write blk=332 take=64
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-storage] blk-write enter lba=167936 len=64 bs=512
+
+[svc-storage] blk-write blk=328 take=64
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-mqtt] IPC: corr=2 op=16 status=4
+
+[svc-observability] EXPORT-REJECT frame_seq=0 status=4 byte=0（补传）
+
+[eneros-root-task] OBS-REPORT flush rejected [45, 52, 52, 3a, 6d, 71, 74, 74, 2d, 72, 65, 6a, 65, 63, 74]
+
+[eneros-root-task] OBS-REPORT svc=33 exported=-1
+
+[eneros-root-task] IPC: send hello-req to svc-hello
+
+[svc-hello] IPC: recv req, replying 34 bytes
+
+[eneros-root-task] IPC: recv hello:eneros:tick=46
+
+[eneros-root-task] IPC: send hello-req to svc-hello
+
+[svc-hello] IPC: recv req, replying 34 bytes
+
+[eneros-root-task] IPC: recv hello:eneros:tick=47
+
+[eneros-root-task] IPC: send hello-req to svc-hello
+
+[svc-hello] IPC: recv req, replying 34 bytes
+
+[eneros-root-task] IPC: recv hello:eneros:tick=48
+
+[eneros-root-task] IPC: send hello-req to svc-hello
+
+[svc-hello] IPC: recv req, replying 34 bytes
+
+[eneros-root-task] IPC: recv hello:eneros:tick=49
+
+[eneros-root-task] IPC: send hello-req to svc-hello
+
+[svc-hello] IPC: recv req, replying 34 bytes
+
+[eneros-root-task] IPC: recv hello:eneros:tick=50
+
+[svc-telemetry] TSDB-DISK-COMMIT batch=10 items=7
+
+[svc-telemetry] SNAPSHOT-INPUT-REJECT reason=no-frozen-snapshot now=19499
+
+[svc-energy-agent] tick=0 status=NOACTION
+
+[eneros-root-task] CONTROL-CHAIN: round=9 telemetry-ingest=7 agent=NOACTION dispatch=-
+
+[eneros-root-task] BOOT-WRITE-PROBE pre=0 drv_enter=0
+
+[drv-svc-iec104] IPC: corr=50 op=16 status=4
+
+[eneros-root-task] PROTO-EXEC svc-iec104 status=0x04
+
+[eneros-root-task] IPC: send fault=ExecStack to svc-fault (cycle)
+
+[eneros-root-task] IPC: send hello-req to svc-hello
+
+[svc-hello] IPC: recv req, replying 34 bytes
+
+[eneros-root-task] IPC: recv hello:eneros:tick=51
+
+[eneros-root-task] IPC: send hello-req to svc-hello
+
+[svc-hello] IPC: recv req, replying 34 bytes
+
+[eneros-root-task] IPC: recv hello:eneros:tick=52
+
+[eneros-root-task] IPC: send hello-req to svc-hello
+
+[svc-hello] IPC: recv req, replying 34 bytes
+
+[eneros-root-task] IPC: recv hello:eneros:tick=53
+
+[eneros-root-task] IPC: send hello-req to svc-hello
+
+[svc-hello] IPC: recv req, replying 34 bytes
+
+[eneros-root-task] IPC: recv hello:eneros:tick=54
+
+[eneros-root-task] IPC: send hello-req to svc-hello
+
+[svc-hello] IPC: recv req, replying 34 bytes
+
+[eneros-root-task] IPC: recv hello:eneros:tick=55
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-storage] blk-write enter lba=4321280 len=452 bs=512
+
+[svc-storage] blk-write blk=8440 take=452
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-storage] blk-write enter lba=4321732 len=452 bs=512
+
+[svc-storage] blk-write blk=8440 take=60
+
+[svc-storage] blk-write blk=8441 take=392
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-storage] blk-write enter lba=4322184 len=452 bs=512
+
+[svc-storage] blk-write blk=8441 take=120
+
+[svc-storage] blk-write blk=8442 take=332
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-storage] blk-write enter lba=4322636 len=452 bs=512
+
+[svc-storage] blk-write blk=8442 take=180
+
+[svc-storage] blk-write blk=8443 take=272
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-storage] blk-write enter lba=4323088 len=452 bs=512
+
+[svc-storage] blk-write blk=8443 take=240
+
+[svc-storage] blk-write blk=8444 take=212
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-storage] blk-write enter lba=4323540 len=452 bs=512
+
+[svc-storage] blk-write blk=8444 take=300
+
+[svc-storage] blk-write blk=8445 take=152
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-storage] blk-write enter lba=4323992 len=452 bs=512
+
+[svc-storage] blk-write blk=8445 take=360
+
+[svc-storage] blk-write blk=8446 take=92
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-storage] blk-write enter lba=4324444 len=452 bs=512
+
+[svc-storage] blk-write blk=8446 take=420
+
+[svc-storage] blk-write blk=8447 take=32
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-storage] blk-write enter lba=4324896 len=452 bs=512
+
+[svc-storage] blk-write blk=8447 take=452
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-storage] blk-write enter lba=4325348 len=28 bs=512
+
+[svc-storage] blk-write blk=8447 take=28
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-storage] blk-write enter lba=4321280 len=452 bs=512
+
+[svc-storage] blk-write blk=8440 take=452
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-storage] blk-write enter lba=4321732 len=452 bs=512
+
+[svc-storage] blk-write blk=8440 take=60
+
+[svc-storage] blk-write blk=8441 take=392
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-storage] blk-write enter lba=4322184 len=452 bs=512
+
+[svc-storage] blk-write blk=8441 take=120
+
+[svc-storage] blk-write blk=8442 take=332
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-storage] blk-write enter lba=4322636 len=452 bs=512
+
+[svc-storage] blk-write blk=8442 take=180
+
+[svc-storage] blk-write blk=8443 take=272
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-storage] blk-write enter lba=4323088 len=452 bs=512
+
+[svc-storage] blk-write blk=8443 take=240
+
+[svc-storage] blk-write blk=8444 take=212
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-storage] blk-write enter lba=4323540 len=452 bs=512
+
+[svc-storage] blk-write blk=8444 take=300
+
+[svc-storage] blk-write blk=8445 take=152
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-storage] blk-write enter lba=4323992 len=452 bs=512
+
+[svc-storage] blk-write blk=8445 take=360
+
+[svc-storage] blk-write blk=8446 take=92
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-storage] blk-write enter lba=4324444 len=452 bs=512
+
+[svc-storage] blk-write blk=8446 take=420
+
+[svc-storage] blk-write blk=8447 take=32
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-storage] blk-write enter lba=4324896 len=452 bs=512
+
+[svc-storage] blk-write blk=8447 take=452
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[svc-storage] blk-write enter lba=4325348 len=28 bs=512
+
+[svc-storage] blk-write blk=8447 take=28
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+[drv-svc-storage] IPC: corr=45324 op=16 status=0
+
+
+
+... [本窗共 694248 行（CR 分隔）；此处为判据段抽样：UEFI 头 + BOARD/心跳窗 + PRODUCT-READY + 尾部；完整行号：BOARD@136 heartbeat@8588 PRODUCT-READY@39247] ...

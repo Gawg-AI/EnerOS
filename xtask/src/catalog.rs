@@ -833,8 +833,15 @@ fn validate_assets(root: &Path) -> DynResult<Vec<String>> {
         if fact.sku_id != sku.sku_id {
             v.push(format!("sku-fact-id-mismatch:{}", sku.sku_id));
         }
-        if fact.missing.is_empty() && sku.status == "qualified" {
-            // qualified 必须同时满足"板级事实完整"（missing 空）。
+        // 复查修复（2026-09-13）：旧实现这里是**空 if 体**，注释宣称"qualified
+        // 必须同时满足板级事实完整（missing 空）"但没有任何代码——该判据只在
+        // `board_gate_violations` 里存在，`catalog validate` 单独运行时不判。
+        if !fact.missing.is_empty() && sku.status == "qualified" {
+            v.push(format!(
+                "qualified-sku-unfrozen-facts:{}:{}",
+                sku.sku_id,
+                fact.missing.join(",")
+            ));
         }
         // 70.12（WP-70.12.1）：结构化账本判据（族约束/内存重叠/硬门能力）。
         // v1 记录照旧通过存在性；`kind=product` 必须有结构化账本——否则
@@ -854,24 +861,31 @@ fn validate_assets(root: &Path) -> DynResult<Vec<String>> {
         if rv.get("schema").and_then(|x| x.as_str()) != Some("eneros.external-review-matrix.v1") {
             v.push("review-matrix-schema".to_owned());
         }
-        if let Some(items) = rv.get("items").and_then(|x| x.as_array()) {
-            for (i, item) in items.iter().enumerate() {
-                let status = item.get("status").and_then(|x| x.as_str()).unwrap_or("");
-                if !matches!(
-                    status,
-                    "PASS" | "FAIL" | "PENDING" | "BLOCKED" | "NOT_APPLICABLE_WITH_APPROVAL"
-                ) {
-                    v.push(format!("review-matrix-status-invalid:{i}:{status}"));
-                }
-                if status == "NOT_APPLICABLE_WITH_APPROVAL"
-                    && item
-                        .get("reason")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("")
-                        .is_empty()
-                {
-                    v.push(format!("review-matrix-na-without-reason:{i}"));
-                }
+        // 复查修复（2026-09-13）：缺 `items` 数组时旧实现整段静默跳过
+        // （`if let Some(...)`）——评审矩阵是发布面证据，缺失形态必须判负。
+        let Some(items) = rv.get("items").and_then(|x| x.as_array()) else {
+            v.push("review-matrix-items-missing".to_owned());
+            return Ok(v);
+        };
+        if items.is_empty() {
+            v.push("review-matrix-items-empty".to_owned());
+        }
+        for (i, item) in items.iter().enumerate() {
+            let status = item.get("status").and_then(|x| x.as_str()).unwrap_or("");
+            if !matches!(
+                status,
+                "PASS" | "FAIL" | "PENDING" | "BLOCKED" | "NOT_APPLICABLE_WITH_APPROVAL"
+            ) {
+                v.push(format!("review-matrix-status-invalid:{i}:{status}"));
+            }
+            if status == "NOT_APPLICABLE_WITH_APPROVAL"
+                && item
+                    .get("reason")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .is_empty()
+            {
+                v.push(format!("review-matrix-na-without-reason:{i}"));
             }
         }
     } else {
@@ -919,7 +933,20 @@ pub(crate) fn board_gate_violations(root: &Path) -> DynResult<Vec<String>> {
                 .unwrap_or(&f)
                 .to_string_lossy()
                 .to_string();
-            for failure in super::board::validate_bringup(root, &record, &rel)? {
+            // 复查修复（2026-09-13）：记录必须属于文件名所指的那块板——
+            // 旧实现只用记录自述的 `record.sku_id` 找冻结记录，跨 SKU 继承
+            // 不被发现（实测 `acme-board` 名下的 `ghost-board` 记录零违规）。
+            //
+            // 70.14 复查补齐：**文件名非规范形态时不得静默跳过绑定判据**。
+            // 旧实现 `bringup_expected_sku` 只认 `<sku>-bring-up.json`，于是
+            // `acme-board-bring-up.run.json` / `…-bring-up-v2.json` 拿到
+            // `expected=None` ⇒ 全部 SKU 绑定判据被跳过（"存在即判"防线的
+            // 跨组合继承入口仍在）。非规范名 = 判负并要求规范命名，不猜 SKU。
+            let expected = super::board::bringup_expected_sku(&rel);
+            if expected.is_none() {
+                v.push(format!("bringup-filename-not-canonical:{rel}"));
+            }
+            for failure in super::board::validate_bringup_gated(root, &record, &rel, expected)? {
                 v.push(format!("{failure}:{rel}"));
             }
         }
@@ -967,7 +994,12 @@ pub(crate) fn board_gate_violations(root: &Path) -> DynResult<Vec<String>> {
                 v.push(format!("qualified-sku-no-bringup-record:{}", sku.sku_id));
             } else {
                 let record: super::board::BringUpRecord = read_json(&root.join(&bringup_rel))?;
-                for failure in super::board::validate_bringup(root, &record, &bringup_rel)? {
+                for failure in super::board::validate_bringup_gated(
+                    root,
+                    &record,
+                    &bringup_rel,
+                    Some(sku.sku_id.as_str()),
+                )? {
                     v.push(format!("{failure}:{}", sku.sku_id));
                 }
             }
@@ -980,7 +1012,12 @@ pub(crate) fn board_gate_violations(root: &Path) -> DynResult<Vec<String>> {
                 ));
             } else {
                 let rec: super::board::QualificationRecord = read_json(&root.join(&qual_rel))?;
-                for failure in super::board::validate_qualification(root, &rec, false)? {
+                for failure in super::board::validate_qualification_gated(
+                    root,
+                    &rec,
+                    Some(sku.sku_id.as_str()),
+                    false,
+                )? {
                     v.push(format!("{failure}:{}", sku.sku_id));
                 }
                 if super::board::has_non_hardware_run(&rec) {
@@ -1007,6 +1044,65 @@ fn envelope_verdict_pass(root: &Path, rel: &str) -> bool {
     };
     v.get("schema").and_then(|x| x.as_str()) == Some(ENVELOPE_SCHEMA)
         && v.get("verdict").and_then(|x| x.as_str()) == Some("PASS")
+}
+
+/// `VERIFIED` 行的证据是否真的"通过"（复查 2026-09-13：旧分支恒假 = 从不判）。
+///
+/// 合法形态（**显式允许的 schema**，蓝图 §4「解析明确允许的报告schema」）：
+/// 1. 互操作 L2 报告 `eneros.l2-verified.v1` + `verdict=VERIFIED`，且报告
+///    自述的 `protocol` 必须**等于本行协议**（禁止拿另一协议的通过报告顶替）；
+/// 2. 互操作 L1 报告 `eneros.interop-result.v1` + `verdict=PASS`（Modbus TCP
+///    的 L1 回退面，该 schema 无协议字段）。
+///
+/// 70.14 复查修复：**删除 `eneros.evidence-envelope.v1` 分支**。证据信封
+/// （`EvidenceEnvelope`）里**没有协议字段**（`test_id`/`scope`/`command` 都不是
+/// 协议标识），因此它无法与本行绑定——放行它等于"任意一份两字段 JSON
+/// （`{"schema":"…","verdict":"PASS"}`）可顶替任意协议的 VERIFIED 行"。信封是
+/// **候选级**证据，其合法消费者是候选链（`evidence_chain` / `qualified_sku`
+/// 的 L4/HIL 面），不是协议矩阵行。
+///
+/// 其余（缺文件/空文件/非法 JSON/**未知 schema**/裁决缺失或非通过/协议不符）
+/// 一律判负。`schema` 必须白名单化：只查"某个 verdict 字段等于 PASS"会放过
+/// `{"schema":"eneros.fuzz-smoke.v1","result":"PASS"}` 这类**无关报告**顶替
+/// 协议证据（实测：把 L2 报告换成同目录任一份 PASS 报告即可满足该形态）。
+fn verified_row_evidence_ok(root: &Path, rel: &str, protocol: &str) -> bool {
+    let path = root.join(rel);
+    if !path.is_file() {
+        return false;
+    }
+    if path.metadata().map(|m| m.len() == 0).unwrap_or(true) {
+        return false;
+    }
+    let Ok(text) = fs::read_to_string(&path) else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    let schema = v.get("schema").and_then(|x| x.as_str()).unwrap_or("");
+    let verdict = v
+        .get("verdict")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    match schema {
+        // L2 互操作报告：报告自述协议必须与本行一致（`Modbus TCP` ≡ `modbus-tcp`）。
+        "eneros.l2-verified.v1" => {
+            verdict == "VERIFIED"
+                && normalize_protocol(v.get("protocol").and_then(|x| x.as_str()).unwrap_or(""))
+                    == normalize_protocol(protocol)
+        }
+        "eneros.interop-result.v1" => verdict == "PASS",
+        _ => false,
+    }
+}
+
+/// 协议名规范化（比较用）：只留字母数字并小写（`Modbus TCP` ≡ `modbus-tcp`）。
+fn normalize_protocol(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase()
 }
 
 fn command_gate(root: &Path, args: &[String]) -> DynResult<()> {
@@ -1094,11 +1190,15 @@ fn command_gate(root: &Path, args: &[String]) -> DynResult<()> {
         }
         // 70.14（WP-70.14.5）：若存在技术资格记录，它必须自身成立且不得
         // 混入非硬件 scope 的 run（"参数推算 72h"不得计入资格）。
+        //
+        // 复查修复（2026-09-13）：旧实现在这里按 `record.sku_id != sku.sku_id`
+        // **静默跳过**非本 SKU 的记录——一块板拿另一块板的资格记录因此不被
+        // 发现。改为：所有存在的资格记录都按**文件名派生的 SKU** 判（身份
+        // 不符由 `qualify-sku-name-mismatch` 报出，不再跳过）。
         for (path, record) in super::board::load_qualification_records(root)? {
-            if record.sku_id != sku.sku_id {
-                continue;
-            }
-            let failures = super::board::validate_qualification(root, &record, false)?;
+            let expected = super::board::qualification_expected_sku(&path);
+            let failures =
+                super::board::validate_qualification_gated(root, &record, expected, false)?;
             for f in failures {
                 violations.push(format!("{}:{}", f, path));
             }
@@ -1154,9 +1254,16 @@ fn command_gate(root: &Path, args: &[String]) -> DynResult<()> {
                     "matrix-verified-missing-evidence:{i}:{}",
                     e.protocol
                 ));
-            } else if !envelope_verdict_pass(root, &e.evidence) && !root.join(&e.evidence).is_file()
-            {
-                // JSON 互操作报告（非 envelope）时至少逐字读取结果字段。
+                continue;
+            }
+            // 复查修复（2026-09-13）：旧实现第二个分支是**不可达死代码**
+            // （`else if A && !is_file()`——进入 else 时 `is_file()` 已为真，
+            // 条件恒假）⇒ "VERIFIED 行必须为 PASS"从未实现：把证据文件换成
+            // `{"verdict":"FAIL"}`、`{}` 或 0 字节，gate 照旧放行。
+            // 现在实判：envelope schema + verdict=PASS；互操作报告必须落在
+            // 显式 schema 白名单内，且报告自述协议与本行一致。
+            if !verified_row_evidence_ok(root, &e.evidence, &e.protocol) {
+                violations.push(format!("matrix-verified-bad-evidence:{i}:{}", e.protocol));
             }
         }
     }
@@ -1197,12 +1304,20 @@ fn command_gate(root: &Path, args: &[String]) -> DynResult<()> {
         violations.push("go-no-go-doc-missing".to_owned());
     }
 
-    // 42 前置证据链：当前候选的登记证据必须全 PASS（check-current 语义）。
-    // 43 复用 42 的 evidence42 check-current；若未全绿则 43 机器 Gate 不允许
-    // 宣称软件 L0–L3 全绿。
-    let ev42_ok = run_check_current(root);
-    if !ev42_ok {
-        violations.push("evidence42-check-current-not-all-pass".to_owned());
+    // 42 前置证据链：当前候选的 **required 全集**必须齐备且逐项成立
+    // （`evidence42 check-current` = `candidate_case_statuses` 单一判定库）。
+    // 70.15（WP-70.15.2）：旧实现只要求"扫到至少一个当前候选信封且它们无
+    // 失败"——单个合法信封即可宣称通过，没有 required 全集比较。现在索引
+    // 缺失/全集不全/任一负例一律进 violation；**外部阻塞单列 BLOCKED**，
+    // 不混成"没做完"，也不允许用历史记录填满（蓝图 70 [11] §2 R12）。
+    match run_check_current(root) {
+        CheckCurrent::Pass => {}
+        CheckCurrent::Blocked => {
+            violations.push("evidence42-check-current-blocked".to_owned());
+        }
+        CheckCurrent::Fail => {
+            violations.push("evidence42-check-current-not-all-pass".to_owned());
+        }
     }
 
     // diff 模式：新 SKU PR 不得修改 forbidden core paths。
@@ -1231,7 +1346,18 @@ fn command_gate(root: &Path, args: &[String]) -> DynResult<()> {
     Ok(())
 }
 
-fn run_check_current(root: &Path) -> bool {
+/// `check-current` 的三态结果（BLOCKED 与 FAIL 必须可区分：外部阻塞不是
+/// "没做完"，也不是通过）。`--allow-non-pass` 与之无关：这里没有 PASS 就是
+/// 不放行。
+enum CheckCurrent {
+    Pass,
+    /// required 全集收齐，但存在外部阻塞 case（如实板未到）。
+    Blocked,
+    /// 索引缺失 / 全集不全 / 任一 case 判负 / 无法自调用。
+    Fail,
+}
+
+fn run_check_current(root: &Path) -> CheckCurrent {
     let bin = std::env::current_exe().unwrap_or_else(|_| "cargo".into());
     let mut cmd = Command::new(
         if bin.ends_with("eneros-xtask")
@@ -1248,12 +1374,22 @@ fn run_check_current(root: &Path) -> bool {
     let out = cmd.arg("evidence42").arg("check-current").output();
     match out {
         Ok(o) => {
-            o.status.success() && String::from_utf8_lossy(&o.stdout).contains("CHECK-CURRENT PASS")
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            if o.status.success() && stdout.contains("CHECK-CURRENT PASS") {
+                CheckCurrent::Pass
+            } else if stdout.contains("CHECK-CURRENT BLOCKED")
+                || stderr.contains("check-current BLOCKED")
+            {
+                CheckCurrent::Blocked
+            } else {
+                CheckCurrent::Fail
+            }
         }
         Err(_) => {
             // 兜底：无法自调用时按 BLOCKED 处理，绝不假设 PASS。
             println!("CATALOG-GATE: check-current self-call unavailable (BLOCKED, not PASS)");
-            false
+            CheckCurrent::Blocked
         }
     }
 }
@@ -1349,7 +1485,7 @@ fn platform_gate_diff(root: &Path, base: &str, head: &str) -> DynResult<Vec<Stri
             ));
         }
     }
-    // vendor 特判扫描：diff 中新增/修改的源文件不得出现 `if board ==` /
+    // vendor 特判扫描：diff 中**新增**的源文件行不得出现 `if board ==` /
     // `board == ` 等厂商分支（蓝图书面禁止 `vendor if board ==`）。
     let patch = git(
         &["diff", "-U0", &format!("{base}...{head}"), "--", "."],
@@ -1358,7 +1494,10 @@ fn platform_gate_diff(root: &Path, base: &str, head: &str) -> DynResult<Vec<Stri
     .or_else(|_| git(&["diff", "-U0", base, head, "--", "."], root))?;
     for pat in &forbidden.vendor_patterns {
         for line in patch.lines() {
-            if (line.starts_with('+') || line.starts_with('-')) && line.contains(pat) {
+            // 复查修复（2026-09-13）：旧实现把**删除行**（`-`）也算违规——
+            // "删掉最后一段厂商特判"的 PR 反而 FAIL（fail-when-should-pass）。
+            // 只有新增行（`+`，排除 `+++` 文件头）才可能引入厂商分支。
+            if line.starts_with('+') && !line.starts_with("+++") && line.contains(pat) {
                 v.push(format!("vendor-branch-pattern-in-diff:{pat}:{line}"));
             }
         }
@@ -1680,6 +1819,20 @@ mod catalog_70_tests {
                 .any(|x| x.starts_with("bringup-non-hardware-scope:qemu")),
             "{v:?}"
         );
+        // 70.14 复查补齐红测：**非规范文件名不得让 SKU 绑定判据被跳过**。
+        // 旧实现只认 `<sku>-bring-up.json`，`acme-bring-up.run.json` 会拿到
+        // `expected=None` ⇒ 全部绑定判据跳过（跨组合继承入口）。
+        fs::rename(
+            dir.join("evidence/70/70.12/acme-bring-up.json"),
+            dir.join("evidence/70/70.12/acme-bring-up.run.json"),
+        )
+        .unwrap();
+        let v2 = board_gate_violations(&dir).unwrap();
+        assert!(
+            v2.iter()
+                .any(|x| x.starts_with("bringup-filename-not-canonical")),
+            "非规范文件名必须判负并要求规范命名（不得静默跳过绑定判据）：{v2:?}"
+        );
         assert!(
             v.iter().any(|x| x.starts_with("bringup-serial-unbound")),
             "{v:?}"
@@ -1690,5 +1843,135 @@ mod catalog_70_tests {
             "{v:?}"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 复查修复（2026-09-13 第二轮）红测：`VERIFIED` 行的证据判据必须
+    /// **按显式 schema 白名单 + 协议一致**判定。
+    ///
+    /// 第一轮把不可达死分支换成实判，但实判只查"任意 `verdict`/`result`
+    /// 字段等于 PASS/VERIFIED"——把 L2 报告换成同仓库任一份无关 PASS 报告
+    /// （`eneros.fuzz-smoke.v1`、`eneros.media-check.v1`…）即可顶替协议证据；
+    /// 拿**另一协议**的 L2 报告顶替同样成立。蓝图 §4 要求「解析明确允许的
+    /// 报告schema，核对verdict、scope、身份」。
+    #[test]
+    fn verified_row_evidence_requires_allowed_schema_and_protocol() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("eneros-catalog-vre-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("evidence")).unwrap();
+        let write = |rel: &str, body: &str| {
+            let p = dir.join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, body).unwrap();
+        };
+        // 合法形态 1：L2 报告 + 协议一致（`Modbus TCP` ≡ `modbus-tcp`）。
+        write(
+            "evidence/l2-modbus.json",
+            r#"{"schema":"eneros.l2-verified.v1","protocol":"modbus-tcp","verdict":"VERIFIED"}"#,
+        );
+        assert!(verified_row_evidence_ok(
+            &dir,
+            "evidence/l2-modbus.json",
+            "Modbus TCP"
+        ));
+        // 合法形态 2：L1 互操作报告（无协议字段）+ PASS。
+        write(
+            "evidence/l1.json",
+            r#"{"schema":"eneros.interop-result.v1","verdict":"PASS"}"#,
+        );
+        assert!(verified_row_evidence_ok(
+            &dir,
+            "evidence/l1.json",
+            "Modbus TCP"
+        ));
+        // 负例 C（70.14 复查）：标准证据信封**不得**充当协议行证据——信封无
+        // 协议字段、无法与本行绑定，放行它等于两字段 JSON 顶替任意协议行。
+        write(
+            "evidence/env.json",
+            r#"{"schema":"eneros.evidence-envelope.v1","verdict":"PASS"}"#,
+        );
+        assert!(
+            !verified_row_evidence_ok(&dir, "evidence/env.json", "IEC104"),
+            "信封无协议绑定，不得充当协议矩阵行的证据"
+        );
+        // 负例 A：无关 schema 的 PASS 报告不得顶替（旧实现放行）。
+        write(
+            "evidence/fuzz.json",
+            r#"{"schema":"eneros.fuzz-smoke.v1","result":"PASS"}"#,
+        );
+        assert!(
+            !verified_row_evidence_ok(&dir, "evidence/fuzz.json", "IEC104"),
+            "无关 schema 的 PASS 报告不得充当协议证据"
+        );
+        // 负例 B：另一协议的 L2 报告不得顶替。
+        write(
+            "evidence/l2-mms.json",
+            r#"{"schema":"eneros.l2-verified.v1","protocol":"mms","verdict":"VERIFIED"}"#,
+        );
+        assert!(!verified_row_evidence_ok(
+            &dir,
+            "evidence/l2-mms.json",
+            "IEC104"
+        ));
+        // 负例 C：schema 正确但裁决非通过 / 裁决缺失。
+        write(
+            "evidence/l2-fail.json",
+            r#"{"schema":"eneros.l2-verified.v1","protocol":"iec104","verdict":"FAIL"}"#,
+        );
+        assert!(!verified_row_evidence_ok(
+            &dir,
+            "evidence/l2-fail.json",
+            "IEC104"
+        ));
+        write(
+            "evidence/l2-bare.json",
+            r#"{"schema":"eneros.l2-verified.v1","protocol":"iec104"}"#,
+        );
+        assert!(!verified_row_evidence_ok(
+            &dir,
+            "evidence/l2-bare.json",
+            "IEC104"
+        ));
+        // 负例 D：空文件 / 非 JSON / 缺文件。
+        write("evidence/empty.json", "");
+        assert!(!verified_row_evidence_ok(
+            &dir,
+            "evidence/empty.json",
+            "IEC104"
+        ));
+        write("evidence/junk.json", "not json");
+        assert!(!verified_row_evidence_ok(
+            &dir,
+            "evidence/junk.json",
+            "IEC104"
+        ));
+        assert!(!verified_row_evidence_ok(
+            &dir,
+            "evidence/absent.json",
+            "IEC104"
+        ));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 复查修复（2026-09-13 第二轮）红测：仓库内**真实**证据文件必须在收紧
+    /// 后的判据下通过（防止修复制造假阴性——把真证据判负）。
+    #[test]
+    fn real_matrix_evidence_passes_the_schema_allowlist() {
+        // `CARGO_MANIFEST_DIR` = `<repo>/xtask`。
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        for (rel, proto) in [
+            ("evidence/46/l2-modbus-tcp-verified.json", "Modbus TCP"),
+            ("evidence/46/l2-iec104-verified.json", "IEC104"),
+            ("evidence/46/l2-mms-verified.json", "MMS"),
+            ("evidence/46/l2-goose-verified.json", "GOOSE"),
+            ("evidence/46/l2-sv-verified.json", "SV"),
+            ("evidence/46/l2-mqtt-verified.json", "MQTT"),
+            ("evidence/42/modbus-result.json", "Modbus TCP"),
+        ] {
+            assert!(
+                verified_row_evidence_ok(&root, rel, proto),
+                "{rel}（协议 {proto}）必须通过判据"
+            );
+        }
     }
 }

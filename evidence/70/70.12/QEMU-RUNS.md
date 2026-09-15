@@ -8,6 +8,39 @@
 | B `boot-window` | `boot-window.qemu-serial.log` / `.qemu.argv` / `.qemu-result.json` | `a2fff2279284f377`（result 内 `image_initial_sha256=09d1fdc2…`） | **PASS** |
 | D `fix-empty-bundle` | `fix-empty-bundle.qemu-serial.log` / `.qemu.argv` | `c0dd80f02b3022c9` | NO_RESULT（尾部停顿） |
 | E `injected-probe` | `injected-probe.qemu-serial.log` / `.qemu.argv` | `dfc0d6b9019ca44c` | NO_RESULT（尾部停顿） |
+| F `dev-vouch-fix-window`（70.15 复查，见下） | `dev-vouch-fix-window.qemu-serial.log`（判据段抽样）/ `.qemu.argv` / `.verdict-lines.txt` | `f31c92348e5e5443` | 目标侧 **root-heartbeat PASS / PRODUCT-READY true / PANIC=0**；harness 侧 `exit=124`（关停超时，非启动失败） |
+
+## 窗 F：70.15 复查——`vouch_development` 上开发入口的三层 P0 假阳性（2026-09-13）
+
+F-70-12..14-REV 的 `REG-70.12-DEV-ENTRY-NO-VOUCH` 把描述判据带上开发入口后，
+**开发镜像启动即 fail-closed 挂起**。本轮按"运行 → 判负原因 → 修 → 重跑"逐层剥出
+**三层**，全部是**判据假阳性**（不是目标侧代码 bug）：
+
+| 层 | 判负行（实弹原文） | 根因 | 修 |
+|---|---|---|---|
+| 1 | `38 HAL: assembly FAILED board refused: platform-bad-mmio:qemu,fw-cfg-mmio:unaligned-size` | `mmio_is_legal` 要求 `phys`/`size` 双 4096 对齐；QEMU virt 真实 DTB 里 `fw-cfg` = `0x18` 字节、32 个 `virtio_mmio` = `0x200`（`-machine dumpdtb` 实测，33 节点违规） | 删对齐两条，保留零容量/空地址，新增 `window-too-small` |
+| 2 | `platform-coherency-without-fact:qemu,fw-cfg-mmio` | 开发入口账本**恒为空**（`empty_ledger`）、描述由平台自带（DTB 标 `dma-coherent`）⇒ "没有硬件事实"是结构性必然 | 判据加 `!ledger.facts.is_empty()` 前置（与同函数 `ledger.validate` 同形） |
+| 3 | `platform-bad-mmio:arm,cortex-a57:zero-size` | CPU 节点的 `reg = <0x0>`（`cpus` 是 `#size-cells=0`）是 **CPU id** 不是 MMIO；旧实现把它当设备收录，设备表出现 `phys=0 size=0` 项 | `is_cpu` 节点不进设备清单（CPU 事实仍走 `tree.cpus`） |
+
+**三层修完后的实弹结果**（窗 F，判据行逐字）：
+
+```
+[eneros-root-task] 38 HAL: source=fdt cpus=4 enabled=4 mem=1 devices=44
+[eneros-root-task] 38 HAL: timer-freq=62500000 console=arm,pl011 entropy=none iommu=false
+[eneros-root-task] 70.12 BOARD sku=qemu-virt-aarch64 revision=1.0.0 desc_digest=f0f65a2512f7a8c4 bound=false devices=0
+{"schema":"eneros.g2.v1","test":"root-heartbeat","result":"PASS"}
+[eneros-root-task] PRODUCT-READY: true (degraded: ; required degraded: )
+```
+
+`PANIC`/`alloc.rs`/`halting` 全零；串口 694,248 行（CR 分隔）。
+`devices=0` 的解释：`vouch_development` 不要求网络类设备（有意差异，
+virtio-mmio 网卡不描述为 ethernet/net 节点）⇒ `required_devices` 为空，
+与"判据未执行"无关（判据是否执行由层 1–3 的挂起反证）。
+
+> **harness 侧 `exit=124` 不是启动失败**：xtask 内层 `timeout --signal=KILL 200s`
+> 在负载下未能在期限内关停 QEMU，外层 `timeout` 以 124 收尾；窗内判据行与
+> `PRODUCT-READY` 均已产生（与 `REG-70.6-GATE-T1-WINDOW-KILL` 同族现象）。
+> 本窗证据以**窗内判据行**为准。
 
 > **不要用 `target/eneros/artifacts/**` 的当前字节去核对本目录日志**：本卷期间镜像
 > 被重构多次（每次 `image raw` 会重写该路径），当前盘上字节已与任一窗无关。

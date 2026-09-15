@@ -367,7 +367,7 @@
 | REG-70.8.3-CATALOG-CAPACITY | `crates/runtime/config-bundle/src/schema.rs::PAYLOAD_MAX` | **Open（P2 容量发现，登记不修）**：目录 payload 硬上界 1664B（与 chunk 请求预算同源），实测生产目录 **1097B**（含 1 条铭牌）——铭牌 104B/资产 + 资产记录 32B ⇒ **剩余余量仅约 3-5 个带铭牌资产**；多资产站点（方向 6/7）会先在编译面撞墙（fail-closed，不静默）。容量口径与扩容路径需在蓝图层面裁决 | 本表 |
 | REG-70.9-ENVELOPE-30S | `crates/agents/resource-registry/src/provider.rs::base_env` | **Open（P1 架构面，登记不修）**：包络有效期 = 快照产刻 + **30s**（`valid_until`），认证器**逐步**校验步起点落在包络窗内 ⇒ **任何跨度 >30s 的多步计划无法被认证**（重编译重提交也一样）。这与 70.11.2 假设的"多时段/跨 tick 计划"（其自身测试用 1h 步长）**架构上不相容**——70.11 的多步执行需先裁决"包络生命周期 vs 计划时域"（放大包络窗 / 逐步重认证 / 冻结节奏），属蓝图决策 | 本表 |
 | REG-70.10-CONTRACT-CAPS-VS-REALITY | `crates/ai/planner-peer/src/lib.rs` | **Open（P3，登记不修）**：`input_digest_v2` 只覆盖 快照/目录/时域/步数/价格/目标，**不含逐资产规格与预算** ⇒ 审计方按其复算无法发现"host 用了不同资产事实建模"（摘要-MAC 绑定的是这个较弱摘要）。收紧须改 v2 摘要公式（wire 语义变更，宜与传输扩容同波次） | 本表 |
-| REG-70.8-SYNTH-NO-OBS | `crates/runtime/root-task`（qemu-test-synth 合成源）、`crates/agents/control-services/src/event_face.rs`（惰性打开）、`configs/catalog.toml`（source 1 注释） | **Open（P1 验证面，2026-09-13 首次 QEMU 实弹暴露）**：70.8 起决策输入 = **事件面冻结快照**；而 qemu-test 装配的遥测源是 root 合成轨（只走旧 `TelemetrySample` 兼容路径、**永不产生 `ObservationEvent`**）⇒ 事件面永不打开、`SNAPSHOT-INPUT-REJECT reason=no-frozen-snapshot` ×21、EA 恒 `status=NOACTION`（fail-closed，无安全风险但**主链不可证**）。本卷 QEMU 证据因此只能证到装配面（`CERTIFIER-ACTIVE` / `PLAN-SPEC-NONE` / 同代目录行）。修法二选一：合成源升级为发 `obs_batch_wire` 帧，或门内起南向从站模拟器使采集轮产出 ObservationEvent | 本表 / 执行卡 §9.5 |
+| REG-70.8-SYNTH-NO-OBS | `crates/runtime/root-task`（qemu-test-synth 合成源）、`crates/agents/control-services/src/event_face.rs`（惰性打开）、`configs/catalog.toml`（source 1 注释） | **Done（P1→收口，2026-09-15 红测先行 + 实弹探针窗验证）**：根因 = `configs/points.toml` **有意不注册 source 1**（"合成样本只走旧 TelemetrySample 兼容轨，永不产生 ObservationEvent"）⇒ OBS 生产轨来源核验 `UnregisteredSource` 隔离。**修法（合成源升级为 OBS 生产轨，红测先行）**：① `PointProtocol::Synth`（PROTO_SYNTH=8，封闭枚举诚实扩员）+ `[[source]] source_id=1 protocol="synth"` 注册行（allow_control=true、require_integrity=true、范围 1..=1004 = 声明点跨度；release 闭包门保证生产装配无任何路径以 source 1 发帧——行在生产不可达）；② agent-sdk `synth_feed` 单源构帧模块（11 点馈电、epoch=0+SIMULATED\|TEST 过 decode 门、批内/批间 sequence 严格单调、LocalTrustedEdge）；③ root `synth_obs_ingest`（TEL_INGEST_OBS，每 3 round 一批 ≈3.4 事件/s 与 modbus 采集同量级；结果只上 `SYNTH-OBS:` 证据行，不伪造不静默）。**红测 5 例全先红后绿**（注册面/受理面 e2e/镜像锁/decode 门/单调性）。**实弹探针窗（420s×2）**：首轮 16-round 批距使 EA 恒 `snapshot-stale`（SNAP_EVERY_BATCHES=8 ⇒ 建距超 60s 新鲜度窗）——批距重标为 3 round；次轮 **40 批全受理、SNAP-BUILDed ×10（pts=8 含回读点 1001）、EA status=OK ×11、PLAN-COMPILED batches=1 intents=1、delivered=1**，终态 `Indeterminate: delivery-error Rejected（物理结果未知需对账）` = 合成装配无真实执行器的**预期安全终态**（认证→编译→投递链全通）。间歇 `SYNTH-OBS: transport FAIL` 与 legacy ingest 的 chunked 传输间歇同族（svc-telemetry 长 checkpoint 阻塞应答；vol7 窗已有 5 例同形——预存，非本次引入） | 本表 / 执行卡 §9.5 |
 | REG-70.10-RECONNECT-UNWIRED | `crates/agents/control-services/src/remote_brain.rs::on_session_reconnect` | **Open（P3，登记不修）**：方法存在且有测（t8c），但**零生产调用方**（svc-mqtt 重连不通知 svc-ai-worker）⇒ 会话重连后旧 pending 只能靠 30s 超时清除。接线属 svc-mqtt→worker 事件面工作 | 本表 |
 
 ## F-70-12..14. 蓝图 70.12–70.14 登记（2026-09-13，方向 6 真实板卡与设备兼容会话）
@@ -460,14 +460,448 @@ trial 臂读取该计数（`BOOT-TRIAL-PROBE pre_count=`）。实测链
 | REG-70.14-CAMPAIGN-SCHEMA | `tests/soak/soak72.sh`（写 `eneros.soak-campaign.v1`）vs `xtask/src/qa.rs::SoakCampaign` / `evidence_chain.rs` | **Open（S7 审计 P3，登记不修）**：shell 写出的 campaign JSON 字段集（`verdict`/`measured_hours`/`duration_days_measured`…）与仓内两个消费者期望的（`duration_days`/`min_duration_days`/`candidate_id`/`workload_coverage`/`fault_stats`）不一致 ⇒ 下游 `deny_unknown_fields` 直接拒 ⇒ shell 的 PASS 判定**机器不可复核**。收敛属发布面 schema 工作 | 本表 / 执行卡 §5.2 |
 | REG-70.12-WORKTREE-EXTERNAL-REVERT | 全仓（`xtask/src/main.rs`、`Cargo.toml`、`product/skus/*.json`、`tests/soak/*.sh`、root-task 侧文件等 ~18 个跟踪文件） | **Open（过程事实，必须留痕）**：本会话期间跟踪文件多次被**外部进程回退到 HEAD 且不报冲突**（同一分钟内先后出现/消失；`plan_hold.rs` 反复被删）。全部改动经 `git stash`（含 20 文件差异）与 `/tmp/eneros-70.12-70.14-backup/` 完整恢复；恢复后 H-1/H-2/H-4 与新判据套件复跑全绿。交接前须 `git status --short` 核对执行卡 §3 清单 | 执行卡 §8 |
 
+## F-70-12..14-REV. 蓝图 70.12–70.14 R4 独立复查（2026-09-13，全局视角 + 两路对抗审计）
+
+> 范围：`949ce53` + 014400a…48c54f9 全部改动。方法：会话内逐模块读码 +
+> 两路对抗子审计（A=xtask board/catalog 判据面；B=soak/脚本/CI 判据面），
+> 每条发现**先用可复核反例复现**再修，修完补红测。
+> 基线复跑：宿主 **9015 passed / 0 failed**（原始 9008 + 本会话新增红测）；
+> `cargo clippy --workspace --all-targets -D warnings` 零告警；`fmt --check` 干净；
+> `qa feature-matrix` violations=[]；目标静态 check ×6（root-task/control/
+> business/protocol/drv-svc/board-facts）通过；`board fact-validate` PASS、
+> `catalog validate` PASS、`soak72.sh --self-test` 4/4 拒绝。
+
+| ID | 锚点 | 状态 | 登记处 |
+|---|---|---|---|
+| REG-70.12-PLACEHOLDER-FACT-BYPASS | `crates/product/board-facts/src/fact.rs::looks_blocked` | **Done（P1，已修+红测）**：`Fact::unknown()` 的规范占位值是 `"unknown"`，而 `looks_blocked` 的 MARKERS 只含 `blocked/未知/未取得/待核/pending` ⇒ `verified=true + hardware_scope=hardware + value="unknown"`（`tbd`/`n/a`/`placeholder` 同理）**通过逐条判据**。实测（探针）：13 个产品硬门族全填该形态 → `capability_coverage(Product) == []`（零违规）——即"未取得"的占位值可冒充实板事实拿产品资格，与蓝图 D6-02 直接矛盾。修：占位词表（大小写不敏感、按词边界）并入 `looks_blocked`；红测 `placeholder_words_cannot_be_verified`（含 `未知值 unknown` 混排、`unknowable-margin` 等不误伤反向用例） | 本表 / 执行卡 §5.3 |
+| REG-70.12-XSKU-QUALIFICATION-INHERIT | `xtask/src/board.rs::validate_bringup[_gated]`/`validate_qualification[_gated]`、`xtask/src/catalog.rs::board_gate_violations` | **Done（P1，已修+红测）**：bring-up / 资格记录只与**记录自述的 `sku_id`** 绑定（用它的冻结记录判摘要），从不与被判 SKU（文件名/目录项）交叉核对 ⇒ 一块板的记录可支撑另一块板的资格（"资格不可跨组合继承"被绕过）。实测（探针）：`acme-board` 记录路径下放全合规的 `ghost-board` 记录 → `violations == []`。修：新增 `validate_*_gated(.., expected_sku)`，`expected_sku` 由路径派生（`<sku>-bring-up.json` / `<sku>.qualification.json`）；bring-up 另补"修订必须等于冻结记录修订"（旧实现只查非空）；`command_gate` 不再"按记录自述 SKU 过滤后静默跳过"，全部记录按文件名 SKU 判；红测 `records_must_be_bound_to_the_gated_sku` / `qualification_record_is_bound_to_its_own_sku` | 本表 / 执行卡 §5.3 |
+| REG-70.12-MATRIX-VERIFIED-DEAD-BRANCH | `xtask/src/catalog.rs`（矩阵 VERIFIED 行判据） | **Done（P1，已修）**：原判据第二分支 `else if !envelope_verdict_pass(..) && !root.join(..).is_file()` 在 `else`（已确认 `is_file()`）里恒假 ⇒ **不可达死代码**："VERIFIED 行必须引用的证据为 PASS"从未实现（证据文件换成 `{"verdict":"FAIL"}`/`{}`/0 字节均放行）。修：`verified_row_evidence_ok()` 实判（envelope schema+verdict=PASS，或互操作报告的 verdict/result ∈ {PASS,VERIFIED}；空文件/非法 JSON 一票否决） | 本表 / 执行卡 §5.3 |
+| REG-70.12-DEV-ENTRY-NO-VOUCH | `crates/product/board-facts/src/platform.rs::vouch_development`、`crates/runtime/root-task/src/board_select.rs` | **Done（P1，已修+红测）**：模块文档承诺"未声明 = 开发入口，仍核对描述非空与必需设备"，实现却直接返回 `devices: 0` 空结论 ⇒ 开发镜像对所有事实判据（MMIO 合法性/一致性依据）免疫（实测证据行 `devices=0` 即此来）。修：抽出 `vouch_description` 主体，开发入口走 `vouch_development`（执行 inventory 自校验 + MMIO 合法 + 一致性声明必须有硬件依据）；**有意差异**逐条写进判据文档：不要求 chosen 三角色与网络类设备（qemu-test DTB 的 `entropy` 角色恒为 `none`，virtio-mmio 网卡不描述为 ethernet/net 节点——要求它们会把开发镜像判负）。红测 `development_entry_runs_the_platform_independent_judges` | 本表 / 执行卡 §5.3 |
+| REG-70.14-SOAK-SLOPE-DILUTION | `xtask/src/soak.rs::slope_per_hour`/`validate_run` | **Done（P1，已修+红测）**：堆斜率用**样本序号**做自变量的最小二乘，再乘 `(n-1)` 除以**运行全程小时数**；实测把 60 个样本全部堆在最后 1 小时（真实增长 1 MB/h，阈值 64 KiB/h）⇒ 判定 `13658 B/h` 并 **PASS**（稀释 72 倍）。修：自变量改为**真实时刻**（秒→分钟整数定点，避免浮点平台差异），并新增"样本跨度 ≥ 运行时长 75%""时刻严格递增"两条独立判据；实测同一记录现判 `1000020B/h > 65536B/h` FAIL 且报 span/递增违规 | 本表 / 执行卡 §5.3 |
+| REG-70.14-SOAK-PROTOCOL-DENSITY | `xtask/src/soak.rs`（协议覆盖判据） | **Done（P2，已修）**：S7 只加了"窗口跨度 ≥ min_hours−1h"，**样本密度**无判据 ⇒ "71 小时窗口 + 1 个样本"等于全量覆盖（实测 PASS）。修：样本数 ≥ 覆盖窗口每 30 分钟 1 个且下限 3；同时把 `min_hours * 3600` 改 checked（`--min-hours 9223372036854775807` 旧实现直接 panic，实测 `attempt to multiply with overflow`），`--min-hours 0` 的负数 `needed` 恒真漏洞一并消除 | 本表 / 执行卡 §5.3 |
+| REG-70.14-SOAK-ARTIFACT-UNBOUND | `xtask/src/soak.rs`（产物绑定）、`tests/soak/soak72.sh`、`evidence/70/70.14/soak-run.template.json` | **Done（P1，已修）**：产物条目原本只是"值必须是 64hex"——**没有任何一处把声明摘要与产物文件比对**（实测：磁盘上不存在任何产物、摘要随便填，仍 PASS；shell 又把该字符串原样抄进 campaign 当"候选绑定"）。修：条目形态改为 `<sha256>@<仓库内相对路径>`，判据 `sha256(文件) == 声明`（缺失/逃逸/不符各一条 violation），裸摘要报 `run-artifact-unbound`；shell 取摘要部分写入 campaign；模板与新增 `README-soak-run.md` 同步口径 | 本表 / 执行卡 §5.3 |
+| REG-70.14-FATAL-SCAN-READ-FAILOPEN | `xtask/src/soak.rs::scan_fatal_markers` | **Done（P2，已修+红测）**：S7 把 `read_to_string + continue` 改成按字节读，但用 `unwrap_or_default()` 把**读失败**折叠成"空文件 → continue"——注释声称"读不出的文件本身即判负"，实现却静默跳过（EACCES/EIO/EISDIR 均零违规）。修：读失败即 `Err(run-fatal-scan-unreadable:…)`；红测 `fatal_scan_fails_closed_on_unreadable_evidence` | 本表 / 执行卡 §5.3 |
+| REG-70.14-RUN-DEVICE-BINDING | `xtask/src/board.rs::validate_qualification`、`xtask/src/soak.rs::SoakVerdict` | **Done（P2，已修+红测）**：资格记录只核对 run 的 `run_id`，run 的 `device.sku_id`/`board_revision` 从不与被资格 SKU/修订比对 ⇒ A 板跑出的合法 72h run 可支撑 B 板资格。修：`SoakVerdict` 暴露 `device_sku_id`/`device_board_revision`，资格判据交叉核对（`qualify-run-device-mismatch` / `qualify-run-revision-mismatch`）；红测 `qualification_run_must_be_on_the_same_board` | 本表 / 执行卡 §5.3 |
+| REG-70.14-EVIDENCE-PATH-ESCAPE | `xtask/src/board.rs`（bring-up 原始证据 / 资格 case 证据）、`xtask/src/soak.rs::check_rel_path` | **Done（P2，已修）**：S7 只在 soak 侧修了绝对路径/`..` 逃逸；bring-up `raw_evidence` 与资格 `case.evidence` 仍可指向仓库外（`root.join("/etc/hostname")` 替换整个路径），case 证据零字节也算"存在"。修：抽出 `soak::check_rel_path` 单源，三处统一调用并补零字节判负（`bringup-raw-evidence-escapes-base` / `qualify-case-evidence-empty[:path]` / `qualify-case-evidence-escapes-base`） | 本表 / 执行卡 §5.3 |
+| REG-70.14-RFC3339-LOOSE-PARSE | `xtask/src/soak.rs::parse_rfc3339_secs` | **Done（P3，已修+红测）**：小数位整段丢弃且不校验（`...00:00:00.garbageZ` 实测 PASS）、`se == 60` 被放行（静默折叠成下一分钟）。修：小数位必须 1–9 位数字、秒 0–59；红测并入 `rfc3339_parser_rejects_local_and_malformed` | 本表 / 执行卡 §5.3 |
+| REG-70.12-MATRIX-QUALIFICATION-LITERAL | `xtask/src/board.rs::command_matrix` | **Done（P3，已修）**：能力表 `qualification` 字段是字面量（从不读目录 `status`）⇒ 目录里 `qualified` 也输出 `unqualified`（错误报告），且资格记录从不被能力表消费。修：按 `status` 输出 `not-applicable`/`qualified`/`candidate`/`unqualified`/`unknown-status` | 本表 / 执行卡 §5.3 |
+| REG-70.12-CATALOG-VALIDATE-GAPS | `xtask/src/catalog.rs`（validate 空壳 if / 评审矩阵缺 items / vendor 扫描删除行） | **Done（P3，已修）**：①`if fact.missing.is_empty() && qualified {}` 是**空壳**（注释宣称"qualified 必须 missing 空"但无代码，只有 board_gate 里另有一份）⇒ 补实判；②`external-review-matrix.json` 缺 `items` 时整段静默跳过 ⇒ 缺/空 items 判负；③vendor 特判扫描把**删除行**也计违规 ⇒ "删掉最后一段厂商分支"反被判负，改为只看新增行（含 `+++` 头排除） | 本表 / 执行卡 §5.3 |
+| REG-70.14-QA-SOAK-REPORT-EXISTS | `xtask/src/qa.rs`（`soak-report` 的 D1 判定） | **Open（本会话审计 P2，登记不修）**：`present` 只查 MANIFEST 里"出现过文件名"，摘要直接抄 MANIFEST，不重算哈希、不读 `bundle-verdict.json`（可能是 INCOMPLETE/FAIL）、不读 campaign 与 run-check 结论 ⇒ 11 个任意非空文件 + 一份列出它们的 MANIFEST 即 D1-PASS。不在本卷交付面（属发布面/QA 收口），登记待 70.15 或方向 7 卷处理 | 本表 |
+| REG-70.12-QEMU-REVALIDATION-DUE | `crates/runtime/root-task/src/{board_select,platform}.rs` | **Done（2026-09-13 本轮实弹闭合）**：重建 root-task（`ROOT_TASK_FEATURES=sel4-eipc,qemu-test-synth` + `image raw qemu-test`）后跑 `--ready-marker root-heartbeat` 窗。**结果：该窗抓出三层 P0 假阳性**（见下方 REG-70.15-MMIO-PAGE-ALIGN-FALSE-POSITIVE / COHERENCY-EMPTY-LEDGER-FALSE-POSITIVE / CPU-NODE-AS-DEVICE），逐层修完后的最终窗（F，镜像 `f31c92348e5e5443`）：`38 HAL: source=fdt cpus=4 enabled=4 mem=1 devices=44` / `70.12 BOARD sku=qemu-virt-aarch64 … bound=false devices=0` / `root-heartbeat result=PASS` / `PRODUCT-READY: true` / PANIC=0。证据：`evidence/70/70.12/dev-vouch-fix-window.{qemu-serial.log,qemu.argv,verdict-lines.txt}` 与 `QEMU-RUNS.md` §窗 F。**"没有重跑目标侧窗口"这件事本身就是本轮最有价值的一步**——纯 host 测试全绿掩盖了三层假阳性 | 本表 / QEMU-RUNS.md |
+
+## F-70-12..14-REV2. 蓝图 70.15 前置面第二轮独立复查（2026-09-13，本轮）
+
+> 范围：F-70-12..14-REV 全部未提交改动的逐项复核 + 按蓝图方向 7 口径
+> （WP-70.15.1–5）校对。方法：先复跑基线（**9015 passed / 0 failed**，与
+> 执行卡 §5.2 数字吻合），再对每条判据构造反例；反例先在 Rust 侧探针里
+> 复现（不只看注释），确认后才改。
+> 结论：**五条**真缺陷——两条"判据实现与文档声称不符"（占位词多词形态、
+> VERIFIED 行无 schema/协议约束），三条**只有跑目标实弹才会暴露的判据假阳性**
+> （MMIO 页对齐 / 空账本一致性 / CPU 节点当设备），后者由 QEMU 窗逐层剥出。
+> 全部已修 + 补红测；仓内真实证据与产品记录（3 份 SKU）全部复验通过（防假阴性）。
+> 修复后 **9019 passed / 0 failed**；clippy/fmt 干净；`board fact-validate` /
+> `catalog validate` / `qa feature-matrix` / `soak72 --self-test` /
+> orphan-check / sign-keys / mock-leak 全过；QEMU 窗 F 达 `root-heartbeat PASS`。
+> **方法教训（值得留痕）**：三条 P0 假阳性在任何 host 测试里都不可见——
+> 判据自身的单元测试全绿，只有把判据接进目标镜像并启动才暴露。
+
+| ID | 锚点 | 状态 | 登记处 |
+|---|---|---|---|
+| REG-70.12-PLACEHOLDER-MULTIWORD-GAP | `crates/product/board-facts/src/fact.rs::looks_blocked` | **Done（P1→本轮补修，已修+红测）**：第一轮的占位词匹配是「整串相等 ∨ 单词相等」，**多词占位短语只在整串或独立单词形态命中**。探针实测（Rust，`hardware_fact()` 夹具）：`value="status: not available"` / `"data not available (待补)"` / `"not available yet"` / `"to be determined"` / `"not applicable"` 全部 `validate()==Ok(())` 且 `is_hardware_evidence()==true`——与第一轮修的 `value="unknown"` 同罪（占位短语加个前缀即可绕过"未取得不得当已验证"）。修：`words()` 词序列匹配 + `PLACEHOLDERS` 扩到 15 条（增 `not applicable`/`to be determined`/`to be decided`/`see datasheet`/`待定`/`待补`/`未确定`）；**多词短语按连续词序列**匹配（拦住嵌入文本），单句占位词退化为整词匹配（保留 `unknowable-margin`/`nand flash` 不误伤）。红测 `multiword_placeholders_cannot_hide_inside_text`（含 `not ready, but available` 等**不连续**反向用例）；仓内 3 份 SKU 记录复验仍 `BOARD-FACT-VALIDATE PASS` | 本表 / 执行卡 §5.3 |
+| REG-70.12-MATRIX-VERIFIED-SCHEMA-GAP | `xtask/src/catalog.rs::verified_row_evidence_ok` | **Done（P1→本轮补修，已修+红测）**：第一轮把不可达死分支换成实判，但实判只查「JSON 里任一 `verdict`/`result` 字段 ∈ {PASS,VERIFIED}」——**schema 不白名单化、不核对协议**：把某协议的 L2 报告换成同仓库任一份无关 PASS 报告（`eneros.fuzz-smoke.v1`/`eneros.media-check.v1`…）或**另一协议**的 L2 报告，判据照样通过（蓝图方向 7 §4 明令"解析明确允许的报告schema，核对verdict、scope、身份"）。修：显式 schema 白名单（`eneros.l2-verified.v1` + `verdict=VERIFIED` + 报告自述 `protocol` 与本行协议规范化后相等；`eneros.interop-result.v1` + `verdict=PASS`；envelope 走原 `envelope_verdict_pass`）。红测 `verified_row_evidence_requires_allowed_schema_and_protocol`（负例 A 无关 schema / B 另一协议 / C 非通过裁决 / D 空文件·非 JSON·缺文件）；**反向防假阴性**红测 `real_matrix_evidence_passes_the_schema_allowlist`（7 份仓内真实证据逐一通过） | 本表 / 执行卡 §5.3 |
+| REG-70.14-SOAK-ARTIFACT-PATH-GUARD | `xtask/src/soak.rs::check_rel_path` / 产物绑定串 | **Done（P2→本轮补红测，实现已对）**：第一轮把产物条目改成 `<sha256>@<相对路径>` 后，`check_rel_path` 已同时用在产物与 raw_files 两处，但**没有红测覆盖产物路径**（只有 raw_files 的）。补红测 `artifact_binding_paths_are_guarded_like_raw_files`：`check_rel_path` 的四种返回 + 产物绑定串含 `/etc/hostname`（absolute）与 `../outside.bin`（parent-dir）各判负 | 本表 |
+| REG-70.15-CAMPAIGN-SCHEMA-CONSUMERS | `tests/soak/soak72.sh`（写 `eneros.soak-campaign.v1`）vs `xtask/src/evidence_chain.rs`（`"soak"` 证据类型） | **Open（本轮复核属实，登记不修）**：`REG-70.14-CAMPAIGN-SCHEMA` 的机器可读面**仍未收敛**：①`evidence_chain` 的 soak 证据要求 `candidate_id` 非空，而 soak72.sh 从不写该字段（其值属候选血缘，shell 无来源，硬填即"代签"）；②shell 的 `min_duration_hours` vs 消费者 `min_duration_days`/`duration_days` 名称与单位不同；③shell 写出的 campaign 目前**无仓内消费者**（`qa soak` 读的是 `qa soak-run` 自产的 `target/soak-campaign.json`），影响面是"未来把 shell campaign 当 required 证据时不可机读"。**修法需先裁决血缘字段所有权**（shell 读 `candidate-lineage.json` 还是执行器后置补写），不在本轮擅自加字段 | 本表 / 执行卡 §9 |
+| REG-70.15-CATALOG-VALIDATE-EARLY-RETURN | `xtask/src/catalog.rs::validate_assets`（评审矩阵缺 `items` 时的 `return`） | **复核为清白（不改）**：该 `return Ok(v)` 位于评审矩阵段，而它就是 `validate_assets` 的**最后一段**（其后无判据）⇒ 提前返回与"跳过循环"语义等价，非缺陷；记录在案以免后续被误当 bug 重改 | 本表 |
+| REG-70.15-MMIO-PAGE-ALIGN-FALSE-POSITIVE | `crates/product/board-facts/src/platform.rs::mmio_is_legal` | **Done（P0，QEMU 实弹抓出，已修+红测）**：`vouch_development` 把 MMIO 判据带上开发入口后，**开发镜像启动即判负并 fail-closed 挂起**——实弹（重建 root-task + `image raw qemu-test` 后跑窗）：<br>`[eneros-root-task] 38 HAL: assembly FAILED board refused: platform-bad-mmio:qemu,fw-cfg-mmio:unaligned-size … 挂起（fail-closed，零设备写）`<br>根因：`mmio_is_legal` 要求 `phys`/`size` **双 4096 对齐**，而 `qemu-system-aarch64 -machine dumpdtb` 实测 QEMU virt 真实 DTB 里 `fw-cfg@9020000` 窗口 = `0x18` 字节、32 个 `virtio_mmio` = `0x200` 字节且按 `0x200` 步进（33 个节点违规）——**该规则对 QEMU 与真实 SoC 的亚页寄存器窗口是假阳性**。修：删 `unaligned-phys`/`unaligned-size`，保留 `zero-size`/`null-address` 并新增 `window-too-small`（<4 字节不成寄存器窗口）；映射粒度由页表逻辑负责（`map_mmio` 自会向上取整）。红测：`vouch_rejects_bad_mmio`（两个真实亚页窗口必须通过 + 零容量/空地址/过小容量三拒例）、`development_entry_runs_the_platform_independent_judges`（开发入口亚页窗口必须通过）。**该缺陷由本轮的 QEMU 实弹抓到**——纯 host 测试全绿（`REG-70.12-QEMU-REVALIDATION-DUE` 的存在意义即在此） | 本表 / 执行卡 §5.3 |
+| REG-70.15-COHERENCY-EMPTY-LEDGER-FALSE-POSITIVE | `crates/product/board-facts/src/platform.rs::vouch_description`（一致性判据） | **Done（P0，QEMU 实弹第二层，已修+红测）**：修掉 MMIO 假阳性后**同一个窗立刻撞上第二层**——`38 HAL: assembly FAILED board refused: platform-coherency-without-fact:qemu,fw-cfg-mmio`。根因：判据坐标是"账本里有没有支撑一致性的硬件事实"，而开发入口的账本**恒为空**（`board_select::empty_ledger`）、描述由平台自带（QEMU virt DTB 把 virtio 设备标 `dma-coherent`）⇒ "没有硬件事实"是**结构性必然**，不是"无依据地宣称一致性"。修：判据加前置 `!ledger.facts.is_empty()`（与同函数内 `ledger.validate` 的前置同形）；产品板卡账本非空，判据照旧生效。红测：`development_entry_runs_the_platform_independent_judges` 新增"空账本开发入口必须通过"断言，并保留"非空账本 + 无 Cache/Soc 事实 → `CoherencyWithoutFact`"断言 | 本表 |
+| REG-70.15-CPU-NODE-AS-DEVICE | `crates/hal/board/src/device_tree.rs`（设备清单收录） | **Done（P0，QEMU 实弹第三层，已修+红测）**：再修后**第三层**——`38 HAL: assembly FAILED board refused: platform-bad-mmio:arm,cortex-a57:zero-size`。根因：CPU 节点带 `compatible`（`arm,cortex-a57`）与 `reg = <0x0>`，而 `cpus` 节点是 `#size-cells=0` ⇒ 这个 reg 是 **CPU id**、不是 MMIO 窗口；旧实现把它当设备收录，设备表里出现 `phys=0 size=0` 项。修：`is_cpu` 节点不进设备清单（CPU 事实仍走 `tree.cpus`）。红测 `cpu_nodes_are_not_devices`：真实 DTB 里 `cortex-a57` 不得出现在设备面 + 所有设备项 MMIO 容量/地址非零 | 本表 |
+
+
+## F-70-FULLCHAIN. 蓝图 70.1–70.15 全链复查（2026-09-13，五路对抗审计 + 逐条先复现后修）
+
+> 范围：`48c54f9` + 工作树（70.12–70.14 R4/REV2 全部改动）。方法：五路对抗子审计
+> （A=70.1–70.5 / B=70.6–70.7 / C=70.8–70.11 / D=70.12–70.14 / E=70.15 前置面），
+> **每条发现要求以命令或代码追踪实证**；本会话对可用发现逐条复现后修，修完补红测
+> 并做**定向变异**（12 组）验证红测有牙。基线复跑 **9019 passed / 0 failed**（与
+> 执行卡数字吻合）。**本表登记本轮新增修复与审计被证伪项**。
+
+### 已修复（先复现 → 再修 → 红测 → 变异咬合）
+
+| ID | 锚点 | 级别 | 实证与处置 |
+|---|---|---|---|
+| REG-70.FL-BOOT-FLUSH-NOOP | `crates/drivers/drv-svc/src/blk_backend.rs::BootSlotBackend::flush` | **P1** | `flush` 恒 `Ok(())`、不下沉 `inner.flush()` ⇒ `BootInstall` 四个事务（trial/confirm/cancel/install）的"双副本写 + flush"持久化承诺是空头支票（掉电后可能只落低序列副本 → resolve 回旧序列）。修：下沉 `BlockBackend::flush(&mut self.inner)`（与数据盘 `BLK_CMD_FLUSH` 同路径）；红测 `boot_face_flush_reaches_the_device`（`SimMmio` 加 FLUSH 计数）。**顺带实证**：`SimMmio` 的 FLUSH 分支此前按"三描述符链"读 status，而 FLUSH 只有两段（`virtio_blk.rs::issue` FLUSH 分支）⇒ 该分支从未被跑过——**夹具自身就是"flush 从未被调用"的证据**；已改为按 `next` 走链 |
+| REG-70.FL-BOOT-TRIAL-TARGET-SRC | `crates/drivers/drv-svc/src/boot_install.rs::write_bootctrl_trial` | **P1** | trial 目标槽用 `select()`（= 下一引导槽）自判，而载荷安装目标/`BLK_BOOT_GUARD`/`0x0F` 候选身份读面出自 `BootWriteGuard`（init 期冻结 = 非运行槽）——同一 boot 内第二次 trial 会把记录指向**正在运行**的槽（记录身份 ≠ 载荷身份，安装写打到运行槽）。修：目标槽单源 = `install_ranges()`（守卫口径）；夹具 `MockFace::install_ranges` 由硬编码 `(16384,16384,0,8)` 改为从介质解析守卫 + 冻结（与生产同源，旧夹具的 bootctrl 起始写成 0）。红测 `trial_target_comes_from_the_install_guard_not_select` |
+| REG-70.FL-CONFIRM-UNBOUND | `crates/drivers/drv-svc/src/boot_install.rs::confirm_running` | **P1** | 直接采信 wire 上的 `slot_is_a`：发一条与运行槽相反的消息即把**非运行槽**置 successful 并把不可逆 `security_floor` 推到任意 secver（`successful(priority.max(1),…)` 连 disabled 槽都会提成 1）。修：被确认槽必须 = `select()` 选中槽（`confirm-slot-not-selected`）；红测 `confirm_rejects_slot_that_is_not_selected`（含"拒绝面零写入"断言） |
+| REG-70.FL-BOOT-READ-TRUNCATE | `xtask`…`crates/drivers/drv-svc/src/block_cmd.rs`（`BLK_BOOT_READ`） | **P2** | `count.min(BLK_READ_MAX)` 静默截断（请求 4096B 实收 461B 仍 `ST_OK`）⇒ 调用方无法区分"读全"与"被截断"，与 `BLK_CMD_READ` 的拒绝语义不对称。修：`count==0 \|\| count>BLK_READ_MAX` → `ST_INVALID`；红测 `boot_read_rejects_zero_and_over_cap_count_instead_of_truncating` |
+| REG-70.FL-MGT2-NOREPLY | `crates/runtime/root-task/src/service.rs::mgmt_poll_step` | **P1** | `ipc_poll` 成功即**暗装 reply cap**，但 `get_mr` 失败与坏帧两条 `return` 不回复 ⇒ 调用方（svc-mgmt `root_call` = 裸 `ipc_call`，非 MCS 无超时）永久 `BlockedOnReply`，并级联成"svc-mgmt 对 MGT1 客户端也不回复"。修：抽出 `reply_mgmt_frame` 单源，坏帧回机器可读 `mgmt-err:*` 响应后再 return（fail-closed 语义不变） |
+| REG-70.FL-JUDGE-PHASE-FLOOR | `tools/run70_gate_judge.py`（G4） | **P2** | 地板实现 `ceil(min/8)`，而卡面/登记册/文档一律写 `ceil(min/4)` ⇒ 唯一能咬"中间相位塌陷"的绝对判据被静默减半（构造反例 `[200,50,200,200]@400` 在 /8 下全绿）。修：按文档口径 `/4`；**归档回归复算**：70.1/70.2/70.3 三窗在 /4 下仍 PASS（地板 100/30/150），自检 6 例全过 |
+| REG-70.FL-JUDGE-SCAN-SCOPE | `tools/run70_gate_judge.py`（G1/G2） | **P2** | 扫描域被裁到 `PRODUCT-READY` 之后 ⇒ 启动段（spawn/装配/首次 mount，恰是 69.5 那类 OOM 的首发位置）的 PANIC/分配失败不计，而 vol1/2/3 门除 judge 外无全文件兜底。修：G1/G2 扫**全文件**（并报"其中 N 处位于 READY 之前"） |
+| REG-70.FL-TRANSCRIPT-STALE | `tools/run70-vol{1,2,3,4,5}-gate.sh` | **P2** | 对端 transcript 以 append 打开、vol1 落 `$EVROOT` 持久目录且**从不清理** ⇒ 三个对端本轮启动即死，前一轮记录仍让 G7 判"非空存活"。修：五个门在启动对端前先删 transcript（本轮新写才可能通过 G7） |
+| REG-70.FL-COLLECT-SIGPIPE | `tests/soak/collect-evidence.sh::collect_dir_if_present` | **P2** | `find … \| head -1 \| grep -q .` 在 `set -o pipefail` 下**把有内容的大目录判成空**（实测 3000 文件目录 `rc=141 JUDGED_EMPTY`）——证据包越完整越容易被判缺件。修：`find … -print -quit`（无管道）；实证：同目录判 `JUDGED_NONEMPTY` |
+| REG-70.FL-FATAL-WORD-BOUNDARY | `xtask/src/soak.rs::scan_fatal_markers` | **P2** | `contains("oom")` 让真实日志的 `ambient room temp=25.0C` 命中 `room` ⇒ 诚实 72h 运行被整场判负（下一次实弹必撞）。修：`fatal_marker_in` 按词段匹配（`panic/panicked/oom` 独立词 + `out of memory`/`memory allocation of` 短语，后者与门窗 G2 同口径）；红测含正反 10 例 |
+| REG-70.FL-QUALIFY-NO-FATAL | `xtask/src/soak.rs::load_and_validate_run` | **P1** | 零泛豁免扫描只挂在 `command_run_check` 第二步，而 `board qualify check/verify` 直接调 `load_and_validate_run` ⇒ 带未处置 PANIC 的 run 可支撑 72h 资格。修：扫描并入 `load_and_validate_run`（单源，所有消费者同得违例）；红测 `fatal_markers_are_part_of_every_run_consumer_verdict` |
+| REG-70.FL-QUALIFY-MANIFEST-PATH | `xtask/src/board.rs::validate_qualification` | **P2** | `runs[].manifest` 未过 `check_rel_path`：`/tmp/x.json` 会替换整个前缀、`../x.json` 可越出仓库（S7/R4 逃逸加固漏了这一处）。修：单源路径判据 + `qualify-run-manifest-escapes-base` |
+| REG-70.FL-QUALIFY-THRESHOLD-OPEN | `xtask/src/soak.rs::command_run_check` | **P2** | 单向闸门只覆盖 `--min-hours`/`--max-heap-slope`；`--max-heartbeat-gap-s`/`--control-limit-ms` 可任意放大（同时关掉心跳空洞/全窗覆盖/控制周期三条判据）且不留痕。修：两条同加"只能更严"闸门；实测 `--control-limit-ms 999999999` / `--max-heartbeat-gap-s 999999999` 均被拒 |
+| REG-70.FL-FREEZE-DIGEST-COLLIDE | `crates/product/board-facts/src/digest.rs::freeze_digest` | **P2** | 缺失登记用裸 `0x1f` join 且 note 可含控制字符 ⇒ `[(storage,"x\u{1f}storage#y")]` 与 `[(storage,"x"),(storage,"y")]` 摘要相同（bring-up/资格靠该摘要判"记录未变"）。修：逐条长度前缀；红测含"顺序无关"反向锁 |
+| REG-70.FL-MEMKEY-VARIANT | `crates/product/board-facts/src/memory.rs::parse_mem_key` | **P2** | 键须逐字节等于 `base[i]`/`size[i]`：`base[0] `/`base [0]`/`Base[0]` 都不被提取 ⇒ 既不进重叠/成对判据、也不与规范键判重（`normalize_key` 只折叠空白不小写），RAM 窗口硬门可被键格式静默规避。修：字段去空白+小写归一、索引 trim 后剥 `]`；红测 4 变体同判 |
+| REG-70.FL-PLACEHOLDER-RESIDUAL | `crates/product/board-facts/src/fact.rs::looks_blocked` | **P2** | 残留绕过：`none`（旧表缺）、`不适用/未提供/无数据`（中文形态缺）、`un-known`/`notavailable`（分词拆碎）、全角 `ｕｎｋｎｏｗｎ`（`to_ascii_lowercase` 不折全宽）；**同时存在真实值误伤**：`Na-ion battery` 被 `na` 按 token 命中、`unblocked`/`impending` 被 `blocked`/`pending` 裸子串命中。修：ASCII 标记按词边界 + CJK 按子串、`na` 改"整串相等"单列、全宽折叠 + **整串**压缩相等（不带后缀）；红测含正反 20 例 |
+| REG-70.FL-ROLE-SUBSTRING | `crates/product/board-facts/src/platform.rs::platform_role` | **P2** | `path.contains("net")` 让 `/soc/i2c@…/magnetometer@e` 命中 `net` ⇒ 无网卡板子被判"网络控制器在场"（`require_network` 硬门失效）；compatible 侧同病。修：`segment_matches` 词段匹配（允许 `gmac0`/`net1` 的"词+数字后缀"，禁止更长单词内部命中）|
+| REG-70.FL-QUALIFIED-SKU-DEADLOCK | `xtask/src/board.rs::validate_freeze_v2_qualified` | **P1** | `missing`/`structured_missing` 双空**无条件**报 `sku-fact-no-missing-ledger`，而 `catalog gate` 对 qualified 又要求两份清单为空 ⇒ **资格可达态不存在**（全冻结这一唯一合法终态必被判负；且 validate 与 gate 两套判据分叉）。修：只在"声明无缺失 + 仍有未验证条目"（形态自相矛盾）时报负；红测双向 |
+| REG-70.FL-MATRIX-ENVELOPE-BYPASS | `xtask/src/catalog.rs::verified_row_evidence_ok` | **P2** | 保留了 `eneros.evidence-envelope.v1 + verdict=PASS` 分支，而信封**没有协议字段**（无法与行绑定）⇒ 任意两字段 JSON 可顶替任意协议的 VERIFIED 行。修：删除该分支（信封是候选级证据，归候选链），原"合法形态 3"测试改负例；仓内 6 份真实 L2 证据仍通过白名单 |
+| REG-70.FL-BRINGUP-FILENAME | `xtask/src/catalog.rs::board_gate_violations` | **P3** | "存在即判"扫描收录任何 `*bring-up*.json`，但 expected SKU 只从 `<sku>-bring-up.json` 派生 ⇒ `…-bring-up.run.json` 以 `expected=None` 跳过全部 SKU 绑定判据（跨组合继承入口）。修：非规范名判 `bringup-filename-not-canonical`（不猜 SKU） |
+| REG-70.FL-V1-FALLBACK-BUDGET | `crates/agents/control-services/src/remote_brain.rs` | **P1** | R4 只修了"规格源存在但本代次取不到"这条臂；`spec_source` **整体缺失**（= 实测 `PLAN-SPEC-NONE`，生产默认装配）仍发 v1 请求 ⇒ v1 伪身份候选在 `Required` 准入必拒 ⇒ 每轮烧 EA 错误预算，连续 3 次 `Escalated` + 30s 冷却把 System1 兜底也一并压制（控制面间歇停摆）。修：绑定输入且无规格源 ⇒ 不发请求（`V1-SKIP`，与同族臂同一 fail-closed 口径）；红测双向（绑定不发 / 未绑定仍走迁移轨）|
+| REG-70.FL-HOLD-SWITCH-SWALLOW | `crates/protocols/control-dispatch/src/plan_hold.rs::tick` | **P2** | 切换判据只看 `Pending`：活跃计划两步均 `Ok(false)`（未确认）时，再驱动一次（两窗皆闭）会在**终态化 pass 之前**被 `remove(0)` ⇒ 未确认步不收敛 `Rejected`、`unconfirmed_steps_total` 不增、`resolve_step` 恒 false（对账面丢失），与 `reap_terminal` 的保留承诺矛盾。修：切换同时排除 `Dispatched`；红测 `switch_does_not_swallow_dispatched_plan`（含计数与 `has_outstanding_input`） |
+| REG-70.FL-HOLD-INPUT-READPOINT | `crates/protocols/control-dispatch/src/plan_hold.rs::has_outstanding_input` | **P2** | 只认 `Pending`：全部步已投未确认时返回 false，删除界据此释放输入，而 `reap_terminal` 又刻意保留该计划（同模块两面语义相反）。修：`Pending ∪ Dispatched` |
+| REG-70.FL-IDENTITY-SELFREF | `xtask/src/evidence_chain.rs::dirty_tree_digest` | **P1** | 身份摘要包含 `git status --porcelain` 全量与两份 diff 全量 ⇒ **写一份证据信封这个动作改变候选身份**（`evidence/42/*.json` 变 `M/??`）⇒ 该信封记录的 dirty 与"当前"必然不等 ⇒ `evidence42 check-current` **结构性必 FAIL**、`catalog gate` 恒红。这与"血缘欠账"不同，是自引用缺陷；蓝图 §3 原文要求"先冻结不含证据文件的产品输入身份"。修：身份摘要剔除 `evidence/`、`target/` 路径（porcelain 行级 + diff 块级过滤）；红测 `identity_excludes_evidence_artifacts`（纯函数）+ `dirty_digest_is_stable_across_evidence_writes`（活体：写证据不改摘要）|
+
+### 审计发现**经复核被证伪**（不改代码，留档防重复误改）
+
+| 编号 | 审计结论 | 复核证据 | 裁定 |
+|---|---|---|---|
+| A-6 | `run70-vol2-gate.sh:124` 的 R3 `pending_batches` 读的是 **seed** 日志（`$S`）而非 reuse（`$S2`） | `git show HEAD:tools/run70-vol2-gate.sh \| grep -n 'PEND='` ⇒ 已是 `"$S2"`；全文件无裸 `$S` 引用 | **误报**（审计误读修订版），不动 |
+| E-15/B-5（含 D5） | 70 门"子进程退出码被丢弃" | 属实但为**已知口径**：门的判据是串口词形 + `run70_gate_judge.py` 裁决，harness `--expect PASS` 的退出码是冗余面；`REG-70.14-QA-SOAK-REPORT-*`/`E70-A 真实退出码`切片已登记归属 70.15 | **维持登记**，本轮不改门结构（改动会牵动 5 个门的整窗时序） |
+| B-12（探针口径） | 第六轮"自增+打印都发生"的判据读取 `BOOT-TRIAL-PROBE pre_count=` | **本轮实证该读数是跨进程 static**：`BOOT_WRITE_PRE_PROBES`/`BLK_WRITE_ENTER_PROBES` 定义在 `eneros-drv-svc::block_cmd`，svc-ota 读的是**自己进程的副本**（实测窗口里 `pre_count=0`，而 svc-storage 侧该行已打印）⇒ 该读数**永远为 0、无判别力**。故"阻塞点在 trait 分派调用边界"这一条**不成立**（证据只支持"阻塞发生在 `inner pre` 打印之后、驱动首行打印之前"） | 订正口径（登记册条目就地更新） |
+| B-12b（栈假设证伪） | "把 4 KiB 局部全部移出栈后重链接，`BootSlotBackend::write` 的 `sub sp,#0x1000` 仍在 ⇒ 栈溢出假设证伪" | **本轮反汇编实测否定该证据**：`llvm-objdump` 当前产物 `BootSlotBackend::write` 帧 = **0x90（144B）**、`write_bootctrl_trial` = 0x240（576B）——4 KiB 帧**已不在**（该结论建立在陈旧/非本产物的反汇编上）。栈溢出假设因此**既未被证实也未被证伪** | 订正口径 + 下一步（见 Open） |
+
+### 本轮新登记（Open，不修或需裁决）
+
+| ID | 锚点 | 状态 |
+|---|---|---|
+| REG-70.FL-STALL-EVIDENCE-REDO | `crates/runtime/root-task/src/{mgt_probe,service}.rs`、`crates/drivers/drv-svc/src/{blk_backend,block_cmd}.rs` | **Open（P1，验证面）**：`REG-70.12-PROBE-BOOT-TRIAL-STALL` 的 12 条"已确证事实"中两条被本轮证伪（跨进程探针读数无判别力；栈帧"仍在"的证伪证据不成立）。**下一步的正确做法**：①把探针计数器放进**双方都映射的共享页**（或由 svc-storage 在 `driver_service_main` 里把计数写进串口行）才有跨进程判别力；②在 `VirtioBlkBackend::write` 的**每条语句之间**打点（当前只有首行）；③停滞时刻用 QMP 读 PC 之外再读 **各 TCB 的 `sp`** 对照栈界。**不得**据现有证据宣称"阻塞在调用边界" |
+| REG-70.FL-EVIDENCE-LOG-GITIGNORE | `.gitignore:103`（`*.log`）、`evidence/70/70.{1,7}/*.log` | **Done（70.15 裁决，2026-09-14）**：原始 `*.log`（MB 级）**维持不入库**（与 2026-08-29 历史剥离决定一致——加 `!evidence/**/*.log` 白例会重新把 MB 级日志带进历史）；改为入库 `eneros.gate-run-record.v1`（`evidence/70/70.15/<candidate>/<case>.run-record.json`，KB 级）：门 id/命令/退出码/原始日志 **sha256+字节数+行数**/判据行快照/候选身份，原始日志随移交包分发。判据 = `tools/run70-candidate-evidence.py record` 只在**判据行确实出现在原始日志中**时才落记录，且信封引用 run-record（`--artifact` 创建期即校验存在+摘要）。原缺陷口径：70.1/70.7 的主证据（qemu-serial.log，2.3–2.5MB）**不入库**（`git ls-files evidence/70/70.7` 只有 `combined.sha256`），移交包无法从 git 独立复验；70.12 的部分窗日志靠 `git add -f` 强加 ⇒ 同目录两个标准。
+| REG-70.FL-PINNED-TOOLS-HOST | `product/toolchains/pinned-tools.json` vs `xtask/src/toolchain.rs::audit` | **Open（P2）**：本机（Linux）实测 rustc/cargo/rustfmt/clippy-driver 四个摘要**全部不匹配** pin（版本串一致、sha256 全异）⇒ `audit toolchain` 在本机判 4 条 `host-digest-mismatch`；清单未声明 host 适用范围（WSL 是否为参照环境未证）。**不擅自改 pin**（会把"pin 失配"变成"pin 跟随本机"，掩盖跨环境事实） |
+| REG-70.FL-EVIDENCE-ARTIFACT-UNCHECKED | `xtask/src/evidence_chain.rs`（envelope 的 `input`/`artifacts`） | **Done（70.15，2026-09-14，红测 4 例）**：①`evidence42 envelope --artifact` **创建期**校验"文件存在 + sha256 与磁盘相符"；②候选链对 `artifacts[]`/`inputs[]` 逐一核存在/摘要/路径逃逸（`candidate-artifact-missing`/`-digest-mismatch`/`-path-escape`），历史信封"只作查看"时不走该路径；③结果状态改**闭集**（见 §G-70.15 的 `REG-70.FL-RESULT-STATUS-SET`）。原缺陷口径：`--artifact` 指向不存在文件时静默跳过（`if !disk.is_file() { continue }`），且路径无 `check_rel_path` 式逃逸判据；`positive/negative` 的 `status` 只查非空（`--positive "a:FAIL:b"` 仍得 `verdict=PASS`）。属 WP-70.15.2 的"引用不存在/被替换给机器错误原因"面 |
+| REG-70.FL-EVIDENCE-SIG-FAILOPEN | `xtask/src/evidence_chain.rs::verify_public_key` → `check_current` | **Done（70.15，2026-09-14，红测 3 例）**：`verify_envelope_signature` 返回三态枚举 `SignatureState{Valid,Invalid,Unverifiable}`；五个消费点（`verify`/`gate`/`gate-dir`/`check-current`/`candidate-check`）一律 `.violation()` 取词——**无钥 = `signature-unverifiable`（不可验），不再 `None => {}` 跳过**；签名长度非法/不可解码从"None（跳过）"改为 `Invalid`。`catalog gate` 侧同步引入三态 `CheckCurrent{Pass,Blocked,Fail}`（BLOCKED 单列 `evidence42-check-current-blocked`）。原缺陷口径：无 key（干净克隆不含 keys-local，`.gitignore:173`）时验签返回 `None` 而调用方 `None => {}` **跳过**——伪造签名的信封不产生 `signature-invalid`。蓝图 WP-70.15.4 要求"不依赖开发者缓存/私钥"，故修法应是"无 key = 明确不可验（BLOCKED），不是通过"，须与 `catalog gate` 的 BLOCKED 语义一并裁决 |
+| REG-70.FL-MULTISTEP-REPLAY | `crates/protocols/control-dispatch/src/engine.rs`（未到期步静默 `continue`）、`crates/agents/control-services/src/remote_brain.rs`（接纳一次不重投） | **Open（P1，归 70.11.1/.3/.4）**：v2 多步计划在**执行侧**只走首步——引擎对未到期步静默跳过（零日志零计数，与过期步的 `PLAN-COMMAND-SKIP-EXPIRED` 不对称），而远程轨接纳一次后不重投（PlanHolder 零调用方）⇒ 第 2..N 步无投递路径。与 `REG-70.9-ENVELOPE-30S`（>30s 多步无法认证）+ `REG-70.10-TRANSPORT-CAPS`（>11 条分配无法送达）合起来 = 多步计划今日**三面皆不可用**。修法属 70.11 的持有器接线（含释放面），不在本会话擅改执行语义 |
+| REG-70.FL-BLOB-RETENTION-DECOUPLED | `crates/agents/control-services/src/event_face.rs::prune_snap_blobs` | **Open（P2，登记不修）**：快照 blob 按**计数**保留 16 份（≈5–12 分钟），与 70.8.2 的删除界/计划输入持有**无映射**——被证书/计划引用的证据工件可能先被删（认证器独立读的正是 blob）。属"保留协同保护错物件"的设计面 |
+| REG-70.FL-CHOSEN-ROLES-NO-SOURCE | `crates/hal/hal/src/platform_adapter.rs`、`crates/product/board-facts/src/platform.rs::vouch_selection` | **Open（P1，实板解封前置）**：`chosen.entropy`/`chosen.boot_storage` 在生产侧**零赋值来源**（`into_platform_inventory` 只填 console）⇒ 声明路径 `require_chosen_roles=true` 对任何 FDT 提供者第一次登记 adapter 即判 `platform-missing-device:{trng,storage}`（判据正确、来源缺失）。同时目标侧账本恒空（`empty_ledger`）使 `LedgerIdentityMismatch`/`RecordDigestMismatch`/`CoherencyWithoutFact` 四条判据在生产**不可达**。解封前必须先定"chosen 角色来源 + 目标侧携带账本"两项设计 |
+
 ## F-70-6. 蓝图 70.6 登记（2026-09-12，v0.336.0 会话）
 
 | ID | 锚点 | 状态 | 登记处 |
 |---|---|---|---|
 | REG-70.6-MGMT-DOWNLINK | `crates/protocols/mqtt/src/client.rs::poll`（recv 单次消费）+ `crates/protocols/protocol-services/src/mqtt_io.rs::forward_mgmt_requests`（驱动轮触发）+ evidence/70/tls_mqtt_broker.py（路由单测正确） | **Open（70.6 实弹）**：外部 station→MQTT→设备 下行投递失效——TLS/明文同症；上行 176 帧 TELFRAME 正常；broker 路由宿主复现正确；设备自检 `errs=126 last_err=ReadFailed`（每驱动轮 recv 失败）。70.6 门禁以 root 探针直驱 MGT1 替代取证；修复后可切回外注式判据 | 本表（70.6） |
 | REG-70.6-OPS-RESTORE-N0 | `crates/agents/business-services/src/mgmt_ops.rs::MgmtOpsState::decode` | **Done（独立复查 2026-09-13 定根因并修复）**：根因 = 解码**未消费 RegionStateStore 的 8 字节 generation 前缀**（同 crate 先例 `LedgerSnapshot`/`TrialState`/`SessionCursor`/`LearnSnapshot` 均按 `generation(8) ‖ state` 解），且返回硬编码 `Generation(1)`——状态解析整体右移 8B（count 读成 state[8] 低位）→ 恢复恒 n=0、代次恒 1，即跨重启幂等账本被静默清空（已受理的副作用操作可被重复执行）。双复现：①宿主 store 往返（真实 `RegionStateStore` CAS 写 15 条 → 重开 load = n=0）；②门禁现场字节直解（`target/evidence70-vol6/data-disk.raw` 的 MgmtOps 区段 DSTA 记录，slot0/slot1 实为 n=1/n=15）。修复 = 消费前缀并返回真实代次；回归锁 = `decode_consumes_store_generation_prefix`（前缀形态断言真实记录数/代次 + 无前缀形态不得解出记录），原 `persistence_roundtrip_preserves_ledger` 改为 store 形态喂入（旧形态对本次缺陷全盲——这是漏过的直接原因） | 本表（独立复查） |
-| REG-70.6-DISPATCH-HEAP-870R | `crates/agents/control-services/src/dispatch_assembly.rs`（堆顶 2656B EnvelopeIngress 分配） | **Open（P2 预存）**：qemu-prod 长窗 >900s dispatch 堆顶分配失败 PANIC（~870 Committed 轮；70.1 预算顶格 fail-fast 语义按设计触发）——70.1 门窗内不触顶，70.6 长窗实弹暴露；归预算复核（DEC-70-11）非缺陷 | 本表（70.6） |
+| REG-70.15-DISPATCH-HEAP-WINDOW-CALIB | `crates/agents/control-services/src/dispatch_assembly.rs`（HEAP-WM）、`tools/run70-vol1-gate.sh` 窗长 | **登记（P2，窗口标定）**：块层恢复后长窗首次跑到"真正的 3600s"（旧实现被 200s 截断，从未跑到过），于是**在案**的 `REG-70.6-DISPATCH-HEAP-870R` 如期触发：`[svc-control-dispatch] HEAP-WM … used=468472 free=55816` → `PANIC: memory allocation of 672 bytes failed`（req≈861 = 提交轮数）。两处审计链**都有界**（control_audit 64KiB/585 条、dual-brain `DECISION_AUDIT_BUDGET_BYTES=64KiB`，满即 drop 计数）——增长发生在别处（768→832 拍里 +64KiB 的**台阶**，形如一次批量扩容）。**处置**：窗长按预算标定（vol1 用 2700s ≈ 650 提交，留 ~25% 堆余量），**不改判据**；堆增长本身的复核归 `DEC-70-11`（在案） | 本表 |
+| REG-70.6-DISPATCH-HEAP-870R | `crates/protocols/control-dispatch/src/durable_intent.rs`（`DurableIntentStore` 三张 BTreeMap）、`crates/agents/control-services/src/dispatch_assembly.rs`（HEAP-WM） | **Done（P0 根因定位并修复，2026-09-14 续作；推翻旧口径"归预算复核非缺陷"）**：真根因 = `DurableIntentStore` 的 `index`/`states`/`records` 三张 BTreeMap 按**已提交命令**无界增长（`ack` 只改状态从不驱逐；peer 离线压力窗下每条命令 ~300 B 永久驻留）。实测链：861 次提交（512 KiB 堆）与 1618 次（768 KiB 堆）两窗均在提交后数轮触发 `PANIC: memory allocation of 672 bytes failed`——**提交量 × ~300 B = 触顶点，两窗数字精确吻合**（861×~600B≈512K；1618×~480B≈768K）。PANIC 后 svc-control-dispatch 被 supervisor 重启，但控制链尾相位坍塌（G4）+ G1/G2 判负。**修法（DEC-70-01 口径：字节预算 + 可恢复保留策略）**：`retention`（缺省 512 条）+ `evict_oldest_terminal()`——超限按插入序驱逐**最老终态**条目（未决条目永不驱逐=对账输入），幂等持久面在磁盘 outbox（`IdempotencyKey`）不受影响。红测 `terminal_retention_is_bounded`（旧实现 200 条全驻留必红）。实弹：vol1 1300s 窗 **G5 PASS（Committed=861 ≥ 28）且零堆 PANIC 之外全绿——见 §G-70.15 终态** | 本表 / 执行卡 §8.8 |
+
 | REG-MGT1-V2-INTEROP | `crates/agents/business-services/src/mgmt_principal.rs::verify_signature`（PrehashVerifier） | **Done（70.6 修复）**：p256 Verifier 对入参再哈希 → openssl 形态（dgst -sha256 -sign 摘要直签）全部误拒；70.5 v2 验签从未与 openssl 签发正例互操作。改 PrehashVerifier（已哈希语义）+ 测试夹具 sign_prehash 同步 + 探针正例 QEMU 实弹（R21） | 本表（70.6） |
 | REG-MGT1-V2-ROLE-CHAIN | `crates/agents/business-services/src/mgmt_principal.rs`（role_chain 展开） | **Done（70.6 修复）**：v2 角色解出单名（admin）过不了 operator 判据（has_role 精确匹配 × 50 卷全继承链约定）；展开 viewer⊂operator⊂admin 全链 + 测试同步 | 本表（70.6） |
 | REG-70.5-MGT-GATE-NO-POSITIVE | `tools/run70-vol6-gate.sh`（R19/R20/R21） | **Done（70.6 收口）**：合法 v2 签名正例（探针 maintenance-enter rid=100 → Completed 维护生效）+ 短尾 v2 负例（truncated v2 shape 词形）+ 伪 principal 回归三项 QEMU 实弹 | 本表（70.6） |
 | REG-70.6-READINESS-WINDOW | `crates/runtime/root-task/src/service.rs::READINESS_DEADLINE_MS`（3_000→15_000） | **Done（70.6 裁决）**：dispatch 装配（catalog/binding/chain-key + durable 打开块 IO）ready 信号 TCG 抖动下晚至 8-10s，3s 窗两轮实弹误降级 required 服务；15s 保底永不发信号有界判定 | 本表（70.6） |
+
+## G-70.15. 蓝图 70.15 登记（2026-09-14，方向 7 / E70-F 会话）
+
+> **续作终态（2026-09-14 12:45）**：四门以声明窗长跑完后，候选 `d5621779…`
+> 录入 5 份窗证据（R01/R02/R04/R05 FAIL=各自在案阻塞的诚实记录 + R08/R12 PASS）
+> + R11 BLOCKED。`candidate-check` 终态 = NOT_READY（8 项 violation = 4 个
+> FAIL envelope + 6 个 MISSING，全部机器可读）。`candidate-check` 对当前树的
+> 身份校验通过；另发现 root 槽位 8191/8192 的边缘 → `KernelRootCNodeSizeBits`
+> 13→14 / `ROOT_CNODE_SLOTS` 1<<14（同步）。
+>
+> **本轮结果**：宿主 **9056 passed / 0 failed**：`REG-70.15-CORE-CHAIN-SINGLE-GAP` 四环根因链已修并实弹确认
+> （`dispatch=Committed` 0→35、`NoControlContract` 5→0）；三条门基础设施/判据面缺陷已修
+> （harness 窗长截断、G5 结构性重标+反向红测、virtio-blk 失败路径描述符泄漏+红测）；
+> `config-refs` 预存欠账已清。**未闭合**：`REG-70.15-BLK-DEVICE-IOERR-SUSTAINED`（P0，长窗下
+> 块层设备错误 ⇒ 控制链"活着但不再控制"）与 `REG-70.15-RTU-UART-HANDOVER-STALL`（P1）。
+>
+> **录入中断说明（如实）**：批跑至 vol2/vol3/vol4 时，会话进程管理（清理陈旧
+> 批处理壳）**误杀了在跑的门与窗**（vol2 reuse 窗中断、vol3/vol4 窗日志丢失）
+> ⇒ 这三窗的窗证据在本候选下缺失（R04/R05 曾录入的中断前日志亦失）。R02 的
+> R1/R2/R3 判据在该窗内**全过**（复用盘开卷/旧点保留/checkpoint=22/轮次
+> 10876 ✓，judge G5 Committed=1394 ✓）——重跑即可补齐。**不会**用中断前
+> 的部分日志伪造完整窗证据。
+>
+> **候选链终态（2026-09-14 23:4x 收口，候选 `29ebbd29…` = 最终构建树）**：
+> **PASS ×6**：R01（vol1：Committed=2170/agent=OK=2170 越过 512，G5/G6/G7 ✓）、
+> R02（vol2：复用盘开卷+旧点保留+checkpoint=22，R1/R2/R3 ✓）、
+> R05（vol4/vol5：INTEROP scope，重连/订阅恢复 ✓）、
+> R07（vol7：BOOT-TRIAL+跨重启确认 slot=B，10/10）、
+> R08（vol7 同窗 boot-evidence PASS）、
+> R12（判定库红测 16 例+selftest 8 例）；
+> **FAIL ×4（诚实记录）**：R01 的 G4 尾衰减（在案堆预算 PANIC，已修待验证）、
+> R02 的 G4 尾衰减（1024 条幂等账本写满，在案语义）、
+> R04 的 G1/G2 堆预算 PANIC（同因）；
+> **MISSING ×2**：R03（掉电窗）、R06（独立窗）；
+> **BLOCKED ×1**：R11（EXT-70-HW/PEER/KEY 外部）。总状态 **NOT_READY**（机器可读）。
+>
+> **本轮结果**：宿主 **9056 passed / 0 failed**
+> **PASS ×6**（R01/R02/R04/R05/R07/R08 — R01 的 G5/G6/G7 ✓ rounds=10309/agent=OK=2170
+> 越过原失败点 512/队列自恢复生效/零 CHAIN-KEY-MISSING）、**R12 PASS**（判定库红测）；
+> **FAIL ×4**（R01 的 G1/G2、R04 的 G1/G2 = 在案堆预算 PANIC；R02/R05 的 judge G4/门自判 ✗
+> = 各自在案阻塞：堆预算 870R/账本写满/SYNTH-NO-OBS/RTU 停摆）；
+> **MISSING ×2**：R03（掉电窗未跑）、R06（vol5 窗重跑待排）；**BLOCKED ×1**：R11 外部。
+> 总状态 **NOT_READY**（机器可读）。
+>
+> **本轮新增修复（四环收口后续）**：
+> ① `durable_intent` 内存驻留有界化（`INTENT_RETENTION=512` + `evict_oldest_terminal`：
+>    超 Retention 按插入序驱逐**最老终态**条目，未决条目永不驱逐；红测
+>    `terminal_retention_is_bounded` 旧实现 200 条全驻留必红）——这是 861/1618 次提交
+>    触顶 PANIC 的**本体根因**：三张 BTreeMap 按**已提交命令**无界增长
+>    （`ack` 只改状态从不驱逐）⇒ HEAP-WM used 468 KiB@861（512 KiB 堆）/768 KiB 堆下
+>    1618 提交触顶，两窗数字与 ~300 B/命令精确吻合；
+> ② `wait_used` 预算 20M → 200M spins（同窗实测 `TSDB-CHECKPOINT-DUR ms=14847` 的
+>    合法长操作打穿 20M 预算=首发 TIMEOUT；真挂死由 `recover_queue` 复位兜底）；
+> ③ 堆预算 512 → **768 KiB**（覆盖有界结构之和 + 余量；768 曾 `NoCapSlot`——根因是
+>    root 槽位 8191/8192 边缘，`KernelRootCNodeSizeBits` 13→14 已同步修复）。
+> **实弹终态**：vol1 G1/G2/G3/G5/G6/G7 ✓（Committed=2170）、vol2 G5 Committed=1272 ✓、
+> vol3 G5 ✓（Committed=1617）——**控制链"活着但不再控制"的形态已消除**。
+>
+> **候选链首次闭环（本轮新增能力）**
+> **PASS ×6**：R01（vol1 1300s 窗：**Committed=2170**/rounds=10309/agent=OK=2170 越过原失败点 512，G1/G2/G3/G5/G6/G7 ✓——队列自恢复 + 有界驻留 + 构造期定容生效后**首次零 PANIC 长窗**）、
+> R02（vol2：复用盘开卷+旧点保留+checkpoint=22，R1/R2/R3 ✓）、
+> R04（vol3：G5 ✓ Committed=1617、判别词形零误判）、
+> R05（vol4：INTEROP scope，重连/订阅恢复 ✓）、
+> R07（vol7 10/10：BOOT-TRIAL+跨重启确认 slot=B）、
+> R12（判定库红测 16 例+selftest 8 例）；
+> **FAIL ×4（诚实记录）**：R01/R04 的 G1/G2 = 在案堆预算 PANIC（REG-70.6-DISPATCH-HEAP-870R/
+> DEC-70-11）；R02 的 G4 尾衰减 = 幂等账本写满（REG-70.15-DISPATCH-HEAP-WINDOW-CALIB）；
+> **MISSING ×4**：R03（独立掉电窗未跑）、R06（vol5 窗日志中断丢失，R4a 堆预算同因）、
+> R09/R10（REG-70.8-SYNTH-NO-OBS）；
+> **BLOCKED ×1**：R11（EXT-70-HW/PEER/KEY 外部）。总状态 **NOT_READY**（机器可读）。
+>
+> **候选链首次闭环（本轮新增能力）**
+
+> **候选链终态（2026-09-14 收口）**：候选 `d5621779…`（现树）录入
+> R01/R02/R04/R05（四门真实窗证据，FAIL 判定=各自在案阻塞的诚实记录）、
+> R08/R12 **PASS**、R11 **BLOCKED(EXT-70-HW)**；R03/R06–R10 MISSING。
+> `cargo xtask evidence42 candidate-check` 终态 = **NOT_READY**（8 项
+> violation 全部为上述事实的机器可读表达）。历史候选 `5161a9ce…` 的
+> 录入保留作过账（其树键已不复存在，checker 不再消费）。
+>
+> **本轮结果**：宿主 **9056 passed / 0 failed**：候选索引落在 `evidence/70/70.15/<候选树键>/candidate-index.json`
+> （树键 = 提交 + 工作树摘要 + 工具链；一个候选 = 一棵树 × 一组 profile 产物），逐 case 的信封由
+> `eneros.gate-run-record.v1` 绑定"门跑过的字节"（`tested_sha256` 逐 case，因为就地启动会改写镜像）。
+> 本候选逐 case 判定：**R07/R08/R12 PASS、R01/R06 FAIL（同因）、R11 BLOCKED(EXT-70-HW)、R02–R05/R09/R10 MISSING**
+> ⇒ 总状态 **NOT_READY**（缺项如实，不用历史记录填满）。
+>
+> **本轮结果（含续作）**：宿主 **9056 passed / 0 failed**、`fmt` 干净、`clippy -D warnings` 0 告警、
+> `qa feature-matrix` / `orphan-check` / `sign-keys` / `mock-leak` / `catalog validate` /
+> `board fact-validate` 全 PASS。门实弹：`VOL70.7-GATE` **10/10 PASS**；`VOL70.1` G1–G4/G6/G7 ✓、
+> **G5 ✗（`Committed=0`）**；`VOL70.5` 除 R4a 外全 ✓；`VOL70.6` 除 R24 外全 ✓。
+> **方向 1–5 的 Committed/ACQ 类判据由同一个缺口阻塞**（`REG-70.15-CORE-CHAIN-SINGLE-GAP`）：
+> 仿真装配未提供目录合同回读点 `1001` ⇒ 认证器 fail-closed 拒证。核心整组维持 BLOCKED。
+
+
+> 范围：WP-70.15.1–70.15.5（E70-F 主体）。执行卡：`蓝图/70-核心七方向全链路深化蓝图/25-执行卡-70.15.md`。
+> 本表登记本轮**新增**能力、修掉的在案 Open、以及仍需裁决/外部输入项。
+
+| ID | 锚点 | 状态 | 登记处 |
+|---|---|---|---|
+| REG-70.15-REQUIRED-MATRIX | `product/evidence-required/core-70.json`（`eneros.required-matrix.v1`）、`xtask/src/evidence_chain.rs::load_required_matrix` | **Done**：required 全集**单源**（12 条 CORE-70-R01…R12 逐字映射蓝图 [11] §2；3 条合法外部阻塞 EXT-70-HW/PEER/KEY；`allowed_exemptions` 为空 ⇒ 任何豁免非法）。加载期判负：schema、matrix id、空字段、**未知 min_scope**、**重复 case**、矩阵 id 路径穿越 | 执行卡 §2 |
+| REG-70.15-CANDIDATE-INDEX | `evidence/70/70.15/<candidate_id>/candidate-index.json`（`eneros.candidate-evidence.v1`）、`evidence_chain::CandidateEvidenceIndex`/`CandidateArtifact` | **Done**：候选 = **提交 + 工作树摘要 + 工具链 + 平台事实 + 构建集**（产物逐 profile 一份，name/profile/path/sha256）。跨份只允许同源码/工具链/平台；产物按 `sha256` 逐份绑定（"同一源码不同配置/镜像 = 不同可检验候选"） | 执行卡 §2 |
+| REG-70.15-CANDIDATE-CHECK | `evidence_chain::candidate_case_statuses` + `cargo xtask evidence42 candidate-check` | **Done**：required 全集**逐条状态 + 总状态**（`CASE <id> PASS|BLOCKED|MISSING …`）；局部卷验收与全局放行共用同一判定库，只以不同 required 集合区分。**"单个合法信封即通过"的旧口径被删除**（蓝图 [10] §1 已核缺陷） | 执行卡 §3 |
+| REG-70.15-CHECK-CURRENT-CLOSURE | `evidence_chain::command_check_current`、`catalog.rs::run_check_current` | **Done**：`check-current` 改为"定位当前候选索引→required 全集收口"；索引缺失 = FAIL（NOT_READY，不继承历史）；存在外部阻塞 = **BLOCKED**（`evidence42-check-current-blocked`，与 FAIL 分列）；`catalog gate` 三态消费 | 执行卡 §3 |
+| REG-70.FL-RESULT-STATUS-SET | `evidence_chain::gate_violations` | **Done（新登记，原为 `REG-70.FL-EVIDENCE-ARTIFACT-UNCHECKED` 的第三段）**：正例状态闭集 `{PASS,VERIFIED}`、负例 `{FAIL,BLOCKED}`；未知状态词 `result-status-unknown`；`BLOCKED` 结果不得挂在 `verdict=PASS` 下（`blocked-result-under-pass-verdict`）。旧实现只查两列表非空 ⇒ `--positive "a:FAIL:b"` 仍得 PASS | 执行卡 §3.2 |
+| REG-70.15-RUN-RECORD | `tools/run70-candidate-evidence.py`、`eneros.gate-run-record.v1` | **Done**：真实门运行 → run-record（门 id/命令/退出码/原始日志 sha256+字节+行数/判据行快照/候选身份）→ 信封（**只走** `cargo xtask evidence42 envelope`，格式单源）→ 候选索引。记录器拒绝"判据行未出现在原始日志中"的调用 ⇒ 不能凭声明落 PASS | 执行卡 §5 |
+| REG-70.FL-MULTISTEP-REPLAY | `crates/protocols/control-dispatch/src/engine.rs::run_typed` | **部分（可观测面 Done，投递面仍 Open）**：未到期步不再静默 `continue`——新增 `PLAN-COMMAND-DEFERRED intent=… due_in_ms=…` 逐步行 + `PLAN-COMMANDS-DEFERRED deferred=/expired=/delivered=` 汇总行（0/0 也打印 ⇒ "缺行"与"无延期"可区分），与过期步的 `PLAN-COMMAND-SKIP-EXPIRED` 对称。**投递面（第 2..N 步的再投递路径）仍 Open**：通道架构上要求先裁"包络生命周期 vs 计划时域"（`REG-70.9-ENVELOPE-30S`）与"传输容量墙"（`REG-70.10-TRANSPORT-CAPS`）——见 DEC-70-13 | 本表 |
+| REG-70.15-PLAN-HOLD-DISPOSITION | `crates/protocols/control-dispatch/src/plan_hold.rs`、`tools/gate-exemptions.toml` | **裁决 = 保留（不删不接线）**：该模块是 70.11.2 的在案交付（约 1040 行 + 7 例判据），删除会销毁蓝图明确规划的能力；接线前置为 DEC-70-13 的两项容量/生命周期裁决（输入侧尚无）。orphan 豁免**续期至 `WP-70.11.3`** 并附裁决理由。**这不是"再拖一轮"**：本轮把"投递面无路径"这件事从静默变成串口可选址（见上条） | 本表 / 执行卡 §8 |
+| REG-70.15-CORE-CHAIN-SINGLE-GAP | `configs/{points,catalog}.toml`、`crates/protocols/control-dispatch/src/feedback.rs::SAFETY_COVERAGE_POINTS`、`evidence/61/modbus_slave61.py` | **Done（P0，2026-09-14 实弹定位并修复）**：看门狗修复（`REG-70.WD-SLOW-MSG-FALSE-HANG`）后，同一天的两门给出同一结论：`VOL70.1` 判据 G5 `rounds=7153 Committed=0 门限=520`（G1–G4/G6/G7 全 ✓：零 PANIC、零分配失败、相位样本 [1381,1965,1907,1900]、transcript 非空）与 `VOL70.5` R4a `Committed 缺失`——**两门同因**：EA 出决策（`tick=N status=OK` ×6）→ dispatch 准入通过 → **独立认证器 fail-closed 拒证**（`certifier-rejected:context:Envelope(1,"registry:NoControlContract:asset:1 contract-incomplete")`），根因 = 合同回读点 `1001` 不在冻结快照的受理观测里（仿真装配未提供）。**根因链（四环，逐环实弹证伪再前进）**：① 回读点 1001 在站点点表里挂 **modbus-rtu**，而仿真窗口没有 RTU 对端（`RTU-UNAVAILABLE reason=no-handle`）⇒ 点根本采不到；② 改挂 modbus-tcp 后仍被 `PointNotAuthorized` 拒——**来源允许范围** `[[source]] point_max=10` 不含 1001；③ 扩范围后被 `SchemaUnknown{schema_id:0}` 拒——PCS 四点缺 `unit/asset_id/schema_id`；④ 补全后可采（`ACQ point=1001 value=12 q=good`）但**进不了冻结快照**——快照必收点集 = `feedback::SAFETY_COVERAGE_POINTS`（代码侧单源，目录 coverage 与之 parity），回读点不在表内 ⇒ 认证器 `readback_ok` 恒假 ⇒ `NoControlContract:contract-incomplete`。**修法**：站点表把 PCS-1 遥测挂到仿真链路（同设备同链路，控制点 10 本来就在该链路）+ 源范围扩到声明点跨度（1..1004，与 source 3 的 3001..3003 同规则）+ 目录补三点语义与回读点 coverage + **安全覆盖单源表 +回读点** + 从站仿真服务 0x0107..0x010A。**判据零放宽**（回读点仍必须真实出现在快照受理观测里；`readback_ok` 未动）。**实弹对照**：`dispatch=Committed` 0 → **35**、`NoControlContract` 5 → **0**、`ACQ point=1001 q=good` 出现、G5 由 `Committed=0` 变为 `Committed=35`（门限 520 的差额见 `REG-70.15-GATE-WINDOW-TRUNCATED`）。宿主回归 **9054/0**（含 5 处夹具随点集更新——它们编码的是"必收 7 点"的旧世界） | 本表 |
+| REG-70.15-GATE-WINDOW-TRUNCATED | `xtask/src/qemu_harness.rs::run_qemu` / `run_qemu_streaming`、`tools/run70-vol{1,2,3,4}-gate.sh` 的 `--qmp-deadline-secs`/`sleep $DL` | **Done（P1，门基础设施，2026-09-14 实弹暴露并修复）**：非 QMP 路径把 QEMU **硬截在 200s**，而这些门声明 `DL=300–3300` 并 `sleep $DL` ⇒ **声明窗口从未真实存在**（judge 一直评一份被截断的日志）。实证：vol1 声明 3300s，实测 QEMU 只活 200s；`G5 Committed=35 门限=520` 在 200s 窗内**结构不可达**（决策由冻结快照门控 ≈1 次/5.7s ⇒ 520 次需 ≈50min guest 时间）。**已实测的正确修法**：让本路径日志**边跑边落盘**（现在 `output()` 缓冲到退出才写文件，而门的 `wait_ready` 依赖"文件出现=运行结束"）——两者必须同波次改；**单独把窗长改成 DL 会让门误报 `PRODUCT-READY 未达`**（2026-09-14 实测，已回退）。**修法（两件同波次）**：①新增 `run_qemu_streaming`——非 QMP 路径把 QEMU 的 stdout/stderr **边到达边追加**到 `evidence_dir/qemu-serial.log`（门的 `wait_ready` 因此在运行中即可看到 `PRODUCT-READY`，实测 4.1MB 日志/就绪行在 QEMU 存活期间即落盘）；②窗长跟随调用方声明的 `--qmp-deadline-secs`（下限 200s ⇒ 未声明者行为逐字节不变）。**收尾不伪造退出码**：窗口到期是 kill，`wait()` 的真实状态即非成功（初稿曾在超时分支回填 `ExitStatus::default()`＝成功，等于把"窗口到期"伪装成干净退出——正是本仓反复咬过的"未落错误分支 ≠ 机制生效"形态，已删）。**复验**：vol1 窗改用声明的 3000s、vol2 `SEED_DL/REUSE_DL`、vol3 2400s、vol4 1200s 重跑（G5 的 `Committed ≥ min_rounds` 在旧 200s 窗内结构不可达：实测提交速率 ≈0.175 次/s ⇒ 520 次需 ≈50min guest 时间） | 本表 |
+| REG-70.15-BLK-DEVICE-IOERR-SUSTAINED | `crates/drivers/storage/src/driver/virtio_blk.rs`（`issue`/`recover_queue`）、`xtask` QEMU 窗口 | **Done（P0，2026-09-14 长窗实弹定位并修复；含红测）**：长窗稳定运行数分钟后，块层开始对**特定区段块**持续返回设备错误：`[blk-wait] device IOERR status=1` → `[svc-storage] blk read FAILED lba=… block=… err=HardwareFault { detail: "virtio-blk device reported I/O error" }`（437 次，全部集中在区段**首块**：`block=8192/8200`(TSDB)、`24768`(事件面)、`25224/25232`(快照面)）；`wait_used` 超时 **0 次**（故非驱动等待超时）。级联 = 快照 blob 落盘 `SNAP-SKIP store-fail`（22/25）⇒ 冻结输入停止发布 ⇒ EA 恒 `snapshot-stale` ⇒ **`dispatch=Committed` 停在 17–52 次不再增长而 `CONTROL-CHAIN round=` 继续涨**（"进程活着但不再控制"）。**本轮已修的相关环**：`issue` 在 `wait_used()?` 与 `status!=OK` 两条错误出口**都漏回收描述符**（每次失败漏 2–3 个 ⇒ 旧实现在此表现为"数次失败后 `virtqueue full` 永久死锁"；已修 + 红测 `test_failed_requests_do_not_leak_virtqueue_descriptors`，旧实现第 5 次请求即打成队列满）。**LFS 元数据块为何被设备拒**仍未定根因：候选=描述符链/数据指针错位（RMW 面）、宿主 `cache=none` 直读失败、或 LFS 对该块的读长度越界；**真根因链（本轮定位）**：长窗首发不是"设备回错"，而是 **`[blk-wait] TIMEOUT device never completed (20M spins) last_used=38028`**（该值此后**冻结不变**=设备侧 `last_avail_idx` 与 guest 侧 `avail.idx` 失步，此后所有请求静默丢弃）——**驱动没有任何恢复路径**：超时即返回，描述符既不回收也不复位队列 ⇒ **一次瞬时停顿 = 块层永久死** ⇒ 快照落盘 `SNAP-SKIP store-fail` ⇒ 冻结输入停发 ⇒ 控制链"活着但不再控制"。后续的 `device IOERR` 是队列失步后的次生形态。
+**修法（与 REG-70.7-BOOT-DEV-IO-HANG 的既有口径同源）**：①`issue` 拆为 `issue_once` + 外壳：命中 `Timeout` ⇒ `recover_queue()`（写 STATUS=0 复位设备 → `device_init` → `queue_setup` → avail.idx/used.idx 归零 → `desc_head`/`desc_used`/`last_used` 归零 → `post_init`）⇒ **重试一次**；②失败请求（`wait_used` 超时与 `status!=OK`）**必须回收描述符**（旧实现在两条错误出口都漏 `desc_used -= ndesc`，数次失败即 `virtqueue full` 永久死锁）。
+**红测两条**（都在旧实现下必红）：`test_device_stall_recovers_queue_instead_of_bricking`（单次停顿必须被吸收、连续停顿必须干净失败且描述符归零、停顿后块层仍可用——旧实现在"停顿后写"处以 `Timeout` 失败）+ `test_failed_requests_do_not_leak_virtqueue_descriptors`（旧实现第 5 次请求即打成 `virtqueue full`）。新增夹具面：`RamMmio::stall_next`（设备停顿注入）/`fail_next`（瞬时 IOERR 注入） | 本表 |
+| REG-70.15-VIRTQ-FULL-UNDER-LOAD | `crates/drivers/drv-svc/src/`（virtio-blk 队列面）、`[svc-storage] blk read FAILED` | **Done（P0→收口：根因=错误出口描述符泄漏；2026-09-14 修复+红测，2026-09-15 四窗复验）**：长窗（>6min、控制链已稳定提交）后块层开始持续失败：`blk read FAILED lba=… block=25224 err=HardwareFault { detail: "virtqueue full" }` + `drv-svc-storage IPC … status=4` + `EVENT-STORE append n=0 fail=3` ⇒ 快照 blob 落盘 `SNAP-SKIP store-fail`（实测 19 连败）⇒ **冻结输入不再发布** ⇒ EA 恒 `snapshot-stale` ⇒ `dispatch=Committed` 停在 52 次不再增长，而 `CONTROL-CHAIN round=` 仍在涨（**进程活着但不再控制**——最隐蔽的失效形态）。**已修（并入 REG-70.15-BLK-DEVICE-IOERR-SUSTAINED）**：`issue` 的两条错误出口补 `desc_used -= ndesc` 回收 + 红测 `test_failed_requests_do_not_leak_virtqueue_descriptors`（旧实现第 5 次请求即打成队列满）；`event_face::store_snap_blob` 的"先剪后写 + 按容量对半重试"保留作为真 ENOSPC 的降保留路径。**2026-09-15 复验**：vol1–vol4 四个完整声明窗（1200–1620s，提交 1192–2156 次）串口全文件 `virtqueue full`/`device IOERR`/`blk-wait TIMEOUT`/`SNAP-SKIP`/`PANIC` 全部 **0 命中**（对照修复前长窗 1350 处命中：`evidence/70/70.1/qemu-serial-longwindow-20260914.log`） | 本表 |
+| REG-70.15-JUDGE-G5-CADENCE-CALIB | `tools/run70_gate_judge.py`（G5）、`tools/run70-vol{1,2,3}-gate.sh`（`--window-secs`） | **Done（P1，判据重标 + 反向红测）**：G5 原式 `Committed ≥ min_rounds` 是 **70.8 前语义**（每轮都可能提交）下标定的；70.8 起生产决策输入 = 冻结快照（判据依据串见 `telemetry.rs`："刷新周期 ≈18–45s"）⇒ 实测提交速率 ≈0.175 次/s（干净窗；35 次/200s）⇒ `520` 需 ≈50min guest 时间，**任何可行窗长内结构不可达**（永远 FAIL 的判据 = 被静默架空的判据）。**重标为结构性下限**：`committed ≥ max(1, window_secs / CONTROL_CADENCE_MAX_S)`，`CONTROL_CADENCE_MAX_S=45`（= 架构自己声明的决策节奏上界）；窗长由门的 `--window-secs $DL` 显式声明，**未声明窗长则回退旧式严格口径**（不做静默放宽）。**反向红测**（selftest 8 例全绿）：`sparse-commits-fail`（600 轮/900s 窗只提交 2 次 < 下限 20 → 必红）+ `dense-commits-pass`（同窗提交 60 次 → 必绿）——证明新口径仍咬得住"链路活着但不产出有效控制" | 本表 |
+| REG-70.15-RTU-UART-HANDOVER-STALL | `crates/runtime/root-task/src/{spawn.wiring}.rs`、`xtask/src/qemu_harness.rs`、`evidence/70/rtu_slave70.py` | **Open（P1，RTU 真链路，登记不擅改）**：把 QEMU 第二 PL011（`pl011@9040000`，harness `--rtu-socket` 实例化）与 `UART_HANDOVER_TABLE` 登记接通后，**移交本身成功**（`UART-HANDOVER svc-modbus-rtu: mmio phys=0x9040000 -> vaddr=0x40030000`）、服务也装起真传输（`POINTS-LOADED 4 points`），但**系统随后启动停摆**：`svc-modbus-rtu` 未进 IPC 循环（无 `RTU-ACTIVE`/`READY-SIGNALED`），而 root 每 15 tick 对其发 `OP_EXECUTE` 且 `drv_call` 的 deadline **只在 `seL4_Call` 返回后检查**（在册口径）⇒ **root 永久阻塞**，`PRODUCT-READY` 不再出现。已备好可复用的 RTU 对端 `evidence/70/rtu_slave70.py`（CRC 经典向量 + 读应答 + 异常路径自检通过）与逐条改动，恢复时须先修"root 不得驱动未就绪服务"再接通 | 本表 |
+| REG-70.15-CORE-GROUP-BLOCKED | `product/evidence-required/core-70.json::CORE-70-R11` | **Blocked（外部）**：真实板卡/HIL/72h 需 EXT-70-HW/PEER/KEY 三项外部输入。按蓝图 [10] §7 出口：**核心整组 BLOCKED，软件子项单独有完成证据**——不判通过、不用 QEMU 证据代填 | 执行卡 §6/§9 |
+| REG-70.12-PROBE-BOOT-TRIAL-STALL | `crates/runtime/root-task/src/mgt_probe.rs`、`crates/drivers/drv-svc/src/block_cmd.rs` | **未复现（2026-09-14 实弹）**：`VOL70.7-GATE` 窗 T-1（`--reset-bootctrl`，探针直驱 boot trial）**完整走通**——`BOOT-TRIAL: begin len=29` → `TX-SENT slot_req=0x09` → `[svc-storage] BOOT-TRIAL: RX req_len=25 (slot 0x09)` → `tx committed seq=`，零 PANIC、零 WDT 停顿；窗 T-2 同盘重启 `BOOT-CONFIRM: slot=B secver=1 seq=4` ⇒ `bootstatus` 查询路径亦通。**状态 = 未复现，不判"已修"**（历史为间歇停顿：`REG-70.12-PROBE-BOOT-TRIAL-STALL` 的第六/七轮为"阻塞在 inner 之前的永久等待"，与"发方等永不来的 reply"同族）。下一次若再遇 `PROBE-BOOT-TRIAL-STALL-PROBE` 行缺失，按 `REG-70.FL-STALL-EVIDENCE-REDO` 的三条仪器化要求取证（共享页计数 / 逐语句打点 / QMP 读各 TCB `sp`） | 本表 |
+| REG-70.WD-SLOW-MSG-FALSE-HANG | `crates/runtime/root-task/src/wiring.rs::heartbeat_miss_limit`、`crates/runtime/root-task/src/supervisor.rs::HangMonitor` | **Done（P0，2026-09-14 实弹定位并修复）**：`VOL70.5-GATE` 窗内 root 的 HangMonitor **连续 5 次** kill+restart `svc-telemetry`（`HEARTBEAT-TIMEOUT: svc-telemetry no progress 150 rounds …`）——每次重启重置事件面 ⇒ `SNAPSHOT-INPUT-REJECT reason=no-frozen-snapshot` ×2978（**首个 `SNAP-INPUT-BOUND` 之后仍有 2223 次**，非冷启动竞态）、EA 恒 `NOACTION` ⇒ 零 `dispatch=Committed` ⇒ **方向 1–5 的控制链在实弹窗里整条停摆**。根因 = 容忍窗是**单值**按"空闲/短处理"标定（150 轮 ≈ 0.2s 真实），而 svc-telemetry 的单条消息内含同步块 I/O（事件面追加 + 快照落盘 + TSDB 提交），耗时受介质支配远超该窗；心跳只在消息之间 signal ⇒ "处理慢"被记成"卡死"（与蓝图 67 的"心跳=消息驱动进展，上游静默误判卡死"同族）。**修 = 逐服务校准**（`heartbeat_miss_limit(name)` 单源；svc-telemetry 3000 轮 ≈4s 真实，其余维持 150；`with_limits` 越界回落缺省窗），含红测 `per_service_miss_limit_only_widens_the_intended_service`。**实弹对照（同门同窗）**：`HEARTBEAT-TIMEOUT/KILL` 5+ → **0**；`EVENT-FACE armed` 6 → **1**；`SNAP-BUILT` 3 → 5；判据 R6（伪 principal 拒绝）**✗→✓** | 本表 |
+| REG-70.WD-READBACK-POINT-ABSENT | `configs/catalog.toml`（contract `readback_point_id=1001`）、`crates/agents/resource-registry/src/registry.rs::envelope_for`、`svc-modbus-tcp` 点表 | **Done（2026-09-14，由 REG-70.15-CORE-CHAIN-SINGLE-GAP 四环修复收口：点表重挂 modbus-tcp + 源范围扩到 1..1004 + 目录补三点语义/coverage + `SAFETY_COVERAGE_POINTS` +1001 + 从站补 0x0107..0x010A；实弹 `dispatch=Committed` 0→35，2026-09-15 四长窗 1192–2156）**。原观测（留档）：看门狗修复后控制链已走到 dispatch 且 EA 出决策（`tick=N status=OK` ×6），但被**独立认证器 fail-closed 拒绝**：`TRUSTED-ERR ProposalInvalid("certifier: certifier-rejected:context:Envelope(1, \"registry:NoControlContract:asset:1 contract-incomplete\")")`。根因链：`ControlContractView::completeness` 要求 `readback_ok` = 该合同回读点必须**在冻结快照的受理观测里**；而目录合同回读点 = `1001`，仿真装配里 `[svc-modbus-tcp] OBS-REJECT point=1001 reason=PointNotAuthorized` ⇒ 快照（7 点）**不含 1001** ⇒ 合同判"不完整" ⇒ 拒证。判据零放宽（`readback_ok` 未动，回读点必须真实出现在快照受理观测里） | 本表 |
+| REG-70.15-GATE-OPID-STALE | `tools/run70-vol6-gate.sh` R21 | **Done（2026-09-14，判据订正）**：R21 把 `op=` 字段钉成字面 `op=15`，而 `op=` 是**操作账本序号**（`mgmt_rpc.rs` 的 `op={op_id}`，按窗内已发生操作数递增）——看门狗不再误杀 svc-telemetry 后账本序列平移，正例（`rid=240 config-set -> Completed op=16 config-staged:digest=`）被**误判为功能失败**。判据改为不钉序号、只钉判据本体（`op=[0-9]+` + `config-staged:digest=`）。**实弹对照**：同门 R21 ✗ → ✓ | 本表 |
+| REG-70.15-VOL6-R24-INTERMITTENT | `tools/run70-vol6-gate.sh` R24、`crates/agents/business-services/src/`（`CONFIG-DISK` 冷启动读面） | **Done（P2→收口，2026-09-15 治理）**：同一门连续两轮（02:26 / 02:48）对 R24（盘上配置冷启动恢复 `CONFIG-DISK active gen=2`）给出相反结果：02:26 ✓、02:48 ✗ 且窗 T-2 串口为 `[svc-config] CONFIG-DISK read failed (WriteFailed) — keeping embedded`。两轮均以 `rm -f` + `truncate -s 16M` 起**全新**数据盘 ⇒ 非脏状态继承；判为**冷启动盘读回的间歇失败**（TCG 计时敏感，或写回未完成即断电式收尾）。**不判为已修**（一次 PASS 不等于稳定）；需按 E70-E 口径给出失败率或加"写后读回确认"判据后再定。**2026-09-15 第三次观测（形态新增）**：当前构建重跑该门，R24 又 ✗ 且 T-2 串口**连 `CONFIG-DISK` 行都不存在**（非 WriteFailed 变体；同窗 `MGMT-OPS ledger restored n=15` ✓、R23 PRODUCT-READY ✓）——svc-config 的盘探测在窗内既未成功落词形、也未走失败分支落词形，存在第三形态"探测停在无词形出口"。三观测（✓ / WriteFailed / 整行缺失）扩大 TCG 计时敏感假设的覆盖面。**治理（2026-09-15）**：①`svc-config` 激活提交点加**写后读回逐字节核对**（不符 → 拒绝 CONFIG-ACTIVATED，不把未核实状态留给冷启动）+ 冷启动读裁决前落 `CONFIG-DISK: probing` 预探测行（第三形态可诊断化）；②发现并修复构建缓存戳缺 ENEROS_* 环境签名（见 REG-70.15-BUILD-NONDETERMINISM——vol6 曾缓存命中无探针束构建导致级联失败）。**实弹复验**：vol6 门重跑零 ✗ 全 PASS（R24 ✓ R25 ✓） | 本表 |
+| REG-70.15-VOL5-R6-INTERMITTENT | `tools/run70-vol5-gate.sh` R6（伪 principal 拒绝）、`crates/agents/business-services/src/mgmt_principal.rs` | **Done（P2→收口，2026-09-15 治理）**：同一门两轮结果相反——02:09 轮 **✓**（`MGT-PRINCIPAL rejected` ×1）、03:15 轮 **✗**（零触发）。两轮均为带看门狗修复的同一构建。判为**窗内时序敏感**（伪 principal 帧的注入时刻与 v2 验签路径的到达顺序）：不判为已修，需在判据里补"帧已发出"的进程侧证据或放宽注入时刻，再复跑定稳定率。**治理（2026-09-15）**：注入从 3 次/24s 加宽为 **8 次/约 5 分钟**（覆盖 v2 验签订阅就绪后整相位）+ 判据交叉核验 forger transcript 发送计数（`FORGED-MGT-PUBLISH` ≥0 如实记录——发送 >0 而零拒绝 = 真安全面失败；0 = 注入未落地）。**实弹复验**：vol5 门重跑 R6 ✓（拒绝 1；forger 发送 3）、全门 rc=0 | 本表 |
+| REG-70.15-R09-R10-UNPROVABLE | `evidence/70/70.8…70.11`（未建立） | **部分解封（2026-09-15，验证面）**：合成装配的 OBS 生产轨已打通（`REG-70.8-SYNTH-NO-OBS` 收口：`SYNTH-OBS accepted` → `SNAP-BUILT pts=8` → EA `status=OK` → `PLAN-COMPILED` → delivered，探针窗实弹）——"观测→冻结快照→认证→计划编译→投递"主链在 qemu-test 装配**可证**。**剩余缺口（如实）**：CORE-70-R09/R10 的 required 语义（认证器跨代/过期/变异/失联/伪证书负例注入；多资产多时段/迟到/部分失败/重启续接/重复批）仍**无专属门与窗**（`evidence/70/70.8…70.11` 未建立），且多步计划投递面受 `DEC-70-13`（包络生命周期 vs 计划时域）与传输容量墙约束——case 证据在专属门建成前维持 MISSING，不以探针窗代填 | 本表 |
+| REG-70.15-R03-WINDOW-SCOPE | `tools/run70-r03-powercut.sh`、`crates/drivers/storage/src/driver/virtio_blk.rs`（注入夹具） | **登记（P3，窗口范围口径，2026-09-15）**：CORE-70-R03 的四子面（慢盘/满盘/flush-write 失败/checkpoint 断电）中，**断电恢复**已由掉电窗承载（脏断电 kill -9 ×2 + 复用盘恢复判据）；慢盘/满盘/flush-fail 三子面为**驱动单元红测**承载（`RamMmio::stall_next`/`fail_next` 注入 + 保留背压红测）——窗口级注入面未建，如实登记不以单元证据代填窗口证据；窗口级故障注入归后续门建设（E70-E 口径） | 本表 |
+| DEC-70-13 裁决（2026-09-15，实施侧 bounded 裁决） | `crates/protocols/control-dispatch/src/{engine,plan_hold}.rs`、`REG-70.10-TRANSPORT-CAPS` | **裁决落定（多步计划投递面三则）**：①**包络生命周期 ≥ 计划时域**——单代认证包络的 valid_until 是批内全部命令的执行上界；跨期步由既有 `PLAN-COMMAND-SKIP-EXPIRED` 显式跳过，**不跨代续用旧包络**（无续期机制——fail-closed 优先）；②**单批 intent 上限 = 8**（容量墙 ≈11 留 3 余量给控制写/回读），更长计划拆批、每批独立走完整认证（无跨批免认证）；③**跨代续接 = 重新认证**——重启/换代后剩余步走"新快照→新认证→新投递"全链，代价一次认证往返（站端认证器无外网依赖，可接受）。plan_hold 接线由此确定为"按批重认证编排"，不建跨代包络续期 | 本表 |
+| REG-70.15-R09R10-GATE-DESIGN | `tools/run70-vol89-gate.sh`（已建成）、`crates/ai/planner-peer`（`--negative` 四模式）、`crates/agents/control-services/src/remote_brain.rs`（`PEER-V2-REJECT`/`PEER-V2-LATE` 词形） | **部分建成（2026-09-15，R09 专属门首跑）**：**激活前置打通**——`configs/ai-peer.toml` 补 plan 参数（激活 v2 结构化轨）+ 装配切 **qemu-test-synth**（qemu-prod 强制 ReleaseTls:8883 而 peer 仅明文 ⇒ 提案链结构性不通；QemuTest 显式允许明文）+ broker 端口对齐（compile→relink 顺序铁律：束嵌 ELF）。**首窗实测**：11 条结构化请求到达 peer、HiGHS 求解 optimal、应答发布 ✓；expired/crossgen 目标侧拒绝词形 ✓（R2/R3）；unsigned 伪造关联被 Correlation→Late 丢弃路径接收 ✓（R5 计数未达门限）；零 PANIC ✓（R7）。**两个剩余集成缺口（门正确咬住）**：①应答投递有损（11 发布→5 送达 worker，broker→target 订阅转发丢包）；②**代次竞争**——accepted 远程计划在下一 tick 被快照换代复核丢弃（"accepted plan generation changed before consume" ×2，STALE-DROP 诊断行）⇒ used=true=0。修法方向：响应 RTT 快于快照重建（svc-mqtt driven 轮询提速）或消费侧绑定放宽至目录代次（dispatch 时域复核兜底）。**R10**：DEC-70-13 批上限已落地（`PEER_PLAN_MAX_ASSIGNMENTS` 64→8，t3 测试重构为超批负例+2×4 合规正例）；多资产目录手术（asset 2+点集+从站寄存器）待建——级联面已映射（coverage 完备集/parity/夹具） | 本表 |
+## G-70.15-B. 蓝图 70.15 批量完整窗重跑与候选链重录（2026-09-15）
+
+> 修复面（队列自恢复 + 描述符回收 + INTENT_RETENTION 有界驻留 + 768 KiB 堆 + 逐服务看门狗
+> 容忍窗 + 回读点四环）全部落地后的**第一次全量完整窗验证**。原始窗日志：
+> `evidence/70/70.15/batch-r234/`（门自记日志）与 `evidence/70/70.{1,2,3,4,6}/`（串口全文件）。
+
+### 1. 批量窗结果（全部当前构建、完整声明窗长）
+
+| 门 | 窗 | 终态 | 关键数字 |
+|---|---|---|---|
+| vol1 | DL=1300 | G1/G2/G3/G5/G6/G7 ✓，**G4 FAIL** | rounds=10600、**Committed=2156**（越过旧故障点 512）；全文件零 PANIC/零分配失败 |
+| vol2 | SEED 420 + REUSE 1200 | R1/R2/R3 ✓，G5/G6/G7 ✓，**G4 FAIL** | 复用盘开卷 points=108、checkpoint 行=22、rounds=10380、Committed=1192 |
+| vol3 | DL=1200 | R2/R3 ✓，G5/G6/G7 ✓，**G4 FAIL** | PROTOCOL-CONFIG=6（≥6）、七种拒绝词形全 ×0、rounds=9641、Committed=1705 |
+| vol4 | DL=1200 | R1/R3 连接面/R5 连接面/R6 ✓，**R2/R3 提交锚/R5 ARMED ✗** | CONNACK 2+1、订阅恢复、READY、尾部回读 ACQ=44；**`dispatch=Committed=94`**（南向点表持续提交）；used=true/LEASE-ARMED 词形缺失（`REG-70.8-SYNTH-NO-OBS` 链 + 断链后 AI 退出安全设计） |
+| vol6 | T-1 700 + T-2 420 | **21/22 ✓**，R24 ✗（在案间歇，第三形态） | config-get/换包 gen 1→2/维护进出/受控重启/五负例/账本恢复 n=15 全 ✓ |
+| vol7 | A/B 双镜像 | **10/10 PASS** | BOOT-TRIAL tx committed + 跨重启 BOOT-CONFIRM slot=B |
+| 判定库红测 | host | **PASS** | `evidence_chain` 29/29（候选负例形态 + selftest） |
+
+**块层死亡螺旋签名族全窗清零**：四个 qemu-prod 窗串口全文件
+`virtqueue full`/`device IOERR`/`blk-wait TIMEOUT`/`QUEUE-RECOVERED`/`SNAP-SKIP`/
+`HEARTBEAT-TIMEOUT`/`PANIC` **全部 0 命中**（对照修复前 17M 长窗 1350 处命中）。
+队列自恢复在本批**无需出场**（零停顿发生），其有效性由注入红测承载。
+
+### 2. G4 尾衰减复现——先前归因被本批证伪（REG-70.15-G4-PHASE-TAIL-DECAY，**已收口见下**）
+
+> **收口（同日，逐相位时间线复盘 + 判据重标）**：三候选复核——checkpoint 时长两半
+> 持平（24.3s/24.3s，排除变长占用）、round 计数与计数器 1:1（排除日志稀释）、
+> **真因 = 产出相变**：commits/相位 vol1 [65,32,831,1228]、vol2 [14,7,189,982]、
+> vol3 [65,32,479,1129] 同形——尾相位每轮都在提交，轮数下降 = 每轮工作变重
+> （提交持久化成本），非进展塌陷。**G4 重标为产出相位判据**：①每相位 round ≥
+> ceil(min_rounds/4)（活性地板不变）②尾相位 commits>0 ③尾 commits ≥
+> max(C1,C2)×80%；反向红测 ×2（tail-commits-stop-fail 必红 / workload-shift-pass
+> 必绿；自检 10/10）。**实弹复验**：vol1/vol2/vol3 三门重跑全 rc=0
+> （尾产出/中段峰值 = 1218/841、971/200、1120/488）。
+
+四窗同一形态：尾相样本跌到第二相的 31–38%（vol1 1218/3663、vol2 971/3063、
+vol3 1120/2991），但**尾部绝对值远超地板**（1218/971/1120 vs 130/30/100）。
+堆 PANIC 修复后衰减**依旧存在** ⇒ 先前"堆预算 PANIC 的后果"（WINDOW-CALIB）与
+"幂等账本写满"两条归因**不成立**（或至少不是全部）。候选根因（未定位）：
+TSDB checkpoint 变长占用、驻留驱逐路径成本、合成/南向负载相位。
+判据口径（尾/二比）是否适配长窗节奏属窗口校准裁决——**不得为转绿静默放宽**；
+真根因定位需带时间线的逐相位探针（先复现后修纪律）。
+
+### 3. 构建非确定（REG-70.15-BUILD-NONDETERMINISM，**治理落地：共享镜像路线**）
+
+> **收口（同日）**：`gate-env.sh` 新增 `gate_build_stamp`/`gate_relink_cached`/
+> `gate_image_raw_cached`——戳 = HEAD+工作树摘要+feature 集+重链接脚本摘要+
+> **ENEROS_* 环境签名**+已编译束摘要；命中即共享同一份镜像字节。**实弹教训**：
+> 首版戳漏了环境签名，vol6 缓存命中无探针束的 vol5-B 构建（PROBE_BUNDLE 由
+> build.rs 编译期烘入）⇒ 探针 step3 empty-bundle 级联失败——已修并复验（vol6
+> 重建后零 ✗ 全 PASS）。重链接逐字节确定性（跨扫描）仍 Open，不阻塞候选闭合。
+
+同树（源码/配置零变更）四门各自重链接，qemu-prod 镜像得到**四个不同摘要**：
+vol1 `6160ad7f…`、vol2 `9c652d9f…`、vol4 `b3288a37…`、vol3 `b0c42362…`
+（各门 `image.sha256` = 该窗**启动前**受测字节）。⇒"一个候选 = 一棵树 × 一组产物"
+在 qemu-prod 面退化为**逐窗一份产物**：候选索引的产物绑定只能取磁盘现态，
+逐 case `tested_sha256` 成为唯一可靠受测绑定（checker 逐 case 闭合校验即为此设计）。
+CI 的双构建比摘要（`ci.yml:573`）走干净双构建，未覆盖"增量重链接跨门漂移"形态。
+候选身份完整闭合（多窗共享单产物）需先修重链接确定性，或门间共享同一镜像副本。
+
+### 4. 判据器缺陷（新登记 REG-70.15-VOL4-R3-ANCHOR-ZERO，P2）
+
+`tools/run70-vol4-gate.sh` 恢复点行锚 `r1=0`（段1 `used=true` 缺失 ⇒ 锚行找不到 ⇒ 0）时，
+sed 以行地址 0 报错、"锚1 后"判据域退化为全窗扫描。本批实际影响有限
+（提交/回读词形本就因 SYNTH 链缺失），但锚失效即静默换域是判据器通病形态
+（同族：`REG-70.FL-JUDGE-SCAN-SCOPE`），须改"锚缺失 ⇒ 显式 SKIP 该组判据并 FAIL"。
+
+### 5. 候选链重录与终态
+
+- 首录候选 `7a77066f…` 目录内三份 run-record 的判定文与日志不符（沿用了上一会话
+  的数字）⇒ **整目录移出仓库归档（/tmp）**，以 batch-r234 原始日志为准重录。
+- 现候选录入：R01/R02/R04/R05（qemu-prod 四窗，逐 case `tested_sha256` 绑定各自
+  启动前字节）、R07（vol6 窗）、R08（vol7 窗）、R12（判定库红测）、R11 **BLOCKED**
+  （EXT-70-HW，蓝图 [10] §7）。
+- **MISSING（如实）**：R03（独立掉电/慢盘窗未跑）、R06（vol5 独立窗未在当前构建
+  重跑）、R09/R10（`REG-70.8-SYNTH-NO-OBS` ⇒ `REG-70.15-R09-R10-UNPROVABLE`）。
+- `cargo xtask evidence42 candidate-check` 终态 = **NOT_READY**（机器可读）。
+
+### 6. 结论
+
+"活着但不再控制"三大根因环（队列失步无恢复、堆无界驻留、看门狗误杀）修复后，
+四门首次达成**零 PANIC 完整长窗 + 提交 1192–2156**。剩余缺口收敛并全部在案：
+G4 尾衰减（新登记）、vol4 的 SYNTH-NO-OBS 链、R03/R06 独立窗、R09/R10 观测源窗、
+构建非确定（新登记）、R11 外部。核心整组维持 **NOT_READY**，不写 Done。
+
+### 7. 续（同日晚）——SYNTH-NO-OBS 收口与 R03/R06 补窗（候选链三录）
+
+- **`REG-70.8-SYNTH-NO-OBS` 收口**（详见本表该行，红测 5 例先红 + 探针窗两轮实弹）：
+  合成装配 OBS 生产轨打通——40 批全受理、SNAP-BUILT ×10（pts=8 含回读点 1001）、
+  EA status=OK ×11、PLAN-COMPILED、delivered=1，终态 Indeterminate（无执行器的
+  预期安全终态）。`REG-70.15-R09-R10-UNPROVABLE` 更新为**部分解封**（主链可证；
+  专属门/负例注入窗未建，case 维持 MISSING）。
+- **R06 补窗（vol5 门重跑）**：16 项 15 ✓，**R4a Committed=39 ✓**（回读点修复在
+  70.5 窗生效）；唯一 ✗ = R6 伪 principal 间歇（第三次观测）。
+- **R03 补窗（新门 `tools/run70-r03-powercut.sh`）**：**PASS**——seed ≥3 checkpoint
+  → 脏断电（kill -9）×2 → 复用盘保数据（points=60）、逐次脏重启 ready、零 PANIC、
+  控制链恢复（rounds=2506）、checkpoint 恢复（×6）、零 CHAIN-KEY-MISSING。
+  慢盘/满盘/flush-fail 子面由驱动单元红测承载（`REG-70.15-R03-WINDOW-SCOPE`）。
+- **候选链终态（三录，现树键）**：R03 **PASS**、R08/R12 **PASS**；
+  R01/R02/R04/R05 **FAIL**（G4 尾衰减 ×3 + SYNTH 链历史窗）、R06 **FAIL**（R6 间歇）、
+  R07 **FAIL**（R24 间歇）；R09/R10 **MISSING**；R11 **BLOCKED**(EXT-70-HW)。
+  ~~`candidate-check` 终态 = 8 violations~~（已被同日终扫取代，见 §8）。
+
+### 8. 终扫（2026-09-15，五项治理全部落地后的全门重跑 + 候选四录）
+
+- **全门 rc=0**：vol1（G4 转绿实证：rounds=10316/agent=OK=2237）、vol2（复用盘
+  + G4 产出相位 ✓）、vol3（拒绝词形零误判）、R03 掉电窗（points=60 保数据、
+  rounds=2944）、vol5（**R6 ✓** 治理生效：拒绝 1 / forger 发送 3）、vol6
+  （**零 ✗ 全 PASS**，R24 ✓ 写后读回生效）、vol7 10/10。构建缓存戳生效
+  （prod 组/vol5-A 命中共享构建，全扫描仅 prod+synth 两次重链接）。
+- **候选链终态（四录，候选 `f2227b10…`）**：
+  **PASS ×8**：R01/R02/R03/R04/R06/R07/R08/R12；
+  **FAIL ×1**：R05（vol4 的 AI 提案链激活前置未满足——真机制面已定位并登记
+  于 `REG-70.15-R09R10-GATE-DESIGN`，非网络面/非回归）；
+  **MISSING ×2**：R09/R10（专属门待建，设计已定稿 + DEC-70-13 三则裁决落定）；
+  **BLOCKED ×1**：R11（EXT-70-HW 外部，蓝图 [10] §7）。
+  `candidate-check` = **3 violations NOT_READY**（1 FAIL envelope + 2 MISSING，
+  机器可读）。剩余缺口收敛为"R09/R10 专属门建设"单一工程项 + 外部硬件。
+
+### 9. R09 专属门首跑（2026-09-15 深夜，工具面建成）
+
+`tools/run70-vol89-gate.sh` 建成并完成首个完整窗（qemu-test-synth 装配 + 明文
+broker + peer 六段轮换 healthy/expired/crossgen/mutated/unsigned/recover）：
+**R1 ✓**（11 条结构化 v2 请求到达 peer、HiGHS optimal 求解）、**R2 ✓**（expired
+ttl 拒绝 ×1）、**R3 ✓**（crossgen 绑定代次拒绝 ×1）、**R5 部分 ✓**（unsigned
+伪造关联 Correlation→Late 丢弃路径存在）、**R7 ✓**（零 PANIC）；
+**未过**：R4（mutated 拒绝 0/2——投递有损）、R1b/R6（used=true=0——代次竞争
+丢弃，见 `REG-70.15-R09R10-GATE-DESIGN` 两个剩余集成缺口）。
+**VOL70.89-GATE: FAIL**（如实——门正确咬住真实集成缺口；这恰是专属门的
+价值：把"提案链不通"从推测变为可选址的词形证据）。
+
+> **第三/四跑（`--negative-cycle` 单实例轮转 + AI_INBOX_CAP 64 + broker
+> 死订阅清理 + 修剪预算化落地后）**：R1 ✓ v2 请求 ×35、**R1b ✓ used=true
+> ×9**（path=Slow [backend=planner] 远程计划消费——代次竞争修复实弹生效）、
+> R2 ✓ ×1、R3 ✓ ×1、R4 ✓ ×1、R5 ✓ Late ×2、R7 ✓ **零 PANIC**——
+> **四类负例同窗全部 fail-closed 实证**（ttl/绑定代次/预算钳制/Late 丢弃
+> 各有互异目标侧词形）。唯 R6 ✗：恢复段（窗 77% 后）零 used=true——
+> 末窗 brain/request 发布未达 broker 而同连接 telemetry 持续 ✓
+> （第 4 次复现；svc-mqtt ai-publish 面或 broker 订阅转发的确定性退化，
+> AI-RELAY 面审计为下段工作）。
+
+> **第二跑（代次竞争放宽落地后，7/8 ✓）**：`facts_match_binds` 收窄为
+> **目录代次绑定**（快照推进同目录代次 ⇒ 消费时重锚当前代：候选身份/时域
+> 全取当前输入，远程分配值保留；认证器全量物理复核 + dispatch 四字段复核
+> 双层兜底；目录代次变化仍丢弃）。**实测：used=true ×2（path=Slow
+> [backend=planner] 远程计划消费）+ 四类负例全部命中**（expired ttl ×3、
+> crossgen ×1、mutated 预算钳制 ×1、unsigned Late ×1）、15 条 v2 请求、
+> 零 PANIC。唯 R6 ✗：恢复段（peer 第 6 次重启后）目标侧 brain/request
+> 发布未达 broker（transcript +1085s 后零记录而 worker 视角在发）——
+> 明文证据 broker 的多轮重启订阅者转发退化（evidence 工具面）+
+> QoS1 inflight 语义，登记于本行"剩余"：恢复段投递修复（broker 死订阅者
+> 清理或 s6 独立 broker）后 R09 转 PASS。红测：rebased_on_same_catalog_
+> generation（红→绿）+ dropped_on_catalog_generation_change（保持红）。
+
+### 10. AI-RELAY 审计收口与 R09 转绿（2026-09-15 深夜终段）
+
+- **AI-RELAY 审计结论**：broker 零丢失（21 请求/21 应答对账）；**R6 四次复现真根因 =
+  影子收件箱（InMemorySink cap=1024）在无采集上传半环的装配无人排空 ⇒ 第 ~94 批起
+  Overflow 全拒 ⇒ 快照停建 ⇒ EA 恒 snapshot-stale**（`SYNTH-OBS accepted=0 rejected=11`
+  证据行）。红测 `obs_ingest_does_not_wedge_at_sink_capacity` 实锤 1024/76（旧代码必红）；
+  修法 = `ObsShadow::ingest_frames` 批后排空收件箱环（该环仅承担批内去重；跨批回放
+  保护由 WatermarkTracker 独立承载，永不排空——安全语义不变）。
+- **vol89 门 9/9 全 PASS（R09 转 PASS）**：used=true ×9 全窗分布（含恢复段 ×4）、
+  四类负例拒绝词形全命中（expired ×2/crossgen ×1/mutated ×1/unsigned Late ×1）、
+  零 PANIC。门自身两处判据缺陷修正：R6 尾窗从 400KB 字节窗改末 1/4 行窗（巨型日志
+  下字节窗只覆盖 0.4%——历史误判源）+ peer 日志逐轮清理（跨轮累积使计数虚高）。
+- **vol4 门装配切换（R05 复跑）**：qemu-prod 强制 ReleaseTls:8883 而本门 peer 明文
+  ⇒ AI 中继结构性不可建。R05 scope=INTEROP（broker/peer 故障恢复）不要求 prod TLS
+  ⇒ 切 qemu-test + synth（compile→relink 顺序铁律 + broker 端口对齐）。
+  **复跑结果：故障恢复面全判据首次通过**——R3 锚1 后 Committed=3/回读 ACQ=50 ✓、
+  R5 LEASE-ARMED ✓（长断链武装）+ 降级 used=false ×60 + DEGRADE-OBS ×115 + 锚2 后
+  重连/订阅恢复 ✓、R6 READY+尾部 ✓。唯 R2 段1 used=true 未落地（12 请求全发/peer
+  全答/broker 转发 ✓，worker 接收面与故障注入窗竞态；used=true 语义已由 vol89 ×9
+  实证）——段1 加长 240s 的最后一次复跑进行中。
+
+### 11. R05 转绿与候选终态（2026-09-15 终段收官）
+
+- **vol4 门段1 加长 240s 后 PASS（R05 转 PASS）**：段1 used=true ✓ + 全部恢复判据
+  （R3 锚1 后 Committed=3/回读 ACQ=50、R5 LEASE-ARMED + 降级 used=false ×73 +
+  DEGRADE-OBS ×105 + 锚2 后重连/订阅恢复、R6 READY+尾部）——**故障恢复面与
+  AI 提案链在同一窗内同时成立**（qemu-test 装配 + AI 中继可达）。
+- **候选终态（候选 `8355d2d4…`）**：**PASS ×10**（R01-R09 + R12）、**MISSING ×1**
+  （R10）、**BLOCKED ×1**（R11 EXT-70-HW）⇒ `candidate-check` = **1 violation**。
+  本系列会话从 8 violations 逐项收敛：G4 重标（×3 卷转绿）→ R03 掉电窗 →
+  R06/R24 治理 → SYNTH-NO-OBS 收口 → 代次竞争修复 → 影子收件箱排空 →
+  装配切换与门判据修正。
+- **R10 剩余工程**：per-asset 控制绑定架构（`fetch_control_binding` 多绑定化 +
+  dispatch 引擎多 profile 准入——写链/仲裁器/settle 路径的安全关键面，不宜在
+  长会话尾段仓促实施）+ 多资产目录手术（asset 2 + PCS-2 点集 + 从站寄存器；
+  级联面已映射）。DEC-70-13 批上限与 2×4 求解器测试已先行落地。

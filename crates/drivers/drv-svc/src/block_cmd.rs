@@ -107,7 +107,15 @@ pub fn handle_boot_cmd(
             }
             let lba = u64::from_le_bytes(req.payload[1..9].try_into().unwrap());
             let count = u32::from_le_bytes(req.payload[9..13].try_into().unwrap()) as usize;
-            let n = count.min(BLK_READ_MAX);
+            // 70.14 复查修复：**拒绝而非静默截断**（与 `BLK_CMD_READ` 同律）。
+            // 旧实现 `count.min(BLK_READ_MAX)` 让"请求 4096B、实收 461B"以
+            // ST_OK 返回，调用方无法从状态区分截断——单发读面上的静默短读
+            // 等于把"证据不全"伪装成"读成功"。count=0 同样拒绝（非读语义）。
+            if count == 0 || count > BLK_READ_MAX {
+                resp.status = ST_INVALID;
+                return;
+            }
+            let n = count;
             let mut buf = [0u8; BLK_READ_MAX];
             match install.read(lba, &mut buf[..n]) {
                 Ok(()) => {
@@ -598,5 +606,91 @@ mod tests {
         req.payload_len = 13;
         service.handle(&req, &mut resp);
         assert_eq!(resp.status, ST_INVALID);
+    }
+
+    /// 启动盘安装面测试替身（`install_ranges` 与生产同源 = boot_disk 介质图）。
+    struct InstallFace {
+        ram: RamBackend,
+    }
+
+    impl BlockBackend for InstallFace {
+        fn read(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
+            self.ram.read(lba, buf)
+        }
+        fn write(&mut self, lba: u64, data: &[u8]) -> Result<(), ()> {
+            self.ram.write(lba, data)
+        }
+        fn flush(&mut self) -> Result<(), ()> {
+            self.ram.flush()
+        }
+        fn health(&self) -> (u64, u32, u8) {
+            self.ram.health()
+        }
+    }
+
+    impl InstallBackend for InstallFace {
+        fn install_ranges(&self) -> (u64, u64, u64, u64) {
+            use eneros_ota_ab::boot_disk::{lba_range_of, BootPartition};
+            let (b, bl) = lba_range_of(BootPartition::BootB);
+            let (bc, bcl) = lba_range_of(BootPartition::BootCtrl);
+            (b, bl, bc, bcl)
+        }
+    }
+
+    /// 70.14 复查红测：`BLK_BOOT_READ` 的 `count` **拒绝而不截断**。
+    ///
+    /// 缺陷形态（旧实现）：`count.min(BLK_READ_MAX)` 让"请求 4096B、实收
+    /// 461B"以 ST_OK 返回——调用方从状态位无法区分"读全了"与"被截断"，
+    /// 等于把"证据不全"伪装成"读成功"（`BLK_CMD_READ` 早已是拒绝语义，
+    /// 两者不对称）。count=0 同样非读语义。
+    #[test]
+    fn boot_read_rejects_zero_and_over_cap_count_instead_of_truncating() {
+        let mut service: StorageService<InstallFace> = StorageService::new();
+        service.attach(InstallFace {
+            ram: RamBackend::new(40000),
+        });
+        service.attach_install(std::boxed::Box::new(InstallFace {
+            ram: RamBackend::new(40000),
+        }));
+        let mut resp = DriverResponse::new(1, 0, 1);
+
+        // 预置数据：经**安装面**写 BOOTCTRL 区首（守卫放行；读走同一实例）。
+        let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
+            eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
+        );
+        let mut req = mk_req(BLK_BOOT_INSTALL_WRITE);
+        req.payload[1..9].copy_from_slice(&bc_lba.to_le_bytes());
+        req.payload[9..13].copy_from_slice(b"abcd");
+        req.payload_len = 13;
+        service.handle(&req, &mut resp);
+        assert_eq!(resp.status, ST_OK, "BOOTCTRL 区内安装写放行");
+
+        let mut boot_read = |count: u32, resp: &mut DriverResponse| {
+            let mut req = mk_req(BLK_BOOT_READ);
+            req.payload[1..9].copy_from_slice(&bc_lba.to_le_bytes());
+            req.payload[9..13].copy_from_slice(&count.to_le_bytes());
+            req.payload_len = 13;
+            service.handle(&req, resp);
+        };
+
+        // 超上限：拒绝（旧实现截断到 BLK_READ_MAX 并回 ST_OK）。
+        let mut resp = DriverResponse::new(1, 0, 1);
+        boot_read((BLK_READ_MAX + 1) as u32, &mut resp);
+        assert_eq!(
+            resp.status, ST_INVALID,
+            "count > BLK_READ_MAX 必须拒绝（不得静默截断）"
+        );
+
+        // 零长读：拒绝。
+        let mut resp = DriverResponse::new(1, 0, 1);
+        boot_read(0, &mut resp);
+        assert_eq!(resp.status, ST_INVALID, "count=0 非读语义");
+
+        // 域内读：正常返回，且**实收 = 请求**（截断不可见性已消除）。
+        let mut resp = DriverResponse::new(1, 0, 1);
+        boot_read(4, &mut resp);
+        assert_eq!(resp.status, ST_OK);
+        assert_eq!(resp.payload_len, 4, "实收长度必须等于请求长度");
+        assert_eq!(&resp.payload[..4], b"abcd");
     }
 }

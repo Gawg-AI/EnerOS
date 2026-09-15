@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-0371b30cd318",
+  "run_id": "run-18d54a74280c26e3",
+  "nonce": "18d54a74280c2b13",
+  "test_id": "CORE-70-R08",
+  "scope": "L3",
+  "started_at": "2026-09-14T20:38:09Z",
+  "ended_at": "2026-09-14T20:38:09Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "985bcbba2cb76d85245212adc50719fa9a760658901076432470f091321925c2",
+  "product_manifest_digest": "38c2c252f36183d5b0ea35eaae26805690e80f9405b39f98d3254604ea61d43f",
+  "profile_digest": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6",
+  "artifact_sha256": "448a27028be46a6da61d84ca8f58710e5bf25be56fec595ab8745a29fcfc3b9f",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol7-gate.sh（DL=700/DL_T2=420）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-test/product-manifest.normalized.json",
+      "sha256": "38c2c252f36183d5b0ea35eaae26805690e80f9405b39f98d3254604ea61d43f"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-test.json",
+      "sha256": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "双镜像 A/B；BOOT-TRIAL 提交（bootctrl 双副本+flush）→ 跨重启试启动 slot=B → BOOT-CONFIRM 自适应确认；R1-R10"
+  },
+  "positive_results": [
+    {
+      "id": "boot",
+      "status": "PASS",
+      "detail": "R1-R10 全 ✓——BOOT-TRIAL tx committed seq=2 target_secver=1 + 跨重启 boot-evidence result=PASS slot=B + BOOT-CONFIRM slot=B secver=1"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "skip-trial",
+      "status": "FAIL",
+      "detail": "无 trial 直接确认被拒"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/1b206c4d8571928fc718c4b4d64c7020a9896d9a90ba2fe8bc68819624d3c0b4/CORE-70-R08.run-record.json",
+      "sha256": "41e0eb10dc2f7fbfa89383ae54ddf0dd02a0bb94ac0c707c6f1c016d61665574"
+    }
+  ],
+  "signer": "dev",
+  "signature": "0471fa73e644d6d5e5b28661d8cd18845a35fba09e6bdbdbc343812eb8784702628bcdadd633d97a996b6731a9c767b1374b246cf54403c5a800211a48e86c0b"
+}

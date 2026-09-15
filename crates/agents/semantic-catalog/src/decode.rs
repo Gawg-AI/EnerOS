@@ -820,9 +820,11 @@ mod tests {
         let hdr = bundle.header.unwrap();
         assert_eq!(hdr.versions.generation, 1);
         assert_eq!(bundle.assets.len(), 2);
-        assert_eq!(bundle.points.len(), 9);
+        // 2026-09-14：PCS-1 的功率回读/遥测点进目录（+3 语义）；覆盖点数
+        // +1（合同回读点 1001 必须进冻结快照的必收点集）。
+        assert_eq!(bundle.points.len(), 12);
         assert_eq!(bundle.feedback.len(), 5);
-        assert_eq!(bundle.coverage.len(), 7);
+        assert_eq!(bundle.coverage.len(), 8);
         assert_eq!(bundle.contracts.len(), 1);
     }
 }

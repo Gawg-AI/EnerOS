@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-c68ca0098517",
+  "run_id": "run-18d5419111bc97c1",
+  "nonce": "18d5419111bc9c19",
+  "test_id": "CORE-70-R05",
+  "scope": "INTEROP",
+  "started_at": "2026-09-14T17:55:18Z",
+  "ended_at": "2026-09-14T17:55:18Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "3fe81463ae9dbe39ed96827d7dbce88a0d3eb5428864a12096f7b903326ca746",
+  "product_manifest_digest": "da72bd6e321614a740c8c530a88755e32a5d636788ca096c501cdb8b66e0f272",
+  "profile_digest": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2",
+  "artifact_sha256": "47e8b2d5da438cb395961316eea55780cd8e30c38740f3c07a4ce5b5143f7be1",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol4-gate.sh（DL=1200）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "da72bd6e321614a740c8c530a88755e32a5d636788ca096c501cdb8b66e0f272"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "broker/peer 故障恢复：锚1 后目标侧新连接+新订阅、锚2 后 MQTT 面重连+订阅恢复、READY+尾部控制进展+尾部设备回读；段1 used=true/ARMED/提交链"
+  },
+  "positive_results": [
+    {
+      "id": "recovery",
+      "status": "PASS",
+      "detail": "R1 零 PANIC 零分配失败 ✓、R3 锚1 后 CONNACK=2/SUBSCRIBE=2 ✓、R5 锚2 后重连 CONNACK=1/订阅恢复 SUBSCRIBE=1 ✓、R6 编队 READY+尾部控制进展(末轮 97%)+尾部回读 ACQ=44 ✓；串口 dispatch=Committed=94（南向点表持续提交）"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "synth",
+      "status": "FAIL",
+      "detail": "R2 段1 used=true 缺失、R3 锚1 后零 Committed（判据域）、R5 LEASE-ARMED 缺失——根因=REG-70.8-SYNTH-NO-OBS（合成源无观测事件⇒ARMED 链词形缺失；非网络面回归）；附：判据器 r1=0 锚缺陷致'锚1 后'扫描退化为全窗（REG-70.15-VOL4-R3-ANCHOR-ZERO）"
+    }
+  ],
+  "verdict": "FAIL",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/d772ebab98cf63f545a6b109ef4d5d43cdda7651e01d2849af9737d7b353c88d/CORE-70-R05.run-record.json",
+      "sha256": "d1e24d4345576bb50ea228d50228ac58366f889d21fa43afd84368433ed56c23"
+    }
+  ],
+  "signer": "dev",
+  "signature": "b5b0270fb2fc3686de71de3c760d14e16af2035402b92b8d45d0fc5b56d8227e0248e788073759b6dad67bfd04da9941b15063c8e231e35a6502a1080fec600b"
+}

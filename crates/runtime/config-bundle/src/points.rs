@@ -33,6 +33,9 @@ pub enum PointProtocol {
     Goose,
     Sv,
     Mqtt,
+    /// root 合成源（REG-70.8-SYNTH-NO-OBS 解封）：qemu-test-synth 测试装配
+    /// 的 OBS 生产轨馈电身份；release 闭包门保证生产装配不可达。
+    Synth,
 }
 
 impl PointProtocol {
@@ -46,6 +49,7 @@ impl PointProtocol {
             points::PROTO_GOOSE => Some(Self::Goose),
             points::PROTO_SV => Some(Self::Sv),
             points::PROTO_MQTT => Some(Self::Mqtt),
+            points::PROTO_SYNTH => Some(Self::Synth),
             _ => None,
         }
     }
@@ -60,6 +64,7 @@ impl PointProtocol {
             "goose" => Some(Self::Goose),
             "sv" => Some(Self::Sv),
             "mqtt" => Some(Self::Mqtt),
+            "synth" => Some(Self::Synth),
             _ => None,
         }
     }
@@ -74,6 +79,7 @@ impl PointProtocol {
             Self::Goose => points::PROTO_GOOSE,
             Self::Sv => points::PROTO_SV,
             Self::Mqtt => points::PROTO_MQTT,
+            Self::Synth => points::PROTO_SYNTH,
         }
     }
 
@@ -87,6 +93,7 @@ impl PointProtocol {
             Self::Goose => "goose",
             Self::Sv => "sv",
             Self::Mqtt => "mqtt",
+            Self::Synth => "synth",
         }
     }
 }
@@ -647,6 +654,13 @@ fn decode_addr(
         PointProtocol::Goose | PointProtocol::Sv => {
             if !bytes.is_empty() {
                 return Err(bad_len("goose-sv", 0));
+            }
+            return Ok(None);
+        }
+        // 合成源：无线格式（addr_len 必须为 0）。
+        PointProtocol::Synth => {
+            if !bytes.is_empty() {
+                return Err(bad_len("synth", 0));
             }
             return Ok(None);
         }

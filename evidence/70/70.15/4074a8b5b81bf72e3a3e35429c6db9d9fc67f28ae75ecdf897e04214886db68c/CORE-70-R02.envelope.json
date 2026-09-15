@@ -1,0 +1,84 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-65f8c5abaaed",
+  "run_id": "run-18d553dfeb101d4e",
+  "nonce": "18d553dfeb10217e",
+  "test_id": "CORE-70-R02",
+  "scope": "L2",
+  "started_at": "2026-09-14T23:30:48Z",
+  "ended_at": "2026-09-14T23:30:48Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "435d3061c99f9761a2e3cc75f8bf8201e3cb4a438f9dc8040457927e3e21e78f",
+  "product_manifest_digest": "567acb2ae1d1deddff6d498cdfbf76795bb673835a106b5479cd0bcafec2e2c7",
+  "profile_digest": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2",
+  "artifact_sha256": "d8ffdbe5eb5ef2099b42ebd00e81e1995e1c39b8e60af19bcc6555b50b5c8889",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol2-gate.sh（SEED_DL=420/REUSE_DL=1200）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "567acb2ae1d1deddff6d498cdfbf76795bb673835a106b5479cd0bcafec2e2c7"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "段2 复用盘：R1 TSDB-DISK-OPEN base_block=8192+旧点保留、R2 轮数、R3 checkpoint 行数、judge G1-G7（G4 产出相位重标）"
+  },
+  "positive_results": [
+    {
+      "id": "reuse",
+      "status": "PASS",
+      "detail": "全门 rc=0——复用盘开卷+旧点保留 ✓、checkpoint 行=22 ✓、rounds=9824 ✓、judge G1-G7 全 ✓（G4 产出相位 [16"
+    },
+    {
+      "id": "5",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "200",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "971] 尾产出健康）",
+      "status": "PASS",
+      "detail": ""
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "none",
+      "status": "FAIL",
+      "detail": "无独立负例判据（判据器自检先行）"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/4074a8b5b81bf72e3a3e35429c6db9d9fc67f28ae75ecdf897e04214886db68c/CORE-70-R02.run-record.json",
+      "sha256": "97b7810119430cd39e2f61e0f4043505a0329b106af79fedacf3355395abfb3f"
+    }
+  ],
+  "signer": "dev",
+  "signature": "e6f3fa0c27b546b34b3662d619307af4754f3fde856b13b10e3308c6a85f0bffe8d35bab7ead25e88a86e78ee2c735fa7315fc9a0fc983a541ad66b556f2c50d"
+}

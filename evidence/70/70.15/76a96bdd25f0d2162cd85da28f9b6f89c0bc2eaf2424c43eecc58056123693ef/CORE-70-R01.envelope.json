@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-1e45d7d83c32",
+  "run_id": "run-18d5767c1577b852",
+  "nonce": "18d5767c1577bc50",
+  "test_id": "CORE-70-R01",
+  "scope": "L2",
+  "started_at": "2026-09-15T10:05:02Z",
+  "ended_at": "2026-09-15T10:05:02Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "68f3fa6fcbc20aeeaea2aeb3badd58b608878e04757964b5b215f07ec3ff6a5b",
+  "product_manifest_digest": "d5267089a36f62665aac5f94af4fa24a993fe184147e9b503b36eaea198dba62",
+  "profile_digest": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2",
+  "artifact_sha256": "503a09edd841e71f02fc7d5d8e9a0ed7c0210afbf04f57eb88be97fee728f0da",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol1-gate.sh（DL=1300）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "d5267089a36f62665aac5f94af4fa24a993fe184147e9b503b36eaea198dba62"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "judge G1-G7（G4 产出相位）"
+  },
+  "positive_results": [
+    {
+      "id": "survival",
+      "status": "PASS",
+      "detail": "G1-G7 全 ✓——rounds=10316/agent=OK=2237 ✓；G4 产出相位 ✓；零 PANIC 零 IOERR"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "skip-trial",
+      "status": "FAIL",
+      "detail": "无 trial 直接确认被拒；G4 旧口径已重标（REG-70.15-G4-PHASE-TAIL-DECAY）"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/76a96bdd25f0d2162cd85da28f9b6f89c0bc2eaf2424c43eecc58056123693ef/CORE-70-R01.run-record.json",
+      "sha256": "476a18f950376fb7ab28345216737aaaccde1ec72dae59cd351aaedf8420e2cb"
+    }
+  ],
+  "signer": "dev",
+  "signature": "ff9e806e04c2033c6ddf19f1f99da7051e5a7da6f7d6f0467cd351f8ceae2ec1fe4150da14df39f29ddac59cc4b51499eeebdf9ed94042fbdafe9934fb467200"
+}

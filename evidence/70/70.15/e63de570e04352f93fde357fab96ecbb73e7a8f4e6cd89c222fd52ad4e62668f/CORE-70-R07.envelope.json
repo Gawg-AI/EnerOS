@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-e3fdb7319053",
+  "run_id": "run-18d5643f36d25189",
+  "nonce": "18d5643f36d256b3",
+  "test_id": "CORE-70-R07",
+  "scope": "L2",
+  "started_at": "2026-09-15T04:30:49Z",
+  "ended_at": "2026-09-15T04:30:49Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "466fcc75867156e6ecab0db364c344cefdee9a313e3eb4c97f478dffb764132e",
+  "product_manifest_digest": "51856c7711bb9189d4b76c29ff155578bd64416b7500459da9f7064e1e264c8d",
+  "profile_digest": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6",
+  "artifact_sha256": "f8310ae6b5e65db068c9061a5dedad3b396c42bbd29f1ab47a660046851fce3c",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol6-gate.sh（svc-config 写后读回 + 预探测行生效后）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-test/product-manifest.normalized.json",
+      "sha256": "51856c7711bb9189d4b76c29ff155578bd64416b7500459da9f7064e1e264c8d"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-test.json",
+      "sha256": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "管理动作全链 22 判据（含激活写面读回核对/冷启动恢复/账本恢复/五负例）"
+  },
+  "positive_results": [
+    {
+      "id": "mgmt",
+      "status": "PASS",
+      "detail": "零 ✗ 全 ✓——R24 冷启动恢复 ✓（写后读回生效）、R25 账本恢复 ✓"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "skip",
+      "status": "FAIL",
+      "detail": "R17 维护外激活=宿主闸覆盖（如实登记）"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/e63de570e04352f93fde357fab96ecbb73e7a8f4e6cd89c222fd52ad4e62668f/CORE-70-R07.run-record.json",
+      "sha256": "cd317bc1f387fac33799514eb786d0498a29fb50e2322089e5ca573c21f066e3"
+    }
+  ],
+  "signer": "dev",
+  "signature": "e9636786a0be7f35644ae4dde22260c2060bf64fd5df5d7aa75fb2428822453b97066c4c00612cb998ea8d6009de0868a34725fe45a98794c58eb7bd75da850d"
+}

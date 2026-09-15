@@ -1,0 +1,33 @@
+{
+  "schema": "eneros.gate-run-record.v1",
+  "case_id": "CORE-70-R03",
+  "gate_id": "VOL70.2-R03",
+  "command": "tools/run70-r03-powercut.sh（脏断电×2）",
+  "exit_code": 0,
+  "recorded_at": "2026-09-15T07:26:24Z",
+  "ran_artifact_sha256": "aba7de60d075ebc0c4ba8fbebd6bbf58538b17ffab703f3d6ad2a3060eb6f86c",
+  "ran_artifact_sha256_source": "evidence/70/70.2/powercut/image.sha256",
+  "raw_log": {
+    "name": "r03-powercut.log",
+    "bytes": 1638,
+    "sha256": "9055e246a21d3519493420d79bec520c275b89224ee6feea4d9ce123d989e1fb",
+    "resident": "handoff-bundle",
+    "note": ".gitignore `*.log`：原始日志随移交包分发，本记录绑定其摘要"
+  },
+  "verdict_lines": [
+    "[✓][R2] 脏断电各窗零 PANIC",
+    "[✓][R3] 控制链恢复（rounds=2944）",
+    "[✓][R4] checkpoint 恢复（×6）",
+    "[✓][R5] 终窗 PRODUCT-READY",
+    "[✓][R6] 零 CHAIN-KEY-MISSING",
+    "VOL70.2-R03-POWER-CUT GATE: PASS"
+  ],
+  "verdict": "PASS",
+  "candidate": {
+    "candidate_id": "010724a05f9de7cb8f3caaa283dca3ae71ce8c79ae5950d89062140e1e1cb17e",
+    "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+    "dirty_tree_digest": "3c4c16546da0a8117b9bfd533d52358f28c6b097852102d2e1f5815526de23a5",
+    "artifact_sha256": "d349f98402eed44880326b95123060120deb669264be85b2b22ce4d2f83eb602",
+    "profile": "qemu-prod"
+  }
+}

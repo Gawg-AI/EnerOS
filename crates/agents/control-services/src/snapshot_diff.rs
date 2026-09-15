@@ -26,8 +26,11 @@ mod snapshot_diff_tests {
         quality_bits, IntegrityTag, ObservationEvent, ObservationValue,
     };
 
-    /// 生产 7 点事件（与 [svc-telemetry] OBS 轨同型：点 1-7、epoch=1、
-    /// 事件时间 = now-50ns；单位码按点 1-7 = V/A/Hz/ratio×4）。
+    /// 生产事件集（与 [svc-telemetry] OBS 轨同型：点 1-7、epoch=1、
+    /// 事件时间 = now-50ns；单位码按点 1-7 = V/A/Hz/ratio×4），**并含控制
+    /// 合同的功率回读点 1001**（2026-09-14：快照必收点集
+    /// = `feedback::safety_coverage()` 单源，回读点在其内——缺它则快照
+    /// 恒 `MissingKeys{1001}`，认证器的 `readback_ok` 恒假）。
     fn events(now_ns: u64, values: [f64; 7], seq0: u64, source: u32) -> Vec<ObservationEvent> {
         use eneros_telemetry_model::unit_catalog;
         use eneros_telemetry_model::PhysicalUnit;
@@ -40,7 +43,7 @@ mod snapshot_diff_tests {
             unit_catalog::code_of(PhysicalUnit::Dimensionless),
             unit_catalog::code_of(PhysicalUnit::Dimensionless),
         ];
-        (1..=7)
+        let mut out: Vec<ObservationEvent> = (1..=7)
             .zip(values.iter().copied())
             .map(|(point, v)| ObservationEvent {
                 tenant_id: 1,
@@ -63,7 +66,30 @@ mod snapshot_diff_tests {
                 clock_id: 1,
                 flags: 0,
             })
-            .collect()
+            .collect();
+        // 合同回读点（kW；覆盖窗 ±500 —— 取站内自洽的 12.0 kW）。
+        out.push(ObservationEvent {
+            tenant_id: 1,
+            site_id: 1,
+            source_id: source,
+            source_epoch: 1,
+            sequence: seq0 + 1001,
+            event_time_ns: now_ns.saturating_sub(50),
+            ingest_time_ns: now_ns.saturating_sub(40),
+            asset_id: 1,
+            device_id: 2,
+            unit_code: unit_catalog::code_of(PhysicalUnit::Kilowatts),
+            point_id: 1001,
+            schema_id: 1,
+            schema_version: 1,
+            quality_bits: quality_bits::VALID,
+            mapping_version: 1,
+            value: ObservationValue::F64(12.0),
+            integrity: IntegrityTag::Authenticated,
+            clock_id: 1,
+            flags: 0,
+        });
+        out
     }
 
     /// 事件 → 旧视图样本（obs_shadow 影子对照同函数）。
@@ -112,7 +138,7 @@ mod snapshot_diff_tests {
         policies.register(SnapshotPolicy {
             purpose_id: 1,
             policy_version: 1,
-            required: alloc::vec![1u32, 2, 3, 4, 5, 6, 7],
+            required: alloc::vec![1u32, 2, 3, 4, 5, 6, 7, 1001],
             optional: alloc::vec::Vec::new(),
             allowed_lateness_ns: 10_000,
             max_age_ns: 500_000,

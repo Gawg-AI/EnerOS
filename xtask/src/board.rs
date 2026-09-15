@@ -464,10 +464,21 @@ pub fn validate_freeze_v2_qualified(
         failures.push(format!("sku-fact-revision-missing:{catalog_sku}"));
     }
     if view.missing.is_empty() && view.structured_missing.is_empty() {
-        // 两份缺失清单都空 → 该组合**声明**全部事实已冻结；此时能力覆盖
-        // 硬门必然生效（`qualified` 路径），此处仅作形态提示，避免"空清单
-        // 被当成完整"的误读。
-        failures.push(format!("sku-fact-no-missing-ledger:{catalog_sku}"));
+        // 两份缺失清单都空 = 该组合**声明**全部事实已冻结。
+        //
+        // 70.14 复查修复（**判据死锁**）：旧实现对此**无条件**报
+        // `sku-fact-no-missing-ledger`，而 `catalog gate` 对 `status=qualified`
+        // 又要求 `unfrozen.is_empty()`（即两份清单都必须空）——"完全冻结"这一
+        // 唯一能通过资格门的形态必然被本函数判负，**资格可达态不存在**：
+        // 解封后第一次给产品 SKU 落全冻结账本即撞（`catalog validate` 与
+        // `catalog gate` 还各判一套，形成"validate 过、gate 必挂"的分叉）。
+        // 现只在**形态自相矛盾**时报负：声明"无缺失"却仍有未验证条目
+        // （空清单 + 未验证事实 = 把不完整当完整）。全验证 + 空清单是
+        // 合法终态，由能力硬门与资格门把关。
+        let any_unverified = view.entries.iter().any(|e| !e.verified);
+        if any_unverified {
+            failures.push(format!("sku-fact-no-missing-ledger:{catalog_sku}"));
+        }
     }
     let (facts, missing, mut extra) = extract_ledger_parts(view, catalog_sku);
     failures.append(&mut extra);
@@ -551,14 +562,31 @@ fn command_bring_up(root: &Path, args: &[String]) -> DynResult<()> {
 }
 
 /// 实板 bring-up 记录判据（全部 fail-closed）。
-pub fn validate_bringup(
+///
+/// `expected_sku` = 记录**应该**属于哪块板（调用方按记录路径的 SKU 命名
+/// 派生：`evidence/70/70.12/<sku>-bring-up.json`）。为 `None` 时只判记录
+/// 自身形态（模板/独立检查场景）。
+pub fn validate_bringup_gated(
     root: &Path,
     record: &BringUpRecord,
     record_rel: &str,
+    expected_sku: Option<&str>,
 ) -> DynResult<Vec<String>> {
     let mut v = Vec::new();
     if record.schema != BRINGUP_SCHEMA {
         v.push(format!("bringup-schema:{}", record.schema));
+    }
+    // 复查修复（2026-09-13）：记录必须与**被判 SKU** 绑定，而不是只与
+    // 记录自己声明的 SKU 绑定。旧实现用 `record.sku_id` 去找冻结记录 ⇒
+    // `acme-board`（catalog 侧被资格化）路径下放一份 `ghost-board` 的记录
+    // 零违规（实测 `violations == []`）——资格/启动记录可跨组合继承。
+    if let Some(expected) = expected_sku {
+        if expected != record.sku_id {
+            v.push(format!(
+                "bringup-sku-name-mismatch:{expected}!=({})",
+                record.sku_id
+            ));
+        }
     }
     if record.sku_id.trim().is_empty() {
         v.push("bringup-sku-empty".to_owned());
@@ -609,6 +637,18 @@ pub fn validate_bringup(
                 short(&digest)
             ));
         }
+        // 复查修复（2026-09-13）：修订必须与冻结记录一致——旧实现只查
+        // 非空，换修订的记录也能支撑资格（"换修订 = 新组合"是蓝图明令）。
+        let view = read_freeze_view(&freeze_path)?;
+        if !view.revision.is_empty()
+            && !record.board_revision.is_empty()
+            && view.revision != record.board_revision
+        {
+            v.push(format!(
+                "bringup-revision-mismatch:{}!={}",
+                view.revision, record.board_revision
+            ));
+        }
     }
     // 产物绑定：至少要有启动链与 root 产物摘要，且摘要形态合法。
     if record.artifacts.is_empty() {
@@ -647,6 +687,12 @@ pub fn validate_bringup(
             // 审计（S7 P2）：零字节"证据文件"不算证据。
             v.push(format!("bringup-raw-evidence-empty:{rel}"));
         }
+        // 复查修复（2026-09-13）：绝对路径/`..` 逃逸会把证据指到仓库外
+        // （`root.join("/etc/hostname")` 替换整个路径）。与 soak 同判据，
+        // 由 `check_rel_path` 单源提供。
+        if let Err(reason) = crate::soak::check_rel_path(rel) {
+            v.push(format!("bringup-raw-evidence-escapes-base:{rel}:{reason}"));
+        }
     }
     if v.is_empty() {
         println!(
@@ -655,6 +701,25 @@ pub fn validate_bringup(
         );
     }
     Ok(v)
+}
+
+/// 兼容入口（不绑被判 SKU；模板检查与独立检查用）。
+///
+/// **catalog 门必须走 [`validate_bringup_gated`]**——不传 `expected_sku`
+/// 时"记录属于哪块板"只由记录自述决定，正是跨组合继承的入口。
+pub fn validate_bringup(
+    root: &Path,
+    record: &BringUpRecord,
+    record_rel: &str,
+) -> DynResult<Vec<String>> {
+    validate_bringup_gated(root, record, record_rel, None)
+}
+
+/// 从 bring-up 记录路径派生它应该属于的 SKU
+/// （约定：`.../<sku>-bring-up.json`）。
+pub fn bringup_expected_sku(record_rel: &str) -> Option<&str> {
+    let name = record_rel.rsplit('/').next()?;
+    name.strip_suffix("-bring-up.json")
 }
 
 /// 冻结记录的规范摘要（与 `eneros-board-facts::digest::ledger_digest` 同源；
@@ -757,6 +822,20 @@ fn command_matrix(root: &Path, args: &[String]) -> DynResult<()> {
                     .collect()
             })
             .unwrap_or_default();
+        // 复查修复（2026-09-13）：资格状态必须读**目录事实**——旧实现的
+        // `qualification` 是字面量（`grep qualification board.rs` 无 status
+        // 读取）：即使目录里 status=qualified，能力表也照旧输出
+        // "unqualified"（错误报告，且从不消费资格记录）。
+        let qualification = if kind == "development" {
+            "not-applicable"
+        } else {
+            match entry.get("status").and_then(|x| x.as_str()) {
+                Some("qualified") => "qualified",
+                Some("candidate") => "candidate",
+                Some("not-qualified") => "unqualified",
+                _ => "unknown-status",
+            }
+        };
         let freeze_rel = format!("product/skus/{sku_id}.json");
         // 审计（S7 P3）：读失败不得静默当"无事实"——能力表是发布面判据。
         let freeze = match read_freeze_view(&root.join(&freeze_rel)) {
@@ -769,7 +848,7 @@ fn command_matrix(root: &Path, args: &[String]) -> DynResult<()> {
                     "driver_present": false,
                     "state": "freeze-record-unreadable",
                     "error": e.to_string(),
-                    "qualification": "unqualified",
+                    "qualification": qualification,
                 }));
                 continue;
             }
@@ -805,7 +884,7 @@ fn command_matrix(root: &Path, args: &[String]) -> DynResult<()> {
                 "state": state,
                 "fact_families": fact_families.iter().cloned().collect::<Vec<_>>(),
                 "declared_missing": declared_missing.iter().cloned().collect::<Vec<_>>(),
-                "qualification": if kind == "development" { "not-applicable" } else { "unqualified" },
+                "qualification": qualification,
             }));
         }
         // 无协议的 SKU（真实板卡未接通协议）也要有一行，避免"零行=通过"。
@@ -818,7 +897,7 @@ fn command_matrix(root: &Path, args: &[String]) -> DynResult<()> {
                 "state": if kind == "product" { "no-device-contract" } else { "development-only" },
                 "fact_families": fact_families.iter().cloned().collect::<Vec<_>>(),
                 "declared_missing": declared_missing.iter().cloned().collect::<Vec<_>>(),
-                "qualification": if kind == "development" { "not-applicable" } else { "unqualified" },
+                "qualification": qualification,
             }));
         }
     }
@@ -883,17 +962,35 @@ fn command_qualify(root: &Path, args: &[String]) -> DynResult<()> {
 ///
 /// `verify`（复验）模式额外做影响映射核对：任一组件摘要与当前值不符 →
 /// 受影响场景撤销（**撤销当前适用状态**，历史记录保留）。
-pub fn validate_qualification(
+///
+/// `expected_sku` = 记录**应该**属于哪块板（调用方按记录路径派生：
+/// `product/skus/<sku>.qualification.json`）。为 `None` 时只判记录自身形态。
+pub fn validate_qualification_gated(
     root: &Path,
     record: &QualificationRecord,
+    expected_sku: Option<&str>,
     verify_impacts: bool,
 ) -> DynResult<Vec<String>> {
     let mut v = Vec::new();
     if record.schema != QUALIFICATION_SCHEMA {
         v.push(format!("qualify-schema:{}", record.schema));
     }
+    // 复查修复（2026-09-13）：资格记录必须与**被判 SKU** 绑定（同 bring-up）。
+    if let Some(expected) = expected_sku {
+        if expected != record.sku_id {
+            v.push(format!(
+                "qualify-sku-name-mismatch:{expected}!=({})",
+                record.sku_id
+            ));
+        }
+    }
     if record.candidate_id.trim().is_empty() {
         v.push("qualify-candidate-empty".to_owned());
+    }
+    if record.board_revision.trim().is_empty() {
+        // 修订是"换修订 = 新组合"的绑定字段：空值让下面的修订交叉核对
+        // 静默跳过（S7 F11 同族）。
+        v.push("qualify-revision-empty".to_owned());
     }
     if !HARDWARE_SCOPES.contains(&record.scope.as_str()) {
         v.push(format!("qualify-scope-not-hardware:{}", record.scope));
@@ -930,7 +1027,19 @@ pub fn validate_qualification(
         if r.started_at.trim().is_empty() || r.ended_at.trim().is_empty() {
             v.push(format!("qualify-run-time-missing:{}", r.run_id));
         }
-        if r.manifest.trim().is_empty() || !root.join(&r.manifest).is_file() {
+        // 70.14 复查补齐：manifest 是**判据输入**，必须过与 `raw_evidence` /
+        // case evidence 同一的仓内相对路径判据（`soak::check_rel_path`）。
+        // 旧实现直接 `root.join(&r.manifest)`：绝对路径（`/tmp/x.json`）会替换
+        // 掉整个前缀、`../x.json` 可越出仓库 —— 资格绑定的证据来源不受
+        // "证据必须在仓内"约束（S7/R4 的逃逸加固漏了 runs[].manifest 这一处）。
+        let manifest_rel_ok = match super::soak::check_rel_path(&r.manifest) {
+            Ok(()) => true,
+            Err(why) => {
+                v.push(format!("qualify-run-manifest-escapes-base:{why}"));
+                false
+            }
+        };
+        if r.manifest.trim().is_empty() || !manifest_rel_ok || !root.join(&r.manifest).is_file() {
             v.push(format!("qualify-run-manifest-missing:{}", r.manifest));
         } else {
             required_manifest = true;
@@ -952,6 +1061,24 @@ pub fn validate_qualification(
                         v.push(format!(
                             "qualify-run-id-mismatch:{}!={}",
                             r.run_id, verdict.run_id
+                        ));
+                    }
+                    // 复查修复（2026-09-13）：run 的**设备事实**必须与被资格
+                    // SKU/修订一致——旧实现只核对 `run_id`，A 板跑出的合法
+                    // 72h run 可以支撑 B 板的资格（"资格不可跨组合继承"）。
+                    if verdict.device_sku_id != record.sku_id {
+                        v.push(format!(
+                            "qualify-run-device-mismatch:{}:{}!=({})",
+                            r.run_id, record.sku_id, verdict.device_sku_id
+                        ));
+                    }
+                    if !verdict.device_board_revision.is_empty()
+                        && !record.board_revision.is_empty()
+                        && verdict.device_board_revision != record.board_revision
+                    {
+                        v.push(format!(
+                            "qualify-run-revision-mismatch:{}:{}!=({})",
+                            r.run_id, record.board_revision, verdict.device_board_revision
                         ));
                     }
                 }
@@ -1026,12 +1153,42 @@ pub fn validate_qualification(
     Ok(v)
 }
 
+/// 兼容入口（不绑被判 SKU）。**catalog 门必须走
+/// [`validate_qualification_gated`]**。
+pub fn validate_qualification(
+    root: &Path,
+    record: &QualificationRecord,
+    verify_impacts: bool,
+) -> DynResult<Vec<String>> {
+    validate_qualification_gated(root, record, None, verify_impacts)
+}
+
+/// 从资格记录路径派生它应该属于的 SKU
+/// （约定：`product/skus/<sku>.qualification.json`）。
+pub fn qualification_expected_sku(record_rel: &str) -> Option<&str> {
+    let name = record_rel.rsplit('/').next()?;
+    name.strip_suffix(".qualification.json")
+}
+
 fn qualify_evidence_check(root: &Path, rel: &str, kind: &str) -> String {
     if rel.trim().is_empty() {
         return format!("qualify-{kind}-evidence-empty");
     }
     if !root.join(rel).is_file() {
         return format!("qualify-{kind}-evidence-missing:{rel}");
+    }
+    // 复查修复（2026-09-13）：零字节"证据文件"不算证据（与 soak/bring-up 同判据）。
+    if root
+        .join(rel)
+        .metadata()
+        .map(|m| m.len() == 0)
+        .unwrap_or(true)
+    {
+        return format!("qualify-{kind}-evidence-empty:{rel}");
+    }
+    // 路径逃逸：绝对路径与 `..` 会把证据指到仓库外（与 soak 同判据）。
+    if let Err(reason) = crate::soak::check_rel_path(rel) {
+        return format!("qualify-{kind}-evidence-escapes-base:{rel}:{reason}");
     }
     String::new()
 }
@@ -1311,6 +1468,49 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// 70.14 复查红测：**完全冻结**的记录不得被"无缺失登记"判负（判据死锁）。
+    ///
+    /// 缺陷形态（旧实现）：`missing`/`structured_missing` 双空即无条件报
+    /// `sku-fact-no-missing-ledger`，而 `catalog gate` 对 `status=qualified`
+    /// 要求两份清单都必须空 —— "完全冻结"这一唯一能过资格门的形态必然被本
+    /// 函数判负，资格可达态不存在。现只在"声明无缺失但仍有未验证条目"这一
+    /// 自相矛盾形态报负。
+    #[test]
+    fn fully_frozen_record_is_not_rejected_as_missing_ledger() {
+        let root = tmp_root("frozen-ok");
+        // 全族 entries 一律 verified=true + 两份缺失清单皆空 = 合法终态。
+        let entries = serde_json::json!([
+            entry("soc", "compatible", "vendor,soc", "none", true),
+            entry("cpu", "cores", "8", "count", true),
+            entry("ram", "map", "8GiB@0x0", "none", true),
+            entry("timer", "freq", "62500000", "Hz", true),
+            entry("boot-chain", "vendor", "vendor", "none", true),
+            entry("interrupt-controller", "model", "gic-v3", "none", true),
+        ]);
+        write_freeze(&root, "frozen-ok", entries.clone(), serde_json::json!([]));
+        let view = view_of(&root, "frozen-ok");
+        let failures = validate_freeze_v2(&view, "frozen-ok", "development");
+        assert!(
+            !failures
+                .iter()
+                .any(|f| f.starts_with("sku-fact-no-missing-ledger")),
+            "完全冻结记录不得被判'无缺失登记'（资格可达态）：{failures:?}"
+        );
+        // 反向：声明"无缺失"但仍有未验证条目 = 把不完整当完整 → 必须判负。
+        let mut bad = entries;
+        bad.as_array_mut().unwrap()[0] = entry("soc", "compatible", "vendor,soc", "none", false);
+        write_freeze(&root, "frozen-bad", bad, serde_json::json!([]));
+        let view = view_of(&root, "frozen-bad");
+        let failures = validate_freeze_v2(&view, "frozen-bad", "development");
+        assert!(
+            failures
+                .iter()
+                .any(|f| f.starts_with("sku-fact-no-missing-ledger")),
+            "空缺失清单 + 未验证事实 = 形态自相矛盾，必须判负：{failures:?}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// 审计（S7 F10/F11）红测：未知 kind 与缺 revision 都要显式判负。
     #[test]
     fn unknown_kind_and_missing_revision_are_reported() {
@@ -1545,6 +1745,24 @@ mod tests {
         .expect("configs/ 存在即应可算");
         // 一份**真实可判**的 72h 硬件口径记录（含原始文件与产物角色）。
         let manifest_rel = "evidence/run-manifest.json";
+        // 复查修复（2026-09-13）：产物条目必须与盘上文件实算摘要绑定
+        // （`<sha256>@<相对路径>`）——夹具写真实文件，不与判据脱钩。
+        fs::create_dir_all(root.join("evidence/artifacts")).unwrap();
+        let artifact_binding = |rel: &str, content: &[u8]| -> String {
+            fs::write(root.join(rel), content).unwrap();
+            let mut h = Sha256::new();
+            h.update(content);
+            format!(
+                "{}@{}",
+                h.finalize()
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>(),
+                rel
+            )
+        };
+        let root_task_art = artifact_binding("evidence/artifacts/root-task.bin", b"root-task");
+        let boot_chain_art = artifact_binding("evidence/artifacts/boot-chain.bin", b"boot-chain");
         let hb: Vec<String> = (0..=(72 * 6)).map(|i| rfc3339_at_minutes(i * 10)).collect();
         let metrics: Vec<serde_json::Value> = (0..73)
             .map(|i| {
@@ -1563,7 +1781,7 @@ mod tests {
             "run_id": "run-1",
             "scenario": "hil-full-plan",
             "scope": "hw-hil",
-            "artifacts": {"root_task": "a".repeat(64), "boot_chain": "b".repeat(64)},
+            "artifacts": {"root_task": root_task_art, "boot_chain": boot_chain_art},
             "device": {"sku_id": "acme-board", "board_revision": "rev-A",
                        "serial": "SN-1", "firmware": "uefi-1"},
             "rig": {"rig_id": "rig-1", "instruments": ["power-meter"],
@@ -1663,6 +1881,124 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// 复查修复（2026-09-13）红测：资格记录引用的 soak run 必须在**同一块板**
+    /// 上跑——旧实现只核对 `run_id`，A 板跑出的合法 72h run 可以支撑 B 板的
+    /// 资格（"资格不可跨组合继承"）。
+    #[test]
+    fn qualification_run_must_be_on_the_same_board() {
+        let root = tmp_root("qualdev");
+        fs::create_dir_all(root.join("evidence/artifacts")).unwrap();
+        fs::create_dir_all(root.join("configs")).unwrap();
+        fs::write(root.join("configs/points.toml"), b"a = 1\n").unwrap();
+        fs::write(root.join("evidence/case.json"), b"{}").unwrap();
+        let artifact = |rel: &str, content: &[u8]| -> String {
+            fs::write(root.join(rel), content).unwrap();
+            let mut h = Sha256::new();
+            h.update(content);
+            format!(
+                "{}@{}",
+                h.finalize()
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>(),
+                rel
+            )
+        };
+        let root_art = artifact("evidence/artifacts/root-task.bin", b"root-task");
+        let boot_art = artifact("evidence/artifacts/boot-chain.bin", b"boot-chain");
+        fs::write(root.join("evidence/run-serial.log"), b"boot ok\n").unwrap();
+        // 两块板的冻结记录都在（run 属于 ghost-board）。
+        for sku in ["acme-board", "ghost-board"] {
+            write_freeze(
+                &root,
+                sku,
+                serde_json::json!([entry("soc", "compatible", "board,soc", "none", true)]),
+                serde_json::json!([]),
+            );
+        }
+        let hb: Vec<String> = (0..=(72 * 6)).map(|i| rfc3339_at_minutes(i * 10)).collect();
+        let metrics: Vec<serde_json::Value> = (0..73)
+            .map(|i| {
+                serde_json::json!({
+                    "at": rfc3339_at_minutes(i * 60),
+                    "heap_bytes": 1_000_000, "dma_bytes": 250_000, "handles": 40,
+                    "flush_latency_ms_max": 12, "control_period_ms_max": 100,
+                })
+            })
+            .collect();
+        let run = serde_json::json!({
+            "schema": "eneros.soak-run.v1",
+            "run_id": "run-ghost",
+            "scenario": "hil-full-plan",
+            "scope": "hw-hil",
+            "artifacts": {"root_task": root_art, "boot_chain": boot_art},
+            "device": {"sku_id": "ghost-board", "board_revision": "rev-A",
+                       "serial": "SN-1", "firmware": "uefi-1"},
+            "rig": {"rig_id": "rig-1", "instruments": ["power-meter"],
+                    "power_channel": "psu-1"},
+            "started_at": rfc3339_at_minutes(0),
+            "ended_at": rfc3339_at_minutes(72 * 60),
+            "heartbeats": hb,
+            "protocol_coverage": [
+                {"protocol": "modbus-tcp", "active_from": rfc3339_at_minutes(0),
+                 "active_to": rfc3339_at_minutes(72 * 60), "samples": 1000}],
+            "metrics": metrics,
+            "judge_version": "fixture",
+            "raw_files": ["evidence/run-serial.log"],
+            "interruptions": [],
+        });
+        fs::write(
+            root.join("evidence/run-manifest.json"),
+            serde_json::to_vec_pretty(&run).unwrap(),
+        )
+        .unwrap();
+        let record = QualificationRecord {
+            schema: QUALIFICATION_SCHEMA.to_owned(),
+            candidate_id: "cand-1".to_owned(),
+            // 被资格的就是 acme-board，但 run 的 device 是 ghost-board。
+            sku_id: "acme-board".to_owned(),
+            board_revision: "rev-A".to_owned(),
+            scope: "hw-hil".to_owned(),
+            required_cases: vec![CaseBinding {
+                case_id: "CORE-70-R11".to_owned(),
+                requirement: "CORE-70-R11".to_owned(),
+                evidence: "evidence/case.json".to_owned(),
+            }],
+            runs: vec![RunBinding {
+                run_id: "run-ghost".to_owned(),
+                scenario: "hil-full-plan".to_owned(),
+                scope: "hw-hil".to_owned(),
+                started_at: rfc3339_at_minutes(0),
+                ended_at: rfc3339_at_minutes(72 * 60),
+                manifest: "evidence/run-manifest.json".to_owned(),
+            }],
+            impacts: vec![ImpactBinding {
+                component: "config".to_owned(),
+                digest: current_impact_digest(
+                    &root,
+                    &ImpactBinding {
+                        component: "config".to_owned(),
+                        digest: String::new(),
+                        scenarios: vec![],
+                    },
+                )
+                .unwrap()
+                .expect("configs/ 摘要可算"),
+                scenarios: vec!["hil-full-plan".to_owned()],
+            }],
+            fact_record_digest: freeze_record_digest(&root, "acme-board").unwrap(),
+            unsupported: vec![],
+            limitations: vec![],
+        };
+        let v = validate_qualification(&root, &record, false).unwrap();
+        assert!(
+            v.iter()
+                .any(|x| x.starts_with("qualify-run-device-mismatch:run-ghost:acme-board")),
+            "run 的板卡必须与被资格 SKU 一致：{v:?}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn qualification_rejects_empty_and_non_hardware() {
         let root = tmp_root("qualify");
@@ -1692,6 +2028,117 @@ mod tests {
                 "missing {expected} in {v:?}"
             );
         }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 复查修复（2026-09-13）红测：bring-up / 资格记录必须与**被判 SKU**
+    /// 绑定——文件名带 SKU 但记录内部是另一块板，旧实现零违规（资格可跨
+    /// 组合继承，蓝图决策表 B 方案"运行时猜再兜底"的反面也被绕过）。
+    #[test]
+    fn records_must_be_bound_to_the_gated_sku() {
+        let root = tmp_root("skubind");
+        fs::write(root.join("evidence/raw.log"), b"boot ok\n".repeat(4)).unwrap();
+        write_freeze(
+            &root,
+            "ghost-board",
+            serde_json::json!([entry("soc", "compatible", "ghost,soc", "none", true)]),
+            serde_json::json!([]),
+        );
+        write_freeze(
+            &root,
+            "acme-board",
+            serde_json::json!([entry("soc", "compatible", "acme,soc", "none", true)]),
+            serde_json::json!([]),
+        );
+        let ghost_digest = freeze_record_digest(&root, "ghost-board").unwrap();
+        let mut record = BringUpRecord {
+            schema: BRINGUP_SCHEMA.to_owned(),
+            sku_id: "ghost-board".to_owned(),
+            board_revision: "rev-A".to_owned(),
+            serial: "SN-1".to_owned(),
+            rig_id: "rig-1".to_owned(),
+            scope: "hw-bringup".to_owned(),
+            fact_record_digest: ghost_digest,
+            artifacts: BTreeMap::from([
+                ("boot_chain".to_owned(), "a".repeat(64)),
+                ("root_task".to_owned(), "b".repeat(64)),
+            ]),
+            required_services: vec!["root-task".to_owned()],
+            raw_evidence: vec!["evidence/raw.log".to_owned()],
+            operators: Operators {
+                bringup_by: "alice".to_owned(),
+                device_facts_by: "alice".to_owned(),
+                reviewed_by: "bob".to_owned(),
+            },
+        };
+        // 判据自身应成立（换成本来那块的记录则零违规）——先确认夹具是"好记录"。
+        let rel_ghost = "evidence/70/70.12/ghost-board-bring-up.json";
+        assert_eq!(
+            validate_bringup_gated(&root, &record, rel_ghost, Some("ghost-board")).unwrap(),
+            Vec::<String>::new(),
+            "夹具在自身 SKU 名下必须是通过的"
+        );
+        // 关键：同一记录放在 acme-board 的记录路径下 → 必须判负。
+        let rel_acme = "evidence/70/70.12/acme-board-bring-up.json";
+        let v = validate_bringup_gated(&root, &record, rel_acme, Some("acme-board")).unwrap();
+        assert!(
+            v.contains(&"bringup-sku-name-mismatch:acme-board!=(ghost-board)".to_string()),
+            "跨 SKU 继承必须判负：{v:?}"
+        );
+        // 记录名派生：调用方按路径取名时不会漏判。
+        assert_eq!(bringup_expected_sku(rel_acme), Some("acme-board"));
+        // 修订也必须与冻结记录一致（旧实现从不比对 bring-up 的修订）。
+        record.sku_id = "acme-board".to_owned();
+        record.fact_record_digest = freeze_record_digest(&root, "acme-board").unwrap();
+        record.board_revision = "rev-OTHER".to_owned();
+        let v = validate_bringup_gated(&root, &record, rel_acme, Some("acme-board")).unwrap();
+        assert!(
+            v.contains(&"bringup-revision-mismatch:rev-A!=rev-OTHER".to_string()),
+            "修订不符必须判负：{v:?}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 复查修复（2026-09-13）红测：资格记录文件的文件名（即被资格 SKU——
+    /// 调用方按 `product/skus/<sku>.qualification.json` 命名）必须与记录
+    /// 内部 SKU 一致，否则一块板可以拿另一块板的资格记录。
+    #[test]
+    fn qualification_record_is_bound_to_its_own_sku() {
+        let root = tmp_root("qualbind2");
+        write_freeze(
+            &root,
+            "acme-board",
+            serde_json::json!([entry("soc", "compatible", "acme,soc", "none", true)]),
+            serde_json::json!([]),
+        );
+        write_freeze(
+            &root,
+            "ghost-board",
+            serde_json::json!([entry("soc", "compatible", "ghost,soc", "none", true)]),
+            serde_json::json!([]),
+        );
+        let record = QualificationRecord {
+            schema: QUALIFICATION_SCHEMA.to_owned(),
+            candidate_id: "cand-1".to_owned(),
+            sku_id: "ghost-board".to_owned(),
+            board_revision: "rev-A".to_owned(),
+            scope: "hw-hil".to_owned(),
+            required_cases: vec![],
+            runs: vec![],
+            impacts: vec![],
+            fact_record_digest: String::new(),
+            unsupported: vec![],
+            limitations: vec![],
+        };
+        // 记录挂在 acme-board 名下（文件名 = 被资格 SKU）→ 身份不符必须判负。
+        let v = validate_qualification_gated(&root, &record, Some("acme-board"), false).unwrap();
+        assert!(
+            v.contains(&"qualify-sku-name-mismatch:acme-board!=(ghost-board)".to_string()),
+            "资格记录身份不符必须判负：{v:?}"
+        );
+        // 在自身名下不再报身份不符（其余违规照旧）。
+        let v = validate_qualification_gated(&root, &record, Some("ghost-board"), false).unwrap();
+        assert!(!v.iter().any(|x| x.contains("sku-name-mismatch")), "{v:?}");
         let _ = fs::remove_dir_all(&root);
     }
 }

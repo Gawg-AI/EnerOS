@@ -452,10 +452,15 @@ pub trait EventStore {
     /// `last_offset < keep_after_offset` 的 segment（前缀），返回删除清单
     /// （digest/范围/记录数）供调用方写审计。consumer/legal hold 检查在
     /// 调用方。
+    /// 删除 keep_after_offset 之前的完整段，**单次至多 max_segments 段**
+    /// （REG-70.15-PRUNE-MEGAOP：无界删除突发会以 40 万+ 块 IPC 阻塞
+    /// svc-telemetry 单线程循环 ⇒ 快照停摆 ⇒ 控制链停摆——调用方按窗
+    /// 摊销，水位靠多窗排空）。
     fn delete_full_segments_before(
         &mut self,
         partition: PartitionId,
         keep_after_offset: LogOffset,
+        max_segments: usize,
     ) -> Result<Vec<DeletedSegment>, StoreError>;
 
     /// 显式落盘栅栏：把所有 staged 记录写入设备并 flush 介质。

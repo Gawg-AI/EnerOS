@@ -90,20 +90,39 @@ kill -9 $(pgrep -f "mqtt_telemetry_broker.py") 2>/dev/null || true
 kill -9 $(pgrep -f "eneros-planner-peer") 2>/dev/null || true
 kill -9 $(pgrep -f "qemu-system") 2>/dev/null || true
 sleep 2
-gate_export_signing_key
-gate_compile_config "$RUN/config-compile.log" qemu-prod
-echo "=== sel4-build-rust 重链接 ==="
-bash "$ROOT/third_party/sel4-build-rust.sh" >"$RUN/sel4.log" 2>&1 || {
+# 装配切换（2026-09-15，R05 复跑）：qemu-prod 强制 ReleaseTls:8883 而本门
+# peer 为明文 MQTT ⇒ AI 中继结构性不可建（used=true 判据永缺）。R05 的
+# scope=INTEROP（broker/peer 故障恢复语义）不要求 prod TLS 装配——切
+# qemu-test + synth（AI 中继已由 vol89 实证 used=true ×9）。目标 MQTT broker
+# 端口对齐 1883（束嵌 ELF：compile 先于 relink 的顺序铁律）。
+TEST_ROOT_KEY_HEX="1f58396696deec97a0090fa612eb5c4784f0b114693696916c01e9cff8ebc5c7ec0c18caf02a7478c73e54bf13a06fb11624fd1a233ab5e41217aa7bb3803e04"
+MQTT_TOML="$ROOT/configs/protocol-mqtt.toml"
+cp -f "$MQTT_TOML" "$RUN/protocol-mqtt.toml.bak"
+python3 - "$MQTT_TOML" <<'PY'
+import sys, re
+p = sys.argv[1]
+s = open(p).read()
+s = re.sub(r'broker\s*=\s*"10\.0\.2\.2:\d+"', 'broker = "10.0.2.2:1883"', s)
+open(p, "w").write(s)
+PY
+gate_cleanup_env
+ENEROS_KMS_DIR=configs/kms-dev cargo xtask config compile --profile qemu-test \
+  --accept-test-signing-key --root-key-hex "$TEST_ROOT_KEY_HEX" >"$RUN/config-compile.log" 2>&1 || {
+  echo "CONFIG-COMPILE FAIL"; tail -5 "$RUN/config-compile.log"; exit 2; }
+echo "=== sel4-build-rust 重链接（synth 装配）==="
+gate_relink_cached "$RUN/sel4.log" "sel4-eipc,qemu-test-synth" || {
   echo "SEL4-RELINK FAIL"; tail -20 "$RUN/sel4.log"; exit 3; }
-gate_image_raw qemu-prod "$RUN/image.log"
+gate_image_raw_cached qemu-test "$RUN/image.log" "sel4-eipc,qemu-test-synth"
 
-IMG="$ROOT/target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw"
+IMG="$ROOT/target/eneros/artifacts/qemu-test/eneros-qemu-test.raw"
 [ -f "$IMG" ] || { echo "image missing"; exit 3; }
 sha256sum "$IMG" | tee "$EVROOT/image.sha256"
 TPL="$ROOT/target/evidence61/template.fd"
 [ -f "$TPL" ] || { echo "vars template missing"; exit 3; }
 
-DIR="$RUN/win"; mkdir -p "$DIR"; rm -f "$DIR/qemu-serial.log" "$DIR/eneros-data.raw"
+DIR="$RUN/win"; mkdir -p "$DIR"; rm -f "$DIR/qemu-serial.log" "$DIR/eneros-data.raw" \
+  "$DIR/modbus.transcript.jsonl" "$DIR/iec104.transcript.jsonl" "$DIR/broker-transcript.jsonl"
+truncate -s 64M "$DIR/eneros-data.raw"
 echo "=== 段1-6：QEMU 双故障段矩阵窗（$DL s）==="
 python3 "$ROOT/evidence/61/modbus_slave61.py" --transcript "$DIR/modbus.transcript.jsonl" &
 PMOD=$!
@@ -122,11 +141,12 @@ rm -f "$RUN/$W.seq-state.json"
   --state "$RUN/$W.seq-state.json" >"$RUN/$W.planner-peer.log" 2>&1 &
 PEER_PID=$!
 
-cargo xtask run qemu-prod \
+cargo xtask run qemu-test \
   --image "$IMG" --vars-template "$TPL" \
   --expect PASS --evidence-dir "$DIR" \
+  --data-disk "$DIR/eneros-data.raw" \
   --net-mode present --net-user --net-protocols present \
-  --reset-bootctrl --ready-marker product-ready --qmp-deadline-secs "$DL" >/dev/null 2>&1 &
+  --reset-bootctrl --ready-marker root-heartbeat --qmp-deadline-secs "$DL" >/dev/null 2>&1 &
 QEMU_JOB=$!
 for _ in $(seq 1 100); do
   grep -q "PRODUCT-READY: true" "$DIR/qemu-serial.log" 2>/dev/null && break
@@ -136,7 +156,7 @@ grep -q "PRODUCT-READY: true" "$DIR/qemu-serial.log" || {
   echo "PRODUCT-READY 未达"; kill $QEMU_JOB $PMOD $P104 $PEER_PID $BROKER_PID 2>/dev/null || true
   sleep 2; kill -9 $(pgrep -f "qemu-system") 2>/dev/null || true; exit 6; }
 
-sleep 100  # 段1：健康链样本（used=true / Committed / ACQ）
+sleep 240  # 段1：健康链样本（used=true / Committed / ACQ；240s 覆盖 AI 中继往返竞态）
 
 # ---- 段2：broker kill-9 短断链（25s < 90s arm 阈值，不得武装）------------
 echo "[gate] 段2：kill -9 broker（短断链 25s——arm 阈值下方）"
@@ -184,6 +204,8 @@ kill -9 $(pgrep -f "eneros-planner-peer") 2>/dev/null || true
 
 S="$DIR/qemu-serial.log"; P="$RUN/$W.planner-peer.log"; BT="$DIR/broker-transcript.jsonl"
 [ -f "$S" ] || { echo "serial log missing"; exit 7; }
+# 恢复 protocol-mqtt.toml 基线（本门曾改写 broker 端口）。
+mv -f "$RUN/protocol-mqtt.toml.bak" "$MQTT_TOML" 2>/dev/null || true
 cp -f "$S" "$EVROOT/$W.qemu-serial.log"
 cp -f "$P" "$EVROOT/$W.planner-peer.log"
 cp -f "$BT" "$EVROOT/$W.broker-transcript.jsonl" 2>/dev/null || true

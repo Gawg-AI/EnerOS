@@ -403,6 +403,67 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
         data: &mut [u8],
         datalen: usize,
     ) -> Result<u32, StorageError> {
+        match self.issue_once(kind, sector, data, datalen) {
+            Ok(v) => Ok(v),
+            Err(StorageError::Timeout { .. }) => {
+                // 2026-09-14（`REG-70.15-BLK-DEVICE-IOERR-SUSTAINED`）：设备在
+                // `wait_used` 窗内没有完成请求 ⇒ 设备侧 `last_avail_idx` 与
+                // guest 侧 `avail.idx` 失步，此后**所有**请求静默丢弃（实弹：
+                // `[blk-wait] TIMEOUT device never completed (20M spins)
+                // last_used=38028` 冻结不变 → 级联到 `SNAP-SKIP store-fail`
+                // → 控制链"活着但不再控制"）。按 REG-70.7 既有口径**复位重建
+                // 队列**（写 STATUS=0 清设备侧内部态 + 重跑 device_init/
+                // queue_setup + 环计数器与描述符游标归零），然后**重试一次**：
+                // 可恢复的瞬时停顿不得升级成永久停摆。
+                if self.recover_queue() {
+                    self.issue_once(kind, sector, data, datalen)
+                } else {
+                    Err(StorageError::Timeout {
+                        operation: "virtio-blk request",
+                        ms: 0,
+                    })
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// 队列自恢复：复位设备 + 重建队列 + 归零 guest 侧环计数器/描述符游标。
+    /// 返回 true = 已重建（调用方可重试）。
+    ///
+    /// 与 `VirtioBlkDriver::new` 的初始化序列同源（device_init → queue_setup →
+    /// 环计数器归零 → post_init）；差别只在**不重建驱动实例**（MMIO 映射与
+    /// DMA 池不变），并把 `desc_head`/`desc_used`/`last_used` 一并归零。
+    fn recover_queue(&self) -> bool {
+        if self.device_init().is_err() || self.queue_setup().is_err() {
+            #[cfg(target_os = "none")]
+            eneros_runtime::println!("[blk] QUEUE-RECOVER failed (device_init/queue_setup)");
+            return false;
+        }
+        {
+            let mut pool = self.pool.borrow_mut();
+            let bytes = pool.as_bytes_mut();
+            // avail.idx @0x0102 / used.idx @0x1002（与 new 的归零点同址同宽）。
+            bytes[0x0102..0x0104].copy_from_slice(&0u16.to_le_bytes());
+            bytes[0x1002..0x1004].copy_from_slice(&0u16.to_le_bytes());
+        }
+        self.desc_head.set(0);
+        self.desc_used.set(0);
+        self.last_used.set(0);
+        let pool_ptr = self.pool_ptr();
+        self.mmio.borrow().post_init(pool_ptr);
+        #[cfg(target_os = "none")]
+        eneros_runtime::println!("[blk] QUEUE-RECOVERED —— 队列已复位重建，重试本次请求");
+        true
+    }
+
+    fn issue_once(
+        &self,
+        kind: u32,
+        sector: u64,
+        data: &mut [u8],
+        datalen: usize,
+    ) -> Result<u32, StorageError> {
         if !self.initialized {
             return Err(StorageError::NotInitialized);
         }
@@ -524,7 +585,28 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
         }
 
         // Wait for the used element.
-        let used_len = self.wait_used()?;
+        //
+        // ⚠ 2026-09-14（70.15 长窗实弹，`REG-70.15-VIRTQ-FULL-UNDER-LOAD`）：
+        // **描述符回收必须在每一个出口完成**。旧实现在此用 `?` 提前返回、且在
+        // `status != OK` 分支 `return` 之前也没有回收 ⇒ 每一次失败请求都永久
+        // 漏掉 `ndesc` 个描述符。实测级联：数次瞬时失败（TCG 下 `wait_used`
+        // 超时 / 设备回 IOERR）后 `desc_used` 触顶 ⇒ 之后**每一次** `issue`
+        // 都返回 `HardwareFault{"virtqueue full"}` ⇒ 块层整条死掉 ⇒ 快照
+        // blob 落盘 `SNAP-SKIP store-fail` 连败 ⇒ 冻结输入停止发布 ⇒ 控制链
+        // "进程活着但不再控制"（`Committed` 停住而 `round=` 仍涨）。
+        //
+        // 设备已经消费了这批描述符（无论结果如何），故回收对**已完成**的请求
+        // 是严格正确的；对`wait_used` 超时（设备疑似失联）也一并回收——代价是
+        // 理论上的"迟到完成"可能踩到被复用的描述符，收益是**不再把块层永久
+        // 钉死**（本驱动单请求串行，超时后再不复用才是灾难）。宁可一次瞬时
+        // 失败，不要整条链停摆。
+        let used_len = match self.wait_used() {
+            Ok(v) => v,
+            Err(e) => {
+                self.desc_used.set(self.desc_used.get() - ndesc);
+                return Err(e);
+            }
+        };
 
         // Check status byte and copy IN data back.
         self.cache.invalidate(self.va_of(status_off), 1);
@@ -535,6 +617,8 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
             if status != VIRTIO_BLK_S_OK {
                 #[cfg(target_os = "none")]
                 eneros_runtime::println!("[blk-wait] device IOERR status={status}");
+                drop(pool);
+                self.desc_used.set(self.desc_used.get() - ndesc);
                 return Err(StorageError::HardwareFault {
                     detail: "virtio-blk device reported I/O error",
                 });
@@ -555,9 +639,17 @@ impl<M: VirtioMmio, P: DmaPool, C: ArmCache> VirtioBlkDriver<M, P, C> {
     /// 元素（此前缺失，真机 cache 一致性缺口）。
     fn wait_used(&self) -> Result<u32, StorageError> {
         let used_va = self.va_of(0x1000);
-        // 70.7：上限 20M spins（≈2-20s）——挂死请求快速干净失败，
-        // 避免单次读垄断 vCPU 数百秒拖垮整窗（run44-49 实弹）。
-        for _spin in 0..20_000_000u32 {
+        // 2026-09-14（70.15 长窗实弹，`REG-70.15-BLK-DEVICE-IOERR-SUSTAINED`
+        // 首发形态）：预算 20M（≈2-20s）被**合法的长操作**打穿——同窗实测
+        // `TSDB-CHECKPOINT-DUR ms=14847`（≈14.8s ≈ 20M spins），其后紧跟
+        // `TIMEOUT device never completed`。TCG 下设备完成随宿主负载波动，
+        // 预算必须覆盖**最坏合法操作**（checkpoint/组写/擦除），而非静默
+        // 负载均值。20M → 200M（≈20-200s，有界 ×10）；真挂死由
+        // `recover_queue()`（复位重建）兜底，不再"超时即砖化"。
+        //
+        // 70.7 保留口径：挂死请求仍要干净失败，避免单次读垄断 vCPU 数百
+        // 秒拖垮整窗（run44-49 实弹）——只是上限必须 ≥ 最坏合法操作时长。
+        for _spin in 0..200_000_000u32 {
             // 70.7（兜底，非真因）：周期性 **MMIO 读**（STATUS，只读无副作用）
             // ——单线程 TCG 下纯 RAM 自旋不产生退出、主循环（AIO 完成处理）
             // 可能被饿死的防御性踢。**本卷终局实证：本案"永不完成"的真因
@@ -814,6 +906,16 @@ pub struct RamMmio {
     pool_ptr: core::cell::Cell<*mut u8>,
     /// Number of 512-byte sectors on the simulated disk.
     pub disk_blocks: u64,
+    /// **故障注入面**（2026-09-14，`REG-70.15-VIRTQ-FULL-UNDER-LOAD` 红测用）：
+    /// 大于 0 时接下来这么多次请求以 `VIRTIO_BLK_S_IOERR` 完成（不落盘、
+    /// 不回读），用来构造"设备瞬时失败"序列。设备模型必须能失败，否则
+    /// "失败路径的描述符回收"这条不变量在夹具里不可证。
+    pub fail_next: core::cell::Cell<u32>,
+    /// **停顿注入面**（2026-09-14，`REG-70.15-BLK-DEVICE-IOERR-SUSTAINED` 红测用）：
+    /// 大于 0 时 `process_queues` **不消费**待处理条目（设备"卡住"不复位也不
+    /// 完成），用来构造"设备永不完成 ⇒ 驱动 `wait_used` 超时"序列——正是
+    /// 长窗实弹的首发形态（`TIMEOUT device never completed … last_used=…`）。
+    pub stall_next: core::cell::Cell<u32>,
 }
 
 impl RamMmio {
@@ -840,6 +942,8 @@ impl RamMmio {
             notified: false,
             pool_ptr: core::cell::Cell::new(core::ptr::null_mut()),
             disk_blocks: blocks,
+            fail_next: core::cell::Cell::new(0),
+            stall_next: core::cell::Cell::new(0),
         }
     }
 
@@ -860,6 +964,8 @@ impl RamMmio {
             notified: false,
             pool_ptr: core::cell::Cell::new(core::ptr::null_mut()),
             disk_blocks: blocks,
+            fail_next: core::cell::Cell::new(0),
+            stall_next: core::cell::Cell::new(0),
         }
     }
 
@@ -888,6 +994,13 @@ impl RamMmio {
         // SAFETY: avail/used 视图区间与 desc/数据区间不重叠，布局匹配。
         let avail = unsafe { &mut *(pool[0x0100..0x1100].as_mut_ptr() as *mut VirtqAvail) };
         let used = unsafe { &mut *(pool[0x1000..0x2000].as_mut_ptr() as *mut VirtqUsed) };
+        let fail_left = self.fail_next.get();
+        if self.stall_next.get() > 0 {
+            // 设备"卡住"：不消费 avail 条目（既无 used 项，也不推进
+            // last_avail_idx）——驱动侧观察即"永不完成"。
+            self.stall_next.set(self.stall_next.get() - 1);
+            return;
+        }
         // Process all newly available descriptors.
         while used.idx != avail.idx {
             let head = avail.ring[used.idx as usize & QUEUE_MASK] as usize;
@@ -921,6 +1034,10 @@ impl RamMmio {
             };
             let status_off = (status_desc.addr - POOL_PHYS_BASE) as usize;
             match req.kind {
+                VIRTIO_BLK_T_IN if fail_left > 0 => {
+                    // 注入的瞬时失败：设备"看见"请求但报 IOERR（不改介质）。
+                    pool[status_off] = VIRTIO_BLK_S_IOERR;
+                }
                 VIRTIO_BLK_T_IN => {
                     let start = (req.sector as usize) * SECTOR_SIZE;
                     let len = data_desc.len as usize;
@@ -931,6 +1048,9 @@ impl RamMmio {
                     } else {
                         pool[status_off] = VIRTIO_BLK_S_IOERR;
                     }
+                }
+                VIRTIO_BLK_T_OUT if fail_left > 0 => {
+                    pool[status_off] = VIRTIO_BLK_S_IOERR;
                 }
                 VIRTIO_BLK_T_OUT => {
                     let start = (req.sector as usize) * SECTOR_SIZE;
@@ -959,6 +1079,9 @@ impl RamMmio {
                 },
             };
             used.idx = used.idx.wrapping_add(1);
+            if self.fail_next.get() > 0 {
+                self.fail_next.set(self.fail_next.get() - 1);
+            }
         }
     }
 }
@@ -1082,6 +1205,91 @@ mod tests {
         let mut out = [0u8; 512];
         drv.read_block(3, &mut out).expect("read");
         assert_eq!(out, input);
+    }
+
+    /// 2026-09-14（70.15 长窗实弹红测）：**失败请求不得泄漏 virtqueue
+    /// 描述符**（`REG-70.15-VIRTQ-FULL-UNDER-LOAD`）。
+    ///
+    /// 缺陷形态：`issue` 在 `wait_used()?` 与 `status != OK` 两条错误出口
+    /// **都没有** `desc_used -= ndesc` ⇒ 每次失败永久漏 2–3 个描述符；实测
+    /// 数次瞬时失败后队列打满 ⇒ 之后每次 `issue` 都 `HardwareFault{"virtqueue
+    /// full"}` ⇒ 块层整条死掉（快照落盘饿死 ⇒ 控制链"活着但不再控制"）。
+    ///
+    /// 判据两面：① 注入的 30 次失败必须都是**设备 IOERR**（不是队列打满——
+    /// 后者说明描述符在漏）；② 故障序列结束后块层必须**仍然可用**。
+    #[test]
+    fn test_failed_requests_do_not_leak_virtqueue_descriptors() {
+        let mmio = RamMmio::new(1024);
+        mmio.fail_next.set(30);
+        let pool = RamPool::new(9);
+        let mut drv = VirtioBlkDriver::new(mmio, pool, NoopCache, config()).expect("init");
+        drv.set_block_count(1024);
+        let mut out = [0u8; 512];
+        for i in 0..30u32 {
+            match drv.read_block(3, &mut out) {
+                Err(StorageError::HardwareFault { detail }) => assert!(
+                    !detail.contains("virtqueue full"),
+                    "第 {i} 次请求打成队列满——描述符在失败路径上没有被回收：{detail}"
+                ),
+                other => {
+                    #[allow(clippy::disallowed_macros)] // 测试断言
+                    {
+                        panic!("第 {i} 次必须是设备 IOERR，实际 {other:?}")
+                    }
+                }
+            }
+        }
+        // 注入结束：块层必须恢复可用（旧实现此处必炸 "virtqueue full"）。
+        drv.read_block(3, &mut out)
+            .expect("故障序列后块层必须仍可用");
+        let input = [0x77u8; 512];
+        drv.write_block(5, &input).expect("write");
+        drv.read_block(5, &mut out).expect("read");
+        assert_eq!(out, input);
+    }
+
+    /// 2026-09-14（70.15 长窗实弹红测）：**设备停顿不得把队列永久钉死**。
+    ///
+    /// 缺陷形态（实弹）：`[blk-wait] TIMEOUT device never completed (20M spins)
+    /// last_used=38028`（该值此后冻结）⇒ 设备侧 `last_avail_idx` 与 guest 侧
+    /// `avail.idx` 失步 ⇒ 之后**所有**请求静默丢弃 ⇒ 快照落盘饿死 ⇒ 控制链
+    /// "活着但不再控制"。旧实现超时后既不回收描述符也不复位队列 ⇒ 一次停顿
+    /// = 块层永久死。
+    ///
+    /// 判据两面：
+    /// ① **单次停顿必须被吸收**——复位重建 + 重试 ⇒ 请求成功（旧实现：直接
+    ///   Timeout，且队列带伤）；
+    /// ② **持续停顿** ⇒ 干净失败为 `Timeout` 且 `desc_used` 归零（不留半用
+    ///   描述符——否则队列永久 `virtqueue full`）。
+    #[test]
+    fn test_device_stall_recovers_queue_instead_of_bricking() {
+        // ① 单次停顿：吸收（复位重建 + 重试 ⇒ 成功）。
+        let mmio = RamMmio::new(1024);
+        mmio.stall_next.set(1);
+        let pool = RamPool::new(9);
+        let mut drv = VirtioBlkDriver::new(mmio, pool, NoopCache, config()).expect("init");
+        drv.set_block_count(1024);
+        let input = [0x3Cu8; 512];
+        drv.write_block(7, &input)
+            .expect("单次设备停顿必须被队列复位 + 重试吸收（旧实现此处 Timeout）");
+
+        // ② 持续停顿：干净失败 + 描述符归零。
+        let mmio2 = RamMmio::new(1024);
+        mmio2.stall_next.set(u32::MAX);
+        let pool2 = RamPool::new(9);
+        let mut drv2 = VirtioBlkDriver::new(mmio2, pool2, NoopCache, config()).expect("init");
+        drv2.set_block_count(1024);
+        let input2 = [0x3Du8; 512];
+        let r = drv2.write_block(7, &input2);
+        assert!(
+            matches!(r, Err(StorageError::Timeout { .. })),
+            "持续停顿时必须判超时，实际 {r:?}"
+        );
+        assert_eq!(
+            drv2.desc_used.get(),
+            0,
+            "超时后描述符必须归零（回收 + 队列复位重建）"
+        );
     }
 
     #[test]

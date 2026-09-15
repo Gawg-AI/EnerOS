@@ -182,7 +182,18 @@ impl PlanHolder {
         // 切换单点（tick 起手一次判定）：活跃计划（`plans[0]`）已无未发步
         // ⇒ 最早的待切换计划接手。**不覆盖在途**：切换只在活跃计划排空后
         // 发生（绝不抢占已投递/在途命令），故任一时点只有一个投递面。
-        if self.plans.len() > 1 && !Self::has_pending(&self.plans[0].states) {
+        //
+        // 70.14 复查修复：切换判据必须**同时**排除 `Dispatched`（已投未确认）。
+        // 旧实现只看 `Pending` —— 活跃计划最后一步以 `Ok(false)`（投递结果
+        // 未知）投出后，下一步 tick 它就满足"无 Pending"而被 `remove(0)`：
+        // 未确认命令既不收敛 `Rejected`、`unconfirmed_steps_total` 也不增，
+        // `resolve_step` 此后恒 false（对账面丢失）——与 `reap_terminal` 的
+        // "Dispatched 计划保留到回执或窗闭"承诺直接矛盾。现在切换等它终态化。
+        let active_has_dispatched = self.plans[0].states.contains(&StepState::Dispatched);
+        if self.plans.len() > 1
+            && !Self::has_pending(&self.plans[0].states)
+            && !active_has_dispatched
+        {
             self.plans.remove(0);
             self.switched_total = self.switched_total.saturating_add(1);
         }
@@ -348,8 +359,16 @@ impl PlanHolder {
     ///
     /// 跨服务接线（dispatch 读点 → telemetry `hold_offset`）由装配方轮询
     /// 本读点承载；分区/位点映射属事件面事实，不入本模块（深度边界）。
+    ///
+    /// 70.14 复查修复：**`Dispatched`（已发未确认）同样算持有**。旧实现只看
+    /// `Pending`——全部步骤已投出但未确认时返回 `false`，删除界据此释放输入，
+    /// 而 `reap_terminal` 又刻意保留该计划（未确认命令的对账面要可查）：
+    /// 同一模块两个面语义相反。未确认步的对账需要引用其输入/证书证据，
+    /// 释放即失去可追溯性。
     pub fn has_outstanding_input(&self) -> bool {
-        self.plans.iter().any(|p| Self::has_pending(&p.states))
+        self.plans
+            .iter()
+            .any(|p| Self::has_pending(&p.states) || p.states.contains(&StepState::Dispatched))
     }
 
     /// 持有的活跃计划数（观测）。
@@ -956,6 +975,109 @@ mod tests {
     /// （双命令源）；现语义 = `plans[0]` 活跃投递、其余待切换，活跃计划
     /// **排空后**自动接手（`switched_total`；不做时间维抢占，抢占策略属
     /// WP-70.11.3）。
+    /// 70.14 复查红测：切换**不得吞掉未确认（`Dispatched`）计划**。
+    ///
+    /// 缺陷形态（旧实现）：tick 起手的切换只看 `Pending`——活跃计划 A 两步
+    /// 都以 `Ok(false)`（投递结果未知）投出后，再驱动一次（两个窗都已闭）时
+    /// A 满足"无 Pending"而在**终态化 pass 之前**被 `remove(0)`：
+    /// 未确认命令既不收敛 `Rejected`、`unconfirmed_steps_total` 也不增，
+    /// `resolve_step` 此后恒 false（对账面丢失），且与 `reap_terminal` 的
+    /// "Dispatched 保留到回执或窗闭"承诺矛盾。
+    ///
+    /// 同时锁 `has_outstanding_input`：全部步 Dispatched 时仍持有输入
+    /// （未确认命令的对账要引用其证据）。
+    #[test]
+    fn switch_does_not_swallow_dispatched_plan() {
+        let mut h = PlanHolder::default();
+        let start_ms = 1_700_000_000_000u64;
+        let sid = [0x5A; 16];
+        let a = plan_with_id([0x01; 16], sid, 2);
+        let a_id = *a.id();
+        let a_snap = a.snapshot_id();
+        let b = plan_with_id([0x02; 16], sid, 2);
+        h.accept(
+            a,
+            cert(&plan_with_id([0x01; 16], sid, 2), start_ms, 3_600_000),
+            start_ms,
+        )
+        .expect("A");
+        h.accept(
+            b,
+            cert(&plan_with_id([0x02; 16], sid, 2), start_ms, 3_600_000),
+            start_ms,
+        )
+        .expect("B");
+        let f = facts(sid);
+        // `committed=false` + 无 fail_steps ⇒ `Ok(false)` = **投出但结果未确认**
+        // （与 t10 同一形态；`Err` 是"投递失败保 Pending"，不是本场景）。
+        let mut uncertain = RecordingSink {
+            calls: Vec::new(),
+            fail_steps: Vec::new(),
+            committed: false,
+        };
+        // tick1（窗 1）：步 1 投出且未确认。
+        assert_eq!(
+            h.tick(
+                PlanTick {
+                    now_ms: start_ms + 100_000,
+                    facts: Some(&f)
+                },
+                &mut uncertain
+            ),
+            1
+        );
+        assert_eq!(h.status()[0][0].state, StepState::Dispatched);
+        // tick2（窗 2）：步 1 窗闭 ⇒ Rejected（终态化 pass）；步 2 投出未确认。
+        assert_eq!(
+            h.tick(
+                PlanTick {
+                    now_ms: start_ms + 3_700_000,
+                    facts: Some(&f)
+                },
+                &mut uncertain
+            ),
+            1
+        );
+        assert_eq!(h.status()[0][0].state, StepState::Rejected, "步 1 窗闭终态");
+        assert_eq!(
+            h.status()[0][1].state,
+            StepState::Dispatched,
+            "步 2 投出未确认"
+        );
+        assert!(
+            h.has_outstanding_input(),
+            "全部剩余步 Dispatched（未确认）时仍必须持有输入（对账需引用证据）"
+        );
+        // tick3（两窗皆闭）：**不得在终态化之前把 A 切换掉**。
+        let mut sink = RecordingSink::all_committed();
+        h.tick(
+            PlanTick {
+                now_ms: start_ms + 7_300_000,
+                facts: Some(&f),
+            },
+            &mut sink,
+        );
+        assert_eq!(
+            h.switched_total, 0,
+            "A 仍有未确认步 ⇒ 不切换（绝不抢占在途）"
+        );
+        assert_eq!(h.held_count(), 2, "未确认计划不得被切换丢弃");
+        assert_eq!(
+            h.status()[0][1].state,
+            StepState::Rejected,
+            "未确认步必须在窗闭时收敛 Rejected 并计数（旧实现整计划被丢弃 → 无痕）"
+        );
+        // 两个未确认步各在自身窗闭时收敛（步 1@tick2、步 2@tick3）。
+        assert_eq!(h.unconfirmed_steps_total, 2);
+        // 在途未见回执时**计划本体必须仍在**（回执路径的出口由 t10 覆盖：
+        // 计划的保留是先决条件——旧实现在此处已把 A 丢弃，回执无处回填）。
+        assert!(
+            h.status().iter().any(|p| p[0].state == StepState::Rejected),
+            "A 的步状态必须仍可查询（对账面）"
+        );
+        let _ = (a_id, a_snap);
+    }
+
     #[test]
     fn t11_only_one_plan_delivers_pending_switches_after_drain() {
         let mut h = PlanHolder::default();

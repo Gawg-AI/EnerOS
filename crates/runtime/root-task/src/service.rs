@@ -312,13 +312,13 @@ impl Orchestration {
         service_count: usize,
         driver_count: usize,
         start_ms: u64,
-        heartbeat_miss_limit: i64,
+        heartbeat_limits: &[i64],
     ) -> Self {
         Self {
             tick: 0,
             once: OnceFlags::new(),
             readiness: ReadinessTracker::new(start_ms, service_count),
-            hang_monitor: crate::supervisor::HangMonitor::new(service_count, heartbeat_miss_limit),
+            hang_monitor: crate::supervisor::HangMonitor::with_limits(heartbeat_limits),
             drv_irq_counts: alloc::vec![0; driver_count],
             irq_count: 0,
             collect_seq: 0,
@@ -345,7 +345,24 @@ impl Orchestration {
     }
 }
 
-// 一次性周期的 seL4 触点步（cfg 门——host 仅测 OnceFlags 状态机本体）。
+// MGT2 响应发送单源：Reply 消费 `ipc_poll` 暗装的 reply cap。
+// **凡是 poll 成功之后要 return 的分支都必须先经过本函数**——否则调用方
+// （svc-mgmt `root_call` = 裸 `ipc_call`）永久 BlockedOnReply。
+#[cfg(target_os = "none")]
+fn reply_mgmt_frame(frame: &[u8]) {
+    use eneros_sel4_sys::safe::{ipc_reply, message_info_new, set_mr};
+    let Ok(mrs) = eneros_ipc_wire::mr::frame_into_mrs(frame) else {
+        return;
+    };
+    for (i, v) in mrs.iter().enumerate() {
+        let _ = set_mr(i as u64, *v);
+    }
+    if let Ok(mi) = message_info_new(0, 0, 0, mrs.len() as u64) {
+        let _ = ipc_reply(mi);
+    }
+}
+
+/// 一次性周期的 seL4 触点步（cfg 门——host 仅测 OnceFlags 状态机本体）。
 #[cfg(target_os = "none")]
 impl Orchestration {
     /// 身份推送传输错误有界重试上限（连续计）：超时/NACK 是可恢复态
@@ -544,18 +561,33 @@ impl Orchestration {
         }
         let len = eneros_sel4_sys::types::message_info_length(mi);
         let mut words = alloc::vec::Vec::with_capacity(len as usize);
+        let mut read_err = false;
         for i in 0..len {
             match get_mr(i) {
                 Ok(w) => words.push(w),
                 Err(_) => {
-                    eneros_runtime::println!("[eneros-root-task] MGMT-EP: MR read failed");
-                    return;
+                    read_err = true;
+                    break;
                 }
             }
         }
-        let Ok(req) = eneros_ipc_wire::mr::frame_from_mrs(&words) else {
-            eneros_runtime::println!("[eneros-root-task] MGMT-EP: bad frame (sender={sender})");
-            return;
+        let req = if read_err {
+            Err("mgmt-err:mrs")
+        } else {
+            eneros_ipc_wire::mr::frame_from_mrs(&words).map_err(|_| "mgmt-err:bad-frame")
+        };
+        // 70.14 复查修复：poll 成功即**已暗装 reply cap**——此前的两个提前
+        // `return` 让调用方永久 `BlockedOnReply`（svc-mgmt 的 `root_call` 是
+        // 裸 `ipc_call`；非 MCS 无 IPC 超时），并级联成"svc-mgmt 对 MGT1
+        // 客户端也不回复"的整链无应答。坏帧不再静默丢弃：回一条机器可读
+        // 错误帧后继续（调用方拿 ERR，不猜成功）。
+        let req = match req {
+            Ok(r) => r,
+            Err(word) => {
+                eneros_runtime::println!("[eneros-root-task] MGMT-EP: {word} (sender={sender})");
+                reply_mgmt_frame(word.as_bytes());
+                return;
+            }
         };
         // ready 投影：boot readiness Ready 且不在重验等待。先取快照
         //（readiness/awaiting 均拷出——下方 &mut self.mgmt 借用互斥）。
@@ -590,14 +622,7 @@ impl Orchestration {
             eneros_runtime::println!("[eneros-root-task] {word}");
         }
         // 先回复（Reply 消费 Poll 暗装 cap；失败不阻断动作侧审计）。
-        if let Ok(mrs) = eneros_ipc_wire::mr::frame_into_mrs(&verdict.resp) {
-            for (i, v) in mrs.iter().enumerate() {
-                let _ = set_mr(i as u64, *v);
-            }
-            if let Ok(mi2) = message_info_new(0, 0, 0, mrs.len() as u64) {
-                let _ = ipc_reply(mi2);
-            }
-        }
+        reply_mgmt_frame(&verdict.resp);
         // 动作（重启在回复之后执行——请求方先拿到 ack）。
         if let Some(crate::mgmt::MgmtAction::Restart(idx)) = verdict.action {
             apply_manual_restart(self, supervisor, handles, idx, self.tick);
@@ -969,8 +994,13 @@ pub fn run_ipc_loop(
     }
     // 心跳缺失容忍轮次。必须 **> 驱动周期**（正常服务在两驱动轮间无
     // 请求无心跳——probe 已清除不误杀；svc-hang probe 未清除 → 超限
-    // kill）。150 轮 ≈ 0.2s 真实（hello ~760 轮/s）。
-    const HEARTBEAT_MISS_LIMIT: i64 = 150;
+    // kill）。逐服务校准自 `wiring::heartbeat_miss_limit` 单源（2026-09-14
+    // 实弹：单值 150 让 svc-telemetry 的块 I/O 长消息被记成卡死，见该函数
+    // 文档的实测证据）；本处零手写常量。
+    let heartbeat_limits: alloc::vec::Vec<i64> = handles
+        .iter()
+        .map(|h| crate::wiring::heartbeat_miss_limit(&h.name))
+        .collect();
     // 周期编排（控制链 5 / 可观测 25+20 / hang 200 / 存储落盘 60 / OTA
     // 70 / 故障注入 50 / 看门狗 100）自本函数常量迁入
     // `wiring::PERIODIC_SCHEDULE` 单源（蓝图 63 卷 63.2 WP-63.2.2）——
@@ -982,7 +1012,7 @@ pub fn run_ipc_loop(
         handles.len(),
         irq_drivers.len(),
         now_ms(),
-        HEARTBEAT_MISS_LIMIT,
+        &heartbeat_limits,
     );
 
     loop {
@@ -1280,7 +1310,7 @@ pub fn run_ipc_loop(
                 eneros_runtime::println!(
                     "[eneros-root-task] HEARTBEAT-TIMEOUT: {} no progress {} rounds since probe (last_beat={}, probe={}) — kill+restart",
                     handle.name,
-                    HEARTBEAT_MISS_LIMIT,
+                    crate::wiring::heartbeat_miss_limit(&handle.name),
                     last_beat,
                     sent
                 );
@@ -1974,7 +2004,57 @@ fn control_chain_synth_ingest(
             ));
         }
     };
+    synth_obs_ingest(telemetry_ep, seq, epoch, now);
     Ok(accepted)
+}
+
+/// REG-70.8-SYNTH-NO-OBS 解封（2026-09-15）：合成馈电同步走 **OBS 生产轨**
+/// （TEL_INGEST_OBS，source=1，帧 = agent-sdk `synth_feed` 单源构帧）——
+/// 观测 → 冻结快照 → 独立认证 → dispatch 全链在合成装配可证（R09/R10 前置）。
+/// 旧 TelemetrySample 兼容轨（上行）保持不变，两轨并存。
+///
+/// 节奏：每第 3 个 round 一批（qemu-test TCG 实测 round ≈1s ⇒ ≈0.3 Hz 批
+/// ≈3.4 事件/s，与 modbus 采集负载同量级；快照每 SNAP_EVERY_BATCHES=8 批
+/// 一建 ⇒ 建距 ≈26s，须落在 60s 输入新鲜度窗内——16 round 一批在实弹窗里
+/// 使 EA 恒 snapshot-stale，见 2026-09-15 探针窗）。结果只上证据行：受理
+/// 数缺失时下游 SNAPSHOT/Committed 词形缺失即为门判据——不伪造、不静默
+/// 重试风暴。
+#[cfg(all(target_os = "none", feature = "sel4-eipc", feature = "qemu-test-synth"))]
+fn synth_obs_ingest(telemetry_ep: u64, seq: u64, epoch: &mut u64, now: u64) {
+    if seq % 3 != 0 {
+        return;
+    }
+    let now_ns = now.saturating_mul(1_000_000);
+    let req = match eneros_agent_sdk::synth_feed::synth_obs_request(seq, now_ns) {
+        Ok(r) => r,
+        Err(e) => {
+            eneros_runtime::println!("[eneros-root-task] SYNTH-OBS: encode FAIL {e:?}（不静默）");
+            return;
+        }
+    };
+    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedSession::bind_shared_const(
+        "root-synth-obs",
+        telemetry_ep,
+        epoch,
+    );
+    let resp = match endpoint.call("svc-telemetry", &req) {
+        Ok(r) => r,
+        Err(e) => {
+            eneros_runtime::println!("[eneros-root-task] SYNTH-OBS: transport FAIL {e:?}");
+            return;
+        }
+    };
+    match eneros_agent_sdk::obs_batch_wire::decode_obs_response(&resp) {
+        Some((acc, rej)) => {
+            eneros_runtime::println!("[eneros-root-task] SYNTH-OBS: accepted={acc} rejected={rej}");
+        }
+        None => {
+            eneros_runtime::println!(
+                "[eneros-root-task] SYNTH-OBS: REJECTED {:02x?}",
+                &resp[..resp.len().min(8)]
+            );
+        }
+    }
 }
 
 /// 45.5 合成源降级：release/qemu-prod 装配**零合成遥测路径**——closure gate
@@ -2418,7 +2498,7 @@ mod tests {
     /// Orchestration 构造：计数/epoch 初值（原循环局部初值语义）。
     #[test]
     fn orchestration_initial_state() {
-        let o = Orchestration::new(4, 2, 1_000, 150);
+        let o = Orchestration::new(4, 2, 1_000, &[150; 4]);
         assert_eq!(o.tick, 0);
         assert_eq!(o.irq_count, 0);
         assert_eq!(o.collect_seq, 0);

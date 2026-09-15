@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-cce6d61342d4",
+  "run_id": "run-18d578082554aff8",
+  "nonce": "18d578082554b5ff",
+  "test_id": "CORE-70-R12",
+  "scope": "GATE",
+  "started_at": "2026-09-15T10:33:23Z",
+  "ended_at": "2026-09-15T10:33:23Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "6b4d691c7cf10bfae76c194dc50d993c71d4e5d278c59f891dc9a3a8a20308b7",
+  "product_manifest_digest": "0b03d978af0b5e70d549c53d6ca133a4702ec6143ffc8c378f0f091cbcca22f2",
+  "profile_digest": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6",
+  "artifact_sha256": "b2feb4446eba6c3cc6fb0edc024f30ddd2ae6f015feb82ec78db23ddc3d48ebf",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "cargo test -p eneros-xtask evidence_chain::（候选判定库红测）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-test/product-manifest.normalized.json",
+      "sha256": "0b03d978af0b5e70d549c53d6ca133a4702ec6143ffc8c378f0f091cbcca22f2"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-test.json",
+      "sha256": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "host 判定库全负例形态"
+  },
+  "positive_results": [
+    {
+      "id": "red-tests",
+      "status": "PASS",
+      "detail": "evidence_chain 29/29"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "fake-pass",
+      "status": "FAIL",
+      "detail": "单个合法信封不再能宣称整体通过"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/8355d2d4c62c09c285d55d1778265c45a4f04bd1d23e0a6bc12e1c4d08ace3f4/CORE-70-R12.run-record.json",
+      "sha256": "3ca261b82125ddbe3aa6e149849e4ecce555aa2983cf65ebca1ffcee7bbfda4c"
+    }
+  ],
+  "signer": "dev",
+  "signature": "51e7d5193e2d184f9b06be4f43cde4e60326f194f144f1d7c436bb2b7baeb5f94d0d207e27611393486025b008828a7ab74ac4469d42dc758bb0233b544ada0d"
+}

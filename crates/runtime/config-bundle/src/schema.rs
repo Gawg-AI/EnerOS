@@ -195,6 +195,9 @@ pub mod points {
     pub const PROTO_GOOSE: u8 = 5;
     pub const PROTO_SV: u8 = 6;
     pub const PROTO_MQTT: u8 = 7;
+    /// root 合成源（REG-70.8-SYNTH-NO-OBS 解封：qemu-test-synth 测试装配的
+    /// OBS 生产轨馈电；release 闭包门保证生产装配不可达——只作身份标记）。
+    pub const PROTO_SYNTH: u8 = 8;
 }
 
 /// `ai-peer`（consumer: svc-ai-worker；schema v1；49 WP-49.2 远程 dual-brain

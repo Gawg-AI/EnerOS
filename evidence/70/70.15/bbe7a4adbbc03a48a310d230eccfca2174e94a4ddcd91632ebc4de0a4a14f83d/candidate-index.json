@@ -1,0 +1,49 @@
+{
+  "schema": "eneros.candidate-evidence.v1",
+  "matrix_id": "core-70",
+  "candidate_id": "bbe7a4adbbc03a48a310d230eccfca2174e94a4ddcd91632ebc4de0a4a14f83d",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "22c2097bdfa20306b27578e09e72926b64acd8c97d79de457d3e6a5206cab5fb",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "artifacts": [
+    {
+      "name": "qemu-prod",
+      "profile": "qemu-prod",
+      "path": "target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw",
+      "sha256": "678438a50c8d01b7876d2ef84252de42fe06f79bab86a0a9cf47bceacf42f4da"
+    },
+    {
+      "name": "qemu-test-combined",
+      "profile": "qemu-test",
+      "path": "target/evidence70-vol7/eneros-combined.raw",
+      "sha256": "448a27028be46a6da61d84ca8f58710e5bf25be56fec595ab8745a29fcfc3b9f"
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "CORE-70-R01",
+      "artifact": "qemu-prod",
+      "envelope": "evidence/70/70.15/bbe7a4adbbc03a48a310d230eccfca2174e94a4ddcd91632ebc4de0a4a14f83d/CORE-70-R01.envelope.json",
+      "envelope_sha256": "671621933bb2dfd83319a151ccac81b0913011da8effc2679d94a2a7aec7f839",
+      "detail": "VOL70.1 // L2",
+      "tested_sha256": "adea47824d4e55a79b55eb23a72abf4189c3ed50ca9e72f2081cc876b4ccc0c1"
+    },
+    {
+      "case_id": "CORE-70-R12",
+      "artifact": "qemu-prod",
+      "envelope": "evidence/70/70.15/bbe7a4adbbc03a48a310d230eccfca2174e94a4ddcd91632ebc4de0a4a14f83d/CORE-70-R12.envelope.json",
+      "envelope_sha256": "775ef03f632d8e47dd8064e5388f7bc4ebe23931d28ad3df9b9d399ed362faca",
+      "detail": "evidence42-candidate-check // GATE",
+      "tested_sha256": "adea47824d4e55a79b55eb23a72abf4189c3ed50ca9e72f2081cc876b4ccc0c1"
+    }
+  ],
+  "blocked": [
+    {
+      "case_id": "CORE-70-R11",
+      "blocker": "EXT-70-HW",
+      "reason": "真实板卡/HIL/72h 需板卡 revision/固件/手册/调试通道与真实熵-时间-存储特性、对端型号与点表、生产公钥与设备身份来源——三项外部输入未到位，按蓝图 70 [10] §7 不以 QEMU 证据代填"
+    }
+  ],
+  "exemptions": []
+}

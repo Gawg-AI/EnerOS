@@ -17,7 +17,7 @@
 
 EnerOS（Power Native Agent OS）是一个面向能源互联网场景的 **Power Native + Agent Native + AI Native** 专用操作系统。基于 seL4 微内核形式化验证基座与 Rust `no_std` 运行时构建，采用混合关键性架构（Mixed Criticality），将**实时控制（RTOS 分区）**与**AI Agent（用户态分区）**隔离运行在同一 ARM64 硬件上。
 
-**当前版本**：workspace v0.325.0（精确值以根 `Cargo.toml` 为准）— 交付冲刺 44–59 卷完成（候选冻结 tag `v1.0.0-rc.1`；终验矩阵与缺口清单见 `evidence/52/`）；蓝图 61–67 全收官后，蓝图 68（持久化解冻与决策链接电，68.1–68.5 五卷）收口——68.5 落地 host planner 分区第一形态（真 HiGHS 经 RemoteBrain 通道 + DegradationLease 武装 + MQTT broker 通道根因修复）；测试基线计数随卷出口证据更新（52 终验以来各卷 Exit 均全绿）；生产发布（v1.0.0）未授权——当前裁决 NO-GO（`docs/v1.0.0-go-no-go.md`）。
+**当前版本**：workspace v0.337.0（精确值以根 `Cargo.toml` 为准）— 交付冲刺 44–59 卷完成（候选冻结 tag `v1.0.0-rc.1`；终验矩阵与缺口清单见 `evidence/52/`）；蓝图 61–68 全收官。**蓝图 69（十一个深化卷）与蓝图 70（核心七方向全链路深化，70.1–70.15）的软件面已落地**：70.15 建立候选 required 矩阵单源（`product/evidence-required/core-70.json`）与候选构建集身份检查器（`cargo xtask evidence42 candidate-check`），证据归档格式 = `eneros.gate-run-record.v1`（原始日志摘要绑定，随移交包分发）。**核心整组仍 BLOCKED**——`CORE-70-R11`（真实板卡/HIL/72h）依赖外部输入 `EXT-70-HW/PEER/KEY`，按蓝图 70 [10] §7 出口不以 QEMU 证据代填；多步计划投递面待 `DEC-70-13` 两项容量/生命周期裁决。测试基线计数随卷出口证据更新（52 终验以来各卷 Exit 均全绿）；生产发布（v1.0.0）未授权——当前裁决 NO-GO（`docs/v1.0.0-go-no-go.md`）。
 
 > **唯一内核路线 = seL4**（ADR-0023 用户决策，ADR-0030 执行确认，KRN-001）：自研 microkernel 已淘汰（G2 验证缺陷），产品镜像内核/引导为 seL4（`third_party/sel4-build.sh`）；EnerOS root-task 消费 BootInfo 并 spawn EL0 服务（KRN-002~004）。
 

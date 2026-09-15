@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-1438c85a36b5",
+  "run_id": "run-18d4fae6941711b3",
+  "nonce": "18d4fae694171615",
+  "test_id": "CORE-70-R06",
+  "scope": "L3",
+  "started_at": "2026-09-13T20:20:20Z",
+  "ended_at": "2026-09-13T20:20:20Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "300fbb1f6fd30336212b978ba58a6c27563e5d23e9e4af94a05ddcfdccb981c0",
+  "product_manifest_digest": "09efb709843e0b3aed73f0e4a050363790c1dd6170e11ab531cce2f7b52ced19",
+  "profile_digest": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2",
+  "artifact_sha256": "39a171125b088802ea1074f94e7dfbf28a9824ab21ca24d51045f34f384e5b8b",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol5-gate.sh（DL=560）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "09efb709843e0b3aed73f0e4a050363790c1dd6170e11ab531cce2f7b52ced19"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "external qmp + serial verdict lines；生产锚 OTA-ANCHOR-GATE + TLS/身份面判据"
+  },
+  "positive_results": [
+    {
+      "id": "identity",
+      "status": "PASS",
+      "detail": "身份 capsule/推送/svc-ota 装配/配置取数/TLS 全链"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "committed",
+      "status": "FAIL",
+      "detail": "R4a Committed 缺失（同 REG-70.15-CORE-CHAIN-SINGLE-GAP）"
+    }
+  ],
+  "verdict": "FAIL",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/5161a9ceae2e1a9496210159d80ae7c7c72486d76a55dff355186ff1fff4745d/CORE-70-R06.run-record.json",
+      "sha256": "29846dded25c50e661de22bcf598184cabaf0cbb52ff1b5ad696a5948577703d"
+    }
+  ],
+  "signer": "dev",
+  "signature": "44e405895e273448d8377a84e5813f989ea832c10f32d932bc98d00edd5d23c5776c3ab1e6bd39625ac94535b041b6962f5c0a15ea9a84410cc96af1e4597805"
+}

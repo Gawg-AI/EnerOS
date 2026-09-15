@@ -23,3 +23,13 @@ learn_enabled = true
 # **不落 TOML**（compile_security 同款注入链，configs/kms-dev/degrade-lease.key
 # 开发档模板）。
 degrade_lease_ttl_secs = 86400
+# 蓝图 70.10 WP-70.10.2 + DEC-70-13 裁决（2026-09-15）：结构化计划参数
+# 四键全给（部分给 = 配置错）——激活 v2 结构化请求轨：AI worker 以可信
+# 快照派生规格（逐资产 nameplate×合同×预算钳制）向 peer 发 v2 请求，
+# 应答按 binds 逐字段验收后进认证/投递（used=true 面）。
+# DEC-70-13：包络有效期 ≥ 计划时域 ⇒ 时域 4×15s=60s = ttl_secs；单批
+# 分配 ≤ PEER_PLAN_MAX_ASSIGNMENTS=8（1 资产×4 步 ✓）。
+plan_step_ns = 15_000_000_000
+plan_steps = 4
+plan_objective = "min_cost"
+plan_prices_per_kwh = [0.5, 0.6, 0.4, 0.45]

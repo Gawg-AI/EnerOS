@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-7bbdd9ef66f9",
+  "run_id": "run-18d56856b9b67358",
+  "nonce": "18d56856b9b6777e",
+  "test_id": "CORE-70-R03",
+  "scope": "L2",
+  "started_at": "2026-09-15T05:45:48Z",
+  "ended_at": "2026-09-15T05:45:48Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "766b0bb1df2f99066125f0673420fa651d892fd498776d32f203ff17667be8e6",
+  "product_manifest_digest": "475a21ba6a3866c60bf7abdc76531f7e9ed8ed4473dfb790cad801cca85b0583",
+  "profile_digest": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2",
+  "artifact_sha256": "d349f98402eed44880326b95123060120deb669264be85b2b22ce4d2f83eb602",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-r03-powercut.sh（脏断电×2）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "475a21ba6a3866c60bf7abdc76531f7e9ed8ed4473dfb790cad801cca85b0583"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "掉电恢复合同"
+  },
+  "positive_results": [
+    {
+      "id": "power-cut",
+      "status": "PASS",
+      "detail": "points=60 保数据 ✓、零 PANIC ✓、rounds=2944 ✓、checkpoint ×6 ✓"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "none",
+      "status": "FAIL",
+      "detail": "无独立负例判据"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/12eca6186997728af8c561c9b5013654bc8f65138d0c7f2932ef264217432560/CORE-70-R03.run-record.json",
+      "sha256": "f123c62831e6d3f6c41f419c5a17a42d2e6bd9f9ebed6b3015658bd1de6c448a"
+    }
+  ],
+  "signer": "dev",
+  "signature": "655a1da65d83f97ef35eefb9f8482dab3f33b36ffd863ae967c841e03c87bcb8f8f655a5e1cb0d20655c6d77968e8f2e41e277faf76d0dce9a5cbc5d8ece9b0a"
+}

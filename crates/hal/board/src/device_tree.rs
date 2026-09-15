@@ -629,6 +629,17 @@ pub fn parse_fdt_tree(blob: &[u8]) -> Result<FdtTree, FdtError> {
                 }
 
                 // phandle 索引登记顺序：节点索引 = tree.nodes.len()（push 前）。
+                //
+                // **CPU 节点不进设备清单**（2026-09-13 目标实弹修正）：CPU 节点
+                // 有 `compatible`（`arm,cortex-a57`）与 `reg = <0x0>`，但那是
+                // **CPU id**（`cpus` 节点 `#size-cells=0`），不是 MMIO 窗口。
+                // 旧实现把它当设备收录 ⇒ 设备表里出现 `phys=0 size=0` 的
+                // `arm,cortex-a57` 项，逐条 MMIO 判据在开发镜像上判
+                // `platform-bad-mmio:arm,cortex-a57:zero-size` 并 fail-closed
+                // 挂起（实弹）。CPU 事实走 `tree.cpus`，与设备面无关。
+                if is_cpu {
+                    continue;
+                }
                 let node_idx = tree.nodes.len();
                 if let Some(p) = phandle {
                     // 覆盖前面占位（若已 push 过）。
@@ -1354,6 +1365,42 @@ mod tests {
         assert!(!tree.memory.is_empty(), "memory 节点必须解析");
         assert!(!tree.cpus.is_empty(), "cpu 节点必须解析");
         assert_eq!(tree.cpus[0], 0);
+    }
+
+    /// 目标实弹修正（2026-09-13）红测：**CPU 节点不得进设备清单**。
+    ///
+    /// CPU 节点有 `compatible`（`arm,cortex-a57`）与 `reg = <0x0>`，旧实现把
+    /// 它当设备收录 ⇒ 设备表出现 `phys=0 size=0` 的 MMIO 项，开发镜像在
+    /// 逐条 MMIO 判据上判 `platform-bad-mmio:arm,cortex-a57:zero-size` 并
+    /// fail-closed 挂起。设备清单必须是**驱动消费面**：每项都有合法的
+    /// MMIO 窗口（CPU 事实走 `tree.cpus`）。
+    #[test]
+    fn cpu_nodes_are_not_devices() {
+        let tree = parse_fdt_tree(QEMU_VIRT_DTB).expect("parse 真实 dtb");
+        let inv = tree.to_inventory();
+        // 真实 DTB 里 CPU 的 compatible 是 `arm,cortex-a57`；不得出现在设备面。
+        assert!(
+            !inv.nodes
+                .iter()
+                .any(|d| d.compatible_all.iter().any(|c| c.contains("cortex-a57"))),
+            "CPU 节点不得进设备清单：{:?}",
+            inv.nodes
+                .iter()
+                .map(|d| (d.path.clone(), d.compatible.clone()))
+                .collect::<Vec<_>>()
+        );
+        // 全部设备项必须有合法的 MMIO 窗口（零容量/空地址都是占位形态）。
+        for d in &inv.nodes {
+            for (phys, size) in &d.regs {
+                assert_ne!(*size, 0, "{} 的 MMIO 容量不得为 0", d.path);
+                assert_ne!(*phys, 0, "{} 的 MMIO 地址不得为空", d.path);
+            }
+        }
+        // CPU 事实仍从 cpus 面提供（不得因排除而丢失）。
+        assert!(
+            !tree.cpus.is_empty(),
+            "CPU 事实必须仍在 tree.cpus（设备面排除不等于事实丢弃）"
+        );
     }
 
     #[test]

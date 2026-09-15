@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-641399ab8473",
+  "run_id": "run-18d5767d7eb7efdb",
+  "nonce": "18d5767d7eb7f4b5",
+  "test_id": "CORE-70-R09",
+  "scope": "L3",
+  "started_at": "2026-09-15T10:05:08Z",
+  "ended_at": "2026-09-15T10:05:08Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "68f3fa6fcbc20aeeaea2aeb3badd58b608878e04757964b5b215f07ec3ff6a5b",
+  "product_manifest_digest": "3dd0f0c1a265a30eed5b515cb6b3e60f909919998029ccc74aad4aaf30797263",
+  "profile_digest": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6",
+  "artifact_sha256": "740dcb71e34ea03fb78f4cc3e986cd6fb79277ab3eff3e52df1199a050b4c439",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol89-gate.sh（--negative-cycle + 影子收件箱批后排空 + 门尾窗/日志清理修正）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-test/product-manifest.normalized.json",
+      "sha256": "3dd0f0c1a265a30eed5b515cb6b3e60f909919998029ccc74aad4aaf30797263"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-test.json",
+      "sha256": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "R09 负例面：v2 链激活 + 四类负例 fail-closed + 恢复段 used=true + 零 PANIC"
+  },
+  "positive_results": [
+    {
+      "id": "activation",
+      "status": "PASS",
+      "detail": "R1 ✓、R1b used=true ×9 ✓、R2 expired ×2 ✓、R3 crossgen ×1 ✓、R4 mutated ×1 ✓、R5 unsigned Late ×1 ✓、R6 恢复段 used=true ×4 ✓、R7 零 PANIC ✓"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "skip",
+      "status": "FAIL",
+      "detail": "门内无负例判据缺口；根因链（影子收件箱排空）红测锁定"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/76a96bdd25f0d2162cd85da28f9b6f89c0bc2eaf2424c43eecc58056123693ef/CORE-70-R09.run-record.json",
+      "sha256": "7abcf9ebefe5c1cfa57592f5fe2f0b61db0782a648ac24db4f66d51f4a4f0d5a"
+    }
+  ],
+  "signer": "dev",
+  "signature": "d0bb0dc93785234b0976be2b0d9202fe72d9357cc9c9e06afa5033846906bb98db80a923641664e424e6f3f9042f1aab32db5175071a445dabe9a46bf3cdce07"
+}

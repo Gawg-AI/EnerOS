@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-24c97a454e3e",
+  "run_id": "run-18d5744ca107b00d",
+  "nonce": "18d5744ca107b483",
+  "test_id": "CORE-70-R08",
+  "scope": "L3",
+  "started_at": "2026-09-15T09:24:59Z",
+  "ended_at": "2026-09-15T09:24:59Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "dce113d588e8562940f834561ad66a98c60ae91d12dc19826ada3a7d38c17eca",
+  "product_manifest_digest": "ab2de4e85cd5693c836be74f457de1c15ad949b3d4cb18be4727c9fa0c861d64",
+  "profile_digest": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6",
+  "artifact_sha256": "b2feb4446eba6c3cc6fb0edc024f30ddd2ae6f015feb82ec78db23ddc3d48ebf",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol7-gate.sh（DL=700/DL_T2=420）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-test/product-manifest.normalized.json",
+      "sha256": "ab2de4e85cd5693c836be74f457de1c15ad949b3d4cb18be4727c9fa0c861d64"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-test.json",
+      "sha256": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "双镜像 A/B；BOOT-TRIAL→跨重启→BOOT-CONFIRM；R1-R10"
+  },
+  "positive_results": [
+    {
+      "id": "boot",
+      "status": "PASS",
+      "detail": "R1-R10 全 ✓"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "skip-trial",
+      "status": "FAIL",
+      "detail": "无 trial 直接确认被拒"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/86e4ff3f13cb0ede981a86bc58474daf2c27b3849decf0282694738489f2cb3b/CORE-70-R08.run-record.json",
+      "sha256": "bd67fc283bf70944d9a6be22658b0ec0c5833c43235cea12cd12bc0b7694da77"
+    }
+  ],
+  "signer": "dev",
+  "signature": "7da669518d1a643484670dff430b714a0383578b0089087dc23c4582c8f8f6cf1a674e327643929b727ccd36c06cc6c064b2b4bddef01af286944172ea4c9201"
+}

@@ -69,9 +69,9 @@ sleep 2
 gate_export_signing_key
 gate_compile_config "$RUN/config-compile.log" qemu-prod
 echo "=== sel4-build-rust 重链接（root/服务闭包变更）==="
-bash "$ROOT/third_party/sel4-build-rust.sh" >"$RUN/sel4.log" 2>&1 || {
+gate_relink_cached "$RUN/sel4.log" || {
   echo "SEL4-RELINK FAIL"; tail -20 "$RUN/sel4.log"; exit 3; }
-gate_image_raw qemu-prod "$RUN/image.log"
+gate_image_raw_cached qemu-prod "$RUN/image.log"
 
 IMG="$ROOT/target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw"
 [ -f "$IMG" ] || { echo "image missing"; exit 3; }
@@ -79,7 +79,8 @@ sha256sum "$IMG" | tee "$EVROOT/image.sha256"
 TPL="$ROOT/target/evidence61/template.fd"
 [ -f "$TPL" ] || { echo "vars template missing"; exit 3; }
 
-DIR="$RUN/win"; mkdir -p "$DIR"; rm -f "$DIR/qemu-serial.log" "$DIR/eneros-data.raw"
+DIR="$RUN/win"; mkdir -p "$DIR"; rm -f "$DIR/qemu-serial.log" "$DIR/eneros-data.raw" \
+  "$DIR/modbus.transcript.jsonl" "$DIR/iec104.transcript.jsonl" "$DIR/broker-transcript.jsonl"
 
 echo "=== 段1 目标实弹窗（$DL s；peer 离线压力形；门限 $MIN_ROUNDS 轮）==="
 python3 "$ROOT/evidence/61/modbus_slave61.py" --transcript "$DIR/modbus.transcript.jsonl" &
@@ -125,6 +126,7 @@ cp -f "$DIR/broker-transcript.jsonl" "$EVROOT/broker-transcript.jsonl" 2>/dev/nu
 
 # ---- R1：判据器 G1–G7 ----------------------------------------------------
 python3 "$ROOT/tools/run70_gate_judge.py" "$S" "$MIN_ROUNDS" \
+  --window-secs "$DL" \
   --transcripts "$DIR/modbus.transcript.jsonl" "$DIR/iec104.transcript.jsonl" \
   | tee "$EVROOT/judge.json" || FAIL=1
 

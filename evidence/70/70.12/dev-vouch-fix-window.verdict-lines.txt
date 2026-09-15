@@ -1,0 +1,5 @@
+[eneros-root-task] 38 HAL: source=fdt cpus=4 enabled=4 mem=1 devices=44
+[eneros-root-task] 38 HAL: timer-freq=62500000 console=arm,pl011 entropy=none iommu=false
+[eneros-root-task] 70.12 BOARD sku=qemu-virt-aarch64 revision=1.0.0 desc_digest=f0f65a2512f7a8c4 bound=false devices=0
+{"schema":"eneros.g2.v1","test":"root-heartbeat","result":"PASS"}
+[eneros-root-task] PRODUCT-READY: true (degraded: ; required degraded: )

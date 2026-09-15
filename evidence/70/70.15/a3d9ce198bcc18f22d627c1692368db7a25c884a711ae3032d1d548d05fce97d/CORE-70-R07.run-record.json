@@ -1,0 +1,52 @@
+{
+  "schema": "eneros.gate-run-record.v1",
+  "case_id": "CORE-70-R07",
+  "gate_id": "VOL70.6",
+  "command": "tools/run70-vol6-gate.sh（DL=700/DL_T2=420；svc-config 写后读回 + 预探测行生效后）",
+  "exit_code": 0,
+  "recorded_at": "2026-09-15T03:42:46Z",
+  "ran_artifact_sha256": "d9abddf45548f56787154c6a63e2d2ce3d55782944292f1306eeccd3c91a0485",
+  "ran_artifact_sha256_source": "evidence/70/70.6/image-t.sha256",
+  "raw_log": {
+    "name": "vol6.log",
+    "bytes": 3898,
+    "sha256": "7050a8350c6a9d0b877cbd23d837f92420ff3fab5b300a20a500cb259b7c15c1",
+    "resident": "handoff-bundle",
+    "note": ".gitignore `*.log`：原始日志随移交包分发，本记录绑定其摘要"
+  },
+  "verdict_lines": [
+    "[✓][R1] 零 PANIC / 零分配失败",
+    "[✓][R2] PRODUCT-READY 达成",
+    "[✓][R3] config-get 载荷取回（gen=1）",
+    "[✓][R5] 维护进入实效（root 词形）",
+    "[✓][R6] 维护内控制写暂停词形",
+    "[✓][R7] 签名换包激活 gen=2（root 直驱 CFG1）",
+    "[✓][R8] 盘上提交词形（CONFIG-ACTIVATED）",
+    "[✓][R9] 消费者同代（config-get gen=2）",
+    "[✓][R10] 受控重启受理（root 词形）",
+    "[✓][R11] 实例代次变更 + 重启完成",
+    "[✓][R12] ready 重验完成",
+    "[✓][R14] 维护退出（健康门放行）",
+    "[✓][R15] 负例：保护服务重启拒绝（root 裁决词形）",
+    "[✓][R16] 负例：幂等冲突拒绝（同 rid 异参）",
+    "[✓][R18] 负例：幂等回放（同操作一次执行）",
+    "[✓][R19] 负例：短尾 v2 拒绝（REG-70.5 收口）",
+    "[✓][R20] 负例：伪 principal 拒绝（70.5 R6 回归）",
+    "[✓][R21] 正例配对：合法 v2 签名过验签进授权（stage commit 执行）",
+    "[✓][R17] 维护外激活拒绝（探针步存在=宿主闸覆盖；QEMU 环形不安全）",
+    "[✓][R22] 操作账本持久化词形（MGMT-OPS persisted）",
+    "[✓][R23] 窗T-2 冷启动 PRODUCT-READY",
+    "[✓][R24] 盘上配置冷启动恢复（CONFIG-DISK active gen=2）",
+    "[✓][R25] 操作账本跨重启恢复（MGMT-OPS ledger restored）",
+    "[✓][R26] 窗T-2 零 PANIC",
+    "VOL70.6-GATE: PASS"
+  ],
+  "verdict": "PASS",
+  "candidate": {
+    "candidate_id": "a3d9ce198bcc18f22d627c1692368db7a25c884a711ae3032d1d548d05fce97d",
+    "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+    "dirty_tree_digest": "7f41b85b150c9ad2d0720b8ffc053b093b28004209bcce45d14b823392834256",
+    "artifact_sha256": "e5643923507b546c166b8e309ab23941157cf7816b345b47cfdb5f25d54df067",
+    "profile": "qemu-test"
+  }
+}

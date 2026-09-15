@@ -28,6 +28,14 @@ use super::{invalid, read_json, DynResult};
 /// 硬件 scope（与 `board.rs` 同域；非硬件 scope 不得作为 72h 技术资格）。
 pub const HARDWARE_SCOPES: [&str; 3] = ["hw-hil", "hw-soak", "hw-bringup"];
 
+/// 资源样本必须覆盖的最小运行占比（%）。
+///
+/// 复查修复（2026-09-13）："至少 3 个样本"没有覆盖要求 ⇒ 把全部样本堆在
+/// 运行尾部的 1 小时内，1 MB/h 的真实增长会被斜率换算稀释成 13.7 KB/h 并
+/// PASS（实测）。75% 是"样本必须跟着整段运行走"的结构性下限，不假设采样
+/// 周期（真机采样周期由试验台脚本决定，判据只要求别把样本挤在一角）。
+pub const MIN_METRIC_SPAN_PCT: i64 = 75;
+
 /// 一次运行的原样记录（E70-E 切片：原始时间/样本/覆盖/资源）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -133,6 +141,9 @@ pub struct SoakVerdict {
     pub violations: Vec<String>,
     /// 实测连续小时（由真实起止算出）。
     pub measured_hours: u64,
+    /// 记录的设备事实（SKU/修订）——资格判据用它核对"同一块板"。
+    pub device_sku_id: String,
+    pub device_board_revision: String,
     /// 堆斜率（字节/小时，最小二乘；样本不足 → None）。
     pub heap_slope_bytes_per_hour: Option<i64>,
     pub heap_peak_bytes: Option<u64>,
@@ -163,7 +174,19 @@ pub fn parse_rfc3339_secs(s: &str) -> Option<i64> {
     if d.len() != 3 || d[0].len() != 4 || d[1].len() != 2 || d[2].len() != 2 {
         return None;
     }
-    let secs_part = rest.split('.').next().unwrap_or("");
+    // 复查修复（2026-09-13）：小数秒必须**定形**——旧实现
+    // `rest.split('.').next()` 把 `.` 之后的内容整段丢弃且不校验，
+    // `2026-09-01T00:00:00.garbageZ` 被当成合法时刻（实测 PASS）。
+    // 只接受 1..=9 位数字的小数秒（丢弃其值，判据只到秒）。
+    let secs_part = match rest.split_once('.') {
+        Some((head, frac)) => {
+            if frac.is_empty() || frac.len() > 9 || !frac.chars().all(|c| c.is_ascii_digit()) {
+                return None;
+            }
+            head
+        }
+        None => rest,
+    };
     let t: Vec<&str> = secs_part.split(':').collect();
     if t.len() != 3 || t.iter().any(|p| p.len() != 2) {
         return None;
@@ -182,7 +205,9 @@ pub fn parse_rfc3339_secs(s: &str) -> Option<i64> {
     let h: i64 = t[0].parse().ok()?;
     let mi: i64 = t[1].parse().ok()?;
     let se: i64 = t[2].parse().ok()?;
-    if !(1970..=9999).contains(&y) || !(1..=12).contains(&mo) || h > 23 || mi > 59 || se > 60 {
+    // 复查修复：`se == 60`（闰秒）在本算法里只是"多 60 秒"，且证据时刻不会
+    // 恰好落在闰秒上——直接拒绝而非静默折叠（旧实现 `se > 60` 放行）。
+    if !(1970..=9999).contains(&y) || !(1..=12).contains(&mo) || h > 23 || mi > 59 || se > 59 {
         return None;
     }
     // 闰年/月长校验（`2026-02-30`、`2026-04-31` 一律拒绝）。
@@ -214,19 +239,42 @@ fn is_sha256(s: &str) -> bool {
             .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
 }
 
-/// 最小二乘斜率（x = 样本序号，y = 值）——避免引入浮点依赖导致的
-/// 平台差异；返回 (斜率 numerator, denominator)。
-fn slope_per_step(values: &[u64]) -> Option<(i128, i128)> {
-    let n = values.len() as i128;
+/// 摘要的短展示（证据/违规串；不参与判定）。
+fn short16(s: &str) -> String {
+    s.chars().take(16).collect()
+}
+
+/// 字节摘要 → 小写 hex（与 `board.rs` 同口径；判定只比较 hex 串）。
+fn hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push(HEX[(b >> 4) as usize] as char);
+        s.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    s
+}
+
+/// 最小二乘斜率（x = 样本真实时刻相对运行起点的**分钟数**，y = 值）→
+/// 换算成"值/小时"的**整数值**。整数定点，避免浮点平台差异。
+///
+/// 复查修复（2026-09-13）：旧实现 x = **样本序号**，再把 `per_step` 乘
+/// `(n-1)` 除以**运行全程小时数**——样本集中在运行尾部 1 小时时，1 MB/h
+/// 的真实增长被稀释成 13.7 KB/h 并 PASS（实测）。斜率必须来自真实时刻。
+fn slope_per_hour(points: &[(i64, u64)]) -> Option<i64> {
+    let n = points.len() as i128;
     if n < 3 {
         return None;
     }
+    let x0 = points.first()?.0;
     let mut sx: i128 = 0;
     let mut sy: i128 = 0;
     let mut sxx: i128 = 0;
     let mut sxy: i128 = 0;
-    for (i, v) in values.iter().enumerate() {
-        let x = i as i128;
+    for (t, v) in points {
+        // 秒 → 分钟（整数除法）：72h ≈ 4320 分钟，i128 无溢出风险，同时
+        // 保住小斜率的分辨率（按秒会让 `num*3600/den` 先丢整数位）。
+        let x = ((*t - x0) / 60) as i128;
         let y = *v as i128;
         sx += x;
         sy += y;
@@ -237,7 +285,7 @@ fn slope_per_step(values: &[u64]) -> Option<(i128, i128)> {
     if denom == 0 {
         return None;
     }
-    Some((n * sxy - sx * sy, denom))
+    Some(((n * sxy - sx * sy) * 60 / denom) as i64)
 }
 
 /// 运行记录判据（全部 fail-closed；`policy` 由调用方冻结）。
@@ -252,6 +300,8 @@ pub fn validate_run(
 ) -> DynResult<SoakVerdict> {
     let mut v = SoakVerdict {
         run_id: manifest.run_id.clone(),
+        device_sku_id: manifest.device.sku_id.clone(),
+        device_board_revision: manifest.device.board_revision.clone(),
         ..Default::default()
     };
     if manifest.schema != "eneros.soak-run.v1" {
@@ -309,13 +359,52 @@ pub fn validate_run(
             v.violations.push(format!("run-artifact-missing:{role}"));
         }
     }
-    for (role, digest) in &manifest.artifacts {
-        if !is_sha256(digest) {
+    // 复查修复（2026-09-13）：产物条目是**路径**，判据必须 `sha256(文件) ==
+    // 记录里的摘要`——旧实现只查"值是否为 64 位 hex"，摘要与任何产物都没有
+    // 关系（实测：磁盘上不存在任何产物、摘要随便填，仍然 PASS）。
+    for (role, spec) in &manifest.artifacts {
+        if spec.trim().is_empty() {
             v.violations.push(format!("run-artifact-digest-bad:{role}"));
+            continue;
         }
-        if digest.chars().all(|c| c == '0') {
+        let (declared, rel) = match spec.split_once('@') {
+            Some((d, p)) => (d.trim(), p.trim()),
+            None => {
+                v.violations.push(format!(
+                    "run-artifact-unbound:{role}:必须为 <sha256>@<相对路径>（值不与任何产物绑定时判据无从核对）"
+                ));
+                continue;
+            }
+        };
+        if !is_sha256(declared) {
+            v.violations.push(format!("run-artifact-digest-bad:{role}"));
+            continue;
+        }
+        if declared.chars().all(|c| c == '0') {
             v.violations
                 .push(format!("run-artifact-digest-zero:{role}"));
+            continue;
+        }
+        if let Err(reason) = check_rel_path(rel) {
+            v.violations
+                .push(format!("run-artifact-escapes-base:{role}:{reason}"));
+            continue;
+        }
+        let path = base.join(rel);
+        match fs::read(&path) {
+            Err(e) => v
+                .violations
+                .push(format!("run-artifact-missing:{role}:{rel}:{e}")),
+            Ok(bytes) => {
+                let actual = hex(&eneros_board_facts::digest::sha256(&bytes));
+                if actual != declared {
+                    v.violations.push(format!(
+                        "run-artifact-digest-mismatch:{role}:{}!={}",
+                        short16(declared),
+                        short16(&actual)
+                    ));
+                }
+            }
         }
     }
     // 真实时长：由起止时刻算出（不由参数推导）。
@@ -429,11 +518,31 @@ pub fn validate_run(
                     // 72h 运行里 60 秒、1 个样本也过。要求覆盖区间达到冻结
                     // 时长（容差 1 小时：允许单次重连造成的短缝）。
                     let span = b - a;
-                    let needed = (policy.min_hours as i64) * 3_600 - 3_600;
+                    // 复查修复（2026-09-13）：`min_hours as i64 * 3600` 在
+                    // `--min-hours 9223372036854775807` 下直接 panic（实测
+                    // `attempt to multiply with overflow`）；`min_hours=0`
+                    // 时 `needed` 变成负数使整条判据恒真。改为 checked 乘法
+                    // + 只在 min_hours > 0 时判定（QUALIFICATION 恒为 72）。
+                    let needed = (policy.min_hours as i64)
+                        .checked_mul(3_600)
+                        .and_then(|x| x.checked_sub(3_600))
+                        .unwrap_or(i64::MAX);
                     if policy.min_hours > 0 && span < needed {
                         v.violations.push(format!(
                             "run-protocol-window-too-short:{}:{}s<{}s",
                             c.protocol, span, needed
+                        ));
+                    }
+                    // 复查修复（2026-09-13）：覆盖判据还要有**样本密度**——
+                    // 「71 小时的窗口 + 1 个样本」在旧实现里等于全量覆盖
+                    // （实测 PASS）。口径：覆盖窗口内至少每 30 分钟 1 个样本，
+                    // 且绝对下限 3 个（采样周期由试验台脚本决定，判据只排除
+                    // "整段运行只报了几次"的形态）。
+                    let min_samples = ((span / 1_800) as u64).max(3);
+                    if c.samples < min_samples {
+                        v.violations.push(format!(
+                            "run-protocol-samples-too-few:{}:{}<{}",
+                            c.protocol, c.samples, min_samples
                         ));
                     }
                 }
@@ -447,8 +556,7 @@ pub fn validate_run(
     if manifest.metrics.len() < 3 {
         v.violations.push("run-metrics-too-few".to_owned());
     } else {
-        let heap: Vec<u64> = manifest.metrics.iter().map(|m| m.heap_bytes).collect();
-        v.heap_peak_bytes = heap.iter().copied().max();
+        v.heap_peak_bytes = manifest.metrics.iter().map(|m| m.heap_bytes).max();
         v.dma_peak_bytes = manifest.metrics.iter().map(|m| m.dma_bytes).max();
         v.handles_peak = manifest.metrics.iter().map(|m| m.handles).max();
         v.flush_latency_peak_ms = manifest
@@ -461,28 +569,71 @@ pub fn validate_run(
             .iter()
             .map(|m| m.control_period_ms_max)
             .max();
-        // 斜率换算：样本间隔按真实时刻算（小时）。
-        let span_hours = match (started, ended) {
-            (Some(s), Some(e)) if e > s => ((e - s) as f64) / 3600.0,
-            _ => 0.0,
-        };
-        if let Some((num, den)) = slope_per_step(&heap) {
-            let per_step = (num as f64) / (den as f64);
-            let per_hour = if span_hours > 0.0 {
-                per_step * (manifest.metrics.len() as f64 - 1.0) / span_hours
-            } else {
-                0.0
-            };
-            let slope = per_hour.round() as i64;
-            v.heap_slope_bytes_per_hour = Some(slope);
-            if slope > policy.max_heap_slope_bytes_per_hour {
-                v.violations.push(format!(
-                    "run-heap-growth:{slope}B/h>{}B/h",
-                    policy.max_heap_slope_bytes_per_hour
-                ));
+        // 采样时刻必须与运行区间一致（时钟失真负例），且**严格递增**——
+        // 旧实现只查"在窗口内"，样本列表顺序即回归顺序：同一组值重排即可
+        // 改变斜率结论（复查 2026-09-13）。
+        let mut stamped: Vec<(i64, u64)> = Vec::with_capacity(manifest.metrics.len());
+        let mut time_ok = true;
+        for (i, m) in manifest.metrics.iter().enumerate() {
+            match parse_rfc3339_secs(&m.at) {
+                None => {
+                    v.violations.push(format!("run-metric-time-invalid:{i}"));
+                    time_ok = false;
+                    break;
+                }
+                Some(t) => {
+                    if let (Some(s), Some(e)) = (started, ended) {
+                        if t < s || t > e + 60 {
+                            v.violations.push(format!("run-metric-outside-run:{i}"));
+                            time_ok = false;
+                            break;
+                        }
+                    }
+                    if let Some((pt, _)) = stamped.last() {
+                        if t <= *pt {
+                            // 重复时刻让最小二乘的分母退化/顺序敏感。
+                            v.violations
+                                .push(format!("run-metric-time-not-increasing:{i}"));
+                            time_ok = false;
+                            break;
+                        }
+                    }
+                    stamped.push((t, m.heap_bytes));
+                }
             }
-        } else {
-            v.violations.push("run-heap-slope-undecidable".to_owned());
+        }
+        // 样本必须覆盖运行全程的主要部分：旧实现只要求"3 个样本"，把全部
+        // 样本堆在运行尾部的 1 小时内即可让斜率被稀释（实测 1 MB/h → 13.7 KB/h
+        // PASS）。覆盖判据与时间基斜率（上面）互为独立防线。
+        if time_ok && stamped.len() >= 3 {
+            if let (Some(s), Some(e)) = (started, ended) {
+                let span = stamped.last().expect("non-empty").0 - stamped[0].0;
+                let run = e - s;
+                let needed = run * MIN_METRIC_SPAN_PCT / 100;
+                if run > 0 && span < needed {
+                    v.violations.push(format!(
+                        "run-metrics-span-too-short:{span}s<{needed}s({MIN_METRIC_SPAN_PCT}% of {run}s)"
+                    ));
+                }
+            }
+        }
+        // 斜率：单位 = 值/小时（整数定点）。
+        match slope_per_hour(&stamped) {
+            Some(slope) => {
+                v.heap_slope_bytes_per_hour = Some(slope);
+                if slope > policy.max_heap_slope_bytes_per_hour {
+                    v.violations.push(format!(
+                        "run-heap-growth:{slope}B/h>{}B/h",
+                        policy.max_heap_slope_bytes_per_hour
+                    ));
+                }
+            }
+            None => {
+                // 时间基最小二乘不可判（<3 样本或时刻重合）——不得当"零增长"。
+                if time_ok {
+                    v.violations.push("run-heap-slope-undecidable".to_owned());
+                }
+            }
         }
         if let Some(p) = v.control_period_peak_ms {
             if p > policy.control_period_limit_ms {
@@ -490,23 +641,6 @@ pub fn validate_run(
                     "run-control-period-over-limit:{p}ms>{}ms",
                     policy.control_period_limit_ms
                 ));
-            }
-        }
-        // 采样时刻必须与运行区间一致（时钟失真负例）。
-        for (i, m) in manifest.metrics.iter().enumerate() {
-            match parse_rfc3339_secs(&m.at) {
-                None => {
-                    v.violations.push(format!("run-metric-time-invalid:{i}"));
-                    break;
-                }
-                Some(t) => {
-                    if let (Some(s), Some(e)) = (started, ended) {
-                        if t < s || t > e + 60 {
-                            v.violations.push(format!("run-metric-outside-run:{i}"));
-                            break;
-                        }
-                    }
-                }
             }
         }
     }
@@ -524,19 +658,42 @@ pub fn validate_run(
         }
         // 审计（S7 P2）：绝对路径会绕过 base（`base.join("/etc/hostname")`），
         // `..` 可以指到仓库外——原始证据必须是运行目录内的相对路径。
-        let p = std::path::Path::new(rel);
-        if p.is_absolute()
-            || p.components()
-                .any(|c| matches!(c, std::path::Component::ParentDir))
-        {
+        if let Err(reason) = check_rel_path(rel) {
             v.violations
-                .push(format!("run-raw-file-escapes-base:{rel}"));
+                .push(format!("run-raw-file-escapes-base:{rel}:{reason}"));
         }
     }
     Ok(v)
 }
 
+/// 证据路径判据（**单源**：soak / bring-up / 资格记录共用）。
+///
+/// 拒绝绝对路径与 `..` 逃逸——`base.join("/etc/hostname")` 会替换整个路径，
+/// `base.join("../x")` 会指到仓库外，两者都让"证据在仓库内"的判据失效。
+pub fn check_rel_path(rel: &str) -> Result<(), &'static str> {
+    if rel.trim().is_empty() {
+        return Err("empty");
+    }
+    let p = std::path::Path::new(rel);
+    if p.is_absolute() {
+        return Err("absolute");
+    }
+    if p.components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err("parent-dir");
+    }
+    Ok(())
+}
+
 /// 从目录读取运行记录并判定（命令入口共用）。
+///
+/// 70.14 复查修复：**零泛豁免的 PANIC/OOM 扫描并入本函数**（单源）。
+/// 旧实现只在 `command_run_check` 的第二步做扫描，而其它消费者
+/// （`board qualify check/verify` 走本函数）拿到的 verdict **不含** fatal
+/// 违规 ⇒ 一份原始日志里带未处置 PANIC 的 run 可以支撑 72h 技术资格
+/// （S7-4 的红测只覆盖了 `scope=qemu` 这类 validate 层违规）。扫描并入
+/// 后：任何"这份 run 是否成立"的判定都含零泛豁免面。
 pub fn load_and_validate_run(
     base: &Path,
     rel: &str,
@@ -548,7 +705,13 @@ pub fn load_and_validate_run(
         return Err(invalid(format!("soak run manifest missing: {rel}")));
     }
     let manifest = read_json::<SoakRunManifest>(&path)?;
-    validate_run(base, &manifest, policy, require_hardware)
+    let mut verdict = validate_run(base, &manifest, policy, require_hardware)?;
+    for (file, line, text) in scan_fatal_markers(base, &manifest.raw_files)? {
+        verdict
+            .violations
+            .push(format!("run-fatal-marker:{file}:{line}:{text}"));
+    }
+    Ok(verdict)
 }
 
 /// 在原始串口/日志文件里扫描未处置的 PANIC/OOM 标记（零泛豁免）。
@@ -566,20 +729,52 @@ pub fn scan_fatal_markers(
         // 审计（S7 P1）：旧实现用 `read_to_string` + `else { continue }`——
         // 只要原始日志里有一个非 UTF-8 字节，**整个文件**就不被扫描，
         // PANIC/OOM 零泛豁免形同虚设（构造性绕过：往日志尾部塞一个 0xFF）。
-        // 改为按字节读 + lossy 解码；读不出的文件本身即判负。
-        let bytes = fs::read(&path).unwrap_or_default();
+        // 改为按字节读 + lossy 解码。
+        //
+        // 复查修复（2026-09-13）：`unwrap_or_default()` 把**读失败**折叠成
+        // "空文件 → continue"——注释声称"读不出的文件本身即判负"，实现却
+        // 静默跳过（EACCES/EIO/EISDIR 都变成零违规）。读失败必须判负。
+        let bytes = fs::read(&path).map_err(|e| {
+            invalid(format!(
+                "run-fatal-scan-unreadable:{rel}:{e}（读不出的原始证据不得当'无可疑'）"
+            ))
+        })?;
         if bytes.is_empty() {
             continue;
         }
         let text = String::from_utf8_lossy(&bytes);
         for (i, line) in text.lines().enumerate() {
             let l = line.to_ascii_lowercase();
-            if l.contains("panic") || l.contains("oom") || l.contains("out of memory") {
+            // 70.14 复查修复：**按词边界匹配**。旧实现是裸子串
+            // `l.contains("oom")`——真实浸泡/环境日志里的
+            // `ambient room temp=25.0C` 命中 `room`（内含 "oom"）⇒ 诚实运行
+            // 被 `run-fatal-marker` 整场判负（72h 长跑必撞的假阳性）。
+            // 词边界保留全部真实形态：`PANIC` / `panicked at` / `OOM` /
+            // `oom-kill` / `oom_reaper`（非字母数字即分词）。
+            if fatal_marker_in(&l) {
                 hits.push((rel.clone(), i + 1, line.trim().to_owned()));
             }
         }
     }
     Ok(hits)
+}
+
+/// 单个（已小写的）行是否含未处置的 PANIC/OOM 致命标记。
+///
+/// 语义：`panic` / `panicked` / `oom` 必须是**独立词**（避免 `room`、
+/// `bloom`、`looming` 之类子串误伤）；`out of memory` 与分配失败签名
+/// `memory allocation of` 按短语匹配（无同形误伤）。
+///
+/// 分配失败签名与 70.x 门判据器 G2 同口径（69.5 的真实失败正是
+/// `memory allocation of 114688 bytes failed`）——"零泛豁免"必须同时覆盖
+/// panic 与 OOM 两条腿，否则浸泡面会比门窗更宽。
+pub fn fatal_marker_in(lower_line: &str) -> bool {
+    if lower_line.contains("out of memory") || lower_line.contains("memory allocation of") {
+        return true;
+    }
+    lower_line
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|t| t == "panic" || t == "panicked" || t == "oom")
 }
 
 // ============================================================
@@ -631,24 +826,62 @@ fn command_run_check(root: &Path, args: &[String]) -> DynResult<()> {
         };
         match a.as_str() {
             "--min-hours" => {
-                policy.min_hours = val()?
+                let v: u64 = val()?
                     .parse()
-                    .map_err(|_| invalid("--min-hours must be u64"))?
+                    .map_err(|_| invalid("--min-hours must be u64"))?;
+                // 复查修复（2026-09-13）：判据阈值只能**调高**不能调低——
+                // `--min-hours 0` 会把"72h 技术资格"降成"任何时长"，且判据
+                // 产物里不记录用了哪套阈值（REG-70.14-JUDGE-POLICY-OVERRIDE
+                // 的同一性质）。放宽是发布面策略签名问题，不允许由调用方
+                // 静默完成；本入口只接受"更严"。
+                if v < SoakPolicy::QUALIFICATION.min_hours {
+                    return Err(invalid(format!(
+                        "--min-hours {v} 低于资格判据下限 {}h（放宽阈值属发布策略，不得由调用方静默完成）",
+                        SoakPolicy::QUALIFICATION.min_hours
+                    )));
+                }
+                policy.min_hours = v;
             }
             "--max-heap-slope" => {
-                policy.max_heap_slope_bytes_per_hour = val()?
+                let v: i64 = val()?
                     .parse()
-                    .map_err(|_| invalid("--max-heap-slope must be i64"))?
+                    .map_err(|_| invalid("--max-heap-slope must be i64"))?;
+                if v > SoakPolicy::QUALIFICATION.max_heap_slope_bytes_per_hour {
+                    return Err(invalid(format!(
+                        "--max-heap-slope {v} 高于资格判据上限 {} B/h（放宽阈值属发布策略，不得由调用方静默完成）",
+                        SoakPolicy::QUALIFICATION.max_heap_slope_bytes_per_hour
+                    )));
+                }
+                policy.max_heap_slope_bytes_per_hour = v;
             }
             "--control-limit-ms" => {
-                policy.control_period_limit_ms = val()?
+                let v: u64 = val()?
                     .parse()
-                    .map_err(|_| invalid("--control-limit-ms must be u64"))?
+                    .map_err(|_| invalid("--control-limit-ms must be u64"))?;
+                // 70.14 复查补齐：同一性质的两条阈值此前**没有**单向闸门
+                // （只锁了 min-hours / max-heap-slope）——`--control-limit-ms
+                // 999999999` 直接关掉控制周期判据，且判据产物不记录策略。
+                if v > SoakPolicy::QUALIFICATION.control_period_limit_ms {
+                    return Err(invalid(format!(
+                        "--control-limit-ms {v} 高于资格判据上限 {}ms（放宽阈值属发布策略，不得由调用方静默完成）",
+                        SoakPolicy::QUALIFICATION.control_period_limit_ms
+                    )));
+                }
+                policy.control_period_limit_ms = v;
             }
             "--max-heartbeat-gap-s" => {
-                policy.max_heartbeat_gap_s = val()?
+                let v: u64 = val()?
                     .parse()
-                    .map_err(|_| invalid("--max-heartbeat-gap-s must be u64"))?
+                    .map_err(|_| invalid("--max-heartbeat-gap-s must be u64"))?;
+                // 同上：`--max-heartbeat-gap-s 999999999` 同时关掉"心跳空洞"
+                // 与"心跳覆盖全窗"两条判据。
+                if v > SoakPolicy::QUALIFICATION.max_heartbeat_gap_s {
+                    return Err(invalid(format!(
+                        "--max-heartbeat-gap-s {v} 高于资格判据上限 {}s（放宽阈值属发布策略，不得由调用方静默完成）",
+                        SoakPolicy::QUALIFICATION.max_heartbeat_gap_s
+                    )));
+                }
+                policy.max_heartbeat_gap_s = v;
             }
             "--expect-scope" => match val()?.as_str() {
                 "hw" => require_hardware = true,
@@ -669,15 +902,9 @@ fn command_run_check(root: &Path, args: &[String]) -> DynResult<()> {
         }
     }
     let rel = rel.ok_or_else(|| invalid("soak run-check requires <manifest.json>"))?;
-    let mut verdict = load_and_validate_run(&base, &rel, &policy, require_hardware)?;
-    // 零泛豁免：原始文件里的 PANIC/OOM 一律判负（缺文件已在 run 判据里报）。
-    let path = base.join(&rel);
-    let manifest = read_json::<SoakRunManifest>(&path)?;
-    for (file, line, text) in scan_fatal_markers(&base, &manifest.raw_files)? {
-        verdict
-            .violations
-            .push(format!("run-fatal-marker:{file}:{line}:{text}"));
-    }
+    // fatal 扫描已在 `load_and_validate_run` 内（单源：资格/能力表等消费者同样
+    // 拿到零泛豁免违规；此处不得再扫第二遍）。
+    let verdict = load_and_validate_run(&base, &rel, &policy, require_hardware)?;
     if let Some(out) = out {
         if let Some(dir) = out.parent() {
             fs::create_dir_all(dir)?;
@@ -772,10 +999,28 @@ mod tests {
         )
     }
 
+    /// 写出一对"真实"产物文件并返回 `<sha256>@<相对路径>` 绑定串
+    /// （复查 2026-09-13：产物条目必须与盘上文件的可算摘要绑定）。
+    fn artifact_binding(root: &Path, rel: &str, content: &[u8]) -> String {
+        let path = root.join(rel);
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir).unwrap();
+        }
+        fs::write(&path, content).unwrap();
+        let digest = hex(&eneros_board_facts::digest::sha256(content));
+        format!("{digest}@{rel}")
+    }
+
     fn good_manifest(root: &Path) -> SoakRunManifest {
         let mut artifacts = BTreeMap::new();
-        artifacts.insert("root_task".to_owned(), "a".repeat(64));
-        artifacts.insert("boot_chain".to_owned(), "b".repeat(64));
+        artifacts.insert(
+            "root_task".to_owned(),
+            artifact_binding(root, "artifacts/root-task.bin", b"root-task-image"),
+        );
+        artifacts.insert(
+            "boot_chain".to_owned(),
+            artifact_binding(root, "artifacts/boot-chain.bin", b"boot-chain-image"),
+        );
         // 3 天，每 10 分钟一个心跳（433 个；末次 = 起 + 72h）。
         let heartbeats: Vec<String> = (0..=(72 * 6)).map(|i| hhmm_minutes(i * 10)).collect();
         let metrics: Vec<MetricSample> = (0..72)
@@ -895,7 +1140,10 @@ mod tests {
     fn hardcoded_zero_leak_and_zero_artifact_are_rejected() {
         let root = tmp_root("zero");
         let mut m = good_manifest(&root);
-        m.artifacts.insert("qemu-prod".to_owned(), "0".repeat(64));
+        m.artifacts.insert(
+            "qemu-prod".to_owned(),
+            format!("{}@artifacts/x.bin", "0".repeat(64)),
+        );
         let v = validate_run(&root, &m, &SoakPolicy::QUALIFICATION, true).unwrap();
         assert!(v
             .violations
@@ -907,6 +1155,41 @@ mod tests {
         assert!(v2
             .violations
             .contains(&"run-artifact-digest-bad:root_task".to_string()));
+        // 复查修复（2026-09-13）红测：摘要必须与盘上文件实算值一致——
+        // 只给摘要（无路径）= 无从核对 ⇒ 判负；摘要与内容不符 ⇒ 判负。
+        let mut m3 = good_manifest(&root);
+        m3.artifacts.insert("root_task".to_owned(), "a".repeat(64));
+        let v3 = validate_run(&root, &m3, &SoakPolicy::QUALIFICATION, true).unwrap();
+        assert!(
+            v3.violations
+                .iter()
+                .any(|x| x.starts_with("run-artifact-unbound:root_task")),
+            "{:?}",
+            v3.violations
+        );
+        let mut m4 = good_manifest(&root);
+        let wrong = format!("{}@artifacts/root-task.bin", "c".repeat(64));
+        m4.artifacts.insert("root_task".to_owned(), wrong);
+        let v4 = validate_run(&root, &m4, &SoakPolicy::QUALIFICATION, true).unwrap();
+        assert!(
+            v4.violations
+                .iter()
+                .any(|x| x.starts_with("run-artifact-digest-mismatch:root_task")),
+            "{:?}",
+            v4.violations
+        );
+        // 产物文件缺失（记录声称有、盘上没有）⇒ 判负。
+        let mut m5 = good_manifest(&root);
+        let missing = format!("{}@artifacts/absent.bin", "d".repeat(64));
+        m5.artifacts.insert("root_task".to_owned(), missing);
+        let v5 = validate_run(&root, &m5, &SoakPolicy::QUALIFICATION, true).unwrap();
+        assert!(
+            v5.violations
+                .iter()
+                .any(|x| x.starts_with("run-artifact-missing:root_task")),
+            "{:?}",
+            v5.violations
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1059,6 +1342,50 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// 复查修复（2026-09-13 第二轮）红测：**产物绑定串**的路径同样必须被
+    /// 路径判据把守——旧判据只查摘要形态，`../` 与绝对路径的产物路径从不
+    /// 被判（`base.join("/etc/hostname")` 替换整个路径 ⇒ 摘要核对指向仓库
+    /// 外的文件）。`check_rel_path` 是 soak / bring-up / 资格三处共用的单源。
+    #[test]
+    fn artifact_binding_paths_are_guarded_like_raw_files() {
+        assert_eq!(check_rel_path(""), Err("empty"));
+        assert_eq!(check_rel_path("   "), Err("empty"));
+        assert_eq!(check_rel_path("/etc/hostname"), Err("absolute"));
+        assert_eq!(check_rel_path("../outside.bin"), Err("parent-dir"));
+        assert_eq!(check_rel_path("evidence/../../x"), Err("parent-dir"));
+        assert!(check_rel_path("evidence/70/70.14/run/artifacts/root.bin").is_ok());
+        assert!(check_rel_path("./artifacts/root.bin").is_ok());
+
+        let root = tmp_root("artpath");
+        let mut m = good_manifest(&root);
+        m.artifacts.insert(
+            "root_task".to_owned(),
+            format!("{}@/etc/hostname", "a".repeat(64)),
+        );
+        let v = validate_run(&root, &m, &SoakPolicy::QUALIFICATION, true).unwrap();
+        assert!(
+            v.violations
+                .iter()
+                .any(|x| x.starts_with("run-artifact-escapes-base:root_task:absolute")),
+            "{:?}",
+            v.violations
+        );
+        let mut m2 = good_manifest(&root);
+        m2.artifacts.insert(
+            "root_task".to_owned(),
+            format!("{}@../outside.bin", "b".repeat(64)),
+        );
+        let v2 = validate_run(&root, &m2, &SoakPolicy::QUALIFICATION, true).unwrap();
+        assert!(
+            v2.violations
+                .iter()
+                .any(|x| x.starts_with("run-artifact-escapes-base:root_task:parent-dir")),
+            "{:?}",
+            v2.violations
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// 审计（S7 P2）红测：协议"覆盖"必须真覆盖（60 秒 1 样本不足 72h）。
     #[test]
     fn protocol_coverage_must_span_the_run() {
@@ -1116,6 +1443,109 @@ mod tests {
         assert!(parse_rfc3339_secs("2026-13-01T00:00:00Z").is_none());
         assert!(parse_rfc3339_secs("2026-09-01T25:00:00Z").is_none());
         assert!(parse_rfc3339_secs("").is_none());
+        // 复查修复（2026-09-13）红测：小数秒必须定形、闰秒拒绝。
+        assert!(
+            parse_rfc3339_secs("2026-09-01T00:00:00.garbageZ").is_none(),
+            "非法小数位不得被整段丢弃"
+        );
+        assert!(
+            parse_rfc3339_secs("2026-09-01T00:00:00.Z").is_none(),
+            "空小数位"
+        );
+        assert!(
+            parse_rfc3339_secs("2026-09-01T00:00:00.1234567890Z").is_none(),
+            "小数位超过 9 位"
+        );
+        assert_eq!(
+            parse_rfc3339_secs("2026-09-01T00:00:00.123Z"),
+            parse_rfc3339_secs("2026-09-01T00:00:00Z"),
+            "合法小数秒按秒截断"
+        );
+        assert!(
+            parse_rfc3339_secs("2026-09-01T00:00:60Z").is_none(),
+            "闰秒不静默折叠成下一分钟"
+        );
+    }
+
+    /// 复查修复（2026-09-13）红测：不可读的原始证据不得当"无可疑"。
+    #[test]
+    fn fatal_scan_fails_closed_on_unreadable_evidence() {
+        let root = tmp_root("scan-unreadable");
+        // 目录：`is_file()` 为假（走缺失分支）；这里直接对**不存在的**路径
+        // 断言 Err（旧实现 `unwrap_or_default()` 会把任何读失败折叠成空 ⇒ Ok([])）。
+        let err = scan_fatal_markers(&root, &["evidence/absent.log".to_owned()]).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("run-fatal-scan-unreadable"),
+            "读不出的原始证据必须判负：{msg}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 70.14 复查红测：致命标记扫描**按词边界**，不按裸子串。
+    ///
+    /// 缺陷形态（旧实现）：`l.contains("oom")`——真实 72h 浸泡/环境日志里
+    /// `ambient room temp=25.0C` 的 `room` 就含 `oom`，诚实运行被
+    /// `run-fatal-marker` 整场判负（"下一次实弹必撞"的假阳性）；同时
+    /// `bloom`/`looming` 同理。零泛豁免语义必须保留（真 PANIC/OOM 行照命中）。
+    #[test]
+    fn fatal_marker_matching_is_word_bounded_not_substring() {
+        // 不得误伤（词边界）：room / bloom / looming / boomtown。
+        for ok in [
+            "[sensor] ambient room temp=25.0C humidity=40%",
+            "[orch] bloom filter rebuilt",
+            "forecast: looming degradation acceptable",
+            "site=boomtown relay closed",
+        ] {
+            assert!(
+                !fatal_marker_in(&ok.to_ascii_lowercase()),
+                "合法行不得被判致命：{ok}"
+            );
+        }
+        // 必须命中（真实形态，零泛豁免不变）。
+        for bad in [
+            "PANIC: panicked at crates/x/src/lib.rs:12",
+            "[svc-x] panicked at 'called Result::unwrap()'",
+            "memory allocation of 114688 bytes failed",
+            "Out of memory: Killed process 123",
+            "kernel: oom-kill:constraint=CONSTRAINT_NONE",
+            "oom_reaper: reaped process 42",
+        ] {
+            assert!(
+                fatal_marker_in(&bad.to_ascii_lowercase()),
+                "致命行必须命中：{bad}"
+            );
+        }
+    }
+
+    /// 70.14 复查红测：**资格消费者拿到的 verdict 必须含零泛豁免违规**。
+    ///
+    /// 缺陷形态（旧实现）：fatal 扫描只在 `command_run_check` 的第二步执行，
+    /// 而 `board qualify check/verify` 直接调 `load_and_validate_run` ⇒ 一份
+    /// 原始日志里带未处置 PANIC 的 run 可以支撑 72h 技术资格（与"任何未处置
+    /// PANIC/OOM 使整场失败"直接冲突）。扫描并入 `load_and_validate_run` 后，
+    /// 所有消费者（含资格）都拿到 `run-fatal-marker:*`。
+    #[test]
+    fn fatal_markers_are_part_of_every_run_consumer_verdict() {
+        let root = tmp_root("fatal-in-load");
+        let m = good_manifest(&root);
+        let rel = "evidence/run.json";
+        // 原始日志里写入一条真实 PANIC（其余字段全合规）。
+        fs::write(
+            root.join("evidence/serial.log"),
+            "boot ok\nPANIC #1 at x.rs:1\n",
+        )
+        .unwrap();
+        fs::write(root.join(rel), serde_json::to_vec_pretty(&m).unwrap()).unwrap();
+        let v = load_and_validate_run(&root, rel, &SoakPolicy::QUALIFICATION, true).unwrap();
+        assert!(
+            v.violations
+                .iter()
+                .any(|x| x.starts_with("run-fatal-marker:")),
+            "加载判据（资格/能力表消费者共用）必须含 PANIC 违规：{:?}",
+            v.violations
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

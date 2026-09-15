@@ -83,6 +83,10 @@ pub extern "C" fn _start(
     };
     match &mut storage {
         Some(io) => {
+            // 第三形态可诊断化（REG-70.15-VOL6-R24）：进入读裁决前先落一行——
+            // 若本行出现而后续四个分支词形全缺，即"读路径挂起"形态（此前
+            // 整块无词形 = 不可诊断）。
+            eneros_runtime::println!("[svc-config] CONFIG-DISK: probing active region");
             let mut region = [0u8; CONFIG_REGION_BYTES];
             let read = io.read(CONFIG_ACTIVE_OFFSET, &mut region);
             match read {
@@ -168,7 +172,20 @@ impl ConfigHandler {
             return Err(());
         };
         io.write(CONFIG_ACTIVE_OFFSET, envelope).map_err(|_| ())?;
-        io.flush().map_err(|_| ())
+        io.flush().map_err(|_| ())?;
+        // REG-70.15-VOL6-R24 写后读回确认（2026-09-15）：写+flush 后必须读回
+        // 逐字节核对才算提交成功——读回不符 = 介质/路径不可信，拒绝进入
+        // CONFIG-ACTIVATED（宁可本次激活失败，不把未核实状态留给冷启动）。
+        let mut back = alloc::vec![0u8; envelope.len()];
+        io.read(CONFIG_ACTIVE_OFFSET, &mut back).map_err(|_| ())?;
+        if back.as_slice() != envelope {
+            eneros_runtime::println!(
+                "[svc-config] CONFIG-DISK readback MISMATCH ({}B) — refusing activation",
+                back.len()
+            );
+            return Err(());
+        }
+        Ok(())
     }
 }
 

@@ -106,6 +106,7 @@ pub mod obs_wire;
 pub mod ota_wire;
 pub mod relay_face;
 pub mod root_mgmt;
+pub mod synth_feed;
 // 蓝图 70.8（WP-70.8.1/70.8.4）：可信快照输入 wire 单源（身份 + 144B
 // 遥测载荷一体；决策/证书/执行证据共用同一 snapshot_id 引用）。
 pub mod snap_input_wire;

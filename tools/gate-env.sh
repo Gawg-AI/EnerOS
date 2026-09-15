@@ -141,3 +141,65 @@ gate_build_prelude() {
   gate_compile_config "$DIR/compile.log" "$PROFILE"
   gate_image_raw "$PROFILE" "$DIR/image.log"
 }
+
+# ===========================================================================
+# 构建缓存戳（REG-70.15-BUILD-NONDETERMINISM 治理，2026-09-15）：
+# 同树 + 同 ROOT_TASK_FEATURES 的重链接/镜像只做一次——后续门共享同一
+# 份镜像字节（"门间共享同一镜像副本"路线），候选身份在单次收口扫描内
+# 单产物闭合。树状态 = HEAD + tracked 工作树摘要 + 重链接脚本摘要 +
+# feature 集；任一变化 → 戳失效 → 重建。
+# 注意：跨 feature 交替（qemu-prod ↔ qemu-test-synth）必然使戳失效并
+# 重链接（合成装配与生产装配是不同闭包）——扫描编排按 feature 分组
+# 排序即可最大化共享。
+# ===========================================================================
+gate_build_stamp() {  # $1 = features 字符串（可空）
+  # **必须并入 build.rs 消费的 ENEROS_* 环境**（PROBE_BUNDLE/PROBE_SIG/
+  # IMAGE_SIGNING_KEY 等在编译期烘进 ELF——2026-09-15 vol6 实弹：缓存命中
+  # 了无探针束的 vol5-B 构建 ⇒ 探针 step3 empty-bundle 级联失败。环境签名
+  # 变化 ⇒ 戳失效，诚实重建）。
+  # 树摘要用 **git diff HEAD 内容哈希**（2026-09-15 vol89 实弹教训：porcelain
+  # 行摘要对"已修改文件的内容再编辑"不敏感 ⇒ 缓存吞掉诊断构建）。
+  local tree envsig
+  tree="$(git rev-parse HEAD 2>/dev/null)-$(git diff HEAD 2>/dev/null | sha256sum | cut -d' ' -f1)"
+  envsig="$(printenv 2>/dev/null | grep -E '^ENEROS_' | sort | sha256sum | cut -d' ' -f1)"
+  printf '%s-%s-%s-%s' "$tree" "${1:-none}" "$envsig" \
+    "$(sha256sum "$ROOT/third_party/sel4-build-rust.sh" 2>/dev/null | cut -d' ' -f1)" \
+    | sha256sum | cut -d' ' -f1
+}
+
+gate_relink_cached() {  # $1 = log 路径；$2 = features（可空）
+  local stamp expected
+  stamp="$(gate_build_stamp "${2:-}")"
+  expected="$(cat "$ROOT/target/eneros/.relink-stamp" 2>/dev/null || true)"
+  if [ "$stamp" = "$expected" ]; then
+    echo "=== sel4-build-rust 重链接（缓存命中，跳过：stamp=${stamp:0:12}）==="
+    return 0
+  fi
+  echo "=== sel4-build-rust 重链接（stamp=${stamp:0:12}）==="
+  if [ -n "${2:-}" ]; then
+    ROOT_TASK_FEATURES="$2" bash "$ROOT/third_party/sel4-build-rust.sh" >"$1" 2>&1 || {
+      tail -20 "$1"; return 1; }
+  else
+    bash "$ROOT/third_party/sel4-build-rust.sh" >"$1" 2>&1 || {
+      tail -20 "$1"; return 1; }
+  fi
+  mkdir -p "$ROOT/target/eneros"
+  printf '%s' "$stamp" > "$ROOT/target/eneros/.relink-stamp"
+}
+
+gate_image_raw_cached() {  # $1 = profile; $2 = log; $3 = features（可空）
+  # 镜像戳额外并入已编译配置束摘要——每轮新鲜锚/钥材料（如 vol5 OTA 锚）
+  # 会使束摘要变化 ⇒ 缓存正确失效，不共享。
+  local stamp expected img="$ROOT/target/eneros/artifacts/$1/eneros-$1.raw"
+  local bundle=""
+  [ -f "$ROOT/product/config-bundle.bin" ] && bundle="$(sha256sum "$ROOT/product/config-bundle.bin" | cut -d' ' -f1)"
+  stamp="$(gate_build_stamp "${3:-}")-${bundle:-none}"
+  expected="$(cat "$ROOT/target/eneros/.image-stamp-$1" 2>/dev/null || true)"
+  if [ "$stamp" = "$expected" ] && [ -f "$img" ]; then
+    echo "=== image raw $1（缓存命中，跳过）==="
+    return 0
+  fi
+  gate_image_raw "$1" "$2"
+  mkdir -p "$ROOT/target/eneros"
+  printf '%s' "$stamp" > "$ROOT/target/eneros/.image-stamp-$1"
+}

@@ -1689,16 +1689,32 @@ impl DispatchEngine {
         // not_before 语义：未来步不当拍投递（留待到期 tick——键已由编译
         // 确定性分配，重编译 + journal 幂等命中 = 无重复投递）；已过期步
         // 跳过并留证据行。
+        //
+        // **未到期步不是静默丢弃**（2026-09-14）：旧实现对未到期步直接
+        // `continue`（零日志零计数），与过期步的 `PLAN-COMMAND-SKIP-EXPIRED`
+        // 不对称——于是"多步计划只走了首步"在串口证据里**不可见**
+        // （REG-70.FL-MULTISTEP-REPLAY）。现补对称证据行 + 计数：
+        // 延期步数逐次可对账，投递面是否真有后续 tick 来接手，
+        // 从"看不出来"变成"看得出"。
         let legacy_single = crate::compiler::is_legacy_single_command_plan(plan);
         let mut delivered_any = false;
         let mut last_receipt = None;
+        let mut deferred_steps = 0u32;
+        let mut expired_steps = 0u32;
         for batch in &outcome.batches {
             for intent in batch.intents() {
                 let now = (self.now_fn)();
                 if now < intent.valid_from_ms() {
+                    deferred_steps = deferred_steps.saturating_add(1);
+                    eneros_runtime::println!(
+                        "[svc-control-dispatch] PLAN-COMMAND-DEFERRED intent={:02x?} due_in_ms={}",
+                        &intent.intent_id().0[..4],
+                        intent.valid_from_ms().saturating_sub(now),
+                    );
                     continue;
                 }
                 if now > intent.valid_until_ms() {
+                    expired_steps = expired_steps.saturating_add(1);
                     eneros_runtime::println!(
                         "[svc-control-dispatch] PLAN-COMMAND-SKIP-EXPIRED intent={:02x?}",
                         &intent.intent_id().0[..4],
@@ -1734,10 +1750,17 @@ impl DispatchEngine {
                 last_receipt = Some(receipt);
             }
         }
+        // 延期/过期步数一次性对账（0/0 也打印：缺行与"无延期"必须可区分）。
+        eneros_runtime::println!(
+            "[svc-control-dispatch] PLAN-COMMANDS-DEFERRED deferred={} expired={} delivered={}",
+            deferred_steps,
+            expired_steps,
+            u32::from(delivered_any),
+        );
         if !delivered_any {
             self.arbiter.clear_in_flight(self.profile.device_id);
-            return Err(DispatchError::ProposalInvalid(String::from(
-                "计划无到期命令（未来步留待到期 tick）",
+            return Err(DispatchError::ProposalInvalid(alloc::format!(
+                "计划无到期命令（未来步留待到期 tick）：deferred={deferred_steps} expired={expired_steps}"
             )));
         }
         self.arbiter.clear_in_flight(self.profile.device_id);

@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-ddff2dd87620",
+  "run_id": "run-18d5149ef188829b",
+  "nonce": "18d5149ef1888757",
+  "test_id": "CORE-70-R04",
+  "scope": "L2",
+  "started_at": "2026-09-14T04:11:39Z",
+  "ended_at": "2026-09-14T04:11:39Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "69b83c03e7960655ff10d9f672430b5fce17ee06e4ee65d682f6ffead0cf5ec8",
+  "product_manifest_digest": "b94ac540a6d936e9b32ff4cda46f1b65a2b3157c3b8b644399b7260f71654ce2",
+  "profile_digest": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2",
+  "artifact_sha256": "a5d8bf9fdb5f93bfdb8ddabc7520670919b95edfb3e402fa75223eee21cbf8f4",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol3-gate.sh（DL=1800）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "b94ac540a6d936e9b32ff4cda46f1b65a2b3157c3b8b644399b7260f71654ce2"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "IPC 有界组装/判别：CHUNKED-BUDGET/RESP-TOOLARGE/REPLY-TRUNCATED/PULL-STALE/SLOT-FULL/BadTotalLen/BadChunkSize 全 0，DUP-SESSION×13/PAGE-EVICTED×13/SLOW×47 可观测"
+  },
+  "positive_results": [
+    {
+      "id": "ipc",
+      "status": "PASS",
+      "detail": "G5 rounds=9199/Committed=1617 ≥ 下限 40；判别词形全部可观测且零误判"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "budget",
+      "status": "FAIL",
+      "detail": "G1/G2 在案堆预算 PANIC ×1"
+    }
+  ],
+  "verdict": "FAIL",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/d5621779a2e734a3f4fd25d5e7ac54a4b26823d71613a1059682883286156b4b/CORE-70-R04.run-record.json",
+      "sha256": "74919f7375f8ab20b8f7fb16c5e5798643e23a917ddc2c319c2b38e2c8217876"
+    }
+  ],
+  "signer": "dev",
+  "signature": "ae0857b8ccd6b5cead9b350e234c889347440cb5a9176a79fd27b6bf3e73b6612b9dd7f015c4d4fa30b89b92ec13428ff8275cfd89bf5933acce0dcd038ec80e"
+}

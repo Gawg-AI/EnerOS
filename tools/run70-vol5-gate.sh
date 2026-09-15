@@ -123,10 +123,9 @@ ENEROS_KMS_DIR=configs/kms-dev cargo xtask config compile --profile qemu-prod \
   echo "CONFIG-COMPILE FAIL rc=$?"; tail -5 "$RUN/config-compile-a.log"; exit 2; }
 cargo xtask qa gate ota-anchor --profile qemu-prod | tee "$EVROOT/ota-anchor-gate-a.txt"
 grep -q "forbidden=yes" "$EVROOT/ota-anchor-gate-a.txt" || { echo "ota-anchor 禁用面判据缺失"; exit 2; }
-echo "=== sel4-build-rust 重链接 ==="
-bash "$ROOT/third_party/sel4-build-rust.sh" >"$RUN/sel4-a.log" 2>&1 || {
+gate_relink_cached "$RUN/sel4-a.log" || {
   echo "SEL4-RELINK FAIL"; tail -20 "$RUN/sel4-a.log"; exit 3; }
-gate_image_raw qemu-prod "$RUN/image-a.log"
+gate_image_raw_cached qemu-prod "$RUN/image-a.log"
 IMG="$ROOT/target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw"
 [ -f "$IMG" ] || { echo "image missing"; exit 3; }
 sha256sum "$IMG" | tee "$EVROOT/image-a.sha256"
@@ -135,7 +134,8 @@ TPL="$ROOT/target/evidence61/template.fd"
 
 # ---- 段2：窗A QEMU（TLS 端到端）-------------------------------------------
 DIR="$RUN/win-a"; mkdir -p "$DIR"
-rm -f "$DIR/qemu-serial.log" "$DIR/eneros-data.raw" "$DIR/broker-transcript.jsonl" "$DIR/forge.transcript.jsonl"
+rm -f "$DIR/qemu-serial.log" "$DIR/eneros-data.raw" "$DIR/broker-transcript.jsonl" "$DIR/forge.transcript.jsonl" \
+      "$DIR/modbus.transcript.jsonl" "$DIR/iec104.transcript.jsonl"
 echo "=== 段2：窗A QEMU TLS 窗（$DL s）==="
 python3 "$ROOT/evidence/61/modbus_slave61.py" --transcript "$DIR/modbus.transcript.jsonl" &
 PMOD=$!
@@ -162,12 +162,15 @@ QEMU_JOB=$!
 # 250s，以文件为触发的注入会落进窗内串口静默段之后；+90s 时订阅已
 # 就绪且目标活跃）。
 (
+  # REG-70.15-VOL5-R6-INTERMITTENT 治理（2026-09-15）：注入从 3 次/24s
+  # 加宽为 8 次/约 5 分钟（覆盖窗内 v2 验签订阅就绪后的整个相位）；
+  # 发送计数入 forge.transcript（"帧已发出"进程侧证据，判据交叉核验）。
   sleep 75
-  for ROUND in 1 2 3; do
+  for ROUND in 1 2 3 4 5 6 7 8; do
     python3 "$ROOT/evidence/70/mgt_v2_forger.py" --broker 127.0.0.1:"$TLS_PORT" \
       --ca "$WORK/ca.pem" --client "$WORK/broker.pem" --client-key "$WORK/broker.key" \
       --transcript "$DIR/forge.transcript.jsonl" >>"$DIR/forge.log" 2>&1 || true
-    sleep 8
+    sleep 35
   done
 ) &
 FORGER_JOB=$!
@@ -228,7 +231,12 @@ n=$(grep -ac "OTA-DOWNLOAD: OK" "$S" || true); n=${n:-0}
 [ "$n" -eq 0 ] && echo "[✓][R5b] 窗A 零 OTA-DOWNLOAD OK（测试探针不在 release）" || { echo "[✗][R5b] OTA-DOWNLOAD OK ×$n 出现于 release 窗"; FAIL=1; }
 
 n=$(grep -ac "MGT-PRINCIPAL rejected" "$S" || true); n=${n:-0}
-[ "$n" -ge 1 ] && echo "[✓][R6] 伪 principal 拒绝（$n）" || { echo "[✗][R6] 伪 principal 拒绝缺失"; FAIL=1; }
+SENT=$(grep -ac "FORGED-MGT-PUBLISH" "$DIR/forge.transcript.jsonl" 2>/dev/null || true); SENT=${SENT:-0}
+if [ "$n" -ge 1 ]; then
+  echo "[✓][R6] 伪 principal 拒绝（$n；forger 发送 $SENT）"
+else
+  echo "[✗][R6] 伪 principal 拒绝缺失（forger 发送 $SENT——>0 则为真安全面失败，0 为注入未落地）"; FAIL=1
+fi
 
 cp -f "$S" "$EVROOT/wa.qemu-serial.log"
 
@@ -243,10 +251,9 @@ ENEROS_KMS_DIR=configs/kms-dev cargo xtask config compile --profile qemu-prod \
   echo "CONFIG-COMPILE(窗B) FAIL"; tail -5 "$RUN/config-compile-b.log"; exit 2; }
 cargo xtask qa gate ota-anchor --profile qemu-test | tee "$EVROOT/ota-anchor-gate-b.txt"
 echo "=== sel4 重链接（窗B；synth 探针装配）==="
-ROOT_TASK_FEATURES="sel4-eipc,qemu-test-synth" bash "$ROOT/third_party/sel4-build-rust.sh" \
-  >"$RUN/sel4-b.log" 2>&1 || {
+gate_relink_cached "$RUN/sel4-b.log" "sel4-eipc,qemu-test-synth" || {
   echo "SEL4-RELINK-B FAIL"; tail -20 "$RUN/sel4-b.log"; exit 3; }
-gate_image_raw qemu-test "$RUN/image-b.log"
+gate_image_raw_cached qemu-test "$RUN/image-b.log" "sel4-eipc,qemu-test-synth"
 IMG_B="$ROOT/target/eneros/artifacts/qemu-test/eneros-qemu-test.raw"
 [ -f "$IMG_B" ] || { echo "qemu-test image missing"; exit 3; }
 sha256sum "$IMG_B" | tee "$EVROOT/image-b.sha256"

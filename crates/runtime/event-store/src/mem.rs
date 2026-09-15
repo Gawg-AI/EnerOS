@@ -471,12 +471,19 @@ impl EventStore for MemEventStore {
         &mut self,
         partition: PartitionId,
         keep_after_offset: LogOffset,
+        max_segments: usize,
     ) -> Result<Vec<DeletedSegment>, StoreError> {
         let Some(part) = self.parts.get_mut(&partition) else {
             return Ok(Vec::new());
         };
         let mut deleted = Vec::new();
-        while let Some(seg) = part.segments.first() {
+        loop {
+            if deleted.len() >= max_segments {
+                break; // 单次预算：多窗摊销（REG-70.15-PRUNE-MEGAOP）
+            }
+            let Some(seg) = part.segments.first() else {
+                break;
+            };
             if !seg.sealed || seg.next_offset > keep_after_offset {
                 break;
             }

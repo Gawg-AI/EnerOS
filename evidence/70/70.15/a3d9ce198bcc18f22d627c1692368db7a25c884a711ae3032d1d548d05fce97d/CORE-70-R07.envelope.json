@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-9c521c5d48f8",
+  "run_id": "run-18d561a00b6ab193",
+  "nonce": "18d561a00b6ab5d7",
+  "test_id": "CORE-70-R07",
+  "scope": "L2",
+  "started_at": "2026-09-15T03:42:46Z",
+  "ended_at": "2026-09-15T03:42:46Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "7f41b85b150c9ad2d0720b8ffc053b093b28004209bcce45d14b823392834256",
+  "product_manifest_digest": "9d74f9c2fa2fe92e0e0025dafc2cc2a15347e71caec51a14c9f0cbd774f6c8b8",
+  "profile_digest": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6",
+  "artifact_sha256": "e5643923507b546c166b8e309ab23941157cf7816b345b47cfdb5f25d54df067",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol6-gate.sh（DL=700/DL_T2=420；svc-config 写后读回 + 预探测行生效后）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-test/product-manifest.normalized.json",
+      "sha256": "9d74f9c2fa2fe92e0e0025dafc2cc2a15347e71caec51a14c9f0cbd774f6c8b8"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-test.json",
+      "sha256": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "管理动作全链 22 判据（探针直驱生产 MGT1）：config-get/维护进出/签名换包 stage→commit→activate gen1→2（激活写面含读回核对）/消费者同代/受控重启/五负例/操作账本持久化+跨重启恢复/盘上配置冷启动恢复"
+  },
+  "positive_results": [
+    {
+      "id": "mgmt",
+      "status": "PASS",
+      "detail": "零 ✗ 全 ✓——R7/R8 换包激活 gen=2（读回核对通过）✓、R24 盘上配置冷启动恢复 ✓（写后读回生效）、R25 账本恢复 ✓、五负例 ✓"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "skip",
+      "status": "FAIL",
+      "detail": "R17 维护外激活=宿主闸覆盖（QEMU 环形不安全）如实登记"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/a3d9ce198bcc18f22d627c1692368db7a25c884a711ae3032d1d548d05fce97d/CORE-70-R07.run-record.json",
+      "sha256": "594e88f1079e79f3bef306accc0a34608b8fd49cedfe5c864cf5b83aa7f4474f"
+    }
+  ],
+  "signer": "dev",
+  "signature": "3653f14f464c2b6041153c3700bffead3147606cc022d299ae581be65fed94d1059d144934712c49657c1d420b3208317a5e7b208bbfec921291697671d44407"
+}

@@ -1,0 +1,34 @@
+{
+  "schema": "eneros.gate-run-record.v1",
+  "case_id": "CORE-70-R06",
+  "gate_id": "VOL70.5",
+  "command": "tools/run70-vol5-gate.sh（DL=560 窗A + 窗B）",
+  "exit_code": 0,
+  "recorded_at": "2026-09-15T10:33:20Z",
+  "ran_artifact_sha256": "6cb02062602832f0e12e272f41822f1c0c8b52cf2ef149530c8b0a4a79cb0319",
+  "ran_artifact_sha256_source": "evidence/70/70.5/image-a.sha256",
+  "raw_log": {
+    "name": "vol5.log",
+    "bytes": 3335,
+    "sha256": "26c4386c5aabdf0985c1db300537ce7a3a3f0e17535cef9edd68c524d5b5504c",
+    "resident": "handoff-bundle",
+    "note": ".gitignore `*.log`：原始日志随移交包分发，本记录绑定其摘要"
+  },
+  "verdict_lines": [
+    "[✓][R7] 零 PANIC / 零分配失败",
+    "[✓][R1] identity-capsule 写入（1）",
+    "[✓][R5] 探针隔离（probe absent ×1，零签章路径）",
+    "[✓][R6] 伪 principal 拒绝（1；forger 发送 3）",
+    "[✓][R8] 签名描述 v2 探针全链（OTA-DOWNLOAD OK ×1）",
+    "[✓][R9] 窗B 身份面观测（IDENTITY ×2）",
+    "VOL70.5-GATE: PASS"
+  ],
+  "verdict": "PASS",
+  "candidate": {
+    "candidate_id": "8355d2d4c62c09c285d55d1778265c45a4f04bd1d23e0a6bc12e1c4d08ace3f4",
+    "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+    "dirty_tree_digest": "6b4d691c7cf10bfae76c194dc50d993c71d4e5d278c59f891dc9a3a8a20308b7",
+    "artifact_sha256": "503a09edd841e71f02fc7d5d8e9a0ed7c0210afbf04f57eb88be97fee728f0da",
+    "profile": "qemu-prod"
+  }
+}

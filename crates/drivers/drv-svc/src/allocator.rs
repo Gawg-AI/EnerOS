@@ -26,7 +26,14 @@ use linked_list_allocator::LockedHeap;
 // +128 KiB × 5 控制服务 = +640 KiB bss（+160 cnode 槽——640/64 × 16，
 // 现用 ~2000 < 4096），
 // QEMU 判据 = 复用盘 + broker 窗 ≥420s 无 PANIC。
-const HEAP_SIZE: usize = 512 * 1024;
+// 2026-09-14（70.15 长窗实弹）：512 → **768 KiB** 以覆盖"有界结构之和"
+// （`InMemoryIntentStore` cap=1024 条·幂等窗口按设计全保留、control_audit
+// 64 KiB/585 条、dual-brain 64 KiB 满即 drop——**均有界**，缺的是预算 ≥
+// 上界之和 + 余量）。首试 768 曾 `spawn FAILED: NoCapSlot`——根因是 root
+// 能力槽打满（8191/8192），**不是堆本身**：`KernelRootCNodeSizeBits` 已
+// 13→14（16384 槽，build-rust.sh 同步）后启动正常。intent.rs 另改
+// "构造期定容"（`Vec::with_capacity`）消除倍增尖峰。
+const HEAP_SIZE: usize = 768 * 1024;
 
 #[cfg(not(feature = "heap-large"))]
 const HEAP_SIZE: usize = match option_env!("ENEROS_HEAP_SIZE_BYTES") {

@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-4836ee52cae4",
+  "run_id": "run-18d53ac1107adbc3",
+  "nonce": "18d53ac1107adf53",
+  "test_id": "CORE-70-R01",
+  "scope": "L2",
+  "started_at": "2026-09-14T15:50:27Z",
+  "ended_at": "2026-09-14T15:50:27Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "c6910931be56ac2557c9d920e5e3db0a964f1345c7ca9fc8809072faefd42359",
+  "product_manifest_digest": "4ffe1669258d45ef3c04446899e81f018db4ef1d274f181894cbee364f88080d",
+  "profile_digest": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2",
+  "artifact_sha256": "6160ad7f07b64af04ffe25f343aeccb612152f71ddbe8c6646ae8c098d5dd347",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol1-gate.sh（DL=1300）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "4ffe1669258d45ef3c04446899e81f018db4ef1d274f181894cbee364f88080d"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "judge：G5 rounds=10309/Committed=2170（越过 512）✓、G6/G7 ✓；G1/G2 = 在案堆预算 PANIC ×1（REG-70.6-DISPATCH-HEAP-870R/DEC-70-11）；G4 尾衰减为其后果"
+  },
+  "positive_results": [
+    {
+      "id": "survival",
+      "status": "PASS",
+      "detail": "Committed=2170、零 CHAIN-KEY-MISSING、队列自恢复吸收停顿"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "budget",
+      "status": "FAIL",
+      "detail": "G1/G2 堆预算 PANIC ×1（DEC-70-11 复核项，非新回归）"
+    }
+  ],
+  "verdict": "FAIL",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/29ebbd296b75be984ed119342ab98a636d45d2281e9469830f9046e21cca9b08/CORE-70-R01.run-record.json",
+      "sha256": "ec610fb9afb3c5eb2b099079ef1ad4ee639d6db7269e2c7b61d873a04e1e8a6f"
+    }
+  ],
+  "signer": "dev",
+  "signature": "c9ba91d3fe806d290b3a06b1fc7cb40f917f814298b91cd7ff240db8b0c58a095987d86db07112c6974290c1e6c00c135598b22c71946706424f06573e7a6106"
+}

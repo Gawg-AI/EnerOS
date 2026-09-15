@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-0b74ba0dce4c",
+  "run_id": "run-18d578076f18ccd1",
+  "nonce": "18d578076f18d0ed",
+  "test_id": "CORE-70-R06",
+  "scope": "L3",
+  "started_at": "2026-09-15T10:33:20Z",
+  "ended_at": "2026-09-15T10:33:20Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "6b4d691c7cf10bfae76c194dc50d993c71d4e5d278c59f891dc9a3a8a20308b7",
+  "product_manifest_digest": "d5267089a36f62665aac5f94af4fa24a993fe184147e9b503b36eaea198dba62",
+  "profile_digest": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2",
+  "artifact_sha256": "503a09edd841e71f02fc7d5d8e9a0ed7c0210afbf04f57eb88be97fee728f0da",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol5-gate.sh（DL=560 窗A + 窗B）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "d5267089a36f62665aac5f94af4fa24a993fe184147e9b503b36eaea198dba62"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "生产身份面 16 项 + R6 注入交叉核验"
+  },
+  "positive_results": [
+    {
+      "id": "identity",
+      "status": "PASS",
+      "detail": "16/16 全 ✓——R6 ✓、R4a Committed=39 ✓"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "skip-trial",
+      "status": "FAIL",
+      "detail": "R5b 探针不在 release 装配 = 隔离负例判据"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/8355d2d4c62c09c285d55d1778265c45a4f04bd1d23e0a6bc12e1c4d08ace3f4/CORE-70-R06.run-record.json",
+      "sha256": "91b37a9c6e5245933c552dad838534dda24d07adb36c764f98c81122569f1cec"
+    }
+  ],
+  "signer": "dev",
+  "signature": "c26a940da364df1c77bcc8694dfe956804ed8b86697945df78f819d135879d6a8888ddbe98831dccdf8c71c034364ccad7e07540a782d1131997da67b3098a0b"
+}

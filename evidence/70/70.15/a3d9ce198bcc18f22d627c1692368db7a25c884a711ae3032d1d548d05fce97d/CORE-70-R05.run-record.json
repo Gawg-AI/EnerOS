@@ -1,0 +1,40 @@
+{
+  "schema": "eneros.gate-run-record.v1",
+  "case_id": "CORE-70-R05",
+  "gate_id": "VOL70.4",
+  "command": "tools/run70-vol4-gate.sh（DL=1200）",
+  "exit_code": 0,
+  "recorded_at": "2026-09-15T03:43:42Z",
+  "ran_artifact_sha256": "b3288a3764f4bddb1199af29b102c7609071f033372f8e613f65bf8de7359d6d",
+  "ran_artifact_sha256_source": "evidence/70/70.4/image.sha256",
+  "raw_log": {
+    "name": "vol4.log",
+    "bytes": 3923,
+    "sha256": "f53c4ac0f4532460c33b30aa0894cfbc25bee585bdd95ada172ebadd33f8675d",
+    "resident": "handoff-bundle",
+    "note": ".gitignore `*.log`：原始日志随移交包分发，本记录绑定其摘要"
+  },
+  "verdict_lines": [
+    "[✓][R1] 零 PANIC / 零分配失败",
+    "[✗][R2] 段1 used=true 缺失",
+    "[✓][R3] 锚1 后目标侧新连接 CONNACK=2",
+    "[✓][R3] 锚1 后新订阅 SUBSCRIBE=2",
+    "[✗][R3] 锚1 后零 Committed",
+    "[✗][R3] 锚1 后零设备回读",
+    "[✗][R5] LEASE-ARMED 缺失",
+    "[✓][R5] 锚2 后 MQTT 面重连 CONNACK=1",
+    "[✓][R5] 锚2 后订阅恢复 SUBSCRIBE=1",
+    "[✓][R6] 服务编队 READY（无服务静默死亡）",
+    "[✓][R6] 尾部控制进展（末轮在日志 97% 处，总 414872 行）",
+    "[✓][R6] 尾部设备回读（尾 3 万行 ACQ=44）",
+    "=== VOL70.4 GATE: FAIL ==="
+  ],
+  "verdict": "FAIL",
+  "candidate": {
+    "candidate_id": "a3d9ce198bcc18f22d627c1692368db7a25c884a711ae3032d1d548d05fce97d",
+    "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+    "dirty_tree_digest": "7f41b85b150c9ad2d0720b8ffc053b093b28004209bcce45d14b823392834256",
+    "artifact_sha256": "d349f98402eed44880326b95123060120deb669264be85b2b22ce4d2f83eb602",
+    "profile": "qemu-prod"
+  }
+}

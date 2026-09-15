@@ -462,8 +462,12 @@ mod tests {
         // 旧实现会判"能力齐备"；现必须逐族报 hardware-evidence 缺失。
         let mut facts = Vec::new();
         for sub in crate::capability::SkuKind::Product.required() {
-            let mut f = Fact::repo(*sub, "placeholder", "value", "none");
-            f.source = "repo:placeholder".into();
+            // 注意：值不得是 `unknown`/`placeholder` 这类占位词——复查补漏
+            // （2026-09-13）后它们与"未取得"同义，会被逐条判据拒绝（见
+            // `placeholder_words_cannot_be_verified`）。本条红测针对的是
+            // **来源等级**（repo 事实不能顶产品硬门），不是占位形态。
+            let mut f = Fact::repo(*sub, "declared", "qemu-virt-dts", "none");
+            f.source = "repo:qemu-virt.dts".into();
             facts.push(f);
         }
         let l = BoardLedger::new("sku", "rev", 2, facts, Vec::new()).unwrap();

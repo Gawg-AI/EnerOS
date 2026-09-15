@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-a1efed618530",
+  "run_id": "run-18d5307a8d9c0083",
+  "nonce": "18d5307a8d9c04e5",
+  "test_id": "CORE-70-R01",
+  "scope": "L2",
+  "started_at": "2026-09-14T12:42:09Z",
+  "ended_at": "2026-09-14T12:42:09Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "22c2097bdfa20306b27578e09e72926b64acd8c97d79de457d3e6a5206cab5fb",
+  "product_manifest_digest": "b6943f795b6f6fd4d7721c87562151a9d9e86ef1785ede45a071e46113f65304",
+  "profile_digest": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2",
+  "artifact_sha256": "678438a50c8d01b7876d2ef84252de42fe06f79bab86a0a9cf47bceacf42f4da",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol1-gate.sh（DL=1300，768KiB 堆窗）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "b6943f795b6f6fd4d7721c87562151a9d9e86ef1785ede45a071e46113f65304"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "judge：G3/G5/G6/G7 PASS（rounds=9995/Committed=1618 ≥ 下限 28/零 CHAIN-KEY-MISSING）；G1/G2 = 在案堆预算 PANIC ×1（REG-70.6-DISPATCH-HEAP-870R/DEC-70-11）；G4 尾衰减为其后果"
+  },
+  "positive_results": [
+    {
+      "id": "survival",
+      "status": "PASS",
+      "detail": "Committed=1618（旧实现 861 即触顶）、队列自恢复吸收停顿、agent=OK=1618 越过原失败点 512"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "budget",
+      "status": "FAIL",
+      "detail": "G1/G2 堆预算 PANIC ×1（DEC-70-11 复核项，非新回归）"
+    }
+  ],
+  "verdict": "FAIL",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/bbe7a4adbbc03a48a310d230eccfca2174e94a4ddcd91632ebc4de0a4a14f83d/CORE-70-R01.run-record.json",
+      "sha256": "0579c280c7d1ee7f37e67498994a64e84c054368bae4d7fd4e790c0ab8c10607"
+    }
+  ],
+  "signer": "dev",
+  "signature": "d7a34275f60910466447c6536bd4daeca2b2e7834c1f18b8bcd04889423e81b6b02cc1e892f73a0b6a5daea8a4b37f89ae56c5f216ae93f13366022f646ba701"
+}

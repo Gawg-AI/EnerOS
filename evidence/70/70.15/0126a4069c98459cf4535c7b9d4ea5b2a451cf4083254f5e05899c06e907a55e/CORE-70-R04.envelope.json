@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-bed8bcb9916f",
+  "run_id": "run-18d54a3aa19403e2",
+  "nonce": "18d54a3aa194081c",
+  "test_id": "CORE-70-R04",
+  "scope": "L2",
+  "started_at": "2026-09-14T20:34:02Z",
+  "ended_at": "2026-09-14T20:34:02Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "2175954fab5ed5ee40a2467ba3cbfacf573cd1e98d38c8053012a2e2d0c0193d",
+  "product_manifest_digest": "19e6230ff8c7fce7103073971a95940a9cb1b1503abc68a53a743f80edd8da05",
+  "profile_digest": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2",
+  "artifact_sha256": "a7844c22f1f7b297d67eb1992780323fe3566c4f41e68c096f35f38a78f1d23c",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol3-gate.sh（DL=1200）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "19e6230ff8c7fce7103073971a95940a9cb1b1503abc68a53a743f80edd8da05"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "IPC 有界组装/判别：R2 PROTOCOL-CONFIG loaded=6（≥6）、R3 七种拒绝词形硬零（CHUNKED-BUDGET/RESP-TOOLARGE/REPLY-TRUNCATED/PULL-STALE/SLOT-FULL/BadTotalLen/BadChunkSize）、judge G1-G7"
+  },
+  "positive_results": [
+    {
+      "id": "ipc",
+      "status": "PASS",
+      "detail": "R2 ✓；R3 全 ×0（健康窗合法流量零误判）；G5 rounds=9641(门限 400)/Committed=1705(下限 26) ✓；G1/G2/G3/G6/G7 ✓；观测 DUP-SESSION×0/PAGE-EVICTED×11/SLOW×45；串口全文件零 PANIC/零 IOERR/零 SNAP-SKIP"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "phase",
+      "status": "FAIL",
+      "detail": "G4 相位样本=[2959，2991，2571，1120] 尾/二=1120/2991≈37% 低于判据比（尾部 1120 远超地板 100；堆 PANIC 修复后依旧 ⇒ REG-70.15-G4-PHASE-TAIL-DECAY）"
+    }
+  ],
+  "verdict": "FAIL",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/0126a4069c98459cf4535c7b9d4ea5b2a451cf4083254f5e05899c06e907a55e/CORE-70-R04.run-record.json",
+      "sha256": "e146ede716a307af5071b43c893403c29324a71bedeb6874bbaf6a9cca0eb208"
+    }
+  ],
+  "signer": "dev",
+  "signature": "7fcb79154ea410d952697e00a6942b90156a708aa684f31d5ad2a43e12f43b80a3d2e381211926eba34de3075afa4956eff97ad1c97c2ee294d83535a8655801"
+}

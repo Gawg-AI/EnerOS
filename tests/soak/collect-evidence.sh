@@ -61,11 +61,22 @@ collect_if_present() {
 }
 
 # 目录类证据（pcap/exported）：必须存在且含至少一个非空文件。
+#
+# 70.14 复查修复：旧判据 `find … -size +0c | head -1 | grep -q .` 在本脚本的
+# `set -o pipefail` 下**把有内容的大目录判成空**——`grep -q` 命中首个匹配即
+# 退出，`head`/`find` 依次收到 SIGPIPE，管道状态 141 ⇒ 条件为假 ⇒ 归 `empty:`
+# ⇒ 严格模式 exit 1 / 宽松模式自标 non_release。实测（3000 个非空文件的目录）：
+# `rc=141 JUDGED_EMPTY`——证据包越完整越容易被判缺件，fail-closed 方向反了。
+# 改为 `find -print -quit`（找到第一个即停，无管道、无 SIGPIPE）。
 collect_dir_if_present() {
     local name="$1"
     local src="$2"
     local dst="$3"
-    if [ -d "${src}" ] && find "${src}" -type f -size +0c | head -1 | grep -q .; then
+    local first_nonempty=""
+    if [ -d "${src}" ]; then
+        first_nonempty="$(find "${src}" -type f -size +0c -print -quit 2>/dev/null || true)"
+    fi
+    if [ -n "${first_nonempty}" ]; then
         cp -r "${src}" "${dst}"
         echo "collected: ${name} <- ${src}"
     elif [ -d "${src}" ]; then

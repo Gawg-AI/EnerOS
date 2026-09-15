@@ -226,6 +226,16 @@ def ts(mins):
     import datetime
     base = datetime.datetime(2026, 9, 1, tzinfo=datetime.timezone.utc)
     return (base + datetime.timedelta(minutes=mins)).strftime("%Y-%m-%dT%H:%M:%SZ")
+import hashlib, os
+# 复查修复（2026-09-13）：产物条目必须与盘上文件实算摘要绑定
+# （`<sha256>@<相对路径>`）——夹具写真实文件，不用假摘要。
+base_dir = os.path.dirname(os.path.abspath(out))
+def bind(rel, content):
+    path = os.path.join(base_dir, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(content)
+    return "%s@%s" % (hashlib.sha256(content).hexdigest(), rel)
 hb = [ts(m) for m in range(0, hours * 60 + 1, 10)]
 metrics = [{"at": ts(m), "heap_bytes": 1000000 + (m % 50),
             "dma_bytes": 250000, "handles": 40,
@@ -236,7 +246,9 @@ body = {
   "run_id": "self-test-run",
   "scenario": "steady",
   "scope": "hw-soak",
-  "artifacts": {"root_task": "a"*64, "boot_chain": "b"*64},
+  "artifacts": {
+      "root_task": bind("artifacts/root-task.bin", b"self-test-root-task"),
+      "boot_chain": bind("artifacts/boot-chain.bin", b"self-test-boot-chain")},
   "device": {"sku_id": "self-test-sku", "board_revision": "rev-A",
              "serial": "SN-SELFTEST", "firmware": "uefi-1"},
   "rig": {"rig_id": "rig-self-test", "instruments": ["power-meter"],
@@ -361,11 +373,15 @@ else
         MEASURED_HOURS=$(python3 -c "import json,sys;print(json.load(open('${OUT_DIR}/soak-run-verdict.json'))['measured_hours'])" 2>/dev/null || echo "")
         # 70.14（S7 审计 P2）：候选产物摘要取**必需角色**（不再是 values() 第一个
         # ——任意角色的任意 64hex 都能冒充候选绑定）。
+        # 复查修复（2026-09-13）：产物条目是 `<sha256>@<相对路径>` 绑定串，
+        # run-check 已实算文件摘要并比对；campaign 只登记摘要部分（路径随
+        # soak-run.json 归档），未绑定的裸摘要直接判负——不把无从核对的字符串
+        # 当候选绑定写进发布证据。
         MEASURED_ARTIFACT=$(python3 -c "
 import json,sys
 m=json.load(open('${RUN_MANIFEST}'))
-a=m.get('artifacts',{})
-print(a.get('root_task',''))
+v=m.get('artifacts',{}).get('root_task','')
+print(v.split('@',1)[0] if '@' in v else '')
 " 2>/dev/null || echo "")
         # 70.14（S7 审计 P3）：实测小时解析失败 = 判定不可用（不得后续写成
         # 空串造成非法 JSON / fail-open）。

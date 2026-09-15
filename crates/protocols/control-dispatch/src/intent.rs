@@ -80,9 +80,20 @@ pub struct InMemoryIntentStore {
 
 impl InMemoryIntentStore {
     /// 创建（容量上限）。
+    ///
+    /// 2026-09-14（70.15 长窗实弹）：**构造期定容**（`Vec::with_capacity`），
+    /// 不用 `Vec::new()` 倍增式扩容。原因：在"peer 离线 = 最大轮速压力"窗形
+    /// 下，幂等账本按设计保留**全部**历史（`find(command_id)` 的去重窗口），
+    /// 记录数一路涨到 `cap`——`Vec` 从 512 → 1024 条的**倍增**会一次性再要
+    /// ~64 KiB，恰好在 512 KiB 堆预算的边缘触发
+    /// `PANIC: memory allocation of 672 bytes failed`（实测 HEAP-WM
+    /// used=468472 free=55816 → PANIC，req≈861）。定容后驻留恒为
+    /// `cap × sizeof(Record)`，峰值平坦、无倍增尖峰。
+    /// （堆本身 512 KiB 不再扩：768 KiB 会让 root 能力预算溢出，见
+    /// drv-svc allocator 的登记。）
     pub fn new(cap: usize) -> Self {
         Self {
-            records: Vec::new(),
+            records: Vec::with_capacity(cap),
             cap,
         }
     }

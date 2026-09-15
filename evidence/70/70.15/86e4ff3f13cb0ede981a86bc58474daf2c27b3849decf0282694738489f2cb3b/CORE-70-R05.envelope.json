@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-0290e84e803b",
+  "run_id": "run-18d57437017ccdcd",
+  "nonce": "18d57437017cd1f3",
+  "test_id": "CORE-70-R05",
+  "scope": "INTEROP",
+  "started_at": "2026-09-15T09:23:26Z",
+  "ended_at": "2026-09-15T09:23:26Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "dce113d588e8562940f834561ad66a98c60ae91d12dc19826ada3a7d38c17eca",
+  "product_manifest_digest": "d5267089a36f62665aac5f94af4fa24a993fe184147e9b503b36eaea198dba62",
+  "profile_digest": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2",
+  "artifact_sha256": "503a09edd841e71f02fc7d5d8e9a0ed7c0210afbf04f57eb88be97fee728f0da",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol4-gate.sh（DL=1200；修复进构建后复跑）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "d5267089a36f62665aac5f94af4fa24a993fe184147e9b503b36eaea198dba62"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "broker/peer 故障恢复：锚1 后目标侧新连接+新订阅、锚2 后 MQTT 面重连+订阅恢复、READY+尾部控制进展+尾部设备回读；段1 used=true/ARMED/提交链"
+  },
+  "positive_results": [
+    {
+      "id": "recovery",
+      "status": "PASS",
+      "detail": "R1 零 PANIC ✓、R3 锚1 后 CONNACK=2/SUBSCRIBE=2 ✓、R5 锚2 后重连 CONNACK=1/订阅恢复 ✓、R6 编队 READY+尾部控制进展(末轮 99%)+尾部回读 ACQ=44 ✓——故障恢复面全判据通过"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "assembly",
+      "status": "FAIL",
+      "detail": "R2 used=true/R5 LEASE-ARMED 缺失——装配缺口（qemu-prod 强制 ReleaseTls:8883 而 vol4 编队为明文 1883 broker、planner-peer 无 TLS 客户端 ⇒ AI 中继在该装配结构性不可建；同根因已由 vol89 的 qemu-test 装配实证 used=true ×9）；另附判据器 r1=0 锚缺陷（REG-70.15-VOL4-R3-ANCHOR-ZERO）"
+    }
+  ],
+  "verdict": "FAIL",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/86e4ff3f13cb0ede981a86bc58474daf2c27b3849decf0282694738489f2cb3b/CORE-70-R05.run-record.json",
+      "sha256": "443eaf6d380e8b86994b75c4cb8cb3ab113ab77fe6743852d5ecc7886f9c065d"
+    }
+  ],
+  "signer": "dev",
+  "signature": "661ae6e2db76e6cb21ef6ee986e827bd1034756041a4622e57beada23d51850bd49dd213936cd12a36f1f192e0e2c776e4b0b16fe06511c17d02dd3b8a6cab0e"
+}

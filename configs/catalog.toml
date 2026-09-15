@@ -139,6 +139,30 @@ schema_id = 1
 unit = "kW"
 role = "measurement"
 
+# PCS-1 其余遥测/状态点（2026-09-14：点表把这三点声明为 asset 1 的绑定
+# 点 ⇒ 目录必须给语义，否则 `resolve_observation` 解析失败——判据
+# `points_table_control_points_have_catalog_semantics` 的前提）。
+[[point_semantics]]
+point_id = 1002
+asset_id = 1
+schema_id = 1
+unit = "ratio"
+role = "measurement"
+
+[[point_semantics]]
+point_id = 1003
+asset_id = 1
+schema_id = 1
+unit = "ratio"
+role = "measurement"
+
+[[point_semantics]]
+point_id = 1004
+asset_id = 1
+schema_id = 1
+unit = "ratio"
+role = "measurement"
+
 # --- 反馈槽（槽序 = TrustedFeedbackBuilder 字段声明序；单源） ---
 [[feedback_slot]]
 slot = "grid_up"
@@ -209,6 +233,20 @@ min = 0.0
 max = 1.0
 period_ms = 5000
 unit = "ratio"
+
+# PCS-1 功率回读点（2026-09-14 / 70.15）：**必须进 coverage**——冻结快照的
+# 必收点集（`SnapshotPolicy::required`）由本表派生（`coverage_config` →
+# `CATALOG-COVERAGE points=`），而独立认证器判控制合同完整性的
+# `readback_ok` 要求"合同回读点在本快照的受理观测里"。本表缺它 ⇒ 回读点
+# 即使被采集也进不了快照 ⇒ 认证器恒判 `contract-incomplete` ⇒
+# `dispatch=Committed` 恒 0（REG-70.15-CORE-CHAIN-SINGLE-GAP 的最后一环）。
+# 窗宽与合同一致（控制设定点 −500..500 kW）；周期取点表的 5000ms。
+[[coverage]]
+point_id = 1001
+min = -500.0
+max = 500.0
+period_ms = 5000
+unit = "kW"
 
 # --- 控制合同（无完整合同 → 可观测可预测，不可进入可控池） ---
 [[control_contract]]

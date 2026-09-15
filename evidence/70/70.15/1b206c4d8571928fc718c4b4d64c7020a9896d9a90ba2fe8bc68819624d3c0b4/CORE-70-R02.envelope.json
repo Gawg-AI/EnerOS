@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-846c7b285d12",
+  "run_id": "run-18d54a7342827d8e",
+  "nonce": "18d54a7342828128",
+  "test_id": "CORE-70-R02",
+  "scope": "L2",
+  "started_at": "2026-09-14T20:38:05Z",
+  "ended_at": "2026-09-14T20:38:05Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "985bcbba2cb76d85245212adc50719fa9a760658901076432470f091321925c2",
+  "product_manifest_digest": "19e6230ff8c7fce7103073971a95940a9cb1b1503abc68a53a743f80edd8da05",
+  "profile_digest": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2",
+  "artifact_sha256": "a7844c22f1f7b297d67eb1992780323fe3566c4f41e68c096f35f38a78f1d23c",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol2-gate.sh（SEED_DL=420/REUSE_DL=1200）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "19e6230ff8c7fce7103073971a95940a9cb1b1503abc68a53a743f80edd8da05"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "段2 复用盘：R1 TSDB-DISK-OPEN base_block=8192+旧点保留、R2 轮数、R3 checkpoint 行数、judge G1-G7"
+  },
+  "positive_results": [
+    {
+      "id": "reuse",
+      "status": "PASS",
+      "detail": "R1 复用盘开卷+旧 108 点保留 ✓；R2 rounds=10380(门限 120) ✓；R3 checkpoint 行=22 ✓；G1/G2/G3/G5(rounds=10380/Committed=1192)/G6/G7 ✓"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "phase",
+      "status": "FAIL",
+      "detail": "G4 相位样本=[3358，2988，3063，971] 尾/二=971/3063≈32%（尾部 971 远超地板 30）——同 REG-70.15-G4-PHASE-TAIL-DECAY"
+    }
+  ],
+  "verdict": "FAIL",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/1b206c4d8571928fc718c4b4d64c7020a9896d9a90ba2fe8bc68819624d3c0b4/CORE-70-R02.run-record.json",
+      "sha256": "466b3abdccacd6d5ef1f03ec9801b2697182eea1c77fda192c8ec02e906d4f47"
+    }
+  ],
+  "signer": "dev",
+  "signature": "b53845f77033ab8c818eec7fae732a1f3306616dd64f773cc601c672aa4543874313022e894d851c94b9b598ea71b2c1126703d3b44a93ea37898ba2792c200d"
+}

@@ -34,6 +34,10 @@ TPL="$ROOT/target/evidence61/template.fd"
 [ -f "$TPL" ] || { echo "vars template missing"; exit 3; }
 
 launch_fleet() {  # $1=run_dir $2=deadline
+  # 本轮新写：transcript 以 append 打开，run_dir 复用时不清理 = G7 恒真
+  #（旧轮数据冒充本轮对端存活）——见 tools/run70_gate_judge.py G7。
+  rm -f "$1/modbus.transcript.jsonl" "$1/iec104.transcript.jsonl" \
+        "$1/broker-transcript.jsonl"
   python3 "$ROOT/evidence/61/modbus_slave61.py" --transcript "$1/modbus.transcript.jsonl" &
   PMOD=$!
   sleep 1
@@ -115,6 +119,7 @@ POINTS=$(echo "$OPEN_LINE" | grep -o "points=[0-9]*" | grep -o "[0-9]*$")
 # ---- R2：复用盘恢复后决策链恢复进展（判据器 G4/G5 相位判据）--------
 MIN_ROUNDS="${MIN_ROUNDS:-120}"
 python3 "$ROOT/tools/run70_gate_judge.py" "$S2" "$MIN_ROUNDS" \
+  --window-secs "$REUSE_DL" \
   --transcripts "$D2/modbus.transcript.jsonl" "$D2/iec104.transcript.jsonl" || FAIL=1
 ROUNDS=$(grep -c "CONTROL-CHAIN: round=" "$S2")
 echo "[R2] reuse rounds=$ROUNDS（门限=$MIN_ROUNDS）"

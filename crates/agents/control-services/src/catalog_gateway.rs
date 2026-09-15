@@ -168,7 +168,10 @@ mod tests {
         use eneros_control_dispatch::feedback::SAFETY_COVERAGE_POINTS;
         let repo = prod_repo();
         let cov = coverage_config(&repo);
-        assert_eq!(cov.points.len(), 7);
+        // 2026-09-14：+1 = 控制合同的功率回读点 1001（见 feedback.rs 单源表）。
+        // 2026-09-15：合同 2 回读点 1005 **不入**完备集（presence 判定，
+        // 见 feedback.rs 注）——完备集保持安全必收点语义。
+        assert_eq!(cov.points.len(), 8);
         for (i, req) in cov.points.iter().enumerate() {
             let (point, min, max, max_age, unit) = SAFETY_COVERAGE_POINTS[i];
             assert_eq!(req.point, point, "覆盖点序与单源表一致（i={i}）");

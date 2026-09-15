@@ -203,6 +203,40 @@ pub fn is_heartbeat(name: &str) -> bool {
     wiring_of(name).is_some_and(|w| w.heartbeat)
 }
 
+/// 心跳缺失容忍轮次缺省值（`hello` ≈ 760 轮/s ⇒ 150 轮 ≈ 0.2s 真实）。
+///
+/// 语义（蓝图 57 WP-57.3 HangMonitor）：服务**处理任何一条消息前**先
+/// signal 心跳 —— 该窗口度量的是"一条消息的处理时长"，不是调度延迟。
+pub const HEARTBEAT_MISS_LIMIT_DEFAULT: i64 = 150;
+
+/// 按服务校准的心跳缺失容忍轮次（蓝图 70.15 实弹定位的看门狗误杀面）。
+///
+/// **缺陷形态（2026-09-14 `VOL70.5-GATE` 窗实测）**：`svc-telemetry` 被
+/// root 的 HangMonitor 连续 kill+restart（窗内 5 次：`HEARTBEAT-TIMEOUT:
+/// svc-telemetry no progress 150 rounds since probe … — kill+restart`）。
+/// 每次重启都重置事件面 ⇒ `SNAPSHOT-INPUT-REJECT reason=no-frozen-snapshot`
+/// ×2978（且**在首个 `SNAP-INPUT-BOUND` 之后仍有 2223 次**，故非冷启动
+/// 竞态）、EA 恒 `NOACTION` ⇒ 零 `dispatch=Committed` ⇒ 方向 1–5 的控制链
+/// 在实弹窗里**整条停摆**。
+///
+/// **根因**：`svc-telemetry` 的**单条消息内**包含同步块 I/O（OBS 事件面
+/// 追加 + 快照落盘 + TSDB 提交，`EVENT-STORE append` / `TSDB-DISK-COMMIT`
+/// 逐批），其耗时受介质与模拟速度支配，远超缺省窗（0.2s 真实）；而心跳
+/// 只在消息之间 signal，故"处理慢"被记成"卡死"。这与蓝图 67 的
+/// 登记同族（"心跳 = 消息驱动进展，上游静默误判卡死"）。
+///
+/// **处置**：按服务的**最坏单条处理时长**校准容忍窗——不是取消看门狗
+/// （真卡死仍在秒级内被发现），也不是改判据。IO 密集服务给 20× 缺省窗
+/// （≈4s 真实，TCG 下数十秒），其余服务维持缺省。
+pub fn heartbeat_miss_limit(name: &str) -> i64 {
+    match name {
+        // 事件面/快照面/TSDB 三条块 I/O 都在单条 OBS 批处理内完成。
+        "svc-telemetry" => 3_000,
+        // 其余在册服务：单条消息为纯计算 + 短 IPC（无同步块 I/O）。
+        _ => HEARTBEAT_MISS_LIMIT_DEFAULT,
+    }
+}
+
 /// 栈页覆盖（main.rs spawn 计划面；自本表推导）。
 pub fn stack_pages_override(name: &str) -> Option<u64> {
     wiring_of(name).and_then(|w| w.stack_pages)

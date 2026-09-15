@@ -1174,7 +1174,7 @@ mod tests {
         };
         let mut planner = Planner::new(ToleranceProfile::l2(), 100);
         let mut highs = HighsSolver::new().expect("HiGHS");
-        crate::handle_request_v2(&json, &mut planner, &mut highs, &mut s);
+        crate::handle_request_v2(&json, None, false, &mut planner, &mut highs, &mut s);
 
         // 断言：outbox 里必须有一条 PUBLISH（v2 应答），且载荷通过目标侧
         // 同链校验（`parse_and_validate_v2` + 请求派生的绑定）。

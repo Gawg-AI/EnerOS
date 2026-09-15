@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-cbb2ab70fdfc",
+  "run_id": "run-18d5307abea59f10",
+  "nonce": "18d5307abea5a354",
+  "test_id": "CORE-70-R12",
+  "scope": "GATE",
+  "started_at": "2026-09-14T12:42:10Z",
+  "ended_at": "2026-09-14T12:42:10Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "22c2097bdfa20306b27578e09e72926b64acd8c97d79de457d3e6a5206cab5fb",
+  "product_manifest_digest": "ed0f34c8404471526d7ea7a6e92259924260887055788763e847ec38b2119b91",
+  "profile_digest": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6",
+  "artifact_sha256": "678438a50c8d01b7876d2ef84252de42fe06f79bab86a0a9cf47bceacf42f4da",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "cargo test -p eneros-xtask evidence_chain::（候选 required 全集判定红测 16 例 + judge selftest 8 例）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-test/product-manifest.normalized.json",
+      "sha256": "ed0f34c8404471526d7ea7a6e92259924260887055788763e847ec38b2119b91"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-test.json",
+      "sha256": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "host 判定库 candidate_case_statuses：缺 case/重复/未知/非法豁免/非法 blocker/跨构建混用/不可验签名/引用不存在或被替换/越界路径 逐形态必须先红；selftest sparse-commits-fail/dense-commits-pass 校验 G5 结构性口径"
+  },
+  "positive_results": [
+    {
+      "id": "red-tests",
+      "status": "PASS",
+      "detail": "16 例负例形态全部判负 + selftest 8 例"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "fake-pass",
+      "status": "FAIL",
+      "detail": "单个合法信封不再能宣称整体通过"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/bbe7a4adbbc03a48a310d230eccfca2174e94a4ddcd91632ebc4de0a4a14f83d/CORE-70-R12.run-record.json",
+      "sha256": "7bc5fb67579f76a4ffcf50af17b01991e51309a2087570e36187842a22ad5940"
+    }
+  ],
+  "signer": "dev",
+  "signature": "91a748bda2695a9ef7791ff877dba3a2a68bb4d35e9e5ca07063f8ffad464acdcc45844e58b6a8cda5dfbff2c72cbe3a1fd4400aa234663b644541a860b2b802"
+}

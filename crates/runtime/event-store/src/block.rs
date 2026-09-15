@@ -978,24 +978,31 @@ impl<D: BlockDevice> EventStore for BlockEventStore<D> {
         &mut self,
         partition: PartitionId,
         keep_after_offset: LogOffset,
+        max_segments: usize,
     ) -> Result<Vec<DeletedSegment>, StoreError> {
         let mut deleted = Vec::new();
-        while let Some((sealed, next_offset, slot, segment_id, first_offset, count, digest)) = self
-            .parts
-            .get(&partition)
-            .and_then(|p| p.segments.first())
-            .map(|s| {
-                (
-                    s.sealed,
-                    s.next_offset,
-                    s.slot,
-                    s.segment_id,
-                    s.first_offset,
-                    s.count,
-                    s.digest,
-                )
-            })
-        {
+        loop {
+            if deleted.len() >= max_segments {
+                break; // 单次预算：多窗摊销（REG-70.15-PRUNE-MEGAOP）
+            }
+            let Some((sealed, next_offset, slot, segment_id, first_offset, count, digest)) = self
+                .parts
+                .get(&partition)
+                .and_then(|p| p.segments.first())
+                .map(|s| {
+                    (
+                        s.sealed,
+                        s.next_offset,
+                        s.slot,
+                        s.segment_id,
+                        s.first_offset,
+                        s.count,
+                        s.digest,
+                    )
+                })
+            else {
+                break;
+            };
             if !sealed || next_offset > keep_after_offset {
                 break; // 只删完整段；开放尾段绝不删
             }

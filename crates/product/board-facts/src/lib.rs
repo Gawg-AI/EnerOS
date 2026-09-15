@@ -37,8 +37,8 @@ pub use fact::{Fact, FactError, HardwareScope, UNIT_NONE};
 pub use ledger::{BoardLedger, LedgerError, LedgerReport};
 pub use memory::{MemorySpan, MEM_ADDR_UNKNOWN};
 pub use platform::{
-    platform_role, required_device_subsystems, vouch_selection, BoardSelection, PlatformRole,
-    PlatformVouch, PlatformVouchError, SelectionError,
+    platform_role, required_device_subsystems, vouch_development, vouch_selection, BoardSelection,
+    PlatformRole, PlatformVouch, PlatformVouchError, SelectionError,
 };
 pub use registry::{
     assembly_selection, AdapterRegistry, BoardAdapter, BoardRefusal, RegisteredAdapter,

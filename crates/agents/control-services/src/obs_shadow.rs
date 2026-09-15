@@ -202,7 +202,13 @@ impl ObsShadow {
                 self.shadow_uncovered += 1;
             }
         }
-        converted.extend(batch);
+        converted.extend(batch); // REG-70.15-R09-R6 根因修复（2026-09-15）：批后**排空**收件箱环。
+                                 // 本环仅承担批内 event_id 去重；跨批回放/回退保护由 WatermarkTracker
+                                 // 独立承载（`sequence <= last` 恒拒，永不排空）。旧语义无人 drain ⇒
+                                 // cap=1024 处 Overflow 全拒 ⇒ 快照停建 ⇒ EA 恒 snapshot-stale
+                                 // （vol89 R6 四次复现根因；宿主装配长窗同样会触达）。
+        let _ = self.sink.drain_frames();
+
         (accepted, rejected)
     }
 
@@ -360,5 +366,156 @@ fn value_ref(v: &eneros_telemetry_model::event::ObservationValue) -> Observation
     match *v {
         V::F64(f) => ObservationValueRef::F64(f),
         _ => ObservationValueRef::Other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::disallowed_macros)]
+
+    use eneros_agent_sdk::synth_feed::{synth_frames, SYNTH_FEED};
+
+    use super::*;
+
+    /// 实弹 `configs/points.toml` 的宿主面编译（合成源注册与馈电元数据的
+    /// 唯一事实 = 签名配置；测试直接锁真实仓库配置，不设影子夹具）。
+    fn live_points_table() -> eneros_config_bundle::points::PointsTable {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../configs/points.toml");
+        let text = std::fs::read_to_string(path).expect("live configs/points.toml");
+        let compiled = eneros_config_bundle::toml_compile::compile_points(&text)
+            .expect("live points.toml must compile");
+        eneros_config_bundle::points::decode_points(&compiled.payload, &compiled.config_id)
+            .expect("decode compiled points")
+    }
+
+    /// REG-70.8-SYNTH-NO-OBS 红测（注册面）：合成源（source 1）必须注册为
+    /// OBS 生产轨来源，且授权面覆盖合成馈电声明点跨度。
+    #[test]
+    fn synth_source_is_registered_for_obs_track() {
+        let table = live_points_table();
+        let src = table
+            .sources
+            .iter()
+            .find(|s| s.source_id == 1)
+            .expect("source 1（root 合成源）必须注册为 OBS 来源——否则合成装配的快照链不可证");
+        assert!(
+            src.point_min <= 1 && (src.point_max == 0 || src.point_max >= 1004),
+            "来源 1 授权面须覆盖合成馈电声明点跨度 1..=1004，实际 {:?}",
+            (src.point_min, src.point_max)
+        );
+        assert!(
+            src.allow_control,
+            "合成馈电必须允许进控制快照（测试装配主链）"
+        );
+        assert!(src.require_integrity, "合成源与生产来源同完整性纪律");
+    }
+
+    /// REG-70.8-SYNTH-NO-OBS 红测（受理面）：合成馈电批次经真实 shadow
+    /// 全受理，转换集覆盖快照必收点集（1..7 + 1001..1004）。
+    #[test]
+    fn synth_obs_frames_are_accepted_end_to_end() {
+        let table = live_points_table();
+        let descriptors = descriptors_from_config(&table.sources, &table.points);
+        let eval = crate::telemetry::evaluator_config(1, alloc::vec::Vec::new());
+        let mut shadow = ObsShadow::new(descriptors, eval);
+        let flat: alloc::vec::Vec<u8> = synth_frames(0, 1_000_000_000).concat();
+        let mut converted = alloc::vec::Vec::new();
+        let mut accepted_events = alloc::vec::Vec::new();
+        let (accepted, rejected) =
+            shadow.ingest_frames(1, &flat, 2_000, &mut converted, &mut accepted_events);
+        assert_eq!(
+            (accepted, rejected),
+            (SYNTH_FEED.len(), 0),
+            "合成源 OBS 批次必须全受理（红 = UnregisteredSource 隔离）"
+        );
+        let pts: std::collections::BTreeSet<u32> = converted.iter().map(|s| s.point).collect();
+        for p in [1u32, 2, 3, 4, 5, 6, 7, 1001] {
+            assert!(pts.contains(&p), "快照必收点 {p} 不在合成馈电转换集");
+        }
+    }
+
+    /// REG-70.15-R09-R6 根因红测（2026-09-15）：影子收件箱（cap=1024）在
+    /// 无采集上传半环的装配（qemu-test-synth）必须不楔死——**消费后排空**
+    /// 语义。旧实现无人 drain ⇒ 第 ~94 批起 `Overflow` 全拒 ⇒ 快照停建 ⇒
+    /// EA 恒 snapshot-stale ⇒ 提案链停（vol89 R6 四次复现的根因）。
+    /// 变异靶：去掉 obs_ingest 的 drain_frames 调用 → 本测红。
+    #[test]
+    fn obs_ingest_does_not_wedge_at_sink_capacity() {
+        let table = live_points_table();
+        let descriptors = descriptors_from_config(&table.sources, &table.points);
+        let eval = crate::telemetry::evaluator_config(1, alloc::vec::Vec::new());
+        let mut shadow = ObsShadow::new(descriptors, eval);
+        // 100 批 × 11 事件 = 1100 > cap 1024：全程必须零拒绝。
+        let mut total_accepted = 0usize;
+        let mut total_rejected = 0usize;
+        for batch in 0..100u64 {
+            let flat: alloc::vec::Vec<u8> = synth_frames(batch, 1_000_000_000 + batch).concat();
+            let mut converted = alloc::vec::Vec::new();
+            let mut accepted_events = alloc::vec::Vec::new();
+            let (a, r) = shadow.ingest_frames(
+                1,
+                &flat,
+                2_000 + batch,
+                &mut converted,
+                &mut accepted_events,
+            );
+            total_accepted += a;
+            total_rejected += r;
+        }
+        assert_eq!(
+            (total_accepted, total_rejected),
+            (1100, 0),
+            "影子收件箱不得在容量处楔死（Overflow = 消费后排空缺失）"
+        );
+    }
+
+    /// 镜像锁：synth_feed 馈电表逐点对照真实配置声明面（device/unit/asset/
+    /// schema）——配置改版而馈电未跟 = 红（root 不持配置，镜像一致性靠本锁）。
+    #[test]
+    fn synth_feed_mirror_locks_live_config() {
+        let table = live_points_table();
+        assert_eq!(
+            SYNTH_FEED.len(),
+            11,
+            "馈电声明点全集 = 网关 1..7 + PCS 1001..1004"
+        );
+        for sp in SYNTH_FEED.iter() {
+            let rec = table
+                .points
+                .iter()
+                .find(|p| p.point_id == sp.point_id)
+                .unwrap_or_else(|| panic!("馈电点 {} 未在 live 配置声明", sp.point_id));
+            assert_eq!(
+                rec.device_id, sp.device_id,
+                "点 {} device 漂移",
+                sp.point_id
+            );
+            assert_eq!(
+                rec.identity.unit_code, sp.unit_code,
+                "点 {} unit_code 漂移",
+                sp.point_id
+            );
+            assert_eq!(
+                rec.identity.asset_id, sp.asset_id,
+                "点 {} asset 漂移",
+                sp.point_id
+            );
+            assert_eq!(
+                rec.identity.schema_id,
+                eneros_agent_sdk::synth_feed::SYNTH_SCHEMA_ID,
+                "点 {} schema 漂移",
+                sp.point_id
+            );
+        }
+        let src = table
+            .sources
+            .iter()
+            .find(|s| s.source_id == 1)
+            .expect("source 1 行存在");
+        assert_eq!(
+            src.protocol,
+            eneros_config_bundle::points::PointProtocol::Synth,
+            "source 1 协议必须是 synth（身份标记）"
+        );
     }
 }

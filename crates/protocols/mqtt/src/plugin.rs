@@ -68,7 +68,10 @@ impl MqttTransport for Box<dyn TransportHandle> {
 const KNOWN_KEYS: &[&str] = eneros_protocol_keys::MQTT;
 
 /// 49：peer 应答收件箱上限（有界缓冲；满则丢弃新消息并计数）。
-pub const AI_INBOX_CAP: usize = 8;
+/// AI 应答收件箱容量（REG-70.15-R09 投递有损治理，2026-09-15）：peer 负例
+/// 段 + 观测导出洪峰并发时，8 深收件箱在两次轮询间溢出丢应答 ⇒ 目标侧
+/// 拒绝词形随机缺失。64 深 = 单窗应答速率的裕量；满仍丢新（有界不伪造）。
+pub const AI_INBOX_CAP: usize = 64;
 /// 49：app 发布 outbox 上限。
 pub const APP_OUTBOX_CAP: usize = 4;
 /// 蓝图 70.4（WP-70.4.4）：离线存留上限（P 建议值 300s）——超龄条目

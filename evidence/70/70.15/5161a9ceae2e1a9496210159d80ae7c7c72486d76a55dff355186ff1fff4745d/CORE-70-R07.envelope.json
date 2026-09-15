@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-169adec729d2",
+  "run_id": "run-18d4fae6370e7ed2",
+  "nonce": "18d4fae6370e83de",
+  "test_id": "CORE-70-R07",
+  "scope": "L2",
+  "started_at": "2026-09-13T20:20:18Z",
+  "ended_at": "2026-09-13T20:20:18Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "300fbb1f6fd30336212b978ba58a6c27563e5d23e9e4af94a05ddcfdccb981c0",
+  "product_manifest_digest": "ed0f34c8404471526d7ea7a6e92259924260887055788763e847ec38b2119b91",
+  "profile_digest": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6",
+  "artifact_sha256": "b2ba73e606d6d2795f2cb72458a917084664b2b8ccff4b14d8bd38e5c7e35041",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol6-gate.sh（DL=700）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-test/product-manifest.normalized.json",
+      "sha256": "ed0f34c8404471526d7ea7a6e92259924260887055788763e847ec38b2119b91"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-test.json",
+      "sha256": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "external qmp + serial verdict lines；root MGT2 中继 + 配置代次事务 + 操作账本跨重启"
+  },
+  "positive_results": [
+    {
+      "id": "mgmt",
+      "status": "PASS",
+      "detail": "R14-R26（含 R21 正例；R24；R25）"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "neg-cases",
+      "status": "FAIL",
+      "detail": "R15-R20 六条负例逐条拒绝"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/5161a9ceae2e1a9496210159d80ae7c7c72486d76a55dff355186ff1fff4745d/CORE-70-R07.run-record.json",
+      "sha256": "d340a4ff7679af3f6761943a17158b859fe0eba0aedce8a2c26bbbb12bd4cbb7"
+    }
+  ],
+  "signer": "dev",
+  "signature": "9ae41a826c404094d6d7315b5d7263717cdd906bd2f4692beac93e740174f681799974c72f12cc968c97158ecba80451424ee7adf4d179ff3491c29dda7c0f07"
+}

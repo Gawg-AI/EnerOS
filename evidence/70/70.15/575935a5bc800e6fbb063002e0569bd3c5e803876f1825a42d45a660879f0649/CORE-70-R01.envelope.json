@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-eb893ba5a9ae",
+  "run_id": "run-18d53cce2a790c3f",
+  "nonce": "18d53cce2a7910f1",
+  "test_id": "CORE-70-R01",
+  "scope": "L2",
+  "started_at": "2026-09-14T16:28:03Z",
+  "ended_at": "2026-09-14T16:28:03Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "4e6114ff558496dd920e280f841031ac8594a7dca9b0b4b39e5998ab385a7127",
+  "product_manifest_digest": "4ffe1669258d45ef3c04446899e81f018db4ef1d274f181894cbee364f88080d",
+  "profile_digest": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2",
+  "artifact_sha256": "352ddb4747b399e5f24200e833ee3be6a2965a8a7f04a5f33c69da6af2d65488",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol1-gate.sh（DL=1300）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "4ffe1669258d45ef3c04446899e81f018db4ef1d274f181894cbee364f88080d"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "judge：G1/G2/G3/G5/G6/G7 PASS（rounds=10600/Committed=2156 越过原失败点 512/零 PANIC/零分配失败）；G4 = 相位衰减（尾 1218 < 二 3663×80%）——新登记 REG-70.15-G4-PHASE-DECAY"
+  },
+  "positive_results": [
+    {
+      "id": "survival",
+      "status": "PASS",
+      "detail": "Committed=2156（旧实现 861 即触顶）、零 CHAIN-KEY-MISSING、队列自恢复生效"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "decay",
+      "status": "FAIL",
+      "detail": "G4 相位衰减=提交速率随窗内递减（根因待剖析，非 PANIC/非停摆）"
+    }
+  ],
+  "verdict": "FAIL",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/575935a5bc800e6fbb063002e0569bd3c5e803876f1825a42d45a660879f0649/CORE-70-R01.run-record.json",
+      "sha256": "e2e8733cdf442440191889e369cc6649c2c080474b8d0375bb536c00d6399695"
+    }
+  ],
+  "signer": "dev",
+  "signature": "7c4c4c140ed2b7f4c6e00ea1479a21c1af01b6776ab61a27aa7ebfaf314558d5cf9f321d3b9ec145349b344ac30946f4c1cd5d7316513d8eb362f05e2948e70d"
+}

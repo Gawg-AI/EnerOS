@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-43a729c70c17",
+  "run_id": "run-18d5646218a3d79f",
+  "nonce": "18d5646218a3dba7",
+  "test_id": "CORE-70-R05",
+  "scope": "INTEROP",
+  "started_at": "2026-09-15T04:33:19Z",
+  "ended_at": "2026-09-15T04:33:19Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "7f5b9c83c6be888465586919d2d189042bfd8fc3d4ead51208f8bb6b304dd721",
+  "product_manifest_digest": "475a21ba6a3866c60bf7abdc76531f7e9ed8ed4473dfb790cad801cca85b0583",
+  "profile_digest": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2",
+  "artifact_sha256": "d349f98402eed44880326b95123060120deb669264be85b2b22ce4d2f83eb602",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol4-gate.sh（DL=1200）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "475a21ba6a3866c60bf7abdc76531f7e9ed8ed4473dfb790cad801cca85b0583"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "broker/peer 故障恢复 + 段1 used=true/ARMED/提交链"
+  },
+  "positive_results": [
+    {
+      "id": "recovery",
+      "status": "PASS",
+      "detail": "R1 零 PANIC ✓、R3/R5 重连订阅恢复 ✓、R6 READY+尾部回读 ✓、Committed=94"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "synth",
+      "status": "FAIL",
+      "detail": "R2 used=true/R5 LEASE-ARMED 缺失——该窗装配缺 ai-peer plan 参数（已修）+ 代次竞争（已修待复跑）；见 REG-70.15-R09R10-GATE-DESIGN"
+    }
+  ],
+  "verdict": "FAIL",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/37abc89dc8b36307c1514e442ef51a7a149e43c6111e4d579fb7ecf4f22e484b/CORE-70-R05.run-record.json",
+      "sha256": "034379b9a57b1b1beedf2d040f4c8532f84530e04dbd9accdd8329f46b86db91"
+    }
+  ],
+  "signer": "dev",
+  "signature": "3b186a33bd0e73134d26a80880b87900d4bb52159fc15538a1edebab6ecbbf8b7aa434a93de0b78e956f39a039ea61269c443e5998c2ac6258b3fa5985613704"
+}

@@ -109,11 +109,10 @@ ENEROS_KMS_DIR=configs/kms-dev cargo xtask config compile --profile qemu-test \
     > "$RUN/config-compile-restore.log" 2>&1 || { say "基线束恢复失败"; exit 2; }
 
 # 根循环探针（qemu-test-synth）。
-ROOT_TASK_FEATURES="sel4-eipc,qemu-test-synth" bash third_party/sel4-build-rust.sh \
-    > "$RUN/sel4-t.log" 2>&1 || { say "sel4 重链接失败"; exit 3; }
+gate_relink_cached "$RUN/sel4-t.log" "sel4-eipc,qemu-test-synth" || { say "sel4 重链接失败"; exit 3; }
 
 # 镜像 A（workspace 0.336.0，epoch E）。
-gate_image_raw qemu-test "$RUN/image-a.log" || { say "镜像 A 构建失败"; exit 3; }
+gate_image_raw_cached qemu-test "$RUN/image-a.log" "sel4-eipc,qemu-test-synth" || { say "镜像 A 构建失败"; exit 3; }
 RAW_A="$RUN/eneros-a.raw"
 cp target/eneros/artifacts/qemu-test/eneros-qemu-test.raw "$RAW_A"
 
@@ -121,7 +120,7 @@ cp target/eneros/artifacts/qemu-test/eneros-qemu-test.raw "$RAW_A"
 cargo xtask bump-version --set 0.337.0 > "$RUN/bump-337.log" 2>&1 \
     || { say "bump 0.337.0 失败"; exit 2; }
 export SOURCE_DATE_EPOCH="$EPOCH_B"
-gate_image_raw qemu-test "$RUN/image-b.log" || { say "镜像 B 构建失败"; exit 3; }
+gate_image_raw_cached qemu-test "$RUN/image-b.log" "sel4-eipc,qemu-test-synth" || { say "镜像 B 构建失败"; exit 3; }
 unset SOURCE_DATE_EPOCH
 RAW_B="target/eneros/artifacts/qemu-test/eneros-qemu-test.raw"
 

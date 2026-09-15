@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-641399ab8473",
+  "run_id": "run-18d5767cc8ffb31d",
+  "nonce": "18d5767cc8ffb72f",
+  "test_id": "CORE-70-R05",
+  "scope": "INTEROP",
+  "started_at": "2026-09-15T10:05:05Z",
+  "ended_at": "2026-09-15T10:05:05Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "68f3fa6fcbc20aeeaea2aeb3badd58b608878e04757964b5b215f07ec3ff6a5b",
+  "product_manifest_digest": "3dd0f0c1a265a30eed5b515cb6b3e60f909919998029ccc74aad4aaf30797263",
+  "profile_digest": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6",
+  "artifact_sha256": "740dcb71e34ea03fb78f4cc3e986cd6fb79277ab3eff3e52df1199a050b4c439",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol4-gate.sh（DL=650；qemu-test 装配切换后复跑——AI 中继可达）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-test/product-manifest.normalized.json",
+      "sha256": "3dd0f0c1a265a30eed5b515cb6b3e60f909919998029ccc74aad4aaf30797263"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-test.json",
+      "sha256": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "broker/peer 故障恢复：锚1 后新连接+新订阅+授权控制进展+设备回读、长断链 LEASE-ARMED+降级可观测、锚2 后重连+订阅恢复、READY+尾部进展+尾部回读"
+  },
+  "positive_results": [
+    {
+      "id": "recovery",
+      "status": "PASS",
+      "detail": "R1 零 PANIC ✓、R3 锚1 后 CONNACK=4/SUBSCRIBE=8/Committed=3/回读 ACQ=50 ✓、R5 LEASE-ARMED ✓+降级 used=false ×60+DEGRADE-OBS ×115+锚2 后重连/订阅恢复 ✓、R6 READY+尾部进展+尾部回读 ✓——故障恢复面全判据首次通过（含 LEASE-ARMED/Committed 此前缺失项）"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "timing",
+      "status": "FAIL",
+      "detail": "R2 段1 used=true 未落地——AI 中继往返与早期 broker kill 竞态（12 请求全发/peer 全答/broker 转发 ✓）；used=true 语义已由同装配 vol89 实证 ×9"
+    }
+  ],
+  "verdict": "FAIL",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/76a96bdd25f0d2162cd85da28f9b6f89c0bc2eaf2424c43eecc58056123693ef/CORE-70-R05.run-record.json",
+      "sha256": "f7ee02d21c7f5eb23f57f9b87ee2be8ad70636eb9f02cc47512209851d67c244"
+    }
+  ],
+  "signer": "dev",
+  "signature": "ab8e5c6f15e93f9ed656625b725cb27713675396ef24385f7e011c5668f5bf846ded9f3eac786c07840b80797781bc70b9b23bf438460cbe7c2c0b2acd93de0f"
+}

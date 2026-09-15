@@ -54,6 +54,11 @@ pub fn event_store_config() -> StoreConfig {
 /// 已承担秒级磁盘成本，快照构建+落盘叠加其上，轻批保持零磁盘）。
 pub const SNAP_EVERY_BATCHES: u64 = 8;
 
+/// 保留修剪单窗段数预算（REG-70.15-PRUNE-MEGAOP，2026-09-15）：删除突发
+/// 受预算约束、多窗摊销——无界删除 = 数万块 IPC 阻塞 svc-telemetry 单线程
+/// 循环 ⇒ 快照停摆 ⇒ 控制链停摆（实弹 40 万行 IPC/20 分钟）。
+pub const PRUNE_MAX_SEGMENTS_PER_WINDOW: usize = 4;
+
 /// 快照 blob 保留份数（超出删最老 produced_at；.tmp 残留与坏 blob 一并清）。
 pub const SNAP_KEEP_BLOBS: usize = 16;
 
@@ -585,7 +590,11 @@ impl<C: EipcSend + Clone + 'static> EventFace<C> {
                 if hold < committed {
                     hold_limited += 1; // 计划输入持有是此刻的约束方（证据）
                 }
-                match face.sink.store_mut().delete_full_segments_before(p, keep) {
+                match face.sink.store_mut().delete_full_segments_before(
+                    p,
+                    keep,
+                    PRUNE_MAX_SEGMENTS_PER_WINDOW,
+                ) {
                     Ok(deleted) if !deleted.is_empty() => {
                         deleted_total += deleted.len() as u64;
                         *pruned_segments += deleted.len() as u64;
@@ -683,20 +692,51 @@ fn store_snap_blob(
     let name = snapshot_file_stem(&snap.snapshot_id);
     let tmp = format!("{}/{}.tmp", SNAP_DIR, name);
     let path = format!("{}/{}.snap", SNAP_DIR, name);
-    {
+
+    // —— 先腾位，再写 ——
+    //
+    // 2026-09-14（70.15 长窗实弹）：旧实现是"先写后剪"，于是**区段一旦写不下
+    // 一份新 blob 就永远写不下**——littlefs 的 create/rename（目录元数据提交）
+    // 本身需要空闲块，满区时新写入必失败，而唯一的释放动作在**失败之后**的
+    // 剪枝里，永远轮不到 ⇒ 冻结输入停止发布 ⇒ EA 恒 `snapshot-stale` ⇒ 控制链
+    // 静默饿死。实测：`SNAP-BUILT=25 / SNAP-STORED=6 / SNAP-SKIP store-fail=19`，
+    // 提交停在 52 次不再增长（同一窗内 rounds 仍在涨——进程活着但不再控制）。
+    //
+    // 修法（保持"半成品不可见"与"保留最新 N 份"语义）：
+    //   1) 写前先剪到 `SNAP_KEEP_BLOBS - 1`，为新文件留出确定性空间；
+    //   2) 仍失败 ⇒ **对半砍保留数并重试**（15 → 7 → 3 → 1），直到写得下
+    //      或砍到 0 为止——自恢复，不把"区段紧张"升级成"控制链永久停摆"。
+    //      为什么必须"按容量自适应"而不是固定砍一次：实测该区段（64×4KiB
+    //      LFS）**实际只装得下约 6 份 1.2KiB blob**（littlefs 元数据/CTZ
+    //      开销），远低于配置的 `SNAP_KEEP_BLOBS=16` ⇒ 固定阈值剪枝腾不出
+    //      空间（见 `REG-70.15-SNAPBLOB-CAPACITY-VS-RETENTION`）。
+    let attempt = |fs: &mut Lfs| -> Result<(), ()> {
         let mut f = fs
             .create(&tmp, eneros_fs::types::FileMode::default_file())
             .map_err(|_| ())?;
         f.write(fs, bytes).map_err(|_| ())?;
         let _ = f.close();
+        fs.rename(&tmp, &path).map_err(|_| ())
+    };
+    let mut keep = SNAP_KEEP_BLOBS.saturating_sub(1);
+    loop {
+        let _ = prune_snap_blobs_keep(fs, keep);
+        if attempt(fs).is_ok() {
+            break;
+        }
+        // 半成品不可见：失败即清 tmp（其名称不在 `.snap` 集合内，但会占块）。
+        let _ = fs.remove(&tmp);
+        if keep == 0 {
+            return Err(());
+        }
+        keep /= 2;
     }
-    fs.rename(&tmp, &path).map_err(|_| ())?;
-    prune_snap_blobs(fs)
+    prune_snap_blobs_keep(fs, SNAP_KEEP_BLOBS)
 }
 
-/// 按 produced_at 保留最新 [`SNAP_KEEP_BLOBS`] 份 .snap（解码失败文件
-/// 一并清除——半成品不可见；.tmp 残留清场，tsdb cleanup 同律）。
-fn prune_snap_blobs(fs: &mut Lfs) -> Result<usize, ()> {
+/// 保留上限参数化版本：写前腾位需要"比最终保留数少一份"的目标，
+/// 重试路径需要"砍到一半"。语义与 [`SNAP_KEEP_BLOBS`] 版逐字相同。
+fn prune_snap_blobs_keep(fs: &mut Lfs, keep: usize) -> Result<usize, ()> {
     let entries = fs.readdir(SNAP_DIR).map_err(|_| ())?;
     let mut metas: Vec<(String, u64)> = Vec::new();
     for e in entries.iter().filter(|e| !e.is_dir) {
@@ -720,14 +760,14 @@ fn prune_snap_blobs(fs: &mut Lfs) -> Result<usize, ()> {
             }
         }
     }
-    if metas.len() <= SNAP_KEEP_BLOBS {
+    if metas.len() <= keep {
         return Ok(metas.len());
     }
     metas.sort_by_key(|(_, produced)| core::cmp::Reverse(*produced));
-    for (path, _) in metas[SNAP_KEEP_BLOBS..].iter() {
+    for (path, _) in metas[keep..].iter() {
         let _ = fs.remove(path);
     }
-    Ok(SNAP_KEEP_BLOBS)
+    Ok(keep)
 }
 
 /// 读整个文件（stat 定长 → open READ 循环读满；tsdb 同法）。
@@ -866,6 +906,21 @@ mod tests {
         eneros_semantic_catalog::open(&compiled.payload).expect("decode catalog")
     }
 
+    /// 快照必收点集（生产 = `control_dispatch::feedback::safety_coverage()`；
+    /// 夹具与之同集：1..=7 + **控制合同功率回读点 1001**，2026-09-14 起）。
+    fn coverage_fixture_points() -> impl Iterator<Item = u32> {
+        (1u32..=7).chain(core::iter::once(1001u32))
+    }
+
+    /// 夹具取值：点 1001（kW，覆盖窗 ±500）必须落在窗内；其余保持原伪值。
+    fn fixture_value(point: u32, round: usize) -> f64 {
+        if point == 1001 {
+            12.0 + round as f64
+        } else {
+            point as f64 * 10.0 + round as f64
+        }
+    }
+
     fn obs(point: u32, seq: u64, now_ms: u64, value: f64) -> ObservationEvent {
         use eneros_telemetry_model::event::{quality_bits, IntegrityTag, ObservationValue};
         ObservationEvent {
@@ -926,12 +981,15 @@ mod tests {
         let storage = FakeStorage::new(disk_len);
         let mut face = make_face(&storage);
         face.set_snapshot_catalog(prod_module_catalog(), 1_000);
-        let events: Vec<ObservationEvent> = (1u32..=7)
-            .map(|p| obs(p, p as u64, 2_000, p as f64 * 10.0))
+        let events: Vec<ObservationEvent> = coverage_fixture_points()
+            .map(|p| obs(p, p as u64, 2_000, fixture_value(p, 0)))
             .collect();
         face.on_obs_batch(&events, 2_000);
         assert!(face.is_open(), "事件面必须已打开");
-        assert_eq!(face.appended, 7, "接受集全量追加");
+        assert_eq!(
+            face.appended, 8,
+            "接受集全量追加（1..=7 + 合同回读点 1001）"
+        );
         let event_range =
             (EVENT_BASE * 512) as usize..((EVENT_BASE + REGION_BLOCKS_512) * 512) as usize;
         let snap_range = (SNAP_BASE * 512) as usize..((SNAP_BASE + SNAP_BLOCKS_512) * 512) as usize;
@@ -957,8 +1015,8 @@ mod tests {
         let storage = FakeStorage::new(disk_len);
         let mut face = make_face(&storage);
         face.set_snapshot_catalog(prod_module_catalog(), 1_000);
-        let events: Vec<ObservationEvent> = (1u32..=7)
-            .map(|p| obs(p, p as u64, 2_000, p as f64))
+        let events: Vec<ObservationEvent> = coverage_fixture_points()
+            .map(|p| obs(p, p as u64, 2_000, fixture_value(p, 0)))
             .collect();
         face.on_obs_batch(&events, 2_000);
         drop(face);
@@ -971,7 +1029,7 @@ mod tests {
             event_store_config(),
         )
         .expect("remount");
-        assert_eq!(report.valid_records, 7);
+        assert_eq!(report.valid_records, 8);
         assert_eq!(report.bad_segments, 0);
     }
 
@@ -983,22 +1041,22 @@ mod tests {
         let disk_len = (DISK_END * 512) as usize;
         let storage = FakeStorage::new(disk_len);
         let mut seq = 0u64;
-        // —— 面甲：写满一个快照窗（8 批 × 7 点）——
+        // —— 面甲：写满一个快照窗（8 批 × 8 点；含合同回读点 1001）——
         {
             let mut face = make_face(&storage);
             face.set_snapshot_catalog(prod_module_catalog(), 1_000);
             for round in 0..SNAP_EVERY_BATCHES {
                 let now = 2_000 + round * 46_000;
-                let events: Vec<ObservationEvent> = (1u32..=7)
+                let events: Vec<ObservationEvent> = coverage_fixture_points()
                     .map(|p| {
                         seq += 1;
-                        obs(p, seq, now, p as f64 * 10.0 + round as f64)
+                        obs(p, seq, now, fixture_value(p, round as usize))
                     })
                     .collect();
                 face.on_obs_batch(&events, now);
             }
             assert_eq!(face.snap_stored, 1, "窗满批必须产出 1 份快照");
-            assert_eq!(face.appended, 7 * SNAP_EVERY_BATCHES);
+            assert_eq!(face.appended, 8 * SNAP_EVERY_BATCHES);
         }
         // —— 掉电：整面丢弃，介质留存 ——
         // —— 上电：重开事件面（mount 路径）——
@@ -1011,7 +1069,7 @@ mod tests {
         )
         .expect("重开事件面");
         assert!(
-            report.valid_records == 7 * SNAP_EVERY_BATCHES,
+            report.valid_records == 8 * SNAP_EVERY_BATCHES,
             "已 ACK 记录全在（recovered={}）",
             report.valid_records
         );
@@ -1025,7 +1083,7 @@ mod tests {
         }
         assert_eq!(
             replayed.len(),
-            7 * SNAP_EVERY_BATCHES as usize,
+            8 * SNAP_EVERY_BATCHES as usize,
             "重放零丢失零乱序"
         );
         let (mut module2, _) = build_module(prod_module_catalog(), 0);
@@ -1066,15 +1124,15 @@ mod tests {
         // 生产路径重开：SNAP 恢复计数可见 + 事件续接（offset 单调）。
         let mut face2 = make_face(&storage);
         face2.set_snapshot_catalog(prod_module_catalog(), 900_000);
-        let events: Vec<ObservationEvent> = (1u32..=7)
+        let events: Vec<ObservationEvent> = coverage_fixture_points()
             .map(|p| {
                 seq += 1;
-                obs(p, seq, 900_000, p as f64)
+                obs(p, seq, 900_000, fixture_value(p, 0))
             })
             .collect();
         face2.on_obs_batch(&events, 900_000);
         assert!(face2.is_open());
-        assert_eq!(face2.appended, 7, "重启后事件面继续追加");
+        assert_eq!(face2.appended, 8, "重启后事件面继续追加");
     }
 
     struct FrameCollector<'a> {
@@ -1103,17 +1161,19 @@ mod tests {
         // -4KiB trailer 块 = 12,224B → 74 记录/段（164B/条）；7 槽容量
         // 518。8 批 × 64 = 512 ≤ 518（零 Full），7 槽全占 → used =
         // (12,288 + 7×16,384)/131,072 = 968‰ ≥ 850‰——窗口批必须修剪
-        // 且零丢失。每批含 7 个必需点（快照可物化）+ 填充点。
+        // 且零丢失。每批含 **8 个必需点**（1..=7 + 合同回读点 1001，快照
+        // 可物化）+ **56 个填充点**（填充数随之 −1，保持"每批 64 条 / 总
+        // 512 ≤ 518"这一几何前提不变——填充数是适配量，几何才是判据）。
         let mut seq = 0u64;
         for round in 0..8u64 {
             let now = 2_000 + round * 46_000;
-            let mut events: Vec<ObservationEvent> = (1u32..=7)
+            let mut events: Vec<ObservationEvent> = coverage_fixture_points()
                 .map(|p| {
                     seq += 1;
-                    obs(p, seq, now, p as f64 * 10.0)
+                    obs(p, seq, now, fixture_value(p, 0))
                 })
                 .collect();
-            for i in 0..57u64 {
+            for i in 0..56u64 {
                 seq += 1;
                 events.push(obs(100 + (i % 4) as u32, seq, now, i as f64));
             }
@@ -1136,6 +1196,55 @@ mod tests {
         );
     }
 
+    /// 2026-09-14（70.15 长窗）：**快照 blob 落盘在 30 个窗内恒成功**的
+    /// 稳态回归锁。
+    ///
+    /// 实弹现象（`SNAP-BUILT=25 / SNAP-STORED=6 / SNAP-SKIP store-fail=19`，
+    /// 提交停在 52 次而 rounds 仍在涨 = "进程活着但不再控制"）的**真根因是
+    /// 块层**：`[svc-storage] blk read FAILED … err=HardwareFault { detail:
+    /// "virtqueue full" }` ⇒ 快照写路径拿不到块 ⇒ store-fail（登记
+    /// `REG-70.15-VIRTQ-FULL-UNDER-LOAD`）。**本夹具不含 virtio**，故本测试
+    /// 在"先写后剪"的旧实现下同样为绿——它不是那条缺陷的红测，只锁住
+    /// "稳态下每窗都出可检索产物"这一性质（防止后续改动引入新的落盘丢失）。
+    ///
+    /// 与之配套的**真修复**是 `store_snap_blob` 的"先剪后写 + 按容量对半
+    /// 重试"（区段真紧张时降保留而非停链）；其红测需带块层的夹具，属后续卷。
+    #[test]
+    fn t7_snapshot_blob_store_never_starves_on_tight_region() {
+        let disk_len = (DISK_END * 512) as usize;
+        let storage = FakeStorage::new(disk_len);
+        let mut face = make_face(&storage);
+        face.set_snapshot_catalog(prod_module_catalog(), 1_000);
+        let mut seq = 0u64;
+        // 30 个快照窗（窗 = SNAP_EVERY_BATCHES 批）> 区段实际容量（≈6 份）
+        // 与配置保留（16 份）——旧实现必在第 7 个窗起连续 store-fail。
+        let windows = 30u64;
+        for batch in 0..(windows * SNAP_EVERY_BATCHES) {
+            let now = 2_000 + batch * 46_000;
+            let events: alloc::vec::Vec<ObservationEvent> = coverage_fixture_points()
+                .map(|p| {
+                    seq += 1;
+                    obs(p, seq, now, fixture_value(p, batch as usize))
+                })
+                .collect();
+            face.on_obs_batch(&events, now);
+        }
+        assert_eq!(
+            face.snap_skipped, 0,
+            "快照落盘不得因区段紧张而失败（skipped={}，stored={}）",
+            face.snap_skipped, face.snap_stored
+        );
+        assert!(
+            face.snap_stored >= windows,
+            "每个快照窗都必须产出可检索的冻结产物（stored={} 窗={windows}）",
+            face.snap_stored
+        );
+        assert!(
+            face.current_input().is_some(),
+            "最后一窗之后仍必须有可用的冻结输入（否则控制链饿死）"
+        );
+    }
+
     /// 70.8.1：冻结快照身份可被决策侧读取，且与落盘 blob 同源
     /// （snapshot_id / provenance_root 一致）；冷启动（无 catalog/无窗）
     /// 为空——绝不伪造身份。
@@ -1150,10 +1259,10 @@ mod tests {
         let mut seq = 0u64;
         for round in 0..SNAP_EVERY_BATCHES {
             let now = 2_000 + round * 46_000;
-            let events: Vec<ObservationEvent> = (1u32..=7)
+            let events: Vec<ObservationEvent> = coverage_fixture_points()
                 .map(|p| {
                     seq += 1;
-                    obs(p, seq, now, p as f64 * 10.0)
+                    obs(p, seq, now, fixture_value(p, 0))
                 })
                 .collect();
             face.on_obs_batch(&events, now);
@@ -1161,7 +1270,11 @@ mod tests {
         let input = face.current_input().expect("窗满批必须有冻结快照输入");
         assert!(!input.facts().is_unbound(), "身份绑定（snapshot_id 非零）");
         assert!(input.facts().is_complete(), "必需点齐 → 完整");
-        assert_eq!(input.facts().accepted, 7, "快照观测 = 必需点集");
+        assert_eq!(
+            input.facts().accepted,
+            8,
+            "快照观测 = 必需点集（含合同回读点 1001）"
+        );
         assert!(input.catalog_version() > 0, "目录合同版本随身份携带");
         // 载荷派生自同一快照：电压 = 点 1 的值（10.0 ≤ v ≤ 70.0 区间内）。
         let v = input
@@ -1197,10 +1310,10 @@ mod tests {
         // 两个快照窗（各 8 批）→ 两代冻结快照，皆在保留窗内。
         for round in 0..(SNAP_EVERY_BATCHES * 2) {
             let now = 2_000 + round * 46_000;
-            let events: Vec<ObservationEvent> = (1u32..=7)
+            let events: Vec<ObservationEvent> = coverage_fixture_points()
                 .map(|p| {
                     seq += 1;
-                    obs(p, seq, now, p as f64 * 10.0 + round as f64)
+                    obs(p, seq, now, fixture_value(p, round as usize))
                 })
                 .collect();
             face.on_obs_batch(&events, now);
@@ -1262,10 +1375,10 @@ mod tests {
         let mut seq = 0u64;
         for round in 0..8u64 {
             let now = 2_000 + round * 46_000;
-            let mut events: Vec<ObservationEvent> = (1u32..=7)
+            let mut events: Vec<ObservationEvent> = coverage_fixture_points()
                 .map(|p| {
                     seq += 1;
-                    obs(p, seq, now, p as f64 * 10.0)
+                    obs(p, seq, now, fixture_value(p, 0))
                 })
                 .collect();
             for i in 0..57u64 {
@@ -1311,8 +1424,8 @@ mod tests {
                 let storage = FakeStorage::new((DISK_END * 512) as usize);
                 let mut face = make_face(&storage);
                 face.set_snapshot_catalog(prod_module_catalog(), 1_000);
-                let events: Vec<ObservationEvent> = (1u32..=7)
-                    .map(|p| obs(p, p as u64, 2_000, p as f64))
+                let events: Vec<ObservationEvent> = coverage_fixture_points()
+                    .map(|p| obs(p, p as u64, 2_000, fixture_value(p, 0)))
                     .collect();
                 face.on_obs_batch(&events, 2_000);
                 assert!(face.is_open());

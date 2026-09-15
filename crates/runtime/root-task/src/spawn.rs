@@ -704,9 +704,12 @@ impl SpawnCtx {
 
 /// root CSpace 容量上限。41（CV-41-1）：内核 `KernelRootCNodeSizeBits`
 /// 12→13（4096→8192 槽）——34 个 EL0 服务 spawn 期 NoCapSlot（QEMU
-/// 实测 root_slot=4089 耗尽）；本常量必须与内核配置一致，否则分配器
-/// 提前拒绝（fail-closed 挂起而非越界）。
-pub const ROOT_CNODE_SLOTS: u64 = 1 << 13;
+/// 实测 root_slot=4089 耗尽）；**70.15（2026-09-14）**：13→14（8192→16384
+/// 槽）——长窗映像使 root 槽位耗到 8191/8192 边缘，一处页界移动即
+/// `spawn FAILED: NoCapSlot`（svc-mgmt 段，实测；`build-rust.sh` 的
+/// `KernelRootCNodeSizeBits` 同步 14）。本常量必须与内核配置一致，否则
+/// 分配器提前拒绝（fail-closed 挂起而非越界）。
+pub const ROOT_CNODE_SLOTS: u64 = 1 << 14;
 
 /// 70.6（WP-70.6.3）：root 管理端点（root 侧 poll cap；sel4_spawn_services
 /// 阶段 1.5 装配）。0 = 未装配（主循环跳过管理轮询）。
@@ -943,9 +946,9 @@ pub struct UartHandover {
 /// 服务 → 可移交非-console PL011 物理基址**允许清单**（board-fact 登记制，
 /// fail-closed：未登记即不移交）。
 ///
-/// - 今日全空（F-S1 环境公理：QEMU virt 唯一 pl011 即 kernel console，
+/// - 登记项只写**非 console** 的 pl011 基址（uart0 = kernel console 永不登记：
 ///   重配波特率/复位 CR 会打断内核串口输出；移交 console 是事故不是功能）。
-/// - 真机 bring-up = owner 在此登记一枚**非 console** pl011 的 reg 基址
+/// - 真机 bring-up = owner 在此登记板级非 console pl011 的 reg 基址
 ///   （C4 注脚：届时 C1 host 全链在板上复跑即为真机验收——程序本体零改码）。
 /// - 扁平序号（行内展开序）= 冲突拒绝位图的 bit 号；同实例二次认领在
 ///   spawn 循环被拒（见 `uart_handover_slot` 单测的冲突语义锁定）。
@@ -979,17 +982,41 @@ mod proto_uart_slot_tests {
     #![allow(clippy::disallowed_macros)] // 测试断言 panic!（mgmt-cli 先例）
     use super::*;
 
-    /// F-S1 锁定：QEMU 无第二串口——现行空表下**任何**服务都不得获得
-    /// UART 移交（svc-modbus-rtu 走诚实降级壳，判据 D.2-C3 的装配前提）。
+    /// 允许清单**空表**语义锁定：空表下任何服务都不得获得 UART 移交
+    /// （fail-closed：未登记即不移交）。
     #[test]
-    fn empty_allowlist_hands_over_nothing_today() {
+    fn empty_allowlist_hands_over_nothing() {
+        let empty: &[(&str, &[u64])] = &[];
         for name in [
             "svc-modbus-rtu",
             "svc-modbus-tcp",
             "svc-telemetry",
             "svc-config",
         ] {
-            assert_eq!(uart_handover_slot(name), None, "{name} 在空表下不得有移交");
+            assert_eq!(
+                uart_handover_slot_in(empty, name),
+                None,
+                "{name} 在空表下不得有移交"
+            );
+        }
+    }
+
+    /// 允许清单**生产表**语义锁定：今日全空（F-S1 环境公理——QEMU virt
+    /// 唯一 pl011 即 kernel console；非 console pl011 的实例化/移交路径
+    /// 见执行卡登记，恢复时本断言随之改写）。
+    #[test]
+    fn production_allowlist_hands_over_nothing_today() {
+        for name in [
+            "svc-modbus-rtu",
+            "svc-modbus-tcp",
+            "svc-telemetry",
+            "svc-config",
+        ] {
+            assert_eq!(
+                uart_handover_slot(name),
+                None,
+                "{name} 在生产表下不得有移交"
+            );
         }
     }
 

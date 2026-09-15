@@ -1,0 +1,84 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-16a4bed3373e",
+  "run_id": "run-18d561b19d1af1a3",
+  "nonce": "18d561b19d1af5dd",
+  "test_id": "CORE-70-R01",
+  "scope": "L2",
+  "started_at": "2026-09-15T03:44:02Z",
+  "ended_at": "2026-09-15T03:44:02Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "7f41b85b150c9ad2d0720b8ffc053b093b28004209bcce45d14b823392834256",
+  "product_manifest_digest": "475a21ba6a3866c60bf7abdc76531f7e9ed8ed4473dfb790cad801cca85b0583",
+  "profile_digest": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2",
+  "artifact_sha256": "d349f98402eed44880326b95123060120deb669264be85b2b22ce4d2f83eb602",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol1-gate.sh（DL=1300；G4 产出相位重标后）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "475a21ba6a3866c60bf7abdc76531f7e9ed8ed4473dfb790cad801cca85b0583"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "judge G1-G7：G1 零 PANIC（无豁免·全文件）、G2 零分配失败、G3 PRODUCT-READY、G4 产出相位（尾 commits>0 ∧ ≥中段峰值 80% + 轮询活性地板）、G5 轮数+提交下限、G6 CHAIN-KEY-MISSING、G7 transcript"
+  },
+  "positive_results": [
+    {
+      "id": "survival",
+      "status": "PASS",
+      "detail": "G1-G7 全 ✓——rounds=10316/agent=OK=2237 越过旧故障点 512；G4 相位产出 [68"
+    },
+    {
+      "id": "29",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "841",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "id": "1218] 尾/中段峰值=1218/841 ✓；全窗零 PANIC 零 IOERR 零 SNAP-SKIP",
+      "status": "PASS",
+      "detail": ""
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "skip-trial",
+      "status": "FAIL",
+      "detail": "无 trial 直接确认被拒（门内既有负例形态）；G4 旧 round 行数口径的尾/二比已按时间线证据重标（REG-70.15-G4-PHASE-TAIL-DECAY）"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/a3d9ce198bcc18f22d627c1692368db7a25c884a711ae3032d1d548d05fce97d/CORE-70-R01.run-record.json",
+      "sha256": "769b2c796ec62da61a298c841afbf69551e2c027c31bb7d668a103af4afb1edc"
+    }
+  ],
+  "signer": "dev",
+  "signature": "a4f87695af424ee4849187d3549f9974662aa3275098bfe301f7b2930697ec2210cd18264bfc611a35cdce085b1d78dd083dfc05311aa76e05d4514829cdcd0f"
+}

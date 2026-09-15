@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-43a729c70c17",
+  "run_id": "run-18d564618ecad884",
+  "nonce": "18d564618ecadd2c",
+  "test_id": "CORE-70-R02",
+  "scope": "L2",
+  "started_at": "2026-09-15T04:33:17Z",
+  "ended_at": "2026-09-15T04:33:17Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "7f5b9c83c6be888465586919d2d189042bfd8fc3d4ead51208f8bb6b304dd721",
+  "product_manifest_digest": "475a21ba6a3866c60bf7abdc76531f7e9ed8ed4473dfb790cad801cca85b0583",
+  "profile_digest": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2",
+  "artifact_sha256": "d349f98402eed44880326b95123060120deb669264be85b2b22ce4d2f83eb602",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol2-gate.sh（SEED_DL=420/REUSE_DL=1200）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "475a21ba6a3866c60bf7abdc76531f7e9ed8ed4473dfb790cad801cca85b0583"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "段2 复用盘 + judge G1-G7"
+  },
+  "positive_results": [
+    {
+      "id": "reuse",
+      "status": "PASS",
+      "detail": "全门 rc=0 ✓"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "none",
+      "status": "FAIL",
+      "detail": "无独立负例判据"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/37abc89dc8b36307c1514e442ef51a7a149e43c6111e4d579fb7ecf4f22e484b/CORE-70-R02.run-record.json",
+      "sha256": "eab1c2993d5b2871592ed9faeea62fb15cc0fd0b2cb0f2c4c1d1a3e444ae6418"
+    }
+  ],
+  "signer": "dev",
+  "signature": "548a389f6964a643b9cb5170724e0e793c15e9dfdebc73fc7720c94c032919ddb6570752c76cd8cdbef58d3016f5d7125e07f84e239e21e25954442e152fcf0c"
+}

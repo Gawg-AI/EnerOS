@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-e3fdb7319053",
+  "run_id": "run-18d5643f66629113",
+  "nonce": "18d5643f6662959d",
+  "test_id": "CORE-70-R09",
+  "scope": "L3",
+  "started_at": "2026-09-15T04:30:50Z",
+  "ended_at": "2026-09-15T04:30:50Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "466fcc75867156e6ecab0db364c344cefdee9a313e3eb4c97f478dffb764132e",
+  "product_manifest_digest": "51856c7711bb9189d4b76c29ff155578bd64416b7500459da9f7064e1e264c8d",
+  "profile_digest": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6",
+  "artifact_sha256": "f8310ae6b5e65db068c9061a5dedad3b396c42bbd29f1ab47a660046851fce3c",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol89-gate.sh（DL=1440 + peer 六段模式轮换；代次竞争放宽后）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-test/product-manifest.normalized.json",
+      "sha256": "51856c7711bb9189d4b76c29ff155578bd64416b7500459da9f7064e1e264c8d"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-test.json",
+      "sha256": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "R09 负例面：结构化 v2 链激活（PEER-REQ-V2≥1 ∧ used=true≥1）∧ expired/crossgen/mutated 各拒绝词形 ≥1 ∧ unsigned Late 丢弃 ∧ 零 PANIC"
+  },
+  "positive_results": [
+    {
+      "id": "activation",
+      "status": "PASS",
+      "detail": "R1 v2 请求 ×15 ✓、R1b used=true ×2（path=Slow [backend=planner] 远程计划消费）✓、R2 expired ×3 ✓、R3 crossgen ×1 ✓、R4 mutated 预算钳制 ×1 ✓、R5 unsigned Late ×1 ✓、R7 零 PANIC ✓——四类负例全部 fail-closed"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "recovery",
+      "status": "FAIL",
+      "detail": "R6 恢复段尾窗零 used=true——late-window 投递退化（peer 多次重启后 brain/request 发布未达 broker transcript）+ 零 PANIC；修复方向已登记（python broker 死订阅者清理 / s6 窗加长）"
+    }
+  ],
+  "verdict": "FAIL",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/e63de570e04352f93fde357fab96ecbb73e7a8f4e6cd89c222fd52ad4e62668f/CORE-70-R09.run-record.json",
+      "sha256": "787ae1a7eceb914ab1bf774055f70362d114b30b7f4c247fc52ab885adf6adcc"
+    }
+  ],
+  "signer": "dev",
+  "signature": "7cdbcdc3afc86443984001172e8e75adc738d7fb5fc5f2714d82275f2267dd99b377e7764b49fe1a3bf2b69dfaa1244e9d95bd4d5f9a688d26039a307d9fed0f"
+}

@@ -517,8 +517,19 @@ impl<
         }
         Ok(())
     }
+    /// 70.14 复查修复：**必须下沉到 inner**（原实现恒 `Ok(())`）。
+    ///
+    /// `BootInstall` 的四个事务（trial/confirm/cancel/install）把"双副本写 +
+    /// flush"当作"掉电时任一时刻 resolve 均取新块"的持久化承诺
+    ///（见 `boot_install.rs` 各事务文档），而设备写缓存不刷 = 掉电后可能只剩
+    /// 半份记录（高序列副本未落、低序列副本已落 → resolve 看到的是**旧序列**，
+    /// 事务自认成功但重启后消失）。此处恒真返回等于把该承诺变成空头支票。
+    ///
+    /// 下沉后 `VirtioBlkBackend::flush` → `issue(VIRTIO_BLK_T_FLUSH)`——与数据盘
+    /// `BLK_CMD_FLUSH` 同一条已验证路径（boot 盘与数据盘同为 virtio-blk，
+    /// QEMU 与真机都支持 FLUSH）。
     fn flush(&mut self) -> Result<(), ()> {
-        Ok(())
+        crate::block_cmd::BlockBackend::flush(&mut self.inner)
     }
     fn health(&self) -> (u64, u32, u8) {
         crate::block_cmd::BlockBackend::health(&self.inner)
@@ -544,6 +555,9 @@ mod tests {
     struct SimMmio {
         regs: [u32; 68],
         disk: alloc::rc::Rc<core::cell::RefCell<alloc::vec::Vec<u8>>>,
+        /// FLUSH（kind=4）请求计数——70.14 复查：`BootSlotBackend::flush`
+        /// 曾恒 `Ok(())` 不透传，事务"双副本 + flush"的持久化承诺无法判别。
+        flushes: alloc::rc::Rc<core::cell::Cell<u32>>,
     }
 
     impl SimMmio {
@@ -560,6 +574,7 @@ mod tests {
                 disk: alloc::rc::Rc::new(core::cell::RefCell::new(
                     alloc::vec![0u8; (blocks as usize) * 512],
                 )),
+                flushes: alloc::rc::Rc::new(core::cell::Cell::new(0)),
             }
         }
 
@@ -584,42 +599,61 @@ mod tests {
                         crate::QUEUE_MAX,
                     )
                 };
-                // 三描述符链：req(0,读) → data(1) → status(2,写)。
+                // 描述符链**按 next 走**，不假定段数：READ/WRITE 是
+                // req → data → status 三段，**FLUSH 只有 req → status 两段**
+                // （`virtio_blk.rs::issue` 的 FLUSH 分支）。旧夹具硬编码取
+                // descs[head+2] 当 status —— FLUSH 时 head+2 是不属于本请求的
+                // 陈旧描述符（addr 可能是 0），一旦真的下发 FLUSH 就会
+                // `0 - base` 溢出 panic。该夹具此前没炸，正说明**boot 面
+                // flush 从未被调用过**（与本轮修的 `flush` 空实现互证）。
                 let d0 = &descs[head];
-                let d1 = &descs[(head + 1) & (crate::QUEUE_MAX - 1)];
-                let d2 = &descs[(head + 2) & (crate::QUEUE_MAX - 1)];
                 let base = 0x1000_0000u64; // 仿真物理基址
                 let req_off = (d0.addr - base) as usize;
-                let data_off = (d1.addr - base) as usize;
-                let status_off = (d2.addr - base) as usize;
                 // req: kind(4)+reserved(4)+sector(8)
                 let kind = u32::from_le_bytes(queue[req_off..req_off + 4].try_into().unwrap());
                 let sector =
                     u64::from_le_bytes(queue[req_off + 8..req_off + 16].try_into().unwrap());
                 let start = (sector as usize) * 512;
+                let second = &descs[d0.next as usize & (crate::QUEUE_MAX - 1)];
+                // FLUSH：第二段即 status（无数据描述符）；其余：第二段 = data，
+                // 第三段 = status。
+                let (data_desc, status_desc) = if kind == 4 {
+                    (None, second)
+                } else {
+                    (
+                        Some(second),
+                        &descs[second.next as usize & (crate::QUEUE_MAX - 1)],
+                    )
+                };
+                let status_off = (status_desc.addr - base) as usize;
                 match kind {
                     0 => {
-                        // READ：**按请求长度**（d1.len）回填——旧实现恒拷
+                        // READ：**按请求长度**（data.len）回填——旧实现恒拷
                         // 512B，多块读的调用方缓冲尾部停在调用前内容（测试
                         // 假绿：读到的是零缓冲区而非介质）。调用方
                         // （VirtioBlkBackend）逐 512B 块发起，故此处
-                        // 512 ≤ d1.len 恒成立。
+                        // 512 ≤ data.len 恒成立。
+                        let dd = data_desc.expect("READ 必有数据描述符");
+                        let data_off = (dd.addr - base) as usize;
                         let disk = self.disk.borrow();
-                        let n = d1.len as usize;
+                        let n = dd.len as usize;
                         assert!(n <= 512 && start + 512 <= disk.len());
                         queue[data_off..data_off + n].copy_from_slice(&disk[start..start + n]);
                         queue[status_off] = 0;
                     }
                     1 => {
                         // WRITE：**按请求长度**写入（同读侧，旧实现恒 512B）。
+                        let dd = data_desc.expect("WRITE 必有数据描述符");
+                        let data_off = (dd.addr - base) as usize;
                         let mut d = self.disk.borrow_mut();
-                        let n = d1.len as usize;
+                        let n = dd.len as usize;
                         assert!(n <= 512 && start + 512 <= d.len());
                         d[start..start + n].copy_from_slice(&queue[data_off..data_off + n]);
                         queue[status_off] = 0;
                     }
                     4 => {
                         // FLUSH：无数据描述符（datalen=0）——仅 status。
+                        self.flushes.set(self.flushes.get() + 1);
                         queue[status_off] = 0;
                     }
                     _ => {
@@ -628,7 +662,7 @@ mod tests {
                 }
                 used.ring[used.idx as usize & (crate::QUEUE_MAX - 1)] = crate::VirtqUsedElem {
                     id: head as u32,
-                    len: d1.len as u32,
+                    len: data_desc.map(|d| d.len).unwrap_or(0),
                 };
                 used.idx = used.idx.wrapping_add(1);
             }
@@ -830,6 +864,58 @@ mod tests {
         let mut back = [0u8; 4096];
         boot.read(bs_ + 8, &mut back).expect("读回副本 1");
         assert_eq!(back, rec, "记录写→影子/介质读回一致");
+    }
+
+    /// 70.14 复查红测：**boot 面 flush 必须下沉到设备**。
+    ///
+    /// 缺陷形态（旧实现）：`BootSlotBackend::flush` 恒 `Ok(())`，不调
+    /// `self.inner.flush()`。而 `BootInstall` 的四个事务（trial/confirm/
+    /// cancel/install）把"双副本写 + flush"当掉电持久化承诺（高序列副本先
+    /// 写、低序列后写，flush 后才算提交）——flush 为空实现即承诺不成立：
+    /// 掉电后设备写缓存里可能只有低序列副本，resolve 回到旧序列 = 事务
+    /// 自认成功却消失。
+    #[test]
+    fn boot_face_flush_reaches_the_device() {
+        let _seq = TEST_SEQ.lock().unwrap();
+        let blocks = 40000u64;
+        let mmio = SimMmio::new(blocks);
+        let flushes = mmio.flushes.clone();
+        let pool = TestPool::new();
+        TEST_POOL.store(
+            pool.arena.as_ptr() as u64,
+            core::sync::atomic::Ordering::Relaxed,
+        );
+        let driver = VirtioBlkDriver::new(
+            mmio,
+            pool,
+            eneros_storage::driver::virtio_blk::NoopCache,
+            eneros_storage::StorageConfig::default(),
+        )
+        .expect("驱动初始化（仿真设备）");
+        let inner: VirtioBlkBackend<SimMmio, TestPool, _> = VirtioBlkBackend {
+            driver: RefCell::new(driver),
+            block_size: 512,
+        };
+        let record = eneros_boot_protocol::BootControl::factory([7u8; 16], 1, [7u8; 16])
+            .encode()
+            .unwrap();
+        let guard = crate::boot_guard::BootWriteGuard::resolve(&record, &record)
+            .expect("factory 记录可解析");
+        let mut boot = BootSlotBackend {
+            inner,
+            guard,
+            boot_dma_vaddr: 0,
+            shadow: core::cell::RefCell::new([0u8; 8192]),
+            shadow_valid: core::cell::Cell::new(true),
+        };
+        use crate::block_cmd::BlockBackend as _;
+        let before = flushes.get();
+        boot.flush().expect("boot 面 flush");
+        assert_eq!(
+            flushes.get(),
+            before + 1,
+            "boot 面 flush 必须产生一次设备 FLUSH（旧实现恒 Ok 不透传 = 事务持久化承诺落空）"
+        );
     }
 
     /// 70.7 复查回归锁：BOOTCTRL 的**部分写**不得让影子与介质分叉。

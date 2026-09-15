@@ -105,6 +105,11 @@ fi
 # NoCapSlot 挂起（QEMU 实测 root_slot=4089 时耗尽）；8192 槽余量
 # > 2× 当前 34 服务峰值，为后续服务预留（跨版本变更登记见
 # evidence/41/CROSS_VERSION-41.md CV-41-1）。
+# 2026-09-14（70.15 实弹）：13 → 14（8192 → 16384 槽）。长窗映像（新增停顿/
+# 故障注入面 + coverage/语义点）使 root 槽位耗到 8191/8192 的边缘，一处页界
+# 移动即 `spawn FAILED: NoCapSlot — 挂起`（svc-mgmt 段，实测）。同 41-CV-41-1
+# 先例（12→13）。root cnode 对象 = 16384×16B = 256 KiB untyped，1 GiB 内存
+# 充裕；root-task 侧 `ROOT_CNODE_SLOTS` 已同步 =1<<14。
 # 33 WP-33.5（中断计数转真）：-DKernelArmExportPTMRUser=ON —— 允许
 # EL0 写 CNTP_CTL_EL0/CNTP_TVAL_EL0（seL4 aarch64 用户态在 EL0；
 # root-task 使能物理定时器需 EXPORT_PTMR_USER=EL0PTEN——缺省时
@@ -120,7 +125,7 @@ fi
   -DPLATFORM=qemu-arm-virt \
   -DARM_CPU=cortex-a57 -DQEMU_GIC_VERSION=3 \
   -DKernelVerificationBuild=OFF -DKernelPrinting=ON \
-  -DKernelRootCNodeSizeBits=13 \
+  -DKernelRootCNodeSizeBits=14 \
   -DSEL4_SRC="$SEL4_SRC_DIR" \
   -DELFLOADER_SRC="$ELFLOADER_SRC" \
   -DCMAKE_MODULE_PATH="$SEL4_SRC_DIR;$CACHE/seL4_tools-master/cmake-tool/helpers;$ELFLOADER_SRC" \

@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-ddff2dd87620",
+  "run_id": "run-18d5149ec667f10e",
+  "nonce": "18d5149ec667f900",
+  "test_id": "CORE-70-R02",
+  "scope": "L2",
+  "started_at": "2026-09-14T04:11:39Z",
+  "ended_at": "2026-09-14T04:11:39Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "69b83c03e7960655ff10d9f672430b5fce17ee06e4ee65d682f6ffead0cf5ec8",
+  "product_manifest_digest": "b94ac540a6d936e9b32ff4cda46f1b65a2b3157c3b8b644399b7260f71654ce2",
+  "profile_digest": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2",
+  "artifact_sha256": "a5d8bf9fdb5f93bfdb8ddabc7520670919b95edfb3e402fa75223eee21cbf8f4",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol2-gate.sh（SEED_DL=420/REUSE_DL=1200）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "b94ac540a6d936e9b32ff4cda46f1b65a2b3157c3b8b644399b7260f71654ce2"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "复用盘 TSDB-DISK-OPEN + 旧点数保留 + checkpoint 持久水位；judge G1-G7"
+  },
+  "positive_results": [
+    {
+      "id": "reuse",
+      "status": "PASS",
+      "detail": "R1 复用盘开卷+旧点保留 ✓、R2 轮次=10876 ✓、R3 checkpoint=22 ✓、G1/G2/G3/G5/G6/G7 ✓（Committed=1394）"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "tail",
+      "status": "FAIL",
+      "detail": "G4 尾相位衰减（1024 条幂等账本写满——在案语义，REG-70.15-DISPATCH-HEAP-WINDOW-CALIB）"
+    }
+  ],
+  "verdict": "FAIL",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/d5621779a2e734a3f4fd25d5e7ac54a4b26823d71613a1059682883286156b4b/CORE-70-R02.run-record.json",
+      "sha256": "d15bc2af412a20d8659e6052622b5c7a2ff22180019427fdaf57c16e5f5b7a08"
+    }
+  ],
+  "signer": "dev",
+  "signature": "b3fbac09dcbe9b0bc9f78920b7151ce5c430e3bfd309cb46802e0e5861f5a38ddc6ee49e08cb93397c25a2863253261647df10080f30fe3141160910a2aa6e06"
+}

@@ -3,7 +3,10 @@
   "run_id": "template-not-a-run",
   "scenario": "steady-72h",
   "scope": "hw-soak",
-  "artifacts": {},
+  "artifacts": {
+    "root_task": "<sha256>@evidence/70/70.14/<run_id>/artifacts/root-task.bin",
+    "boot_chain": "<sha256>@evidence/70/70.14/<run_id>/artifacts/boot-chain.bin"
+  },
   "device": {
     "sku_id": "",
     "board_revision": "",
@@ -18,7 +21,14 @@
   "started_at": "",
   "ended_at": "",
   "heartbeats": [],
-  "protocol_coverage": [],
+  "protocol_coverage": [
+    {
+      "protocol": "",
+      "active_from": "",
+      "active_to": "",
+      "samples": 0
+    }
+  ],
   "metrics": [],
   "judge_version": "xtask/soak-1",
   "raw_files": [

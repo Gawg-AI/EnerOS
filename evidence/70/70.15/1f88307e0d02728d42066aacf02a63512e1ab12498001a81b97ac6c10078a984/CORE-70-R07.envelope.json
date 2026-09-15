@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-f8c81374fb09",
+  "run_id": "run-18d54a6155ed98f3",
+  "nonce": "18d54a6155ed9d73",
+  "test_id": "CORE-70-R07",
+  "scope": "L2",
+  "started_at": "2026-09-14T20:36:48Z",
+  "ended_at": "2026-09-14T20:36:48Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "dcc1e5203a7c8abc86e7adc6c9c63112436f534bfa0aea80f6e9b24d69431dc8",
+  "product_manifest_digest": "38c2c252f36183d5b0ea35eaae26805690e80f9405b39f98d3254604ea61d43f",
+  "profile_digest": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6",
+  "artifact_sha256": "ffd9543ecba0e8e8328fa773e1f74c84e208305ff040f321fcdd11ad8c81bae6",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol6-gate.sh（DL=700/DL_T2=420）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-test/product-manifest.normalized.json",
+      "sha256": "38c2c252f36183d5b0ea35eaae26805690e80f9405b39f98d3254604ea61d43f"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-test.json",
+      "sha256": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "管理动作全链（探针直驱生产 MGT1 接口）：config-get 载荷/维护进出/签名换包 stage→commit→activate（gen 1→2）/消费者同代/受控重启（实例代次+ready 重验）/五负例（保护服务拒绝/幂等冲突/幂等回放/短尾 v2/伪 principal）/操作账本持久化+跨重启恢复"
+  },
+  "positive_results": [
+    {
+      "id": "mgmt",
+      "status": "PASS",
+      "detail": "21/22 ✓——换包激活 gen=2、CONFIG-ACTIVATED 盘上提交、受控重启+ready 重验、伪 principal 拒绝 ✓、幂等三负例 ✓、短尾 v2 拒绝 ✓、T-2 MGMT-OPS ledger restored n=15 ✓"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "reboot",
+      "status": "FAIL",
+      "detail": "R24 盘上配置冷启动恢复 ✗——在案 REG-70.15-VOL6-R24-INTERMITTENT 第三形态（T-2 串口无任何 CONFIG-DISK 行，非 WriteFailed 变体；R23 PRODUCT-READY ✓ 未受阻）"
+    }
+  ],
+  "verdict": "FAIL",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/1f88307e0d02728d42066aacf02a63512e1ab12498001a81b97ac6c10078a984/CORE-70-R07.run-record.json",
+      "sha256": "080485cfbaaad629e4c2140c1ee21faa55e8de9cf314ca92242df0c044c9cc50"
+    }
+  ],
+  "signer": "dev",
+  "signature": "9915106dffb5c599feb7043ad21a72c828bd15e84e37b66a07ec562a242eaece554ea895a4d68f3541c985d6920bda4cb3c498cc4cb9fba0718889b8fbdf770d"
+}

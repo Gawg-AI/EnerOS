@@ -19,6 +19,18 @@ VALUES = {
     0x0105: 0,     # 过流告警 raw=0
     0x0106: 0,     # 过温告警 raw=0（61 复查矫正：独立过温点，解 6/6 别名）
     0x0200: 0,     # 控制点（有功功率 setpoint，kW raw=值 ×1.0）
+    # 2026-09-14（70.15 / REG-70.15-CORE-CHAIN-SINGLE-GAP 修根）：PCS-1 的
+    # 遥测改由本链路提供——功率回读点 1001 在站点点表里的地址 =
+    # slave 2 / 0x0107（见 configs/points.toml 的订正说明）。目标侧一次组读
+    # 取 0x0107..0x0109（1001/1002/1003 三点连续）。
+    0x0107: 120,   # P1001 PCS 有功功率 kW（scale 0.1 → 12.0）
+    0x0108: 5000,  # P1002（scale 0.01 → 50.00）
+    0x0109: 400,   # P1003（scale 0.1 → 40.0）
+}
+
+# 线圈（FC1）——P1004 数字量（slave 2 / 0x010A）。
+COILS = {
+    0x010A: 0,
 }
 
 WRITEABLE = {0x0200}
@@ -104,6 +116,18 @@ def conn_handler(conn, conn_id, transcript, wrong_scale=1.0, reject_writes=False
                                          "func": "fc03", "addr": hex(addr), "count": count,
                                          "handled": "illegal-address"})
                         resp_pdu = bytes([0x83, 0x02])
+                elif func == 0x01 and len(pdu) == 5:  # 读线圈（P1004 数字量）
+                    addr = struct.unpack(">H", pdu[1:3])[0]
+                    count = struct.unpack(">H", pdu[3:5])[0]
+                    if not (1 <= count <= 2000):
+                        resp_pdu = bytes([0x81, 0x03])
+                    else:
+                        nbytes = (count + 7) // 8
+                        bits = bytearray(nbytes)
+                        for i in range(count):
+                            if COILS.get(addr + i, 0):
+                                bits[i // 8] |= 1 << (i % 8)
+                        resp_pdu = bytes([0x01, nbytes]) + bytes(bits)
                 elif func == 0x06 and len(pdu) == 5:  # 写单寄存器
                     addr = struct.unpack(">H", pdu[1:3])[0]
                     value = struct.unpack(">H", pdu[3:5])[0]

@@ -1,0 +1,28 @@
+{
+  "schema": "eneros.gate-run-record.v1",
+  "case_id": "CORE-70-R01",
+  "gate_id": "VOL70.1",
+  "command": "tools/run70-vol1-gate.sh（DL=900；peer 离线 = 69.5 失败压力形）",
+  "exit_code": 0,
+  "recorded_at": "2026-09-13T20:20:19Z",
+  "ran_artifact_sha256": "21ce09ce0047542d2ab0838a483959658daa80f14cc7ba938ac56fbd63d97962",
+  "ran_artifact_sha256_source": "evidence/70/70.1/image.sha256",
+  "raw_log": {
+    "name": "vol1.log",
+    "bytes": 1294,
+    "sha256": "231a3db1b024f32a2566a2c27f92323d30ef2774e93e6bf96115b3f7c1ed8fbf",
+    "resident": "handoff-bundle",
+    "note": ".gitignore `*.log`：原始日志随移交包分发，本记录绑定其摘要"
+  },
+  "verdict_lines": [
+    "=== VOL70.1 QEMU WINDOW: FAIL ==="
+  ],
+  "verdict": "FAIL",
+  "candidate": {
+    "candidate_id": "5161a9ceae2e1a9496210159d80ae7c7c72486d76a55dff355186ff1fff4745d",
+    "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+    "dirty_tree_digest": "300fbb1f6fd30336212b978ba58a6c27563e5d23e9e4af94a05ddcfdccb981c0",
+    "artifact_sha256": "39a171125b088802ea1074f94e7dfbf28a9824ab21ca24d51045f34f384e5b8b",
+    "profile": "qemu-prod"
+  }
+}

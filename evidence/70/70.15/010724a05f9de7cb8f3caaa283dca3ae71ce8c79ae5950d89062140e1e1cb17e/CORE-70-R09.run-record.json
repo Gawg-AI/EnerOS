@@ -1,0 +1,35 @@
+{
+  "schema": "eneros.gate-run-record.v1",
+  "case_id": "CORE-70-R09",
+  "gate_id": "VOL70.89",
+  "command": "tools/run70-vol89-gate.sh（--negative-cycle 单实例轮转 + AI_INBOX_CAP 64 + broker 死订阅清理）",
+  "exit_code": 0,
+  "recorded_at": "2026-09-15T07:26:29Z",
+  "ran_artifact_sha256": "1b117642c31e11e79c73f651b72d2593fef1a458cf4b726f0798319e420787eb",
+  "ran_artifact_sha256_source": "evidence/70/70.89/image.sha256",
+  "raw_log": {
+    "name": "vol89.log",
+    "bytes": 1557,
+    "sha256": "c18e85c70759c70ee5ef31ab210d1619009903175e014a15e0e72e973063fc44",
+    "resident": "handoff-bundle",
+    "note": ".gitignore `*.log`：原始日志随移交包分发，本记录绑定其摘要"
+  },
+  "verdict_lines": [
+    "[✓][R1] 结构化 v2 请求到达 peer（35）",
+    "[✓][R2] expired：ttl 拒绝 ×1（轮转注入 8）",
+    "[✓][R3] crossgen：绑定代次拒绝 ×1（注入 8）",
+    "[✓][R4] mutated：预算钳制拒绝 ×1（注入 8）",
+    "[✓][R5] unsigned：伪造关联 Late 丢弃 ×2（注入 8）",
+    "[✗][R6] 恢复段零 used=true",
+    "[✓][R7] 全窗零 PANIC",
+    "VOL70.89-GATE: FAIL"
+  ],
+  "verdict": "FAIL",
+  "candidate": {
+    "candidate_id": "010724a05f9de7cb8f3caaa283dca3ae71ce8c79ae5950d89062140e1e1cb17e",
+    "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+    "dirty_tree_digest": "3c4c16546da0a8117b9bfd533d52358f28c6b097852102d2e1f5815526de23a5",
+    "artifact_sha256": "8e01512ab543cb081d284dce6e8e5a6a2c03f5eae685d9cdefecd7cb10f5f4c1",
+    "profile": "qemu-test"
+  }
+}

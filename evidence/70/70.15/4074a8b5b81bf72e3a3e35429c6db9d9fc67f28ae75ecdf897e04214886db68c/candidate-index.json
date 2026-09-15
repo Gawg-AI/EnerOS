@@ -1,0 +1,117 @@
+{
+  "schema": "eneros.candidate-evidence.v1",
+  "matrix_id": "core-70",
+  "candidate_id": "4074a8b5b81bf72e3a3e35429c6db9d9fc67f28ae75ecdf897e04214886db68c",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "435d3061c99f9761a2e3cc75f8bf8201e3cb4a438f9dc8040457927e3e21e78f",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "artifacts": [
+    {
+      "name": "qemu-prod",
+      "profile": "qemu-prod",
+      "path": "target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw",
+      "sha256": "d8ffdbe5eb5ef2099b42ebd00e81e1995e1c39b8e60af19bcc6555b50b5c8889"
+    },
+    {
+      "name": "qemu-prod-vol5",
+      "profile": "qemu-prod",
+      "path": "target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw",
+      "sha256": "d8ffdbe5eb5ef2099b42ebd00e81e1995e1c39b8e60af19bcc6555b50b5c8889"
+    },
+    {
+      "name": "qemu-test",
+      "profile": "qemu-test",
+      "path": "target/eneros/artifacts/qemu-test/eneros-qemu-test.raw",
+      "sha256": "ac0fafa9456b4645402f61cbdd847eb7b29e569521ccd13ba8456736cb0e7003"
+    },
+    {
+      "name": "qemu-test-combined",
+      "profile": "qemu-test",
+      "path": "target/evidence70-vol7/eneros-combined.raw",
+      "sha256": "b2feb4446eba6c3cc6fb0edc024f30ddd2ae6f015feb82ec78db23ddc3d48ebf"
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "CORE-70-R01",
+      "artifact": "qemu-prod",
+      "envelope": "evidence/70/70.15/4074a8b5b81bf72e3a3e35429c6db9d9fc67f28ae75ecdf897e04214886db68c/CORE-70-R01.envelope.json",
+      "envelope_sha256": "a61646745f1a49e6b4aed781d629a508f416423b1ff3b13e3cf08c8279253bba",
+      "detail": "VOL70.1 // L2",
+      "tested_sha256": "a7844c22f1f7b297d67eb1992780323fe3566c4f41e68c096f35f38a78f1d23c"
+    },
+    {
+      "case_id": "CORE-70-R02",
+      "artifact": "qemu-prod",
+      "envelope": "evidence/70/70.15/4074a8b5b81bf72e3a3e35429c6db9d9fc67f28ae75ecdf897e04214886db68c/CORE-70-R02.envelope.json",
+      "envelope_sha256": "0c9db777ed8039e447cb3ff13ad4860d23dee6973f6c385a0cb1fb8b2792d88e",
+      "detail": "VOL70.2 // L2",
+      "tested_sha256": "a7844c22f1f7b297d67eb1992780323fe3566c4f41e68c096f35f38a78f1d23c"
+    },
+    {
+      "case_id": "CORE-70-R03",
+      "artifact": "qemu-prod",
+      "envelope": "evidence/70/70.15/4074a8b5b81bf72e3a3e35429c6db9d9fc67f28ae75ecdf897e04214886db68c/CORE-70-R03.envelope.json",
+      "envelope_sha256": "77c189e9ff157a99aa0165fc13e409118812caf35546492d70134f0d832426dd",
+      "detail": "VOL70.2-R03 // L2",
+      "tested_sha256": "aba7de60d075ebc0c4ba8fbebd6bbf58538b17ffab703f3d6ad2a3060eb6f86c"
+    },
+    {
+      "case_id": "CORE-70-R04",
+      "artifact": "qemu-prod",
+      "envelope": "evidence/70/70.15/4074a8b5b81bf72e3a3e35429c6db9d9fc67f28ae75ecdf897e04214886db68c/CORE-70-R04.envelope.json",
+      "envelope_sha256": "00c5eec500e13a00bcd776f6b539365a8da501afdf9deb6e8e859d75422e1791",
+      "detail": "VOL70.3 // L2",
+      "tested_sha256": "e50b2d73409eacca7405f1f60b3c2c2b6b9f64e985ae2234e03790590c96dcbb"
+    },
+    {
+      "case_id": "CORE-70-R05",
+      "artifact": "qemu-prod",
+      "envelope": "evidence/70/70.15/4074a8b5b81bf72e3a3e35429c6db9d9fc67f28ae75ecdf897e04214886db68c/CORE-70-R05.envelope.json",
+      "envelope_sha256": "dd48dc401adfc07d3289abef56ba5657a85b574ff8b4e329f3d4882384c22f82",
+      "detail": "VOL70.4 // INTEROP",
+      "tested_sha256": "b3288a3764f4bddb1199af29b102c7609071f033372f8e613f65bf8de7359d6d"
+    },
+    {
+      "case_id": "CORE-70-R06",
+      "artifact": "qemu-prod-vol5",
+      "envelope": "evidence/70/70.15/4074a8b5b81bf72e3a3e35429c6db9d9fc67f28ae75ecdf897e04214886db68c/CORE-70-R06.envelope.json",
+      "envelope_sha256": "c3f5c020521219503d15583011d80114ee8fe691747ee3ebd9aaf9a4a56e45a9",
+      "detail": "VOL70.5 // L3",
+      "tested_sha256": "6cb02062602832f0e12e272f41822f1c0c8b52cf2ef149530c8b0a4a79cb0319"
+    },
+    {
+      "case_id": "CORE-70-R07",
+      "artifact": "qemu-test",
+      "envelope": "evidence/70/70.15/4074a8b5b81bf72e3a3e35429c6db9d9fc67f28ae75ecdf897e04214886db68c/CORE-70-R07.envelope.json",
+      "envelope_sha256": "b67faab6428870cce19a51dd9d8636eb63dce46fe570675eed4f744fd47f6607",
+      "detail": "VOL70.6 // L2",
+      "tested_sha256": "d9abddf45548f56787154c6a63e2d2ce3d55782944292f1306eeccd3c91a0485"
+    },
+    {
+      "case_id": "CORE-70-R08",
+      "artifact": "qemu-test-combined",
+      "envelope": "evidence/70/70.15/4074a8b5b81bf72e3a3e35429c6db9d9fc67f28ae75ecdf897e04214886db68c/CORE-70-R08.envelope.json",
+      "envelope_sha256": "977a098cd9133c6be60f89f603f85bca2dbcb365cbc451cae5ba4fc2461aeeba",
+      "detail": "VOL70.7 // L3",
+      "tested_sha256": "93acf300e1aa2e7d702775426023b033f3f0913f5116735de4d2c45bfa690da1"
+    },
+    {
+      "case_id": "CORE-70-R12",
+      "artifact": "qemu-test-combined",
+      "envelope": "evidence/70/70.15/4074a8b5b81bf72e3a3e35429c6db9d9fc67f28ae75ecdf897e04214886db68c/CORE-70-R12.envelope.json",
+      "envelope_sha256": "389e1265c879f63271af38cb319157fd84f4726a4841db6279298d9f2ad3b2be",
+      "detail": "evidence42-candidate-check // GATE",
+      "tested_sha256": "93acf300e1aa2e7d702775426023b033f3f0913f5116735de4d2c45bfa690da1"
+    }
+  ],
+  "blocked": [
+    {
+      "case_id": "CORE-70-R11",
+      "blocker": "EXT-70-HW",
+      "reason": "真实板卡/HIL/72h 需板卡 revision/固件/手册/调试通道与真实熵-时间-存储特性、对端型号与点表、生产公钥与设备身份来源——三项外部输入未到位，按蓝图 70 [10] §7 不以 QEMU 证据代填"
+    }
+  ],
+  "exemptions": []
+}

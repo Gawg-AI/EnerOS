@@ -26,6 +26,27 @@ use eneros_boot_protocol::BootControl;
 
 const BC_RECORD: usize = BOOT_CONTROL_RECORD_SIZE;
 
+/// 槽是否处于 **pending trial**（未确认、可参与启动）态。
+///
+/// 口径（70.7 复查 + 70.14 复查单源化）：`pending = 非 successful 且
+/// priority≠0 且 tries≠0`；disabled / successful 槽均非 pending。
+/// **不得**按优先级高低判（trial 写后 trial 槽优先级更高，高低判据会认反）。
+fn is_pending_trial(s: eneros_boot_protocol::SlotState) -> bool {
+    !s.successful && s.priority != 0 && s.tries_remaining != 0
+}
+
+/// `BootControl::select()` → 是否 A 槽（Recovery 与不可选 = `Err`）。
+///
+/// 活跃槽判据的**唯一来源**：`BootWriteGuard::resolve`（安装写面）与
+/// `write_bootctrl_trial`（trial 目标）都用它，避免两处各判一次而分叉。
+fn selected_is_a(control: &BootControl) -> Result<bool, &'static str> {
+    match control.select().map_err(|_| "no-bootable-slot")?.slot {
+        eneros_boot_protocol::BootSlot::A => Ok(true),
+        eneros_boot_protocol::BootSlot::B => Ok(false),
+        eneros_boot_protocol::BootSlot::Recovery => Err("recovery-selected"),
+    }
+}
+
 /// 70.7 安装控制器（WP-70.7.3）：bootctrl 双副本事务。`face` =
 /// boot 受限安装面（非活动槽 ∪ BOOTCTRL 写守卫在面内强制）。
 pub struct BootInstall<'a> {
@@ -88,13 +109,28 @@ impl<'a> BootInstall<'a> {
         target_image_id: [u8; 16],
     ) -> Result<u64, &'static str> {
         let (current, high_copy) = self.read_current()?;
-        // 活跃槽 = select() 的裁决（priority → successful 平局规则的权威
-        // 实现）；Recovery/不可选 = 无「非活动槽」概念 → 拒绝（fail-closed：
-        // 守卫也不放行任何 BOOT 槽写）。
-        let active_is_a = match current.select().map_err(|_| "no-bootable-slot")?.slot {
-            eneros_boot_protocol::BootSlot::A => true,
-            eneros_boot_protocol::BootSlot::B => false,
-            eneros_boot_protocol::BootSlot::Recovery => return Err("recovery-selected"),
+        // **trial 目标槽 = 守卫的非活动槽**（70.14 复查修复，单源 = 安装写面）。
+        //
+        // 为什么不能再用 `select()`：`select()` 是「下一引导槽」，首次 trial
+        // 写成功后它就指向 trial 槽；而载荷真正被安装到的分区由
+        // `BootWriteGuard`（init 期解析一次 = **本 boot 正在运行的槽的对侧**）
+        // 决定——0x0F 候选身份读面读的也是它。两处若各判一次，同一 boot 内
+        // 第二次 trial 就会把记录指向**正在运行**的槽：记录身份与载荷身份
+        // 分叉（70.7-BOOT-TRIAL-BIND 修复面反向失效），安装写还会打到运行槽。
+        // 现三处（安装写 / 候选身份读 / trial 记录）同源于 `install_ranges`。
+        let (inactive_start, inactive_lbas, _, _) = self.face.install_ranges();
+        let (a_start, a_lbas) =
+            eneros_ota_ab::boot_disk::lba_range_of(eneros_ota_ab::boot_disk::BootPartition::BootA);
+        let (b_start, b_lbas) =
+            eneros_ota_ab::boot_disk::lba_range_of(eneros_ota_ab::boot_disk::BootPartition::BootB);
+        let active_is_a = if inactive_start == a_start && inactive_lbas == a_lbas {
+            false
+        } else if inactive_start == b_start && inactive_lbas == b_lbas {
+            true
+        } else {
+            // 守卫导出的非活动区间不是任一 BOOT 槽 → 安装面自相矛盾，
+            // 拒绝（fail-closed，不猜目标）。
+            return Err("install-range-not-a-slot");
         };
         let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
             eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
@@ -159,6 +195,15 @@ impl<'a> BootInstall<'a> {
     /// 收窄回退面；试启动失败回退链在确认前的 tries 耗尽路径不受影响），
     /// 序列 +1 双副本写 + flush。`slot_is_a` = 当前启动槽（IdentityCapsule
     /// 投影）；`security_version` = 已验证运行版本。
+    ///
+    /// 70.14 复查修复：**被确认的槽必须就是 `select()` 选中的槽**。
+    /// 旧实现直接采信调用方的 `slot_is_a`：wire 上给一个与运行槽相反的
+    /// 值即把**非运行槽**置 successful 并把 `security_floor` 推到任意
+    /// `security_version`（`SlotState::successful(priority.max(1),…)` 连
+    /// disabled（priority=0）槽都会被提成 1）——下次引导选择被翻转、
+    /// 不可逆 floor 可被单条消息推高。boot-manager 只引导 `select()` 的
+    /// 槽，故"正在运行的槽"在记录里就是选中槽：不等即拒绝（fail-closed），
+    /// 无需额外通道即可闭合。
     pub fn confirm_running(
         &mut self,
         slot_is_a: bool,
@@ -166,6 +211,9 @@ impl<'a> BootInstall<'a> {
         image_id: [u8; 16],
     ) -> Result<u64, &'static str> {
         let (current, _) = self.read_current()?;
+        if selected_is_a(&current)? != slot_is_a {
+            return Err("confirm-slot-not-selected");
+        }
         let mut next = current; // BootControl: Copy
         if slot_is_a {
             next.slot_a = eneros_boot_protocol::SlotState::successful(
@@ -208,14 +256,13 @@ impl<'a> BootInstall<'a> {
     /// 达，70.7.4 语义）。
     pub fn cancel_trial(&mut self) -> Result<u64, &'static str> {
         let (current, _) = self.read_current()?;
-        // pending trial 判槽（**非**按优先级高低——trial 写后 trial 槽优先
-        // 级更高，高低判据会认反）：pending = 非 successful 且可参与启动
-        //（priority≠0 / tries≠0）。disabled/successful 槽均非 pending。
-        let pending = |s: eneros_boot_protocol::SlotState| {
-            !s.successful && s.priority != 0 && s.tries_remaining != 0
-        };
+        // pending trial 判槽单源 = [`is_pending_trial`]（**非**按优先级高低——
+        // trial 写后 trial 槽优先级更高，高低判据会认反）。
         let mut next = current; // BootControl: Copy
-        match (pending(current.slot_a), pending(current.slot_b)) {
+        match (
+            is_pending_trial(current.slot_a),
+            is_pending_trial(current.slot_b),
+        ) {
             (true, false) => {
                 let t = current.slot_a;
                 next.slot_a =
@@ -312,6 +359,10 @@ mod boot_install_tests {
     struct MockFace {
         media: alloc::vec::Vec<u8>,
         writes: u32,
+        /// 守卫**冻结**缓存（生产 = init 期解析一次、boot 内不变）。
+        /// 不缓存就等于"守卫随介质漂移"，与生产语义不符（会掩盖
+        /// trial 目标与安装面分叉）。
+        guard: core::cell::RefCell<Option<(u64, u64, u64, u64)>>,
     }
 
     const LBA: usize = 512;
@@ -322,6 +373,7 @@ mod boot_install_tests {
             MockFace {
                 media: alloc::vec![0u8; 18480 * LBA],
                 writes: 0,
+                guard: core::cell::RefCell::new(None),
             }
         }
         fn seed_bootctrl(&mut self, rec: &[u8; BOOT_CONTROL_RECORD_SIZE], copy: usize) {
@@ -359,8 +411,42 @@ mod boot_install_tests {
     }
 
     impl InstallBackend for MockFace {
+        /// 70.14 复查修复：**夹具与生产同源**。旧实现硬编码
+        /// `(16384, 16384, 0, 8)`——bootctrl 起始写成 0、槽起始写成 16384，
+        /// 与 `boot_disk` 介质图（BootCtrl=18432 / BootA=20480 / BootB=36864，
+        /// 各 8 MiB 槽）不符：夹具里的 `write_allowed` 判据与生产**不是同一
+        /// 个判据**，安装写面的红测因此没有判别力（trial 目标槽改由
+        /// `install_ranges` 单源导出后立即暴露）。
         fn install_ranges(&self) -> (u64, u64, u64, u64) {
-            (16384, 16384, 0, 8)
+            use eneros_ota_ab::boot_disk::{lba_range_of, BootPartition};
+            if let Some(cached) = *self.guard.borrow() {
+                return cached;
+            }
+            let (bc_lba, bc_lbas) = lba_range_of(BootPartition::BootCtrl);
+            let rec0 = bc_lba as usize * LBA;
+            let rec1 = (bc_lba + 8) as usize * LBA;
+            let guard = crate::boot_guard::BootWriteGuard::resolve(
+                &self.media[rec0..rec0 + BOOT_CONTROL_RECORD_SIZE],
+                &self.media[rec1..rec1 + BOOT_CONTROL_RECORD_SIZE],
+            )
+            // 双副本均无效 → 非活动区间置空（`write_allowed` 恒拒 =
+            // 生产 fail-closed 语义）。
+            .unwrap_or(crate::boot_guard::BootWriteGuard {
+                inactive_start_lba: 0,
+                inactive_lbas: 0,
+                active_is_a: true,
+                active_security_version: 0,
+                sequence: 0,
+            });
+            let out = (
+                guard.inactive_start_lba,
+                guard.inactive_lbas,
+                bc_lba,
+                bc_lbas,
+            );
+            // 首次调用 = 本 boot 的 init；其后冻结（与生产一致）。
+            *self.guard.borrow_mut() = Some(out);
+            out
         }
     }
 
@@ -446,6 +532,80 @@ mod boot_install_tests {
         let sel = c.select().expect("select");
         assert_eq!(sel.slot, BootSlot::B);
         assert!(!sel.trial);
+    }
+
+    /// 70.14 复查红测：**confirm 只接受 `select()` 选中的槽**。
+    ///
+    /// 缺陷形态（旧实现）：直接采信 wire 上的 `slot_is_a`——发一条与运行槽
+    /// 相反的消息即把**非运行槽**置 successful 并把 `security_floor` 推到
+    /// 任意 secver（`successful(priority.max(1), …)` 连 disabled 槽都会被提成
+    /// 1）；下次引导选择被翻转、不可逆 floor 被单条消息推高。boot-manager
+    /// 只引导 `select()` 的槽，故"正在运行的槽"就是选中槽。
+    #[test]
+    fn confirm_rejects_slot_that_is_not_selected() {
+        let mut face = MockFace::new();
+        face.seed_bootctrl(&factory_stable(), 0);
+        face.seed_bootctrl(&factory_stable(), 1);
+        let mut inst = BootInstall::new(&mut face);
+        // 稳定种子：select() = A（A=15 successful > B=14）→ 确认 B 必须拒绝。
+        let before = inst.read_current().expect("read").0.encode().unwrap();
+        let err = inst
+            .confirm_running(false, 2, [3u8; 16])
+            .expect_err("confirm");
+        assert_eq!(err, "confirm-slot-not-selected");
+        let (c0, _) = inst.read_current().expect("read");
+        assert_eq!(c0.security_floor, 1, "拒绝面零副作用（floor 不得被推高）");
+        assert_eq!(
+            c0.encode().unwrap(),
+            before,
+            "拒绝面必须零写入（记录逐字节不变）"
+        );
+        // 正例仍成立：trial 后 select() = B → 确认 B。
+        inst.write_bootctrl_trial(2, [3u8; 16]).expect("trial");
+        inst.confirm_running(false, 2, [3u8; 16])
+            .expect("confirm 选中槽");
+    }
+
+    /// 70.14 复查红测：**trial 目标槽来自安装守卫（`install_ranges`）**，
+    /// 而不是重新用 `select()` 推。
+    ///
+    /// 差别只在"同一 boot 内记录已变"时显现：守卫在 init 期解析一次（非活动
+    /// = 本 boot 未在运行的槽），而 `select()` 是"下一引导槽"。载荷安装目标
+    /// 与 0x0F 候选身份读面都按守卫口径取分区——若 trial 记录另按 `select()`
+    /// 推，第二次 trial 会把记录指向**正在运行**的槽：记录身份 ≠ 载荷身份、
+    /// 安装写打到运行槽。
+    ///
+    /// 本锁构造：先用"select()=A"的记录冻结守卫（非活动 = B），再把记录换成
+    /// "select()=B"（模拟 boot 内记录已前移）→ trial 必须仍落 B（守卫口径），
+    /// 而不是按 select() 的对侧落 A。
+    #[test]
+    fn trial_target_comes_from_the_install_guard_not_select() {
+        let mut face = MockFace::new();
+        let frozen = factory_stable(); // A=15 successful → select()=A ⇒ 守卫非活动 = B
+        face.seed_bootctrl(&frozen, 0);
+        face.seed_bootctrl(&frozen, 1);
+        let inst = BootInstall::new(&mut face);
+        // 冻结守卫（生产 = init 期）。
+        let (inactive_start, _, _, _) = inst.face.install_ranges();
+        let (b_start, _) =
+            eneros_ota_ab::boot_disk::lba_range_of(eneros_ota_ab::boot_disk::BootPartition::BootB);
+        assert_eq!(inactive_start, b_start, "守卫非活动槽 = BOOT_B");
+        // 释放 `inst` 对 face 的独占借用（守卫已缓存进 face）。
+        let _ = inst;
+        // 记录前移：改为 select() = B（B=15 successful > A=14）。
+        let moved = factory_b_active();
+        face.seed_bootctrl(&moved, 0);
+        face.seed_bootctrl(&moved, 1);
+        let mut inst = BootInstall::new(&mut face);
+        let seq = inst.write_bootctrl_trial(2, [3u8; 16]).expect("trial");
+        assert_eq!(seq, 2);
+        let (c, _) = inst.read_current().expect("read");
+        assert_eq!(
+            c.slot_b.security_version, 2,
+            "trial 必须落在守卫口径的非活动槽（B）——按 select() 推会落到 A（运行槽）"
+        );
+        assert_eq!(c.slot_b.tries_remaining, 3);
+        assert_eq!(c.slot_a.priority, 13, "非目标槽（A=14）降 1 保留回退资格");
     }
 
     /// 70.7 复查回归锁：trial 目标槽 = **select() 的裁决对侧**。

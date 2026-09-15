@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-f8405b4892bd",
+  "run_id": "run-18d56dd4e820a2d4",
+  "nonce": "18d56dd4e820a6e6",
+  "test_id": "CORE-70-R07",
+  "scope": "L2",
+  "started_at": "2026-09-15T07:26:28Z",
+  "ended_at": "2026-09-15T07:26:28Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "3c4c16546da0a8117b9bfd533d52358f28c6b097852102d2e1f5815526de23a5",
+  "product_manifest_digest": "34578f039d515eb20ea06eaa89e6d84c35169fd1b1b522002a41924fb29d7989",
+  "profile_digest": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6",
+  "artifact_sha256": "8e01512ab543cb081d284dce6e8e5a6a2c03f5eae685d9cdefecd7cb10f5f4c1",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol6-gate.sh（svc-config 写后读回生效后）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-test/product-manifest.normalized.json",
+      "sha256": "34578f039d515eb20ea06eaa89e6d84c35169fd1b1b522002a41924fb29d7989"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-test.json",
+      "sha256": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "管理动作全链 22 判据"
+  },
+  "positive_results": [
+    {
+      "id": "mgmt",
+      "status": "PASS",
+      "detail": "零 ✗ 全 ✓——R24 冷启动恢复 ✓（写后读回生效）"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "skip",
+      "status": "FAIL",
+      "detail": "R17 维护外激活=宿主闸覆盖（如实登记）"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/010724a05f9de7cb8f3caaa283dca3ae71ce8c79ae5950d89062140e1e1cb17e/CORE-70-R07.run-record.json",
+      "sha256": "82171d3493e0b2fce636c2557b59efb1455216267a3e15d8d80af4587cca846d"
+    }
+  ],
+  "signer": "dev",
+  "signature": "2354bfd0ff315f670fedfdbc1e793caf211e630e4f8c74b2bbb94e062644067a3978fb4bfd0b1f3c86bb900188a18815f69ba73a4c242cd146c6606be7d9800d"
+}

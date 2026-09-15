@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-728fa41499ef",
+  "run_id": "run-18d553a40379dd82",
+  "nonce": "18d553a40379e1ef",
+  "test_id": "CORE-70-R04",
+  "scope": "L2",
+  "started_at": "2026-09-14T23:26:30Z",
+  "ended_at": "2026-09-14T23:26:30Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "cc8228d63648228f15becea296f2e95920fcdea9723663eaf3d8b88aefd521de",
+  "product_manifest_digest": "567acb2ae1d1deddff6d498cdfbf76795bb673835a106b5479cd0bcafec2e2c7",
+  "profile_digest": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2",
+  "artifact_sha256": "d8ffdbe5eb5ef2099b42ebd00e81e1995e1c39b8e60af19bcc6555b50b5c8889",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol3-gate.sh（DL=1200）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "567acb2ae1d1deddff6d498cdfbf76795bb673835a106b5479cd0bcafec2e2c7"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "IPC 有界组装/判别：R2 PROTOCOL-CONFIG loaded=6（≥6）、R3 七种拒绝词形硬零、judge G1-G7（G4 产出相位重标）"
+  },
+  "positive_results": [
+    {
+      "id": "ipc",
+      "status": "PASS",
+      "detail": "全门 rc=0——R2 ✓、R3 拒绝词形全 ×0、G1-G7 全 ✓（G4 产出相位尾健康）；观测 PAGE-EVICTED/SLOW 为预存语义如实记录"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "none",
+      "status": "FAIL",
+      "detail": "无独立负例判据（R3 硬零即负例面）"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/f2227b102aa45ef2da7750299b74dfcdf49efb55db5d2796d952cfe8af0d2a71/CORE-70-R04.run-record.json",
+      "sha256": "99be18502f4c9713a6be7c22491b6cd66bf3aeb7f4427b17e364a9cb667e3e73"
+    }
+  ],
+  "signer": "dev",
+  "signature": "c05c9eca6a7d01ee5e0381e2b80314146b22c946d4d628a8f62127564d62fef89a23e78093f7858c006b6302c7d118d9bfa4f8545adf3424e4c9abc753c39509"
+}

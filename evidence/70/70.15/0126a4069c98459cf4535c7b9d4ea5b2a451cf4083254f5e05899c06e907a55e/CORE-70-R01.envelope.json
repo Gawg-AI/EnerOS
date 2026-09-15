@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-bed8bcb9916f",
+  "run_id": "run-18d54a3a47c00005",
+  "nonce": "18d54a3a47c00454",
+  "test_id": "CORE-70-R01",
+  "scope": "L2",
+  "started_at": "2026-09-14T20:34:01Z",
+  "ended_at": "2026-09-14T20:34:01Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "2175954fab5ed5ee40a2467ba3cbfacf573cd1e98d38c8053012a2e2d0c0193d",
+  "product_manifest_digest": "19e6230ff8c7fce7103073971a95940a9cb1b1503abc68a53a743f80edd8da05",
+  "profile_digest": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2",
+  "artifact_sha256": "a7844c22f1f7b297d67eb1992780323fe3566c4f41e68c096f35f38a78f1d23c",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol1-gate.sh（DL=1300）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "19e6230ff8c7fce7103073971a95940a9cb1b1503abc68a53a743f80edd8da05"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "judge G1-G7：G1 零 PANIC（无豁免·全文件）、G2 零分配失败、G3 PRODUCT-READY、G5 轮数+提交下限、G6 CHAIN-KEY-MISSING、G7 transcript 活性"
+  },
+  "positive_results": [
+    {
+      "id": "survival",
+      "status": "PASS",
+      "detail": "全窗零 PANIC 零分配失败；G5 rounds=10600(门限 520)/Committed=2156(下限 28) 越过旧故障点 512；G6 ×0、G7 ×2 非空；串口全文件零 virtqueue full/零 device IOERR/零 blk-wait TIMEOUT/零 SNAP-SKIP/零 HEARTBEAT-TIMEOUT——块层死亡螺旋签名族清零"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "phase",
+      "status": "FAIL",
+      "detail": "G4 相位样本=[3427，3663，2292，1218] 尾/二=1218/3663≈33% 低于判据比（尾部 1218 远超地板 130；堆 PANIC 修复后依旧存在 ⇒ 新登记 REG-70.15-G4-PHASE-TAIL-DECAY，真根因待逐相位探针）"
+    }
+  ],
+  "verdict": "FAIL",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/0126a4069c98459cf4535c7b9d4ea5b2a451cf4083254f5e05899c06e907a55e/CORE-70-R01.run-record.json",
+      "sha256": "8935e5d7cbb521d14d9220e3e82dccaf73ac8da702b32a23df87efc47049b633"
+    }
+  ],
+  "signer": "dev",
+  "signature": "7caf31fb09d19d9d6348794d510bf50c1e28ff6edccbaf4a58039dab4288e9cd8d3b242995a6dba0166048a7b46548eb026a13dfc583ace1b7ef8c55fcac060a"
+}

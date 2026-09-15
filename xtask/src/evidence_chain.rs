@@ -130,6 +130,637 @@ pub struct CandidateLineage {
     pub build_inputs: Vec<ArtifactRef>,
 }
 
+// ============================================================
+// 70.15（E70-F）：候选 required 矩阵与候选证据索引
+// ============================================================
+
+/// required 矩阵单源 schema——`product/evidence-required/<matrix_id>.json`。
+pub const REQUIRED_MATRIX_SCHEMA: &str = "eneros.required-matrix.v1";
+/// 当前候选证据索引 schema——`evidence/70/70.15/<candidate_id>/candidate-index.json`。
+pub const CANDIDATE_INDEX_SCHEMA: &str = "eneros.candidate-evidence.v1";
+
+/// required 矩阵中的一条必需 case（蓝图 70 [11] §2 的 CORE 场景 + 卷内验收）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequiredCase {
+    pub case_id: String,
+    pub owner: String,
+    /// 该 case 至少需要的证据 scope（rank 见 `scope_rank`）。
+    pub min_scope: String,
+    pub title: String,
+}
+
+/// 合法阻塞/豁免登记项。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BlockerDecl {
+    pub id: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequiredMatrix {
+    pub schema: String,
+    pub matrix_id: String,
+    pub series: String,
+    pub cases: Vec<RequiredCase>,
+    /// `blocked[]` 只能引用这里的 id——"非法豁免皆拒绝"。
+    pub blockers: Vec<BlockerDecl>,
+    /// 合法豁免登记（缺省空 ⇒ 任何豁免皆非法）。
+    #[serde(default)]
+    pub allowed_exemptions: Vec<BlockerDecl>,
+}
+
+/// 候选构建集里的一份产物（一个 profile 一份）。
+///
+/// 同一源码 × 同一工具链可以产出多份 profile 产物；它们属于**同一个候选**，
+/// 但各自是不同的可检验镜像——"同一源码不同配置/镜像分别为不同可检验候选"
+/// 在实现上就是：产物级身份逐份绑定，跨份只允许 提交/工作树/工具链/平台 相同。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateArtifact {
+    pub name: String,
+    pub profile: String,
+    /// 仓库相对路径（不得越出仓库）。
+    pub path: String,
+    /// **构建产物当前文件**的摘要（判据可独立重算）。就地启动会改写镜像，
+    /// 故"跑的是哪份字节"逐 case 记在 [`CandidateCaseEntry::tested_sha256`]。
+    pub sha256: String,
+    /// **受测（启动前）字节**的摘要——门在启动前自记的 `image.sha256`。
+    /// 就地启动会改写镜像，故它与 `sha256`（当前文件）可以不同；缺省 =
+    /// 未就地启动（与 `sha256` 同值语义）。
+    #[serde(default)]
+    pub tested_sha256: Option<String>,
+}
+
+/// 候选索引中的一条已取证据。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateCaseEntry {
+    pub case_id: String,
+    /// 本 case 的受测产物（`artifacts[].name`）。
+    pub artifact: String,
+    /// 仓库相对路径（不得越出仓库）。
+    pub envelope: String,
+    pub envelope_sha256: String,
+    /// **本 case 实际受测的字节**（门在启动前自记的 `image.sha256`）。
+    /// 就地启动会改写镜像 ⇒ 与产物的当前文件摘要可以不同；"跑的是哪份
+    /// 字节"因此是**逐 case**的事实，不是产物级常量（同一产物在不同轮次
+    /// 之间也可能被改写）。
+    #[serde(default)]
+    pub tested_sha256: Option<String>,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateBlockedEntry {
+    pub case_id: String,
+    pub blocker: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateExemptionEntry {
+    pub case_id: String,
+    pub reason: String,
+    pub approved_by: String,
+}
+
+/// 候选证据索引：把 required 全集收在一处，并绑定候选身份。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateEvidenceIndex {
+    pub schema: String,
+    pub matrix_id: String,
+    /// 主产物（`artifacts[0]`）的候选 ID——身份 = 提交 + 工作树 + manifest +
+    /// 工具链 + **产物摘要**，故索引必须自己指出产物在哪，否则"当前候选"
+    /// 无法被独立重算（不能只对 commit 做等值比较）。
+    pub candidate_id: String,
+    pub source_commit: String,
+    pub dirty_tree_digest: String,
+    pub toolchain_digest: String,
+    pub platform_inventory_digest: String,
+    pub artifacts: Vec<CandidateArtifact>,
+    pub cases: Vec<CandidateCaseEntry>,
+    #[serde(default)]
+    pub blocked: Vec<CandidateBlockedEntry>,
+    #[serde(default)]
+    pub exemptions: Vec<CandidateExemptionEntry>,
+}
+
+/// 证据 scope 的显式序（未知 scope 判负——"未知 scope 皆拒绝"）。
+///
+/// `HARDWARE` 单列最高级：仓内 L0–L4 分级里 host 仿真与目标进程都**不能**
+/// 填成硬件验证（蓝图 70 [11] §1），故它必须在 L4 之上。
+pub fn scope_rank(scope: &str) -> Option<u8> {
+    Some(match scope.to_ascii_uppercase().as_str() {
+        "MODEL" | "L0" => 0,
+        "L1" => 1,
+        "L2" => 2,
+        "L3" | "INTEROP" | "SOAK" | "GATE" => 3,
+        "L4" | "PRODUCT" => 4,
+        "HARDWARE" => 5,
+        _ => return None,
+    })
+}
+
+/// 加载 required 矩阵（单源文件；schema/重复 case 在此判负）。
+pub fn load_required_matrix(root: &Path, matrix_id: &str) -> DynResult<RequiredMatrix> {
+    if !matrix_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+    {
+        return Err(invalid(format!("invalid matrix id '{matrix_id}'")));
+    }
+    let path = root.join(format!("product/evidence-required/{matrix_id}.json"));
+    let matrix: RequiredMatrix = read_json(&path)?;
+    if matrix.schema != REQUIRED_MATRIX_SCHEMA {
+        return Err(invalid(format!(
+            "required matrix {} schema mismatch: {}",
+            path.display(),
+            matrix.schema
+        )));
+    }
+    if matrix.matrix_id != matrix_id {
+        return Err(invalid(format!(
+            "required matrix id mismatch: file says {}",
+            matrix.matrix_id
+        )));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for case in &matrix.cases {
+        if case.case_id.is_empty() || case.min_scope.is_empty() {
+            return Err(invalid(format!(
+                "required matrix {matrix_id} has empty case field"
+            )));
+        }
+        if scope_rank(&case.min_scope).is_none() {
+            return Err(invalid(format!(
+                "required matrix {matrix_id} case {} unknown min_scope {}",
+                case.case_id, case.min_scope
+            )));
+        }
+        if !seen.insert(case.case_id.clone()) {
+            return Err(invalid(format!(
+                "required matrix {matrix_id} duplicate case {}",
+                case.case_id
+            )));
+        }
+    }
+    Ok(matrix)
+}
+
+/// 候选证据完整性判定（WP-70.15.1/.2 单一判定库）。
+///
+/// 返回 `(逐项状态行, 违规)`：状态行对 required 全集逐条给出
+/// `CASE <id> <PASS|BLOCKED|MISSING> …`，违规是机器可读原因。
+/// 局部卷验收与全局放行共用本函数，只以不同 `RequiredMatrix` 区分。
+pub fn candidate_case_statuses(
+    root: &Path,
+    index: &CandidateEvidenceIndex,
+    matrix: &RequiredMatrix,
+    lineage: &CandidateLineage,
+    resolve: &dyn Fn(&str, &Path) -> DynResult<CandidateLineage>,
+) -> (Vec<String>, Vec<String>) {
+    let mut v = Vec::new();
+    let mut lines = Vec::new();
+
+    // --- 候选身份（时效性：同一源码不同钥/配置/SKU/镜像 = 不同候选）---
+    if index.schema != CANDIDATE_INDEX_SCHEMA {
+        v.push(format!("candidate-schema-unknown:{}", index.schema));
+    }
+    if index.matrix_id != matrix.matrix_id {
+        v.push(format!(
+            "candidate-matrix-mismatch:{}:{}",
+            index.matrix_id, matrix.matrix_id
+        ));
+    }
+    // 树键自检：索引的 `candidate_id` 必须等于**树级键**（提交+工作树+工具链），
+    // 不是血缘里含产物摘要的那个候选 ID（一个候选 = 一棵树 × 一组产物）。
+    let tree_key = candidate_tree_key(
+        &index.source_commit,
+        &index.dirty_tree_digest,
+        &index.toolchain_digest,
+    );
+    if index.candidate_id != tree_key {
+        v.push(format!(
+            "candidate-tree-key-mismatch:{}",
+            index.candidate_id
+        ));
+    }
+    for (name, got, want) in [
+        (
+            "source_commit",
+            &index.source_commit,
+            &lineage.source_commit,
+        ),
+        (
+            "dirty_tree_digest",
+            &index.dirty_tree_digest,
+            &lineage.dirty_tree_digest,
+        ),
+        (
+            "toolchain_digest",
+            &index.toolchain_digest,
+            &lineage.toolchain_digest,
+        ),
+        (
+            "platform_inventory_digest",
+            &index.platform_inventory_digest,
+            &lineage.platform_inventory_digest,
+        ),
+    ] {
+        if got.is_empty() || got != want {
+            v.push(format!("candidate-identity-mismatch:{name}"));
+        }
+    }
+
+    // --- 构建集逐份绑定：产物存在 + 摘要相符 + 跨份只允许同源码/工具链/平台 ---
+    let mut per_artifact: std::collections::BTreeMap<&str, CandidateLineage> =
+        std::collections::BTreeMap::new();
+    // 逐 case 的受测字节闭合状态（声明了 `tested_sha256` 的 case 必须由
+    // 其 run-record 自记同一个值）。
+    let mut tested_proven: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    if index.artifacts.is_empty() {
+        v.push("candidate-artifacts-empty".to_owned());
+    }
+    let mut seen_artifacts = std::collections::BTreeSet::new();
+    for art in &index.artifacts {
+        if !seen_artifacts.insert(art.name.as_str()) {
+            v.push(format!("candidate-artifact-duplicate:{}", art.name));
+            continue;
+        }
+        let Ok(path) = safe_repo_path(root, art.path.trim_start_matches("./")) else {
+            v.push(format!("candidate-artifact-path-escape:{}", art.name));
+            continue;
+        };
+        if !path.is_file() {
+            v.push(format!("candidate-artifact-unavailable:{}", art.name));
+            continue;
+        }
+        // 就地启动的镜像（`tested_sha256` 在案）：运行本身会改写镜像
+        // （bootctrl/数据区），盘上字节 ≠ 受测字节——受测摘要由逐 case 的
+        // run-record（`ran_artifact_sha256` = 门自记的启动前 sha）闭合，
+        // 文件摘要只验"文件存在且可读"。未声明受测摘要的产物维持旧判据。
+        let booted = art.tested_sha256.is_some();
+        match hash_file(&path) {
+            Ok(actual) if actual == art.sha256 => {}
+            Ok(_) if booted => {
+                // 受测字节由逐 case run-record 闭合（下方第 4 段）。
+            }
+            Ok(_) => {
+                v.push(format!("candidate-artifact-replaced:{}", art.name));
+                continue;
+            }
+            Err(_) => {
+                v.push(format!("candidate-artifact-unreadable:{}", art.name));
+                continue;
+            }
+        }
+        match resolve(&art.profile, &path) {
+            Ok(l) => {
+                // 跨份只允许同源码 + 同工作树 + 同工具链 + 同平台事实。
+                for (field, got, want) in [
+                    ("source_commit", &l.source_commit, &index.source_commit),
+                    (
+                        "dirty_tree_digest",
+                        &l.dirty_tree_digest,
+                        &index.dirty_tree_digest,
+                    ),
+                    (
+                        "toolchain_digest",
+                        &l.toolchain_digest,
+                        &index.toolchain_digest,
+                    ),
+                    (
+                        "platform_inventory_digest",
+                        &l.platform_inventory_digest,
+                        &index.platform_inventory_digest,
+                    ),
+                ] {
+                    if got != want {
+                        v.push(format!(
+                            "candidate-artifact-identity-mismatch:{}:{field}",
+                            art.name
+                        ));
+                    }
+                }
+                per_artifact.insert(art.name.as_str(), l);
+            }
+            Err(e) => v.push(format!("candidate-artifact-unavailable:{}:{e}", art.name)),
+        }
+    }
+
+    // --- 逐 case 归属唯一性 ---
+    let required: std::collections::BTreeMap<&str, &RequiredCase> = matrix
+        .cases
+        .iter()
+        .map(|c| (c.case_id.as_str(), c))
+        .collect();
+    let mut owners: std::collections::BTreeMap<&str, Vec<&str>> = std::collections::BTreeMap::new();
+    for c in &index.cases {
+        owners.entry(c.case_id.as_str()).or_default().push("case");
+    }
+    for b in &index.blocked {
+        owners
+            .entry(b.case_id.as_str())
+            .or_default()
+            .push("blocked");
+    }
+    for e in &index.exemptions {
+        owners
+            .entry(e.case_id.as_str())
+            .or_default()
+            .push("exemption");
+    }
+    for (case_id, who) in &owners {
+        if !required.contains_key(case_id) {
+            v.push(format!("candidate-case-unknown:{case_id}"));
+            continue;
+        }
+        if who.len() > 1 {
+            v.push(format!("candidate-case-duplicate:{case_id}"));
+        }
+    }
+
+    // --- 阻塞/豁免合法性（"非法豁免皆拒绝"）---
+    for b in &index.blocked {
+        if b.reason.trim().is_empty() {
+            v.push(format!("candidate-blocked-no-reason:{}", b.case_id));
+        }
+        if !matrix.blockers.iter().any(|k| k.id == b.blocker) {
+            v.push(format!(
+                "candidate-blocked-illegal:{}:{}",
+                b.case_id, b.blocker
+            ));
+        }
+    }
+    for e in &index.exemptions {
+        if e.reason.trim().is_empty() || e.approved_by.trim().is_empty() {
+            v.push(format!("candidate-exemption-no-authority:{}", e.case_id));
+        }
+        let known = matrix.allowed_exemptions.iter().any(|k| k.id == e.case_id);
+        if !known {
+            v.push(format!("candidate-exemption-illegal:{}", e.case_id));
+        }
+    }
+
+    // --- 逐 case 内容判定 ---
+    let mut sorted_cases: Vec<&CandidateCaseEntry> = index.cases.iter().collect();
+    sorted_cases.sort_by(|a, b| a.case_id.cmp(&b.case_id));
+    for entry in &sorted_cases {
+        let case = match required.get(entry.case_id.as_str()) {
+            Some(c) => *c,
+            None => continue, // 未知 case 已在上面报出，不再重复判定
+        };
+        let rel = entry.envelope.trim_start_matches("./");
+        let Ok(disk) = safe_repo_path(root, rel) else {
+            v.push(format!("candidate-path-escape:{}", entry.envelope));
+            lines.push(format!("CASE {} FAIL path-escape", case.case_id));
+            continue;
+        };
+        if !disk.is_file() {
+            v.push(format!("candidate-envelope-missing:{}", entry.envelope));
+            lines.push(format!("CASE {} MISSING {}", case.case_id, entry.envelope));
+            continue;
+        }
+        match hash_file(&disk) {
+            Ok(actual) if actual == entry.envelope_sha256 => {}
+            Ok(_) => {
+                v.push(format!(
+                    "candidate-envelope-digest-mismatch:{}",
+                    case.case_id
+                ));
+            }
+            Err(_) => v.push(format!("candidate-envelope-unreadable:{}", case.case_id)),
+        }
+        let envelope: EvidenceEnvelope = match read_json(&disk) {
+            Ok(e) => e,
+            Err(e) => {
+                v.push(format!("candidate-envelope-invalid:{}:{e}", case.case_id));
+                lines.push(format!("CASE {} FAIL invalid-envelope", case.case_id));
+                continue;
+            }
+        };
+        if envelope.schema != ENVELOPE_SCHEMA {
+            v.push(format!(
+                "candidate-envelope-schema-unknown:{}:{}",
+                case.case_id, envelope.schema
+            ));
+        }
+        // 信封身份必须与本 case **声明的产物**同代（"混用两个构建"判负）。
+        let case_lineage = match per_artifact.get(entry.artifact.as_str()) {
+            Some(l) => l,
+            None => {
+                v.push(format!(
+                    "candidate-case-artifact-unknown:{}:{}",
+                    case.case_id, entry.artifact
+                ));
+                lines.push(format!(
+                    "CASE {} FAIL artifact={}",
+                    case.case_id, entry.artifact
+                ));
+                continue;
+            }
+        };
+        for (name, got, want) in [
+            (
+                "source_commit",
+                &envelope.source_commit,
+                &case_lineage.source_commit,
+            ),
+            (
+                "dirty_tree_digest",
+                &envelope.dirty_tree_digest,
+                &case_lineage.dirty_tree_digest,
+            ),
+            (
+                "product_manifest_digest",
+                &envelope.product_manifest_digest,
+                &case_lineage.product_manifest_digest,
+            ),
+            (
+                "profile_digest",
+                &envelope.profile_digest,
+                &case_lineage.profile_digest,
+            ),
+            (
+                "artifact_sha256",
+                &envelope.artifact_sha256,
+                &case_lineage.artifact_sha256,
+            ),
+            (
+                "toolchain_digest",
+                &envelope.toolchain_digest,
+                &case_lineage.toolchain_digest,
+            ),
+            (
+                "platform_inventory_digest",
+                &envelope.platform_inventory_digest,
+                &case_lineage.platform_inventory_digest,
+            ),
+        ] {
+            if got != want {
+                v.push(format!(
+                    "candidate-envelope-identity-mismatch:{}:{name}",
+                    case.case_id
+                ));
+            }
+        }
+        for viol in gate_with_context(root, &envelope, Some(&disk)) {
+            v.push(format!("candidate-envelope-gate:{}:{viol}", case.case_id));
+        }
+        // 签名三态：无钥 = 不可验（BLOCKED，不是通过）。
+        if let Some(word) = verify_envelope_signature(root, &envelope).violation() {
+            v.push(format!("candidate-{word}:{}", case.case_id));
+        }
+        // scope 必须已知且不低于 required。
+        let Some(rank) = scope_rank(&envelope.scope) else {
+            v.push(format!(
+                "candidate-scope-unknown:{}:{}",
+                case.case_id, envelope.scope
+            ));
+            lines.push(format!("CASE {} FAIL scope-unknown", case.case_id));
+            continue;
+        };
+        let min = scope_rank(&case.min_scope).unwrap_or(0);
+        if rank < min {
+            v.push(format!(
+                "candidate-scope-below-required:{}:{}<{}",
+                case.case_id, envelope.scope, case.min_scope
+            ));
+            lines.push(format!(
+                "CASE {} FAIL scope={} (<{})",
+                case.case_id, envelope.scope, case.min_scope
+            ));
+            continue;
+        }
+        // 引用不存在 / 被替换：候选链上必须显式不可验（历史信封只作查看
+        // 用途时不走本路径——见候选链文档）。
+        for (what, refs) in [
+            ("artifact", &envelope.artifacts),
+            ("input", &envelope.inputs),
+        ] {
+            for a in refs {
+                let Ok(p) = safe_repo_path(root, a.path.trim_start_matches("./")) else {
+                    v.push(format!(
+                        "candidate-{what}-path-escape:{}:{}",
+                        case.case_id, a.path
+                    ));
+                    continue;
+                };
+                if !p.is_file() {
+                    v.push(format!(
+                        "candidate-{what}-missing:{}:{}",
+                        case.case_id, a.name
+                    ));
+                    continue;
+                }
+                // `artifacts` = 证据载荷（逐字节核）；`inputs` = 构建输入，
+                // 其 sha256 对 manifest/profile 等条目是**语义摘要**（不等于
+                // 文件字节摘要），故只核存在与可读。
+                if what == "input" {
+                    continue;
+                }
+                match hash_file(&p) {
+                    Ok(actual) if actual == a.sha256 => {}
+                    Ok(_) => v.push(format!(
+                        "candidate-{what}-digest-mismatch:{}:{}",
+                        case.case_id, a.name
+                    )),
+                    Err(_) => v.push(format!(
+                        "candidate-{what}-unreadable:{}:{}",
+                        case.case_id, a.name
+                    )),
+                }
+            }
+        }
+        // 该 case 自身的正/负例结果必须都在终态（防"空结果合法"）。
+        if envelope.positive_results.is_empty() || envelope.negative_results.is_empty() {
+            v.push(format!("candidate-results-incomplete:{}", case.case_id));
+        }
+        // 受测字节闭合：run-record 自记的 `ran_artifact_sha256` 必须等于
+        // 本 case 所用产物的受测摘要（就地启动镜像唯一的"跑过哪份字节"
+        // 证据；与门的 `image.sha256` 同源）。
+        for a in &envelope.artifacts {
+            let Ok(rec) = safe_repo_path(root, a.path.trim_start_matches("./")) else {
+                continue;
+            };
+            let Ok(value) = read_json::<serde_json::Value>(&rec) else {
+                continue;
+            };
+            if value.get("schema").and_then(|x| x.as_str()) != Some("eneros.gate-run-record.v1") {
+                continue;
+            }
+            let ran = value
+                .get("ran_artifact_sha256")
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            let want = entry.tested_sha256.as_deref().unwrap_or("");
+            if ran != want {
+                v.push(format!(
+                    "candidate-ran-artifact-mismatch:{}:claimed={} ran={}",
+                    case.case_id,
+                    want.get(..12).unwrap_or(""),
+                    ran.get(..12).unwrap_or("")
+                ));
+            } else {
+                tested_proven.insert(case.case_id.clone());
+            }
+        }
+        lines.push(format!(
+            "CASE {} PASS scope={} env={}",
+            case.case_id, envelope.scope, entry.envelope
+        ));
+    }
+
+    // --- 4. 逐 case 受测摘要闭合（run-record 自记的受测字节）---
+    for entry in &index.cases {
+        if entry.tested_sha256.is_some() && !tested_proven.contains(&entry.case_id) {
+            v.push(format!("candidate-tested-bytes-unproven:{}", entry.case_id));
+        }
+    }
+
+    // --- required 全集收口：缺一不可 ---
+    for case in &matrix.cases {
+        match owners.get(case.case_id.as_str()) {
+            None => {
+                v.push(format!("candidate-case-missing:{}", case.case_id));
+                lines.push(format!("CASE {} MISSING", case.case_id));
+            }
+            Some(who) => {
+                if who.len() == 1 && who[0] == "blocked" {
+                    let b = index
+                        .blocked
+                        .iter()
+                        .find(|b| b.case_id == case.case_id)
+                        .map(|b| b.blocker.clone())
+                        .unwrap_or_default();
+                    lines.push(format!("CASE {} BLOCKED blocker={b}", case.case_id));
+                } else if who.len() == 1 && who[0] == "exemption" {
+                    lines.push(format!("CASE {} EXEMPT", case.case_id));
+                }
+            }
+        }
+    }
+    lines.sort();
+    (lines, v)
+}
+
+/// 把仓库相对路径解析到 `root` 下，越界即 Err。
+///
+/// 路径判据**不另立抄本**：单一事实源 = `crate::soak::check_rel_path`
+/// （绝对路径会替换整个前缀、`..` 可越出仓库——S7/R4 实测漏洞）。
+fn safe_repo_path(root: &Path, rel: &str) -> DynResult<PathBuf> {
+    if let Err(reason) = crate::soak::check_rel_path(rel) {
+        return Err(invalid(format!("path not repo-relative ({reason}): {rel}")));
+    }
+    Ok(root.join(rel))
+}
+
 pub(super) fn command_evidence_chain(root: &Path, args: &[String]) -> DynResult<()> {
     let (mode, tail) = args
         .split_first()
@@ -152,6 +783,7 @@ pub(super) fn command_evidence_chain(root: &Path, args: &[String]) -> DynResult<
                 "stale-index",
                 "current-index",
                 "check-current",
+                "candidate-check",
                 "gate-status",
                 "summary",
                 "release-readiness",
@@ -184,6 +816,7 @@ pub(super) fn command_evidence_chain(root: &Path, args: &[String]) -> DynResult<
         "stale-index" => command_stale_index(root, tail),
         "current-index" => command_current_index(root, tail),
         "check-current" => command_check_current(root, tail),
+        "candidate-check" => command_candidate_check(root, tail),
         "gate-status" => command_gate_status(root, tail),
         "summary" => command_summary(root, tail),
         "release-readiness" => command_release_readiness(root, tail),
@@ -404,20 +1037,97 @@ fn candidate_id(
     hex(&h.finalize())
 }
 
-/// 工作树脏状态 digest：包含 `git status --porcelain`、`git diff` 与
-/// `git diff --cached`。未跟踪文件至少以其路径进入状态清单。
+/// 候选身份**不覆盖**的路径前缀（证据归档与构建产物）。
+///
+/// 蓝图 70 `10-方向7` §3 原文："**先冻结不含证据文件的产品输入身份，再产出
+/// 绑定它的证据；后续归档证据不应让身份自引用**"。旧实现把 `git status` 的
+/// 全量与两份 diff 全量入摘要 ⇒ 写一份证据信封这个动作本身改变候选身份
+/// （`evidence/42/…json` 变成 `M`/`??`）⇒ 该信封记录的 dirty 摘要与"当前"
+/// 摘要必然不等 ⇒ `evidence42 check-current` **结构性必 FAIL**（实测：仓内
+/// 58 份候选信封全部对不上；`catalog gate` 因此恒红）。这是自引用缺陷，
+/// 不是血缘欠账。
+///
+/// `target/` 同理（构建中间产物，非候选输入）。
+const IDENTITY_EXCLUDED_PREFIXES: [&str; 2] = ["evidence/", "target/"];
+
+/// 路径是否属于"非身份输入"（证据/产物）。
+fn identity_excluded_path(path: &str) -> bool {
+    let p = path.trim_start_matches("./");
+    IDENTITY_EXCLUDED_PREFIXES
+        .iter()
+        .any(|pre| p.starts_with(pre))
+}
+
+/// `git status --porcelain` 行的路径部分（重命名取**新**路径）。
+fn porcelain_path(line: &str) -> &str {
+    let rest = if line.len() > 3 { &line[3..] } else { line };
+    match rest.split_once(" -> ") {
+        Some((_, new)) => new.trim(),
+        None => rest.trim(),
+    }
+}
+
+/// `git diff` 的文件块首行（`diff --git a/<path> b/<path>`）中的右路径。
+fn diff_block_path(header: &str) -> Option<&str> {
+    let rest = header.strip_prefix("diff --git ")?;
+    let (_a, b) = rest.rsplit_once(" b/")?;
+    Some(b.trim())
+}
+
+/// 过滤 `git status --porcelain` 输出：丢弃非身份输入路径的行。
+fn filter_porcelain(bytes: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(bytes);
+    let mut out = String::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if identity_excluded_path(porcelain_path(line)) {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.into_bytes()
+}
+
+/// 过滤 `git diff` 输出：按 `diff --git` 文件块丢弃非身份输入块
+/// （块体 = 首行到下一个 `diff --git` 之前）。
+fn filter_diff(bytes: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(bytes);
+    let mut out = String::new();
+    let mut keep = true;
+    for line in text.split_inclusive('\n') {
+        if line.starts_with("diff --git ") {
+            keep = diff_block_path(line.trim_end())
+                .map(|p| !identity_excluded_path(p))
+                .unwrap_or(true);
+        }
+        if keep {
+            out.push_str(line);
+        }
+    }
+    out.into_bytes()
+}
+
+/// 工作树脏状态 digest：`git status --porcelain` + `git diff` +
+/// `git diff --cached`，**剔除证据/产物路径**（身份只覆盖产品输入；
+/// 见 [`IDENTITY_EXCLUDED_PREFIXES`]）。未跟踪的产品输入仍以路径进入清单。
 fn dirty_tree_digest(root: &Path) -> DynResult<String> {
     let mut h = Sha256::new();
-    for args in [
-        vec!["status", "--porcelain"],
-        vec!["diff"],
-        vec!["diff", "--cached"],
+    for (args, filter) in [
+        (
+            vec!["status", "--porcelain"],
+            filter_porcelain as fn(&[u8]) -> Vec<u8>,
+        ),
+        (vec!["diff"], filter_diff),
+        (vec!["diff", "--cached"], filter_diff),
     ] {
         let output = Command::new("git").current_dir(root).args(&args).output()?;
         if !output.status.success() {
             return Err(invalid(format!("git {} failed", args.join(" "))));
         }
-        h.update(output.stdout);
+        h.update(filter(&output.stdout));
         h.update([0u8]);
     }
     Ok(hex(&h.finalize()))
@@ -465,30 +1175,64 @@ fn hash_file(path: &Path) -> DynResult<String> {
     Ok(hex(&Sha256::digest(&bytes)))
 }
 
+/// 签名判定三态（70.15 WP-70.15.2）。
+///
+/// 旧实现把"无验签公钥"折叠成 `None` 而调用方一律 `None => {}` **跳过**：
+/// 干净克隆不含 `keys-local`（`.gitignore:173`）⇒ 伪造签名的信封不产生
+/// `signature-invalid`，即**无钥 = 静默通过**。蓝图 WP-70.15.4 要求
+/// "不依赖开发者缓存/私钥"，故状态必须显式：不可验 ≠ 通过。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignatureState {
+    /// 签名存在且验证通过。
+    Valid,
+    /// 签名存在但验证失败（或签名为空）。
+    Invalid,
+    /// 当前环境无可用验签公钥：**不可验**（release 路径判 BLOCKED，不判通过）。
+    Unverifiable,
+}
+
+impl SignatureState {
+    /// release/候选链口径：只有 `Valid` 可通过。
+    pub fn violation(self) -> Option<&'static str> {
+        match self {
+            SignatureState::Valid => None,
+            SignatureState::Invalid => Some("signature-invalid"),
+            SignatureState::Unverifiable => Some("signature-unverifiable"),
+        }
+    }
+}
+
 /// 验证 EvidenceEnvelope 的 ed25519 签名（签名内容 = signature 置空后的 JSON）。
-/// 返回：
-/// - `Some(true)` 签名存在且验证通过；
-/// - `Some(false)` 签名存在但验证失败；
-/// - `None` 当前环境无可用验签公钥（不武断 PASS，也不因无法验签直接 FAIL）。
-fn verify_envelope_signature(root: &Path, envelope: &EvidenceEnvelope) -> Option<bool> {
+fn verify_envelope_signature(root: &Path, envelope: &EvidenceEnvelope) -> SignatureState {
     if envelope.signature.is_empty() {
-        return Some(false);
+        return SignatureState::Invalid;
     }
     // 47（WP-47.3）：验签钥独立注入（验签钥 ≠ 签章钥可分离）。
-    let key_bytes = super::keys::verify_public_key(root)?;
-    let public_key = ed25519_dalek::VerifyingKey::from_bytes(&key_bytes).ok()?;
-
+    let Some(key_bytes) = super::keys::verify_public_key(root) else {
+        return SignatureState::Unverifiable;
+    };
+    let Ok(public_key) = ed25519_dalek::VerifyingKey::from_bytes(&key_bytes) else {
+        return SignatureState::Unverifiable;
+    };
+    // 签名本体不可解码 ≠ 无钥：信封声明了签名就按其内容裁决。
     let mut unsigned = envelope.clone();
     unsigned.signature.clear();
-    let json = serde_json::to_vec(&unsigned).ok()?;
+    let Ok(json) = serde_json::to_vec(&unsigned) else {
+        return SignatureState::Invalid;
+    };
     let sig_bytes = hex_decode(envelope.signature.trim());
-    let sig_bytes: [u8; 64] = sig_bytes.try_into().ok()?;
+    let Ok(sig_bytes) = <[u8; 64]>::try_from(sig_bytes) else {
+        return SignatureState::Invalid;
+    };
     use ed25519_dalek::Verifier;
-    Some(
-        public_key
-            .verify(&json, &ed25519_dalek::Signature::from_bytes(&sig_bytes))
-            .is_ok(),
-    )
+    if public_key
+        .verify(&json, &ed25519_dalek::Signature::from_bytes(&sig_bytes))
+        .is_ok()
+    {
+        SignatureState::Valid
+    } else {
+        SignatureState::Invalid
+    }
 }
 
 pub(crate) fn hex_decode(input: &str) -> Vec<u8> {
@@ -546,6 +1290,28 @@ fn command_envelope(root: &Path, args: &[String]) -> DynResult<()> {
             "--nonce" => nonce = val()?.to_owned(),
             "--artifact" => artifacts.push(parse_artifact_ref(val()?)?),
             other => return Err(invalid(format!("unknown envelope arg '{other}'"))),
+        }
+    }
+    // 70.15（REG-70.FL-EVIDENCE-ARTIFACT-UNCHECKED）：登记即校验——引用不存在
+    // 的工件或"声称的摘要 ≠ 磁盘字节"在**创建期**就报机器可读原因（旧实现把
+    // 这一面全留给 gate 的"文件存在才比"路径，于是引用不存在的工件可以一路
+    // 通过创建、落盘、归档）。
+    for a in &artifacts {
+        let p = safe_repo_path(root, a.path.trim_start_matches("./"))?;
+        if !p.is_file() {
+            return Err(invalid(format!(
+                "artifact does not exist: {} ({})",
+                a.name, a.path
+            )));
+        }
+        let actual = hash_file(&p)?;
+        if actual != a.sha256 {
+            return Err(invalid(format!(
+                "artifact digest mismatch: {} claimed={} disk={}",
+                a.name,
+                a.sha256.get(..12).unwrap_or(""),
+                actual.get(..12).unwrap_or("")
+            )));
         }
     }
     let lineage_path = lineage_path
@@ -682,10 +1448,8 @@ fn command_verify(root: &Path, args: &[String]) -> DynResult<()> {
     };
     let envelope: EvidenceEnvelope = read_json(&path)?;
     let mut violations = verify_integrity(&envelope);
-    match verify_envelope_signature(root, &envelope) {
-        Some(true) => {}
-        Some(false) => violations.push("signature-invalid".to_owned()),
-        None => {}
+    if let Some(word) = verify_envelope_signature(root, &envelope).violation() {
+        violations.push(word.to_owned());
     }
     if violations.is_empty() {
         println!("EVIDENCE-VERIFY PASS {}", path.display());
@@ -708,10 +1472,8 @@ fn command_gate(root: &Path, args: &[String]) -> DynResult<()> {
     // 42 Exit Gate 1：文件级 gate = 纯语义 + 跨文件上下文（run_id/nonce
     // 复用、artifact 磁盘 digest）。self 即当前文件，扫描时排除自身。
     let mut violations = gate_with_context(root, &envelope, Some(&path));
-    match verify_envelope_signature(root, &envelope) {
-        Some(true) => {}
-        Some(false) => violations.push("signature-invalid".to_owned()),
-        None => {}
+    if let Some(word) = verify_envelope_signature(root, &envelope).violation() {
+        violations.push(word.to_owned());
     }
     if violations.is_empty() {
         println!("EVIDENCE-GATE PASS {}", path.display());
@@ -829,6 +1591,42 @@ pub fn gate_violations(envelope: &EvidenceEnvelope) -> Vec<String> {
             "declared-violations:{}",
             envelope.violations.join(",")
         ));
+    }
+    // 逐例状态闭集 + 终态（70.15 WP-70.15.2）：旧实现只查两个列表非空，
+    // 于是 `--positive "a:FAIL:b"` 仍得 `verdict=PASS`（正例列表里躺着一条
+    // FAIL 也不影响通过）。正例必须是正向终态，负例必须是"按预期失败"或
+    // 明确 BLOCKED；BLOCKED 结果不得挂在 PASS 裁决下。
+    let mut blocked_result = false;
+    for r in &envelope.positive_results {
+        match r.status.as_str() {
+            "PASS" | "VERIFIED" => {}
+            "BLOCKED" => {
+                blocked_result = true;
+                v.push(format!("positive-result-blocked:{}", r.id));
+            }
+            "FAIL" | "PENDING" | "NO_RESULT" => v.push(format!(
+                "positive-result-not-terminal:{}:{}",
+                r.id, r.status
+            )),
+            other => v.push(format!("result-status-unknown:{}:{other}", r.id)),
+        }
+    }
+    for r in &envelope.negative_results {
+        match r.status.as_str() {
+            "FAIL" => {}
+            "BLOCKED" => {
+                blocked_result = true;
+                v.push(format!("negative-result-blocked:{}", r.id));
+            }
+            "PASS" | "VERIFIED" | "PENDING" | "NO_RESULT" => v.push(format!(
+                "negative-result-not-terminal:{}:{}",
+                r.id, r.status
+            )),
+            other => v.push(format!("result-status-unknown:{}:{other}", r.id)),
+        }
+    }
+    if blocked_result && verdict == super::verdict::Verdict::Pass {
+        v.push("blocked-result-under-pass-verdict".to_owned());
     }
 
     let scope = envelope.scope.to_ascii_uppercase();
@@ -1074,10 +1872,8 @@ fn command_gate_dir(root: &Path, args: &[String]) -> DynResult<()> {
         let envelope: EvidenceEnvelope = serde_json::from_value(value)
             .map_err(|e| invalid(format!("{} is not a valid envelope: {e}", path.display())))?;
         let mut violations = gate_violations(&envelope);
-        match verify_envelope_signature(root, &envelope) {
-            Some(true) => {}
-            Some(false) => violations.push("signature-invalid".to_owned()),
-            None => {}
+        if let Some(word) = verify_envelope_signature(root, &envelope).violation() {
+            violations.push(word.to_owned());
         }
         if violations.is_empty() {
             passed += 1;
@@ -2672,8 +3468,232 @@ fn command_current_index(root: &Path, args: &[String]) -> DynResult<()> {
 // Current evidence gate
 // ============================================================
 
+/// **候选树键**：一个候选 = 一棵源码树 × 一组 profile 产物。
+///
+/// 只覆盖 **profile 无关**的三元组（提交 + 工作树摘要 + 工具链）——manifest
+/// 与平台事实摘要都随 profile 变化，若把它们并入键，同一棵树的两份 profile
+/// 产物就会分裂成两个"候选"，与"构建集"模型自相矛盾（实测：qemu-prod 与
+/// qemu-test 的 `candidate_id` 不同 ⇒ 索引分裂）。
+/// profile 级身份逐份记在 `artifacts[]` 并由逐 case 信封绑定。
+/// `candidate_id` 因此**不是**血缘里的那个摘要，而是本键——调用方不得拿它
+/// 与 `CandidateLineage::candidate_id` 比。
+pub fn candidate_tree_key(commit: &str, dirty: &str, toolchain: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(b"eneros.candidate-tree.v1");
+    h.update([0u8]);
+    h.update(commit.as_bytes());
+    h.update([0u8]);
+    h.update(dirty.as_bytes());
+    h.update([0u8]);
+    h.update(toolchain.as_bytes());
+    hex(&h.finalize())
+}
+
+/// 候选证据索引的规范落点：`evidence/70/70.15/<candidate_id>/candidate-index.json`。
+fn candidate_index_rel(candidate_id: &str) -> String {
+    format!("evidence/70/70.15/{candidate_id}/candidate-index.json")
+}
+
+/// 载入候选索引（显式路径优先；否则按当前候选身份取规范落点）。
+fn load_candidate_index(
+    root: &Path,
+    explicit: Option<&Path>,
+    lineage: &CandidateLineage,
+) -> DynResult<CandidateEvidenceIndex> {
+    let path = match explicit {
+        Some(p) => {
+            let rel = p.strip_prefix(root).unwrap_or(p).to_string_lossy();
+            let rel = rel.replace('\\', "/");
+            if crate::soak::check_rel_path(&rel).is_err() {
+                return Err(invalid(format!(
+                    "candidate index path not repo-relative: {rel}"
+                )));
+            }
+            root.join(rel)
+        }
+        None => root.join(candidate_index_rel(&lineage.candidate_id)),
+    };
+    let index: CandidateEvidenceIndex = read_json(&path)?;
+    if index.schema != CANDIDATE_INDEX_SCHEMA {
+        return Err(invalid(format!(
+            "candidate index {} schema unknown: {}",
+            path.display(),
+            index.schema
+        )));
+    }
+    Ok(index)
+}
+
+/// 按当前工作树身份定位候选索引：扫描 `evidence/70/70.15/*/candidate-index.json`，
+/// 找出 `source_commit`/`dirty_tree_digest` 与当前树一致的那一份，再用索引
+/// 自述的 `profile` + `artifact_path` 重算完整身份。
+///
+/// 找不到（含产物已不在盘上）= NOT_READY：证据缺失保持 NOT_READY，不自动
+/// 继承历史 qualified（蓝图 70 [10] §3）。
+fn locate_current_candidate_index(
+    root: &Path,
+    profile_override: Option<&str>,
+    artifact_override: Option<&Path>,
+) -> DynResult<(CandidateEvidenceIndex, CandidateLineage, String)> {
+    if let (Some(profile), Some(artifact)) = (profile_override, artifact_override) {
+        let lineage = compute_lineage(root, profile, Some(artifact))?;
+        let tree = compute_lineage(root, profile, None)?;
+        let rel = candidate_index_rel(&candidate_tree_key(
+            &tree.source_commit,
+            &tree.dirty_tree_digest,
+            &tree.toolchain_digest,
+        ));
+        let index = load_candidate_index(root, Some(&root.join(&rel)), &lineage)?;
+        return Ok((index, lineage, rel));
+    }
+    let _ = profile_override;
+    let base = root.join("evidence/70/70.15");
+    let mut hits: Vec<(String, CandidateEvidenceIndex)> = Vec::new();
+    let mut tree_commit = String::new();
+    let mut tree_dirty = String::new();
+    if base.is_dir() {
+        let mut dirs: Vec<_> = fs::read_dir(&base)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        dirs.sort();
+        for dir in dirs {
+            let path = dir.join("candidate-index.json");
+            if !path.is_file() {
+                continue;
+            }
+            let Ok(index) = read_json::<CandidateEvidenceIndex>(&path) else {
+                continue;
+            };
+            if index.schema != CANDIDATE_INDEX_SCHEMA {
+                continue;
+            }
+            if tree_commit.is_empty() {
+                // 定位只看**当前工作树**（提交 + 工作树摘要）：产物是否还在
+                // 盘上由下一段的完整身份重算回答。
+                let l = compute_lineage(root, "qemu-prod", None)?;
+                tree_commit = l.source_commit;
+                tree_dirty = l.dirty_tree_digest;
+            }
+            if index.source_commit == tree_commit && index.dirty_tree_digest == tree_dirty {
+                let rel = path
+                    .strip_prefix(root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                hits.push((rel, index));
+            }
+        }
+    }
+    match hits.len() {
+        0 => Err(invalid(format!(
+            "candidate-index-unavailable: no index under evidence/70/70.15 for commit {}",
+            compute_lineage(root, "qemu-prod", None)?.source_commit
+        ))),
+        1 => {
+            let (rel, index) = hits.pop().unwrap();
+            // 索引身份是**树级**身份（提交 + 工作树 + manifest + 工具链 +
+            // 平台事实）；产物摘要逐份记在 `artifacts[]` 里逐份绑定——
+            // 故这里不带 artifact 重算（与写索引时同源）。
+            let primary = index
+                .artifacts
+                .first()
+                .ok_or_else(|| invalid("candidate-artifacts-empty"))?;
+            let lineage = compute_lineage(root, &primary.profile, None)?;
+            Ok((index, lineage, rel))
+        }
+        _ => Err(invalid(format!(
+            "candidate-index-ambiguous: {} indexes match the current tree ({})",
+            hits.len(),
+            hits.iter()
+                .map(|(r, _)| r.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
+/// `check-current`：当前候选的 required 全集是否齐备且逐项成立。
+///
+/// 旧实现只做"扫 `evidence/42` 一级目录、只要有信封且无失败就算通过"——
+/// 既没有 required 全集比较（单个合法信封即通过），也不做候选身份之外的
+/// 完整性判定（蓝图 70 [10] §1 已核缺陷）。现在：
+/// 索引缺失 ⇒ FAIL（NOT_READY，不继承历史）；索引存在 ⇒ 逐 case 判定 + 全集收口。
 fn command_check_current(root: &Path, args: &[String]) -> DynResult<()> {
+    let mut profile_id: Option<String> = None;
+    let mut matrix_id = "core-70".to_owned();
+    let mut index_path: Option<PathBuf> = None;
+    let mut artifact: Option<PathBuf> = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut val = || {
+            it.next()
+                .ok_or_else(|| invalid(format!("{a} requires a value")))
+        };
+        match a.as_str() {
+            "--profile" => profile_id = Some(val()?.to_owned()),
+            "--matrix" => matrix_id = val()?.to_owned(),
+            "--index" => index_path = Some(root.join(val()?)),
+            "--artifact" => artifact = Some(root.join(val()?)),
+            other => return Err(invalid(format!("unknown check-current arg '{other}'"))),
+        }
+    }
+    let matrix = load_required_matrix(root, &matrix_id)?;
+    let (index, lineage) = match &index_path {
+        Some(p) => {
+            let lineage = compute_lineage(root, "qemu-prod", artifact.as_deref())?;
+            let index = load_candidate_index(root, Some(p), &lineage)?;
+            (index, lineage)
+        }
+        None => {
+            let (index, lineage, _rel) =
+                locate_current_candidate_index(root, profile_id.as_deref(), artifact.as_deref())?;
+            (index, lineage)
+        }
+    };
+    let (lines, violations) =
+        candidate_case_statuses(root, &index, &matrix, &lineage, &|profile, path| {
+            compute_lineage(root, profile, Some(path))
+        });
+    for line in &lines {
+        println!("{line}");
+    }
+    if !violations.is_empty() {
+        for f in &violations {
+            eprintln!("CHECK-CURRENT FAIL {f}");
+        }
+        return Err(invalid(format!(
+            "check-current FAIL: {} violation(s) for candidate {}",
+            violations.len(),
+            lineage.candidate_id
+        )));
+    }
+    if lines
+        .iter()
+        .any(|l| l.ends_with("BLOCKED") || l.contains(" BLOCKED "))
+    {
+        // 有真实外部阻塞 ⇒ 明确 BLOCKED（不是 PASS，也不是 FAIL）。
+        return Err(invalid(format!(
+            "check-current BLOCKED: candidate {} has externally blocked required cases",
+            lineage.candidate_id
+        )));
+    }
+    println!(
+        "CHECK-CURRENT PASS candidate={} required={}",
+        lineage.candidate_id,
+        matrix.cases.len()
+    );
+    Ok(())
+}
+
+/// `candidate-check`：对任意候选索引做同一判定（局部卷验收与全局放行
+/// 共用 `candidate_case_statuses`，只以不同 required 集合区分）。
+fn command_candidate_check(root: &Path, args: &[String]) -> DynResult<()> {
     let mut profile_id = "qemu-prod".to_owned();
+    let mut matrix_id = "core-70".to_owned();
+    let mut index_path: Option<PathBuf> = None;
+    let mut report = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = || {
@@ -2682,70 +3702,50 @@ fn command_check_current(root: &Path, args: &[String]) -> DynResult<()> {
         };
         match a.as_str() {
             "--profile" => profile_id = val()?.to_owned(),
-            other => return Err(invalid(format!("unknown check-current arg '{other}'"))),
+            "--matrix" => matrix_id = val()?.to_owned(),
+            "--index" => index_path = Some(root.join(val()?)),
+            "--report" => report = true,
+            other => return Err(invalid(format!("unknown candidate-check arg '{other}'"))),
         }
     }
-    let lineage = compute_lineage(root, &profile_id, None)?;
-    let evidence_dir = root.join("evidence/42");
-    let mut checked = 0usize;
-    let mut failures = Vec::new();
-    if evidence_dir.is_dir() {
-        let mut files: Vec<_> = fs::read_dir(&evidence_dir)?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
-            .collect();
-        files.sort();
-        for path in files {
-            let Ok(value) = read_json::<serde_json::Value>(&path) else {
-                continue;
-            };
-            if value.get("schema").and_then(|x| x.as_str()) != Some(ENVELOPE_SCHEMA) {
-                continue;
-            }
-            let dirty = value
-                .get("dirty_tree_digest")
-                .and_then(|x| x.as_str())
-                .unwrap_or("");
-            let commit = value
-                .get("source_commit")
-                .and_then(|x| x.as_str())
-                .unwrap_or("");
-            if dirty != lineage.dirty_tree_digest || commit != lineage.source_commit {
-                continue;
-            }
-            checked += 1;
-            let envelope: EvidenceEnvelope = serde_json::from_value(value)
-                .map_err(|e| invalid(format!("{} invalid envelope: {e}", path.display())))?;
-            let mut violations = gate_with_context(root, &envelope, Some(&path));
-            match verify_envelope_signature(root, &envelope) {
-                Some(true) => {}
-                Some(false) => violations.push("signature-invalid".to_owned()),
-                None => {}
-            }
-            if !violations.is_empty() {
-                failures.push(format!("{}: {}", path.display(), violations.join("; ")));
-            } else {
-                println!("CHECK-CURRENT PASS {}", path.display());
-            }
+    let matrix = load_required_matrix(root, &matrix_id)?;
+    let (index, lineage, index_rel) = match &index_path {
+        Some(p) => {
+            let lineage = compute_lineage(root, &profile_id, None)?;
+            let index = load_candidate_index(root, Some(p), &lineage)?;
+            (index, lineage, String::new())
         }
+        None => locate_current_candidate_index(root, None, None)?,
+    };
+    let (lines, violations) =
+        candidate_case_statuses(root, &index, &matrix, &lineage, &|profile, path| {
+            compute_lineage(root, profile, Some(path))
+        });
+    for line in &lines {
+        println!("{line}");
     }
-    if checked == 0 {
-        return Err(invalid(
-            "check-current FAIL: no current-candidate EvidenceEnvelope found",
-        ));
+    if report {
+        let report = serde_json::json!({
+            "schema": "eneros.candidate-check-report.v1",
+            "matrix_id": matrix.matrix_id,
+            "candidate_id": index.candidate_id,
+            "index": index_rel,
+            "required": matrix.cases.len(),
+            "cases": lines,
+            "violations": violations,
+        });
+        println!("{}", serde_json::to_string_pretty(&report)?);
     }
-    if !failures.is_empty() {
-        for f in &failures {
-            eprintln!("CHECK-CURRENT FAIL {f}");
+    if !violations.is_empty() {
+        for f in &violations {
+            eprintln!("CANDIDATE-CHECK FAIL {f}");
         }
         return Err(invalid(format!(
-            "check-current FAIL: {} of {} current envelopes failed",
-            failures.len(),
-            checked
+            "candidate-check FAIL: {} violation(s)",
+            violations.len()
         )));
     }
-    println!("CHECK-CURRENT PASS total={checked}");
+    println!("CANDIDATE-CHECK PASS");
     Ok(())
 }
 
@@ -4362,6 +5362,20 @@ fn valid_envelope() -> EvidenceEnvelope {
     }
 }
 
+/// 用仓库 `keys-local` 测试键真签一份信封（签名面红测的夹具）。
+#[cfg(test)]
+fn sign_with_repo_dev_key(root: &Path, mut envelope: EvidenceEnvelope) -> EvidenceEnvelope {
+    let key = super::keys::load_signing_key_bytes(root, None, super::keys::ProfileKind::Test)
+        .expect("repo dev signing key must be present for signature tests");
+    let keypair = ed25519_dalek::SigningKey::from_bytes(&key);
+    envelope.signature = String::new();
+    use ed25519_dalek::Signer;
+    envelope.signature = hex(&keypair
+        .sign(&serde_json::to_vec(&envelope).unwrap())
+        .to_bytes());
+    envelope
+}
+
 fn hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
@@ -4479,16 +5493,21 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        let good = valid_envelope();
+        // 70.15 起 gate-dir 走**三态签名**：签名格式非法/内容不符/无钥可验
+        // 都必须判负（旧实现把 `try_into` 失败折叠成 `None` ⇒ 静默跳过——
+        // `valid_envelope()` 的 `deadbeef` 正是靠这条 fail-open 通过）。
+        // 因此这里的"好信封"必须是真签名信封信封。
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let good = sign_with_repo_dev_key(repo_root, valid_envelope());
         let good_path = dir.join("good.json");
         fs::write(&good_path, serde_json::to_vec_pretty(&good).unwrap()).unwrap();
 
-        let mut bad = valid_envelope();
+        let mut bad = sign_with_repo_dev_key(repo_root, valid_envelope());
         bad.verdict = "FAIL".to_owned();
         let bad_path = dir.join("bad.json");
         fs::write(&bad_path, serde_json::to_vec_pretty(&bad).unwrap()).unwrap();
 
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let root = repo_root;
         let r = command_gate_dir(root, &["--dir".into(), dir.to_string_lossy().into()]);
         assert!(r.is_err(), "gate-dir must fail when any envelope is bad");
 
@@ -4499,6 +5518,59 @@ mod tests {
             "gate-dir must pass when all envelopes are valid: {r:?}"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 70.14 复查红测：候选身份**不得被证据归档动作改变**（自引用）。
+    ///
+    /// 缺陷形态（旧实现）：`dirty_tree_digest` 把 `git status --porcelain` 全量
+    /// 入摘要 ⇒ 往 `evidence/` 写一份信封就让摘要变 ⇒ 该信封记录的 dirty 与
+    /// "当前"必然不等 ⇒ `check-current` 结构性必 FAIL（catalog gate 恒红）。
+    /// 蓝图 §3 原文要求"先冻结不含证据文件的产品输入身份"。
+    #[test]
+    fn identity_excludes_evidence_artifacts() {
+        // 纯函数面：证据/产物行与块被剔除，产品输入原样保留。
+        // 夹具路径取**仓内真实存在**的配置（旧夹具用 `configs/new.toml`
+        // 这样的虚构名，被 `qa gate config-refs` 扫成"引用了不存在的配置"
+        // ——那是扫描器的假阳性来源；夹具不该制造假引用）。
+        let porcelain = b" M crates/x/src/lib.rs\n?? evidence/42/new.json\n?? target/tmp.bin\n?? configs/logging.toml\n";
+        let kept = String::from_utf8(filter_porcelain(porcelain)).unwrap();
+        assert!(kept.contains("crates/x/src/lib.rs"), "{kept}");
+        assert!(kept.contains("configs/logging.toml"), "{kept}");
+        assert!(
+            !kept.contains("evidence/"),
+            "证据路径不得进身份摘要：{kept}"
+        );
+        assert!(!kept.contains("target/"), "产物路径不得进身份摘要：{kept}");
+        let diff = b"diff --git a/evidence/42/x.json b/evidence/42/x.json\n--- a/evidence/42/x.json\n+++ b/evidence/42/x.json\n@@ -1 +1 @@\n-a\n+b\ndiff --git a/crates/y.rs b/crates/y.rs\n--- a/crates/y.rs\n+++ b/crates/y.rs\n@@ -1 +1 @@\n-c\n+d\n";
+        let kept = String::from_utf8(filter_diff(diff)).unwrap();
+        assert!(kept.contains("crates/y.rs"), "{kept}");
+        assert!(!kept.contains("evidence/"), "证据 diff 块不得进身份摘要");
+    }
+
+    /// 70.14 复查红测（活体）：改 `evidence/` 下的文件**不改变**候选身份摘要；
+    /// 改产品输入**必须改变**它。前提 = 在仓内 git 工作树运行。
+    #[test]
+    fn dirty_digest_is_stable_across_evidence_writes() {
+        // CARGO_MANIFEST_DIR = <repo>/xtask ⇒ 上一层即仓根。
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("repo root");
+        if !root.join(".git").exists() {
+            return; // 非 git 工作树（打包源码）跳过。
+        }
+        let before = dirty_tree_digest(root).expect("digest");
+        let probe = root.join("evidence/70/70.15/.identity-probe.json");
+        if let Some(dir) = probe.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        fs::write(&probe, b"{}").expect("probe write");
+        let after = dirty_tree_digest(root).expect("digest");
+        let _ = fs::remove_file(&probe);
+        // 目录留空也可能被 git 视为无变化（git 不跟踪空目录），故不再删目录。
+        assert_eq!(
+            before, after,
+            "写证据文件不得改变候选身份（否则证据永不是'当前候选'：自引用）"
+        );
     }
 
     #[test]
@@ -5158,5 +6230,702 @@ mod tests {
             "targets": [{"name": "bad", "pass": false}]
         });
         assert!(!report_gate_violations("miri", &miri).is_empty());
+    }
+
+    // ============================================================
+    // 70.15（E70-F）：候选 required 全集判定红测
+    // ============================================================
+
+    /// 测试夹具：临时"仓库根"——required 矩阵 + 一份合法候选索引 + 信封。
+    struct CandidateFixture {
+        root: PathBuf,
+        key: ed25519_dalek::SigningKey,
+        lineage: CandidateLineage,
+        matrix: RequiredMatrix,
+        index: CandidateEvidenceIndex,
+    }
+
+    fn digest_of(bytes: &[u8]) -> String {
+        hex(&Sha256::digest(bytes))
+    }
+
+    impl CandidateFixture {
+        /// `cases` = (case_id, scope)；`blocked` = (case_id, blocker)。
+        fn new(
+            cases: &[(&str, &str)],
+            blocked: &[(&str, &str)],
+            signer_key: [u8; 32],
+        ) -> CandidateFixture {
+            let root = std::env::temp_dir().join(format!(
+                "eneros-candidate-check-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = fs::remove_dir_all(&root);
+            fs::create_dir_all(root.join("product/evidence-required")).unwrap();
+            // 验签公钥来源 = 临时根的 keys-local 测试键（与生产同一条解析路径）。
+            fs::create_dir_all(root.join("product/security/keys-local")).unwrap();
+            fs::write(
+                root.join("product/security/keys-local/dev-signing.key"),
+                signer_key,
+            )
+            .unwrap();
+
+            let matrix = RequiredMatrix {
+                schema: REQUIRED_MATRIX_SCHEMA.to_owned(),
+                matrix_id: "test-70".to_owned(),
+                series: "70".to_owned(),
+                cases: [
+                    vec![RequiredCase {
+                        case_id: "CORE-70-R01".to_owned(),
+                        owner: "70.1".to_owned(),
+                        min_scope: "L2".to_owned(),
+                        title: "host/目标控制窗".to_owned(),
+                    }],
+                    cases
+                        .iter()
+                        .map(|(id, scope)| RequiredCase {
+                            case_id: (*id).to_owned(),
+                            owner: "70.15".to_owned(),
+                            min_scope: (*scope).to_owned(),
+                            title: "test".to_owned(),
+                        })
+                        .collect(),
+                    // blocked 项同样是 required（"阻塞"是状态，不是缺席）。
+                    blocked
+                        .iter()
+                        .map(|(id, _)| RequiredCase {
+                            case_id: (*id).to_owned(),
+                            owner: "70.15".to_owned(),
+                            min_scope: "L1".to_owned(),
+                            title: "test".to_owned(),
+                        })
+                        .collect(),
+                ]
+                .concat(),
+                blockers: vec![BlockerDecl {
+                    id: "EXT-70-HW".to_owned(),
+                    detail: "实板未到".to_owned(),
+                }],
+                allowed_exemptions: Vec::new(),
+            };
+            fs::write(
+                root.join("product/evidence-required/test-70.json"),
+                serde_json::to_vec_pretty(&matrix).unwrap(),
+            )
+            .unwrap();
+
+            let key = ed25519_dalek::SigningKey::from_bytes(&signer_key);
+            let lineage = CandidateLineage {
+                schema: LINEAGE_SCHEMA.to_owned(),
+                candidate_id: digest_of(b"candidate"),
+                source_commit: "a".repeat(40),
+                dirty_tree_digest: digest_of(b"dirty"),
+                product_manifest_digest: digest_of(b"manifest"),
+                profile_digest: digest_of(b"profile"),
+                toolchain_digest: digest_of(b"toolchain"),
+                artifact_sha256: digest_of(b"artifact"),
+                platform_inventory_digest: digest_of(b"platform"),
+                build_inputs: Vec::new(),
+            };
+
+            // 受测产物落在临时根下：`lineage` 的 artifact_sha256 必须与它一致。
+            let art_dir = root.join("target/test-artifacts");
+            fs::create_dir_all(&art_dir).unwrap();
+            fs::write(art_dir.join("cand.raw"), b"candidate-artifact").unwrap();
+            let art_rel = "target/test-artifacts/cand.raw".to_owned();
+            let art_sha = digest_of(b"candidate-artifact");
+            let lineage = CandidateLineage {
+                artifact_sha256: art_sha.clone(),
+                ..lineage
+            };
+            let mut fixture = CandidateFixture {
+                root,
+                key,
+                lineage: lineage.clone(),
+                matrix,
+                index: CandidateEvidenceIndex {
+                    schema: CANDIDATE_INDEX_SCHEMA.to_owned(),
+                    matrix_id: "test-70".to_owned(),
+                    candidate_id: candidate_tree_key(
+                        &lineage.source_commit,
+                        &lineage.dirty_tree_digest,
+                        &lineage.toolchain_digest,
+                    ),
+                    source_commit: lineage.source_commit.clone(),
+                    dirty_tree_digest: lineage.dirty_tree_digest.clone(),
+                    toolchain_digest: lineage.toolchain_digest.clone(),
+                    platform_inventory_digest: lineage.platform_inventory_digest.clone(),
+                    artifacts: vec![CandidateArtifact {
+                        name: "cand".to_owned(),
+                        profile: "qemu-prod".to_owned(),
+                        path: art_rel,
+                        sha256: art_sha,
+                        tested_sha256: None,
+                    }],
+                    cases: Vec::new(),
+                    blocked: blocked
+                        .iter()
+                        .map(|(id, blocker)| CandidateBlockedEntry {
+                            case_id: (*id).to_owned(),
+                            blocker: (*blocker).to_owned(),
+                            reason: "外部依赖未提供".to_owned(),
+                        })
+                        .collect(),
+                    exemptions: Vec::new(),
+                },
+            };
+            // 所有"必须成立"的 case 都挂一份真实签名过的信封。
+            let rows: Vec<(String, String)> =
+                std::iter::once(("CORE-70-R01".to_owned(), "L2".to_owned()))
+                    .chain(
+                        cases
+                            .iter()
+                            .map(|(a, b)| ((*a).to_owned(), (*b).to_owned())),
+                    )
+                    .collect();
+            for (case_id, scope) in rows {
+                let rel = format!(
+                    "evidence/70/70.15/{}/{case_id}.json",
+                    fixture.lineage.candidate_id
+                );
+                let disk = fixture.root.join(&rel);
+                fs::create_dir_all(disk.parent().unwrap()).unwrap();
+                fixture.write_envelope(&disk, &case_id, &scope);
+                let sha = hash_file(&disk).unwrap();
+                fixture.index.cases.push(CandidateCaseEntry {
+                    case_id,
+                    artifact: "cand".to_owned(),
+                    envelope: rel,
+                    envelope_sha256: sha,
+                    tested_sha256: None,
+                    detail: "test".to_owned(),
+                });
+            }
+            fixture
+        }
+
+        /// 写一份（可选签名、可选改字段的）信封到磁盘。
+        fn write_envelope(&self, disk: &Path, case_id: &str, scope: &str) -> EvidenceEnvelope {
+            let payload = disk
+                .parent()
+                .unwrap()
+                .join(format!("{case_id}.payload.bin"));
+            fs::write(&payload, format!("payload-of-{case_id}").as_bytes()).unwrap();
+            let payload_rel = payload
+                .strip_prefix(&self.root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            let mut env = EvidenceEnvelope {
+                schema: ENVELOPE_SCHEMA.to_owned(),
+                evidence_id: format!("ev-{case_id}"),
+                run_id: format!("run-{case_id}"),
+                nonce: format!("nonce-{case_id}"),
+                test_id: case_id.to_owned(),
+                scope: scope.to_owned(),
+                started_at: "2026-09-14T00:00:00Z".to_owned(),
+                ended_at: "2026-09-14T00:10:00Z".to_owned(),
+                source_commit: self.lineage.source_commit.clone(),
+                dirty_tree_digest: self.lineage.dirty_tree_digest.clone(),
+                product_manifest_digest: self.lineage.product_manifest_digest.clone(),
+                profile_digest: self.lineage.profile_digest.clone(),
+                artifact_sha256: self.lineage.artifact_sha256.clone(),
+                toolchain_digest: self.lineage.toolchain_digest.clone(),
+                platform_inventory_digest: self.lineage.platform_inventory_digest.clone(),
+                command: "cargo xtask run qemu-prod --expect PASS".to_owned(),
+                inputs: vec![ArtifactRef {
+                    name: "payload".to_owned(),
+                    path: payload_rel.clone(),
+                    sha256: hash_file(&payload).unwrap(),
+                }],
+                oracle: OracleDescriptor {
+                    kind: "qemu".to_owned(),
+                    detail: "external qmp exit=0 readback=ok".to_owned(),
+                },
+                positive_results: vec![ResultRef {
+                    id: "boot".to_owned(),
+                    status: "PASS".to_owned(),
+                    detail: "ok".to_owned(),
+                }],
+                negative_results: vec![ResultRef {
+                    id: "bad-sig".to_owned(),
+                    status: "FAIL".to_owned(),
+                    detail: "rejected".to_owned(),
+                }],
+                verdict: "PASS".to_owned(),
+                violations: Vec::new(),
+                artifacts: vec![ArtifactRef {
+                    name: "payload".to_owned(),
+                    path: payload_rel,
+                    sha256: hash_file(&payload).unwrap(),
+                }],
+                signer: "test".to_owned(),
+                signature: String::new(),
+            };
+            use ed25519_dalek::Signer;
+            env.signature = hex(&self.key.sign(&serde_json::to_vec(&env).unwrap()).to_bytes());
+            fs::write(disk, serde_json::to_vec_pretty(&env).unwrap()).unwrap();
+            env
+        }
+
+        fn check(&self) -> Vec<String> {
+            let (_, v) = self.run();
+            v
+        }
+
+        fn statuses(&self) -> Vec<String> {
+            let (l, _) = self.run();
+            l
+        }
+
+        /// 判定面与 `git`/`cargo` 解耦：夹具按产物摘要直接给血缘
+        /// （生产入口注入 `compute_lineage`）。
+        fn run(&self) -> (Vec<String>, Vec<String>) {
+            let lineage = &self.lineage;
+            candidate_case_statuses(
+                &self.root,
+                &self.index,
+                &self.matrix,
+                lineage,
+                &|_profile, path| {
+                    let mut l = lineage.clone();
+                    l.artifact_sha256 = hash_file(path)?;
+                    Ok(l)
+                },
+            )
+        }
+    }
+
+    fn fixture_key() -> [u8; 32] {
+        let mut k = [0u8; 32];
+        for (i, b) in k.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_mul(7).wrapping_add(3);
+        }
+        k
+    }
+
+    #[test]
+    fn candidate_check_accepts_a_complete_matrix() {
+        let f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        let v = f.check();
+        assert!(v.is_empty(), "{v:?}");
+        assert!(
+            f.statuses()
+                .iter()
+                .any(|l| l.contains("CORE-70-R11 BLOCKED blocker=EXT-70-HW")),
+            "{:?}",
+            f.statuses()
+        );
+    }
+
+    #[test]
+    fn candidate_check_rejects_missing_required_case() {
+        let mut f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        f.index.blocked.clear();
+        let v = f.check();
+        assert!(
+            v.iter().any(|x| x == "candidate-case-missing:CORE-70-R11"),
+            "{v:?}"
+        );
+        assert!(
+            f.statuses().iter().any(|l| l == "CASE CORE-70-R11 MISSING"),
+            "{:?}",
+            f.statuses()
+        );
+    }
+
+    #[test]
+    fn candidate_check_rejects_duplicate_case() {
+        let mut f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        // 同一 case 既在 blocked 又挂信封 ⇒ 归属不唯一（"同一 case 只能有一个来源"）。
+        let rel = format!(
+            "evidence/70/70.15/{}/CORE-70-R11.json",
+            f.lineage.candidate_id
+        );
+        let disk = f.root.join(&rel);
+        fs::create_dir_all(disk.parent().unwrap()).unwrap();
+        f.write_envelope(&disk, "CORE-70-R11", "L1");
+        let sha = hash_file(&disk).unwrap();
+        f.index.cases.push(CandidateCaseEntry {
+            case_id: "CORE-70-R11".to_owned(),
+            artifact: "cand".to_owned(),
+            envelope: rel,
+            envelope_sha256: sha,
+            tested_sha256: None,
+            detail: "dup".to_owned(),
+        });
+        let v = f.check();
+        assert!(
+            v.iter()
+                .any(|x| x == "candidate-case-duplicate:CORE-70-R11"),
+            "{v:?}"
+        );
+    }
+
+    #[test]
+    fn candidate_check_rejects_unknown_case_and_illegal_exemption() {
+        let mut f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        f.index.exemptions.push(CandidateExemptionEntry {
+            case_id: "CORE-70-R99".to_owned(),
+            reason: "我批准了".to_owned(),
+            approved_by: "self".to_owned(),
+        });
+        let v = f.check();
+        assert!(
+            v.iter().any(|x| x == "candidate-case-unknown:CORE-70-R99"),
+            "{v:?}"
+        );
+        assert!(
+            v.iter()
+                .any(|x| x == "candidate-exemption-illegal:CORE-70-R99"),
+            "{v:?}"
+        );
+    }
+
+    #[test]
+    fn candidate_check_rejects_blocker_outside_registry() {
+        let mut f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-MINE")], fixture_key());
+        let v = f.check();
+        assert!(
+            v.iter()
+                .any(|x| x == "candidate-blocked-illegal:CORE-70-R11:EXT-70-MINE"),
+            "{v:?}"
+        );
+        // 合法 blocker 但无理由同样判负。
+        f.index.blocked[0].blocker = "EXT-70-HW".to_owned();
+        f.index.blocked[0].reason = "  ".to_owned();
+        let v = f.check();
+        assert!(
+            v.iter()
+                .any(|x| x == "candidate-blocked-no-reason:CORE-70-R11"),
+            "{v:?}"
+        );
+    }
+
+    #[test]
+    fn candidate_check_rejects_wrong_candidate_identity() {
+        let mut f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        // 索引自述身份与当前树不符（换源码/换工具链 = 另一个候选）。
+        f.index.toolchain_digest = digest_of(b"another-toolchain");
+        let v = f.check();
+        assert!(
+            v.iter()
+                .any(|x| x == "candidate-identity-mismatch:toolchain_digest"),
+            "{v:?}"
+        );
+        // 索引自述产物摘要与盘上不符 = 产物被替换（"不能只对 commit 比较"）。
+        let mut f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        f.index.artifacts[0].sha256 = digest_of(b"another-build");
+        let _ = f.statuses();
+        let v = f.check();
+        assert!(
+            v.iter().any(|x| x == "candidate-artifact-replaced:cand"),
+            "{v:?}"
+        );
+    }
+
+    #[test]
+    fn candidate_check_rejects_mixed_builds_inside_one_case() {
+        let mut f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        // 把某 case 的信封换成"另一次构建"的（身份字段不同 ⇒ 不可混用）。
+        let rel = f.index.cases[0].envelope.clone();
+        let disk = f.root.join(&rel);
+        let mut env: EvidenceEnvelope = read_json(&disk).unwrap();
+        env.toolchain_digest = digest_of(b"other-toolchain");
+        use ed25519_dalek::Signer;
+        env.signature = hex(&f.key.sign(&serde_json::to_vec(&env).unwrap()).to_bytes());
+        fs::write(&disk, serde_json::to_vec_pretty(&env).unwrap()).unwrap();
+        f.index.cases[0].envelope_sha256 = hash_file(&disk).unwrap();
+        let v = f.check();
+        assert!(
+            v.iter()
+                .any(|x| x.starts_with("candidate-envelope-identity-mismatch:")
+                    && x.ends_with(":toolchain_digest")),
+            "{v:?}"
+        );
+    }
+
+    #[test]
+    fn candidate_check_rejects_scope_below_required_and_unknown_scope() {
+        let mut f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        let rel = f.index.cases[0].envelope.clone();
+        let disk = f.root.join(&rel);
+        let mut env: EvidenceEnvelope = read_json(&disk).unwrap();
+        env.scope = "L1".to_owned(); // required = L2
+        use ed25519_dalek::Signer;
+        env.signature = hex(&f.key.sign(&serde_json::to_vec(&env).unwrap()).to_bytes());
+        fs::write(&disk, serde_json::to_vec_pretty(&env).unwrap()).unwrap();
+        f.index.cases[0].envelope_sha256 = hash_file(&disk).unwrap();
+        let v = f.check();
+        assert!(
+            v.iter()
+                .any(|x| x == "candidate-scope-below-required:CORE-70-R01:L1<L2"),
+            "{v:?}"
+        );
+        let mut f2 = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        let rel2 = f2.index.cases[0].envelope.clone();
+        let disk2 = f2.root.join(&rel2);
+        let mut env2: EvidenceEnvelope = read_json(&disk2).unwrap();
+        env2.scope = "L9".to_owned();
+        env2.signature = hex(&f2.key.sign(&serde_json::to_vec(&env2).unwrap()).to_bytes());
+        fs::write(&disk2, serde_json::to_vec_pretty(&env2).unwrap()).unwrap();
+        f2.index.cases[0].envelope_sha256 = hash_file(&disk2).unwrap();
+        assert!(
+            f2.check()
+                .iter()
+                .any(|x| x == "candidate-scope-unknown:CORE-70-R01:L9"),
+            "{:?}",
+            f2.check()
+        );
+    }
+
+    #[test]
+    fn candidate_check_rejects_missing_replaced_and_bad_json_references() {
+        // 引用不存在
+        let f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        let rel = f.index.cases[0].envelope.clone();
+        fs::remove_file(f.root.join(&rel)).unwrap();
+        let v = f.check();
+        assert!(
+            v.iter()
+                .any(|x| x.starts_with("candidate-envelope-missing")),
+            "{v:?}"
+        );
+
+        // 引用被替换（digest 不符）
+        let f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        let rel = f.index.cases[0].envelope.clone();
+        fs::write(f.root.join(&rel), b"{}").unwrap();
+        let v = f.check();
+        assert!(
+            v.iter()
+                .any(|x| x.starts_with("candidate-envelope-digest-mismatch")),
+            "{v:?}"
+        );
+
+        // 坏 JSON（digest 对齐但内容不是信封）
+        let mut f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        let rel = f.index.cases[0].envelope.clone();
+        let disk = f.root.join(&rel);
+        fs::write(&disk, b"{ not json").unwrap();
+        f.index.cases[0].envelope_sha256 = hash_file(&disk).unwrap();
+        let v = f.check();
+        assert!(
+            v.iter()
+                .any(|x| x.starts_with("candidate-envelope-invalid")),
+            "{v:?}"
+        );
+
+        // 空文件
+        let mut f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        let rel = f.index.cases[0].envelope.clone();
+        let disk = f.root.join(&rel);
+        fs::write(&disk, b"").unwrap();
+        f.index.cases[0].envelope_sha256 = hash_file(&disk).unwrap();
+        let v = f.check();
+        assert!(
+            v.iter()
+                .any(|x| x.starts_with("candidate-envelope-invalid")),
+            "{v:?}"
+        );
+    }
+
+    #[test]
+    fn candidate_check_rejects_path_escape() {
+        let mut f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        f.index.cases[0].envelope = "../../../etc/hostname".to_owned();
+        let _ = f.statuses();
+        let v = f.check();
+        assert!(
+            v.iter().any(|x| x.starts_with("candidate-path-escape")),
+            "{v:?}"
+        );
+        let mut f2 = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        f2.index.cases[0].envelope = "/etc/hostname".to_owned();
+        assert!(
+            f2.check()
+                .iter()
+                .any(|x| x.starts_with("candidate-path-escape")),
+            "{:?}",
+            f2.check()
+        );
+    }
+
+    #[test]
+    fn candidate_check_rejects_artifact_missing_and_digest_mismatch() {
+        let mut f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        let rel = f.index.cases[0].envelope.clone();
+        let disk = f.root.join(&rel);
+        let mut env: EvidenceEnvelope = read_json(&disk).unwrap();
+        env.artifacts[0].path = "evidence/70/70.15/gone.bin".to_owned();
+        use ed25519_dalek::Signer;
+        env.signature = hex(&f.key.sign(&serde_json::to_vec(&env).unwrap()).to_bytes());
+        fs::write(&disk, serde_json::to_vec_pretty(&env).unwrap()).unwrap();
+        f.index.cases[0].envelope_sha256 = hash_file(&disk).unwrap();
+        let v = f.check();
+        assert!(
+            v.iter()
+                .any(|x| x.starts_with("candidate-artifact-missing")),
+            "{v:?}"
+        );
+
+        let mut f2 = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        let rel2 = f2.index.cases[0].envelope.clone();
+        let disk2 = f2.root.join(&rel2);
+        let mut env2: EvidenceEnvelope = read_json(&disk2).unwrap();
+        env2.artifacts[0].sha256 = "1".repeat(64);
+        env2.signature = hex(&f2.key.sign(&serde_json::to_vec(&env2).unwrap()).to_bytes());
+        fs::write(&disk2, serde_json::to_vec_pretty(&env2).unwrap()).unwrap();
+        f2.index.cases[0].envelope_sha256 = hash_file(&disk2).unwrap();
+        let v = f2.check();
+        assert!(
+            v.iter()
+                .any(|x| x.starts_with("candidate-artifact-digest-mismatch")),
+            "{v:?}"
+        );
+    }
+
+    /// 无验签公钥 ≠ 通过：签名必须显式判"不可验"（旧实现 `None => {}` 静默跳过）。
+    #[test]
+    fn unverifiable_signature_is_not_pass() {
+        let f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        fs::remove_file(f.root.join("product/security/keys-local/dev-signing.key")).unwrap();
+        let v = f.check();
+        assert!(
+            v.iter()
+                .any(|x| x.starts_with("candidate-signature-unverifiable")),
+            "{v:?}"
+        );
+    }
+
+    /// 伪造签名的信封在**有钥**环境下必须判 signature-invalid。
+    #[test]
+    fn forged_signature_is_rejected() {
+        let mut f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        let rel = f.index.cases[0].envelope.clone();
+        let disk = f.root.join(&rel);
+        let mut env: EvidenceEnvelope = read_json(&disk).unwrap();
+        env.verdict = "PASS".to_owned();
+        env.positive_results[0].detail = "tampered".to_owned(); // 破坏已签内容
+        fs::write(&disk, serde_json::to_vec_pretty(&env).unwrap()).unwrap();
+        f.index.cases[0].envelope_sha256 = hash_file(&disk).unwrap();
+        let v = f.check();
+        assert!(
+            v.iter()
+                .any(|x| x.starts_with("candidate-signature-invalid")),
+            "{v:?}"
+        );
+    }
+
+    /// 正/负例状态闭集：正例列表里躺一条 FAIL 不得算通过（旧实现全盲）。
+    #[test]
+    fn positive_result_must_be_a_positive_terminal_state() {
+        let mut env = valid_envelope();
+        env.positive_results[0].status = "FAIL".to_owned();
+        let v = gate_violations(&env);
+        assert!(
+            v.iter()
+                .any(|x| x.starts_with("positive-result-not-terminal")),
+            "{v:?}"
+        );
+
+        let mut env = valid_envelope();
+        env.positive_results[0].status = "NOT_A_STATUS".to_owned();
+        let v = gate_violations(&env);
+        assert!(
+            v.iter().any(|x| x.starts_with("result-status-unknown")),
+            "{v:?}"
+        );
+
+        // 负例"通过"同样判负；BLOCKED 结果不得挂在 PASS 裁决下。
+        let mut env = valid_envelope();
+        env.negative_results[0].status = "PASS".to_owned();
+        let v = gate_violations(&env);
+        assert!(
+            v.iter()
+                .any(|x| x.starts_with("negative-result-not-terminal")),
+            "{v:?}"
+        );
+
+        let mut env = valid_envelope();
+        env.negative_results[0].status = "BLOCKED".to_owned();
+        let v = gate_violations(&env);
+        assert!(
+            v.iter().any(|x| x == "blocked-result-under-pass-verdict"),
+            "{v:?}"
+        );
+
+        // 合法终态不误报：VERIFIED 正例 + FAIL 负例。
+        let mut env = valid_envelope();
+        env.positive_results[0].status = "VERIFIED".to_owned();
+        assert!(
+            gate_violations(&env).is_empty(),
+            "{:?}",
+            gate_violations(&env)
+        );
+    }
+
+    /// 矩阵加载：未知 min_scope、重复 case、schema 不符全部拒绝。
+    #[test]
+    fn required_matrix_loader_rejects_invalid_registry() {
+        let root =
+            std::env::temp_dir().join(format!("eneros-required-matrix-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("product/evidence-required")).unwrap();
+        let good = RequiredMatrix {
+            schema: REQUIRED_MATRIX_SCHEMA.to_owned(),
+            matrix_id: "m".to_owned(),
+            series: "70".to_owned(),
+            cases: vec![RequiredCase {
+                case_id: "CORE-70-R01".to_owned(),
+                owner: "70.1".to_owned(),
+                min_scope: "L2".to_owned(),
+                title: "t".to_owned(),
+            }],
+            blockers: Vec::new(),
+            allowed_exemptions: Vec::new(),
+        };
+        let write = |m: &RequiredMatrix| {
+            fs::write(
+                root.join("product/evidence-required/m.json"),
+                serde_json::to_vec_pretty(m).unwrap(),
+            )
+            .unwrap();
+        };
+        write(&good);
+        assert!(load_required_matrix(&root, "m").is_ok());
+        // 路径穿越的矩阵 id 不得越出固定目录。
+        assert!(load_required_matrix(&root, "../../etc/passwd").is_err());
+
+        let mut dup = good.clone();
+        dup.cases.push(dup.cases[0].clone());
+        write(&dup);
+        assert!(load_required_matrix(&root, "m").is_err());
+
+        let mut bad_scope = good.clone();
+        bad_scope.cases[0].min_scope = "SUPER".to_owned();
+        write(&bad_scope);
+        assert!(load_required_matrix(&root, "m").is_err());
+
+        let mut bad_schema = good.clone();
+        bad_schema.schema = "eneros.required-matrix.v2".to_owned();
+        write(&bad_schema);
+        assert!(load_required_matrix(&root, "m").is_err());
+    }
+
+    /// 仓库真实 required 矩阵可加载且语义自洽（防登记文件本身写坏）。
+    #[test]
+    fn shipped_core70_matrix_loads() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let m = load_required_matrix(&root, "core-70").expect("core-70 matrix must load");
+        assert_eq!(m.cases.len(), 12, "CORE-70-R01..R12");
+        assert!(m.cases.iter().any(|c| c.case_id == "CORE-70-R11"));
+        assert!(m.blockers.iter().any(|b| b.id == "EXT-70-HW"));
+        assert!(m.allowed_exemptions.is_empty());
+        assert!(m.cases.iter().any(|c| c.min_scope == "HARDWARE"));
     }
 }

@@ -68,10 +68,23 @@ pub fn freeze_digest(
         .map(|(s, note)| alloc::format!("{}#{}", s.json_name(), note))
         .collect();
     entries.sort();
+    // 复查修复（70.14）：**逐条长度前缀**，不得用裸 0x1f 连接。
+    //
+    // 缺陷形态（旧实现）：note 是任意 JSON 字符串（serde 允许 `\u001f`），
+    // ledger 校验也不禁止控制字符——于是
+    //   A = [("storage", "x\u{1f}storage#y")]
+    //   B = [("storage", "x"), ("storage", "y")]
+    // 排序后 join 出的字符串逐字节相同 ⇒ 两个语义不同的缺失账本共享同一摘要
+    // （bring-up / 资格正是用 freeze_digest 判"冻结记录未变"，分叉不可检测）。
+    // 长度前缀后，"一条含分隔符的登记"与"两条登记"必然不同。
+    let missing_body: String = entries
+        .iter()
+        .map(|e| alloc::format!("{}:{}", e.len(), e))
+        .collect();
     fields_digest(&[
         ("ledger_digest", body.clone()),
         ("ledger_version", ledger_version.to_string()),
-        ("missing", entries.join("\u{1f}")),
+        ("missing", missing_body),
     ])
 }
 
@@ -361,5 +374,57 @@ mod tests {
         let d = description_digest(b"dtb-bytes");
         assert_eq!(d.len(), 64);
         assert_ne!(d, description_digest(b"dtb-bytes2"));
+    }
+
+    /// 70.14 复查红测：缺失登记的**域分隔必须无碰撞**。
+    ///
+    /// 缺陷形态（旧实现）：条目用裸 `\u{1f}` 连接，而 `note` 是任意 JSON
+    /// 字符串（serde 允许控制字符）——
+    ///   A = [(Storage, "x\u{1f}storage#y")]
+    ///   B = [(Storage, "x"), (Storage, "y")]
+    /// 排序后 join 结果逐字节相同 ⇒ 摘要相同（bring-up/资格靠 `freeze_digest`
+    /// 判"冻结记录未变"，两个语义不同的缺失账本不可区分）。
+    #[test]
+    fn freeze_digest_missing_entries_are_length_prefixed() {
+        let a = freeze_digest(
+            "sku",
+            "rev",
+            2,
+            &[],
+            &[(Subsystem::Storage, "x\u{1f}storage#y".to_string())],
+        );
+        let b = freeze_digest(
+            "sku",
+            "rev",
+            2,
+            &[],
+            &[
+                (Subsystem::Storage, "x".to_string()),
+                (Subsystem::Storage, "y".to_string()),
+            ],
+        );
+        assert_ne!(a, b, "一条含分隔符的登记 ≠ 两条登记（域分隔无碰撞）");
+        // 反向：同一内容不同登记顺序 ⇒ 摘要相同（排序语义不变）。
+        let c = freeze_digest(
+            "sku",
+            "rev",
+            2,
+            &[],
+            &[
+                (Subsystem::Storage, "y".to_string()),
+                (Subsystem::Storage, "x".to_string()),
+            ],
+        );
+        let d = freeze_digest(
+            "sku",
+            "rev",
+            2,
+            &[],
+            &[
+                (Subsystem::Storage, "x".to_string()),
+                (Subsystem::Storage, "y".to_string()),
+            ],
+        );
+        assert_eq!(c, d, "登记顺序不影响摘要");
     }
 }

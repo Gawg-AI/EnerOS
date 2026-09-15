@@ -113,7 +113,14 @@ class Broker:
                         if q > 0:
                             self.inflight.setdefault(conn, []).append((pid, pkt))
                     except OSError:
-                        pass
+                        # 死订阅者清理（REG-70.15-R09 投递有损治理）：断连后
+                        # 不再参与路由，避免屏蔽同主题的存活订阅者。
+                        self.subs.pop(conn, None)
+                        self.inflight.pop(conn, None)
+                        try:
+                            conn.close()
+                        except OSError:
+                            pass
                     break
 
     _pid = [0]

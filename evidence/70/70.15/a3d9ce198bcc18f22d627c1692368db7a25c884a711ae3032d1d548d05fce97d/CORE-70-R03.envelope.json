@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-16a4bed3373e",
+  "run_id": "run-18d561ac8f7d377c",
+  "nonce": "18d561ac8f7d3bd4",
+  "test_id": "CORE-70-R03",
+  "scope": "L2",
+  "started_at": "2026-09-15T03:43:40Z",
+  "ended_at": "2026-09-15T03:43:40Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "7f41b85b150c9ad2d0720b8ffc053b093b28004209bcce45d14b823392834256",
+  "product_manifest_digest": "475a21ba6a3866c60bf7abdc76531f7e9ed8ed4473dfb790cad801cca85b0583",
+  "profile_digest": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2",
+  "artifact_sha256": "d349f98402eed44880326b95123060120deb669264be85b2b22ce4d2f83eb602",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-r03-powercut.sh（SEED_DL=300/FINAL_DL=300，脏断电×2）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "475a21ba6a3866c60bf7abdc76531f7e9ed8ed4473dfb790cad801cca85b0583"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "掉电恢复合同：seed ≥3 checkpoint → 脏断电 kill -9 ×2 → 复用盘 TSDB-DISK-OPEN 保数据、逐次脏重启 PRODUCT-READY、全窗零 PANIC、控制链恢复、checkpoint 恢复、零 CHAIN-KEY-MISSING"
+  },
+  "positive_results": [
+    {
+      "id": "power-cut",
+      "status": "PASS",
+      "detail": "复用盘保数据 points=60；逐次脏重启 ready ✓；零 PANIC；控制链恢复 rounds=2944；checkpoint 恢复 ×6；零 CHAIN-KEY-MISSING"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "none",
+      "status": "FAIL",
+      "detail": "无独立负例判据（R6 缺失即 FAIL）"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/a3d9ce198bcc18f22d627c1692368db7a25c884a711ae3032d1d548d05fce97d/CORE-70-R03.run-record.json",
+      "sha256": "6045555678fa81280f0744eb798a7d8f43cc4580396ae0bdb49f8868cf076a97"
+    }
+  ],
+  "signer": "dev",
+  "signature": "8f7988d2a5cb12198ae9e9ed1ae147dacbff9052e63a96211f8f5d95996659ca3d056678270b5ebff519d7283f3db416d7aa76a5585230bb0773a2b9314c8f09"
+}

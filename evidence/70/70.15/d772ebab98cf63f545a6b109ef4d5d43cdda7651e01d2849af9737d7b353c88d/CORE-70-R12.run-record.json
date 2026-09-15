@@ -1,0 +1,29 @@
+{
+  "schema": "eneros.gate-run-record.v1",
+  "case_id": "CORE-70-R12",
+  "gate_id": "evidence42-candidate-check",
+  "command": "cargo test -p eneros-xtask evidence_chain::（候选判定库红测 29 例：required 负例形态 + selftest）",
+  "exit_code": 0,
+  "recorded_at": "2026-09-14T17:55:20Z",
+  "ran_artifact_sha256": "93e21317719616843177ad05775457c7572f9906cfa7bfc25766217791b514f9",
+  "ran_artifact_sha256_source": "evidence/70/70.7/combined.sha256",
+  "raw_log": {
+    "name": "checker-red-tests.log",
+    "bytes": 2827,
+    "sha256": "52917b65c4385b08ff950f40a7cbb1b9dd9463df9b5a6f54273f55c553b34084",
+    "resident": "handoff-bundle",
+    "note": ".gitignore `*.log`：原始日志随移交包分发，本记录绑定其摘要"
+  },
+  "verdict_lines": [
+    "test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 165 filtered out; finished in 0.12s",
+    "candidate-check red tests: PASS (16 negative forms must be red before the checker accepts)"
+  ],
+  "verdict": "PASS",
+  "candidate": {
+    "candidate_id": "d772ebab98cf63f545a6b109ef4d5d43cdda7651e01d2849af9737d7b353c88d",
+    "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+    "dirty_tree_digest": "3fe81463ae9dbe39ed96827d7dbce88a0d3eb5428864a12096f7b903326ca746",
+    "artifact_sha256": "448a27028be46a6da61d84ca8f58710e5bf25be56fec595ab8745a29fcfc3b9f",
+    "profile": "qemu-test"
+  }
+}

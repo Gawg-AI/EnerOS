@@ -43,6 +43,11 @@ TPL="$ROOT/target/evidence61/template.fd"
 DIR="$RUN"
 mkdir -p "$DIR"
 rm -f "$DIR/qemu-serial.log" "$DIR/eneros-data.raw"
+# 对端 transcript 必须**本轮新写**：files 落 EVROOT（持久），旧实现从不
+# 清理 ⇒ 三个对端进程本轮启动即死，前一轮的记录仍让 G7 判"非空存活"
+# （70.14 复查红测）。清空 = 只有本轮写入才能让 G7 通过。
+rm -f "$EVROOT/modbus.transcript.jsonl" "$EVROOT/iec104.transcript.jsonl" \
+      "$EVROOT/broker-transcript.jsonl"
 
 echo "=== 70.1 持续控制压力窗（$DL s；peer 离线 = 原失败压力形；门限 $MIN_ROUNDS 轮）==="
 python3 "$ROOT/evidence/61/modbus_slave61.py" --transcript "$EVROOT/modbus.transcript.jsonl" &
@@ -88,7 +93,10 @@ cp -f "$S" "$EVROOT/qemu-serial.log"
 cp -f "$EVROOT/broker-transcript.jsonl" "$EVROOT/broker-transcript.jsonl" 2>/dev/null || true
 
 # ---- 结构化判据裁决（G1–G7 单源；退出码即门结果）----
+# 窗长显式声明：G5 的提交下限由"窗长 / 架构决策节奏上界（45s）"推导
+# （见 judge 的 CONTROL_CADENCE_MAX_S）。
 python3 "$ROOT/tools/run70_gate_judge.py" "$S" "$MIN_ROUNDS" \
+  --window-secs "$DL" \
   --transcripts "$EVROOT/modbus.transcript.jsonl" "$EVROOT/iec104.transcript.jsonl"
 RC=$?
 ROUNDS=$(grep -c "CONTROL-CHAIN: round=" "$S")

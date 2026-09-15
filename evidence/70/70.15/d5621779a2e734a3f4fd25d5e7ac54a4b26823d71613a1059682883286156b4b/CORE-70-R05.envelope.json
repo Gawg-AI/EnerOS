@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-ddff2dd87620",
+  "run_id": "run-18d5149f1d3d8b08",
+  "nonce": "18d5149f1d3d8f92",
+  "test_id": "CORE-70-R05",
+  "scope": "L2",
+  "started_at": "2026-09-14T04:11:40Z",
+  "ended_at": "2026-09-14T04:11:40Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "69b83c03e7960655ff10d9f672430b5fce17ee06e4ee65d682f6ffead0cf5ec8",
+  "product_manifest_digest": "b94ac540a6d936e9b32ff4cda46f1b65a2b3157c3b8b644399b7260f71654ce2",
+  "profile_digest": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2",
+  "artifact_sha256": "a5d8bf9fdb5f93bfdb8ddabc7520670919b95edfb3e402fa75223eee21cbf8f4",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol4-gate.sh（DL=1200）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "b94ac540a6d936e9b32ff4cda46f1b65a2b3157c3b8b644399b7260f71654ce2"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "broker/peer 故障恢复：重连 CONNACK/订阅恢复/新连接；MQTT 面恢复判据"
+  },
+  "positive_results": [
+    {
+      "id": "recovery",
+      "status": "PASS",
+      "detail": "R1 零PANIC、R3 锚1 后 CONNACK×2+订阅×2、R5 锚2 后重连+订阅恢复、R6 READY+尾部回读"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "synth",
+      "status": "FAIL",
+      "detail": "R2/R3提交/R5-ARMED ✗——根因=REG-70.8-SYNTH-NO-OBS（合成源无观测事件），非网络面回归"
+    }
+  ],
+  "verdict": "FAIL",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/d5621779a2e734a3f4fd25d5e7ac54a4b26823d71613a1059682883286156b4b/CORE-70-R05.run-record.json",
+      "sha256": "b89b9e87d577f1630c02c2f703387a645cd7ca8ff396b7d9adc7bb6f3bd02dbf"
+    }
+  ],
+  "signer": "dev",
+  "signature": "bb20fae67d9c5840ed739a464c34bcb72fa80a12c1933e323abc0fefd69c59a21f1bdceb5df03a6b5da27df51d4b7d84f29f49506d394a3bce6278f302aa4506"
+}

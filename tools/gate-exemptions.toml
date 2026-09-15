@@ -11,4 +11,10 @@
 "crates/agents/model-ota/src/real.rs" = { rule = "orphan", reason = "未挂载历史死文件（lib.rs 零声明，git 已跟踪）——26-C 未处置；删除归后续卷逐个裁决（63.3 不做边界：孤儿清剿非本蓝图）", expires_at = "WP-26.15", status = "deferred", owner_wp = "26.15" }
 "crates/agents/mvp-scenario/src/tests.rs" = { rule = "mock-leak", reason = "34 GV-08：经 lib.rs `#[cfg(test)] mod tests;` 整体门控的测试文件（use MockSolver 仅测试构建）", expires_at = "never", owner_wp = "34" }
 "crates/runtime/root-task/src/runtime_spec.rs" = { rule = "orphan", reason = "WP-37.1 设计模型：38 卷起已提交并在 main.rs 声明 pub mod，全仓零消费（ServiceHandle 等类型无外部使用）——声明但死面，删除/接线归后续卷 owner 裁决", expires_at = "WP-37.1", status = "deferred", owner_wp = "37.1" }
-"crates/protocols/control-dispatch/src/plan_hold.rs" = { rule = "orphan", reason = "70.11 WP-70.11.2 有界计划持有与到期驱动：判据与测试齐备（约 1040 行 + 7 例），生产零调用方（REG-70.11-HOLD-UNWIRED）——接线需先定释放面与 dispatch→telemetry 服务间通道（属 70.11.3/.11.4）。orphan 门语义为「删除后仍能编译即死文件 ⇒ 删除」，会永久抹除在案待接线模块；按 63.3 先例登记豁免，去留归 70.15 裁决", expires_at = "WP-70.15", status = "deferred", owner_wp = "70.12-70.14" }
+"crates/protocols/control-dispatch/src/plan_hold.rs" = { rule = "orphan", reason = "70.11 WP-70.11.2 有界计划持有与到期驱动：判据与测试齐备（约 1040 行 + 7 例），生产零调用方（REG-70.11-HOLD-UNWIRED）——接线需先定释放面与 dispatch→telemetry 服务间通道（属 70.11.3/.11.4）。orphan 门语义为「删除后仍能编译即死文件 ⇒ 删除」，会永久抹除在案待接线模块；按 63.3 先例登记豁免，去留归 70.15 裁决", expires_at = "WP-70.11.3", status = "deferred", owner_wp = "70.11.3" }
+# 2026-09-14（蓝图 70.15 裁决，DEC-70-13）：**保留**。70.15 的裁决是「不删、不接线」——
+# 删除会销毁蓝图 [08]/[10] 明确规划的多步计划能力（含 7 例判据）；接线前置是两项容量/
+# 生命周期裁决（包络 30s vs 计划时域；传输墙 ≈11 条分配），输入侧尚无。同期已把「投递面
+# 无路径」从静默改为串口可选址：engine `PLAN-COMMAND-DEFERRED` 逐步行 +
+# `PLAN-COMMANDS-DEFERRED deferred=/expired=/delivered=` 汇总行。豁免到期点随之由
+# WP-70.15 提前到接线 WP（WP-70.11.3），不再无限期挂在已完成卷上。

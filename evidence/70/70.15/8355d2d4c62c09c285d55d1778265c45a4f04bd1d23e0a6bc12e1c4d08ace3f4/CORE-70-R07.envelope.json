@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-92750bc3d138",
+  "run_id": "run-18d578079cf316c2",
+  "nonce": "18d578079cf31b06",
+  "test_id": "CORE-70-R07",
+  "scope": "L2",
+  "started_at": "2026-09-15T10:33:21Z",
+  "ended_at": "2026-09-15T10:33:21Z",
+  "source_commit": "48c54f98fe50b7dab36f7bbc0ae44e0fa18ff40b",
+  "dirty_tree_digest": "6b4d691c7cf10bfae76c194dc50d993c71d4e5d278c59f891dc9a3a8a20308b7",
+  "product_manifest_digest": "0b03d978af0b5e70d549c53d6ca133a4702ec6143ffc8c378f0f091cbcca22f2",
+  "profile_digest": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6",
+  "artifact_sha256": "e5e8070f1e906649e21949ce7d10c99039f1a7f39913e2891658b2e2480f106f",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol6-gate.sh（svc-config 写后读回生效后）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-test/product-manifest.normalized.json",
+      "sha256": "0b03d978af0b5e70d549c53d6ca133a4702ec6143ffc8c378f0f091cbcca22f2"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-test.json",
+      "sha256": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "管理动作全链 22 判据"
+  },
+  "positive_results": [
+    {
+      "id": "mgmt",
+      "status": "PASS",
+      "detail": "零 ✗ 全 ✓——R24 冷启动恢复 ✓"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "skip",
+      "status": "FAIL",
+      "detail": "R17 维护外激活=宿主闸覆盖（如实登记）"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/8355d2d4c62c09c285d55d1778265c45a4f04bd1d23e0a6bc12e1c4d08ace3f4/CORE-70-R07.run-record.json",
+      "sha256": "a1423535e3d4057789bb33d1cf01cdb5478a05fa9078c76d2bb052af5b4ca95c"
+    }
+  ],
+  "signer": "dev",
+  "signature": "1d3e7003a3fa367f2ffd8908b71c723f011d094a297191461cdf92997c4737a242001ba69e91a65992b88f4051c20eccf3669188ca23d0d8e7c2dbf4ed8af005"
+}

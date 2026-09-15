@@ -228,7 +228,20 @@ pub struct DurableIntentStore<Io: PersistIo> {
     states: BTreeMap<[u8; 16], DispatchState>,
     /// command_id → 记录（open 重建 + append）。
     records: BTreeMap<[u8; 16], IntentRecord>,
+    /// **内存驻留上限**（2026-09-14，`REG-70.15-DISPATCH-HEAP-870R` 长窗实弹）：
+    /// 三张 BTreeMap 按**已提交命令**无界增长（实测 HEAP-WM 468 KiB / req≈861 →
+    /// 672 B 分配失败 PANIC）。磁盘 outbox 本身就是可恢复保留（open 重放），
+    /// 内存侧只需**近期窗口**做去重/对账 ⇒ 超限时按 outbox id 序驱逐**最老的
+    /// 终态**条目（未决条目永不驱逐——对账输入不可丢）。
+    retention: usize,
+    /// 插入序（outbox id 序的代理；驱逐最老终态用）。
+    order: alloc::vec::Vec<[u8; 16]>,
 }
+
+/// 内存驻留上限（条）：512 KiB 堆下 intent 三表 + 审计链 + 工作集的预算
+/// 反推值（长窗实测：861 次提交即 468 KiB 触顶——三表 ≈300 B/条无上界）。
+/// 磁盘 outbox 保留全量（可恢复）；内存侧只保最近窗口。
+pub const INTENT_RETENTION: usize = 512;
 
 impl<Io: PersistIo> DurableIntentStore<Io> {
     /// 构造（随后必须 `open()`）。
@@ -238,7 +251,57 @@ impl<Io: PersistIo> DurableIntentStore<Io> {
             index: BTreeMap::new(),
             states: BTreeMap::new(),
             records: BTreeMap::new(),
+            retention: INTENT_RETENTION,
+            order: alloc::vec::Vec::new(),
         }
+    }
+
+    /// 驻留上限（测试注入用）。
+    #[cfg(test)]
+    fn with_retention(
+        io: Io,
+        base: u64,
+        slot_len: usize,
+        max_slots: usize,
+        retention: usize,
+    ) -> Self {
+        let mut s = Self::new(io, base, slot_len, max_slots);
+        s.retention = retention;
+        s
+    }
+
+    /// 驻留超限时的**终态驱逐**：按插入序移除最老的终态条目（三张表同步），
+    /// 直到 `index.len() <= retention`。未决（非终态）条目**永不驱逐**——
+    /// 它们是重启对账的输入，丢了会重复执行已发生的写。幂等去重的持久面
+    /// 在磁盘 outbox（`IdempotencyKey`），驱逐内存条目不失去该保护。
+    fn evict_oldest_terminal(&mut self) -> usize {
+        let mut evicted = 0usize;
+        while self.index.len() > self.retention {
+            // 找最老的（插入序）终态条目。
+            let Some(cid) = self
+                .order
+                .iter()
+                .find(|cid| {
+                    matches!(
+                        self.states.get(*cid),
+                        Some(
+                            DispatchState::Committed
+                                | DispatchState::Failed
+                                | DispatchState::Rejected
+                        )
+                    )
+                })
+                .copied()
+            else {
+                break; // 全部未决——不许驱逐（对账输入）。
+            };
+            self.index.remove(&cid);
+            self.states.remove(&cid);
+            self.records.remove(&cid);
+            self.order.retain(|c| c != &cid);
+            evicted += 1;
+        }
+        evicted
     }
 
     /// 打开/重放：从日志恢复未决意图（断电重启对账输入）。
@@ -259,9 +322,11 @@ impl<Io: PersistIo> DurableIntentStore<Io> {
                 eneros_durable_state::MessageState::PeerAcked => continue,
             };
             let rec = p.message;
-            self.index.insert(rec.command_id, p.id);
-            self.states.insert(rec.command_id, state);
-            self.records.insert(rec.command_id, rec);
+            let cid = rec.command_id;
+            self.index.insert(cid, p.id);
+            self.states.insert(cid, state);
+            self.records.insert(cid, rec);
+            self.order.push(cid);
         }
         Ok(())
     }
@@ -305,6 +370,8 @@ impl<Io: PersistIo> IntentStore for DurableIntentStore<Io> {
         self.index.insert(rec.command_id, id);
         self.states.insert(rec.command_id, DispatchState::Persisted);
         self.records.insert(rec.command_id, rec.clone());
+        self.order.push(rec.command_id);
+        self.evict_oldest_terminal();
         Ok(())
     }
 
@@ -460,6 +527,45 @@ mod tests {
             receipt_digest: None,
             plan_sha256: None,
         }
+    }
+
+    /// 2026-09-14（70.15 长窗实弹红测）：**内存驻留必须有界**。
+    ///
+    /// 缺陷形态（实弹 HEAP-WM）：三张 BTreeMap 按**已提交命令**无界增长
+    /// （≈300 B/条，861 次提交即 468 KiB 触顶 512 KiB 堆 → 672 B 分配失败
+    /// PANIC → 控制链"活着但不再控制"）。旧实现 `ack` 只改状态、永不驱逐。
+    ///
+    /// 判据：append + ack 超过 retention 的条目数后——①内存驻留 ≤ retention
+    /// （最老终态被驱逐）；②未决条目永不驱逐（对账输入）；③驱逐后 `find`
+    /// 对最老条目返回 None（诚实体面，幂等持久面在磁盘 outbox）。
+    #[test]
+    fn terminal_retention_is_bounded() {
+        let media = std::rc::Rc::new(core::cell::RefCell::new(Vec::new()));
+        let io = SharedMemIo::new(std::rc::Rc::clone(&media), 1 << 20);
+        let mut store = DurableIntentStore::with_retention(io, 0, 256, 512, 64);
+        store.open().unwrap();
+        // 200 条全部 Committed（终态）——超过 retention=64。
+        for i in 0..200u8 {
+            let r = rec(i, DispatchState::Persisted);
+            store.append(&r).unwrap();
+            store
+                .update_state(&r.command_id, DispatchState::Committed)
+                .unwrap();
+        }
+        assert!(
+            store.index.len() <= 64,
+            "终态驻留必须被驱逐到 retention 内（实际 {}）",
+            store.index.len()
+        );
+        // 未决条目永不驱逐：追加 8 条未决，前面的终态继续让位。
+        for i in 200..208u8 {
+            let r = rec(i, DispatchState::Persisted);
+            store.append(&r).unwrap();
+        }
+        assert!(store.index.len() <= 64);
+        // 最老的已驱逐（find → None）；新近的仍在。
+        assert!(store.find(&[0u8; 16]).is_none(), "最老终态必须被驱逐");
+        assert!(store.find(&[207u8; 16]).is_some(), "新近条目必须保留");
     }
 
     /// 正例：append → update_state(Committed) → 「重启」后 pending 为空

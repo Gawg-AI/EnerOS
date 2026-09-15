@@ -375,6 +375,63 @@ fn watermarks_reach_95_percent_and_reject_q2q3() {
 }
 
 #[test]
+fn retention_delete_respects_per_call_segment_budget() {
+    // REG-70.15-PRUNE-MEGAOP：单次删除突发必须受预算约束（多窗摊销）——
+    // 无界删除 = 数万块 IPC 阻塞 svc-telemetry 单线程循环（实弹 40 万行）。
+    let dev = block_dev(32);
+    let mut store = BlockEventStore::format(FaultyBlockDevice::new(dev), test_config()).unwrap();
+    let mut n = 0u64;
+    loop {
+        match store.append(6, eid(n + 1), 0, &[0xAB; 48]) {
+            Ok(_) => n += 1,
+            Err(StoreError::Full) => break,
+            Err(e) => panic!("{e:?}"),
+        }
+        if n > 4000 {
+            panic!("没满");
+        }
+    }
+    let _ = store.flush();
+    let all = store
+        .delete_full_segments_before(6, u64::MAX, usize::MAX)
+        .unwrap();
+    let total_segments = all.len();
+    assert!(
+        total_segments >= 3,
+        "至少 3 个完整段才可验证预算：{total_segments}"
+    );
+    // 重放：format + 重写同量数据后按预算删。
+    let dev = block_dev(32);
+    let mut store = BlockEventStore::format(FaultyBlockDevice::new(dev), test_config()).unwrap();
+    let mut n = 0u64;
+    loop {
+        match store.append(6, eid(n + 1), 0, &[0xAB; 48]) {
+            Ok(_) => n += 1,
+            Err(StoreError::Full) => break,
+            Err(e) => panic!("{e:?}"),
+        }
+        if n > 4000 {
+            panic!("没满");
+        }
+    }
+    let _ = store.flush();
+    // 预算 = 2：单次恰删 2 段（尽管可删段更多）。
+    let d1 = store.delete_full_segments_before(6, u64::MAX, 2).unwrap();
+    assert_eq!(d1.len(), 2, "单次删除必须受预算约束（首窗）");
+    let d2 = store.delete_full_segments_before(6, u64::MAX, 2).unwrap();
+    assert_eq!(d2.len(), 2, "次窗继续摊销");
+    let d3 = store
+        .delete_full_segments_before(6, u64::MAX, usize::MAX)
+        .unwrap();
+    assert_eq!(
+        d1.len() + d2.len() + d3.len(),
+        total_segments,
+        "多窗摊销后总量一致（不丢不重）"
+    );
+    let _ = total_segments;
+}
+
+#[test]
 fn retention_deletes_only_full_segments_with_audit_trail() {
     let dev = block_dev(32);
     let mut store = BlockEventStore::format(FaultyBlockDevice::new(dev), test_config()).unwrap();
@@ -393,7 +450,7 @@ fn retention_deletes_only_full_segments_with_audit_trail() {
     let _ = store.flush(); // Full 后 staged 残留可能落不进——尽力即可
                            // 保留删除：只删 last_offset < 61 的完整段（每段约 53 条 → 段 1 的
                            // 末条 offset=52；keep_after=61 恰好删段 1 保留段 2）。
-    let deleted = store.delete_full_segments_before(6, 61).unwrap();
+    let deleted = store.delete_full_segments_before(6, 61, 8).unwrap();
     assert!(!deleted.is_empty(), "至少删掉首个完整段");
     for d in &deleted {
         assert!(d.last_offset < 61, "删除段范围核对：{d:?}");

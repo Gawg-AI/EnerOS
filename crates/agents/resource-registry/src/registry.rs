@@ -471,10 +471,10 @@ asset_id = 2
 schema_id = 1
 unit = "kW"
 role = "control"
-readback_point_id = 1003
+readback_point_id = 2003
 
 [[point_semantics]]
-point_id = 1003
+point_id = 2003
 asset_id = 2
 schema_id = 1
 unit = "kW"
@@ -488,7 +488,7 @@ unit = "kW"
 class = "setpoint"
 min = -200.0
 max = 200.0
-readback_point_id = 1003
+readback_point_id = 2003
 priority = "remote"
 safe_state = "hold"
 lost_link = "hold"
@@ -508,17 +508,19 @@ ramp_down_kw_s = 1.0
 soc_min = 0.05
 soc_max = 0.95
 
-# grid(10) 补控制合同（仍无铭牌）。
+# grid(10) 补控制合同（仍无铭牌）。回读点取 2002（不占用生产目录已声明的
+# 1001..1004——2026-09-14 起 PCS-1 的功率回读/遥测点进了目录，测试变体
+# 必须避开这些 id 才不与生产 `[[point_semantics]]` 撞车）。
 [[point_semantics]]
 point_id = 11
 asset_id = 10
 schema_id = 1
 unit = "kW"
 role = "control"
-readback_point_id = 1002
+readback_point_id = 2002
 
 [[point_semantics]]
-point_id = 1002
+point_id = 2002
 asset_id = 10
 schema_id = 1
 unit = "kW"

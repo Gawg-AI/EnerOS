@@ -50,7 +50,7 @@ pub const PROD_FEEDBACK_MAPPING: FeedbackPointMapping = FeedbackPointMapping {
 /// 本 crate 反馈映射共用一份常量（历史三处手抄收编；完全配置化编译归
 /// 后续卷 SafetyCatalog 工作）。点 1-7 = 电压/电流/频率/SOC/grid/过流
 /// 告警/过温告警（复查矫正：过温独立点 7 = peer 0x0106，6/6 别名解除）。
-pub const SAFETY_COVERAGE_POINTS: [(u32, f64, f64, u64, eneros_safety_validator::PointUnit); 7] = [
+pub const SAFETY_COVERAGE_POINTS: [(u32, f64, f64, u64, eneros_safety_validator::PointUnit); 8] = [
     (
         1,
         0.0,
@@ -76,6 +76,24 @@ pub const SAFETY_COVERAGE_POINTS: [(u32, f64, f64, u64, eneros_safety_validator:
     (5, 0.0, 1.0, 5000, eneros_safety_validator::PointUnit::Other),
     (6, 0.0, 1.0, 5000, eneros_safety_validator::PointUnit::Other),
     (7, 0.0, 1.0, 5000, eneros_safety_validator::PointUnit::Other),
+    // 2026-09-14（70.15 / REG-70.15-CORE-CHAIN-SINGLE-GAP 的最后一环）：
+    // **控制合同的功率回读点**。本表是冻结快照必收点集的**代码侧单源**
+    // （`build_policy` 的 `required`），目录 coverage 与之 parity 对齐。
+    // 缺它 ⇒ 回读点即使被采集也进不了冻结快照 ⇒ 独立认证器的
+    // `readback_ok` 恒假 ⇒ `NoControlContract:contract-incomplete` ⇒
+    // `dispatch=Committed` 恒 0（方向 1–5 判据的共同阻塞）。
+    // 窗宽 = 控制合同（−500..500 kW）；周期 = 点表 5000ms。
+    (
+        1001,
+        -500.0,
+        500.0,
+        5000,
+        eneros_safety_validator::PointUnit::Kilowatt,
+    ),
+    // R10 多资产（2026-09-15）注：合同 2 的回读点 1005 **不进本完备集**——
+    // `readback_ok` 语义 = 回读点在快照受理观测中**存在**即可（registry.rs
+    // presence 判定），synth 馈电/从站已送 1005 进快照。完备集保持安全
+    // 必收点语义（1-7 + 1001），不为逐合同回读点扩张。
 ];
 
 /// 由单源表构建评估器覆盖声明（svc-telemetry 装配唯一入口）。

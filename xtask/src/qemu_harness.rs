@@ -777,6 +777,100 @@ fn run_installer(root: &Path, options: InstallRunOptions) -> DynResult<()> {
 }
 
 #[cfg(unix)]
+/// 非 QMP 路径的**流式执行器**：把 QEMU 的 stdout/stderr 边到达边追加到
+/// `evidence_dir/qemu-serial.log`，直到 `window_secs` 到期或 QEMU 自行退出。
+///
+/// 为什么必须流式：门的就绪等待（`wait_ready`）以"日志文件里出现
+/// `PRODUCT-READY: true`"为通过条件；旧实现用 `output()` 缓冲到退出才写
+/// 文件 ⇒ 门只能等 QEMU 结束才能判 READY。两者绑定后，窗口时长就只能等于
+/// "QEMU 自然结束"，调用方声明的 `--qmp-deadline-secs` 形同虚设。
+///
+/// 返回 `(exit_code, raw_log)`；到期未退出 = `timeout --signal=KILL` 语义
+/// （`exit = -1`，调用方按失败处理，绝不把超时当 PASS）。
+fn run_qemu_streaming(
+    qemu_args: &[String],
+    evidence_dir: &Path,
+    window_secs: u64,
+) -> DynResult<std::process::Output> {
+    use std::io::{Read, Write};
+    use std::process::Stdio;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let window = window_secs.max(200);
+    let log_path = evidence_dir.join("qemu-serial.log");
+    let mut child = Command::new(&qemu_args[0])
+        .args(&qemu_args[1..])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| invalid("failed to take QEMU stdout"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| invalid("failed to take QEMU stderr"))?;
+
+    // 汇聚缓冲：既回流给调用方，也**即时追加**到证据文件（门要能边跑边看）。
+    let log: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let file = Arc::new(Mutex::new(fs::File::create(&log_path)?));
+    let mut readers = Vec::new();
+    for stream in [Box::new(stdout) as Box<dyn Read + Send>, Box::new(stderr)] {
+        let log = Arc::clone(&log);
+        let file = Arc::clone(&file);
+        readers.push(thread::spawn(move || {
+            let mut stream = stream;
+            let mut buf = [0u8; 4096];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        log.lock().unwrap().extend_from_slice(&buf[..n]);
+                        if let Ok(mut f) = file.lock() {
+                            let _ = f.write_all(&buf[..n]);
+                            let _ = f.flush();
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        }));
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(window);
+    let timed_out = loop {
+        if child.try_wait()?.is_some() {
+            break false;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            break true;
+        }
+        thread::sleep(Duration::from_millis(100));
+    };
+    let status = child.wait()?;
+    for t in readers {
+        let _ = t.join();
+    }
+    let raw = log.lock().unwrap().clone();
+    // 收尾再写一次全量（与流式内容等值；保证文件在 QEMU 退出后即刻完整）。
+    fs::write(&log_path, &raw)?;
+    // ⚠ **不得伪造退出码**：窗口到期是 kill ⇒ `wait()` 给出的真实状态就是
+    // 非成功（调用方按 "timeout is a failure" 处理，绝不把窗口到期当 PASS）。
+    // 早期草稿这里在 `timed_out` 分支回填 `ExitStatus::default()`（= 成功），
+    // 会把"窗口到期"伪装成干净退出——正是本仓库反复咬过的"未落错误分支
+    // ≠ 机制生效"形态，故删。
+    let _ = timed_out;
+    Ok(std::process::Output {
+        status,
+        stdout: raw,
+        stderr: Vec::new(),
+    })
+}
+
 fn run_qemu_qmp_quit(
     qemu_args: &[String],
     evidence_dir: &Path,
@@ -1094,10 +1188,20 @@ fn run_qemu(root: &Path, options: RunOptions) -> DynResult<()> {
             command.args(&qemu_args);
             command.output()?
         } else {
-            let mut command = Command::new("timeout");
-            command.args(["--signal=KILL", "200s"]);
-            command.args(&qemu_args);
-            command.output()?
+            // 2026-09-14（70.15 实弹暴露并修复）——**窗口长度**：
+            // 本路径原先把 QEMU 硬截在 200s，而门的 `--qmp-deadline-secs`
+            // 与脚本 `sleep $DL` 是 300–3300s ⇒ 声明的窗口**从未真实存在**
+            // （judge 一直评一份被截断 2–16× 的日志；`G4 相位分布`按行四等分
+            // 因此评到的是"被砍掉尾巴"的形状，`G5 Committed ≥ min_rounds`
+            // 在 200s 窗内结构不可达——决策由冻结快照门控 ≈1 次/5.7s）。
+            //
+            // 修法两件必须同波次（分次改会互相打脸，2026-09-14 已实测一次）：
+            //   (a) **日志边跑边落盘**——门的 `wait_ready` 以"文件里出现
+            //       PRODUCT-READY"为通过条件，而本路径原先 `output()` 缓冲到
+            //       退出才写文件 ⇒ 只改窗长会让等待超时并误报 READY 未达；
+            //   (b) 窗长跟随调用方声明的 `--qmp-deadline-secs`（下限 200s，
+            //       未声明者行为不变——零波及）。
+            run_qemu_streaming(&qemu_args, &evidence_dir, options.qmp_deadline_secs)?
         };
         let exit = output.status.code().unwrap_or(-1);
         let mut raw_log = output.stdout;

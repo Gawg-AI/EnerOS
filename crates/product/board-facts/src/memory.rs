@@ -147,13 +147,24 @@ enum MemField {
 
 /// 解析 `base[i]` / `size[i]`。**仅**带索引后缀的键参与窗口提取：
 /// 无索引的 `base`/`size`（单位 `none` 的字面记录）不是窗口事实。
+///
+/// 复查修复（70.14）：字段名**去空白 + ASCII 小写归一**、索引去空白。旧实现
+/// 要求键逐字节等于 `base[i]`/`size[i]`，于是 `base[0] `（尾随空格）、
+/// `base [0]`（内嵌空格）、`Base[0]`（大小写）**都不被提取**——这些键既不触发
+/// 重叠/成对判据，也不与规范键判重（`normalize_key` 只折叠空白、不小写），
+/// RAM 窗口判据（蓝图 C3"错 RAM 重叠使准入红"）可被键格式静默规避。
+/// 归一后任何形态的窗口键进同一判据。
 fn parse_mem_key(key: &str) -> Option<(MemField, u32)> {
     let (field, rest) = key.split_once('[')?;
-    let idx: u32 = rest.strip_suffix(']')?.parse().ok()?;
-    let field = match field {
-        "base" => MemField::Base,
-        "size" => MemField::Size,
-        _ => return None,
+    // 先 trim 再剥 `]`：`base[0] `（尾随空白）否则连 `]` 都剥不掉。
+    let idx: u32 = rest.trim().strip_suffix(']')?.trim().parse().ok()?;
+    let field = field.trim();
+    let field = if field.eq_ignore_ascii_case("base") {
+        MemField::Base
+    } else if field.eq_ignore_ascii_case("size") {
+        MemField::Size
+    } else {
+        return None;
     };
     Some((field, idx))
 }
@@ -316,5 +327,42 @@ mod tests {
         assert_eq!(parse_size("3", "B"), Some(3));
         assert_eq!(parse_size("1", "furlong"), None, "未知单位拒绝，不猜");
         assert_eq!(parse_size("", "GiB"), None);
+    }
+
+    /// 70.14 复查红测：窗口键的**空白/大小写变体**不得绕过重叠判据。
+    ///
+    /// 缺陷形态（旧实现）：`parse_mem_key` 要求键逐字节等于 `base[i]`/`size[i]`，
+    /// 于是 `base[0] `（尾随空格）、`base [0]`（内嵌空格）、`Base[0]`（大小写）
+    /// 都不被提取 ⇒ 这些"疑似窗口"事实既不进重叠/成对判据，也不与规范键判重
+    /// （`normalize_key` 只折叠空白、不小写）——RAM 窗口判据（蓝图 C3）可被
+    /// 键格式静默规避。归一后必须与规范形态**同判**。
+    #[test]
+    fn window_key_variants_do_not_escape_overlap_judgement() {
+        for variant in ["base[0] ", "base [0]", "Base[0]", " BASE[0] "] {
+            let mut facts = Vec::new();
+            let [mut b, s] = ram_window_facts(0, 0x0, 2048);
+            b.key = variant.to_string();
+            facts.push(b);
+            facts.push(s);
+            // 第二个窗口与第一个重叠 → 必须报 Overlap（旧实现返回 Ok）。
+            let [b1, s1] = ram_window_facts(1, 0x4000_0000, 64);
+            facts.push(b1);
+            facts.push(s1);
+            let got = spans_from_facts(&facts);
+            assert!(
+                matches!(got, Err(MemoryError::Overlap { .. })),
+                "键变体 {variant:?} 必须参与重叠判据，实得 {got:?}"
+            );
+        }
+        // 大小写变体同样进成对判据（缺 size 必须报 UnpairedIndex）。
+        let [mut b, _s] = ram_window_facts(7, 0x1000, 1);
+        b.key = "Base[7]".to_string();
+        assert!(
+            matches!(
+                spans_from_facts(&[b]),
+                Err(MemoryError::UnpairedIndex { index: 7, .. })
+            ),
+            "大小写变体必须被提取并报成对缺失"
+        );
     }
 }

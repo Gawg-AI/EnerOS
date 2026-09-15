@@ -114,16 +114,19 @@ impl RootBoardRegistry {
         ledger: &eneros_board_facts::ledger::BoardLedger,
     ) -> Result<VouchLine, BoardSelectError> {
         let Some(sel) = selection else {
-            // 开发入口：不绑定 SKU/描述摘要（但描述必须非空——无描述即无平台）。
-            if description.is_empty() {
-                return Err(BoardSelectError::Vouch(PlatformVouchError::NoDescription));
-            }
+            // 开发入口：不绑 SKU/描述摘要，但**仍走同一套描述判据**
+            // （控制台/启动存储/熵源三角色必须在场且状态 Ok、MMIO 合法、
+            // 一致性声明有硬件依据）。复查修复（2026-09-13）：旧实现直接
+            // 返回 `devices: 0` 的空结论，模块文档承诺的"仍核对必需设备"
+            // 从未执行——开发镜像因此对所有设备判据完全免疫。
+            let v = eneros_board_facts::vouch_development(description, validated, ledger)
+                .map_err(BoardSelectError::Vouch)?;
             return Ok(VouchLine {
                 sku: String::from(runtime_sku),
                 revision: String::from(runtime_revision),
-                description_digest: description_digest(description),
+                description_digest: v.description_digest,
                 bound: false,
-                devices: 0,
+                devices: v.required_devices.len(),
             });
         };
         let v = vouch_selection(

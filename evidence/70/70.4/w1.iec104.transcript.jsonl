@@ -1,28 +1,17 @@
-{"t": 1788929336.7841358, "kind": "LISTEN", "port": 2404}
-{"t": 1788929350.0430052, "kind": "CONNECT", "peer": "('127.0.0.1', 59508)", "session": 0}
-{"t": 1788929350.046725, "kind": "STARTDT_CON", "session": 0}
-{"t": 1788929355.0796475, "kind": "I_FRAME", "type": 100, "cot": 6, "len": 10}
-{"t": 1788929355.0799897, "kind": "INTERROGATION+DATA", "points": 11, "dup_frames": 2, "tagged": true, "iv_variant": true, "invalid_quality": true, "points62_aligned": 3}
-{"t": 1788929355.1299613, "kind": "S_FRAME", "rsn": 1}
-{"t": 1788929355.1804326, "kind": "S_FRAME", "rsn": 2}
-{"t": 1788929355.2288117, "kind": "S_FRAME", "rsn": 3}
-{"t": 1788929355.2753968, "kind": "S_FRAME", "rsn": 4}
-{"t": 1788929355.328188, "kind": "S_FRAME", "rsn": 5}
-{"t": 1788929355.3789473, "kind": "S_FRAME", "rsn": 6}
-{"t": 1788929355.4296327, "kind": "S_FRAME", "rsn": 7}
-{"t": 1788929355.4802632, "kind": "S_FRAME", "rsn": 8}
-{"t": 1788929355.530816, "kind": "S_FRAME", "rsn": 9}
-{"t": 1788929355.5821137, "kind": "S_FRAME", "rsn": 10}
-{"t": 1788929366.1646192, "kind": "I_FRAME", "type": 100, "cot": 6, "len": 10}
-{"t": 1788929366.164836, "kind": "INTERROGATION+DATA", "points": 11, "dup_frames": 2, "tagged": true, "iv_variant": true, "invalid_quality": true, "points62_aligned": 3}
-{"t": 1788929368.1807485, "kind": "S_FRAME", "rsn": 11}
-{"t": 1788929371.2537687, "kind": "S_FRAME", "rsn": 12}
-{"t": 1788929374.0660398, "kind": "S_FRAME", "rsn": 13}
-{"t": 1788929377.4267302, "kind": "S_FRAME", "rsn": 14}
-{"t": 1788929377.426843, "kind": "I_FRAME", "type": 100, "cot": 6, "len": 10}
-{"t": 1788929377.4269786, "kind": "INTERROGATION+DATA", "points": 11, "dup_frames": 2, "tagged": true, "iv_variant": true, "invalid_quality": true, "points62_aligned": 3}
-{"t": 1788929379.1291401, "kind": "S_FRAME", "rsn": 15}
-{"t": 1788929380.4350526, "kind": "S_FRAME", "rsn": 16}
-{"t": 1788929383.5964777, "kind": "S_FRAME", "rsn": 17}
-{"t": 1788929403.6166742, "kind": "READ_TIMEOUT", "err": "timed out"}
-{"t": 1788929987.202931, "kind": "DEADLINE", "deadline": 650.0}
+{"t": 1789466811.7587132, "kind": "LISTEN", "port": 2404}
+{"t": 1789466825.6927395, "kind": "CONNECT", "peer": "('127.0.0.1', 35628)", "session": 0}
+{"t": 1789466825.696149, "kind": "STARTDT_CON", "session": 0}
+{"t": 1789466830.715104, "kind": "I_FRAME", "type": 100, "cot": 6, "len": 10}
+{"t": 1789466830.7153697, "kind": "INTERROGATION+DATA", "points": 11, "dup_frames": 2, "tagged": true, "iv_variant": true, "invalid_quality": true, "points62_aligned": 3}
+{"t": 1789466830.7550588, "kind": "S_FRAME", "rsn": 1}
+{"t": 1789466830.795477, "kind": "S_FRAME", "rsn": 2}
+{"t": 1789466830.8357022, "kind": "S_FRAME", "rsn": 3}
+{"t": 1789466830.8762653, "kind": "S_FRAME", "rsn": 4}
+{"t": 1789466830.9169657, "kind": "S_FRAME", "rsn": 5}
+{"t": 1789466830.9576077, "kind": "S_FRAME", "rsn": 6}
+{"t": 1789466830.9982023, "kind": "S_FRAME", "rsn": 7}
+{"t": 1789466831.0387335, "kind": "S_FRAME", "rsn": 8}
+{"t": 1789466831.0791864, "kind": "S_FRAME", "rsn": 9}
+{"t": 1789466831.1198835, "kind": "S_FRAME", "rsn": 10}
+{"t": 1789466855.743057, "kind": "READ_TIMEOUT", "err": "timed out"}
+{"t": 1789467462.3450403, "kind": "DEADLINE", "deadline": 650.0}

@@ -2404,6 +2404,8 @@ fn compile_addr(
         PointProtocol::Mqtt => &["mqtt"],
         PointProtocol::Mms => &["mms"],
         PointProtocol::Goose | PointProtocol::Sv => &[],
+        // 合成源：身份标记协议（root 本地 EIPC 馈电，无线格式无地址）。
+        PointProtocol::Synth => &[],
     };
     let addr = match pt.get("addr") {
         None if addr_scope_expected.is_empty() => return Ok(alloc::vec::Vec::new()),
@@ -2487,6 +2489,7 @@ fn compile_addr(
             Ok(topic.as_bytes().to_vec())
         }
         PointProtocol::Goose | PointProtocol::Sv => Ok(alloc::vec::Vec::new()),
+        PointProtocol::Synth => Ok(alloc::vec::Vec::new()),
     }
 }
 

@@ -411,8 +411,10 @@ pub enum HangVerdict {
 /// 原 service.rs :620-628 注释随迁）。
 #[derive(Debug)]
 pub struct HangMonitor {
-    /// 心跳缺失容忍轮次（原 HEARTBEAT_MISS_LIMIT，150 ≈ 0.2s 真实）。
-    miss_limit: i64,
+    /// **按服务**的心跳缺失容忍轮次（2026-09-14：单值标定让 `svc-telemetry`
+    /// 的块 I/O 长消息被记成卡死 —— 见 `wiring::heartbeat_miss_limit` 的
+    /// 实测证据与校准口径；真卡死仍在秒级内被判出）。
+    miss_limits: alloc::vec::Vec<i64>,
     /// 各服务最近一次心跳轮次（-1 = 从未心跳）。
     last_beat: alloc::vec::Vec<i64>,
     /// 各服务在途探针轮次（-1 = 无请求在途）。
@@ -423,10 +425,28 @@ impl HangMonitor {
     /// 按服务数新建（全部服务初始为「从未心跳、无在途请求」）。
     pub fn new(count: usize, miss_limit: i64) -> Self {
         Self {
-            miss_limit,
+            miss_limits: alloc::vec![miss_limit; count],
             last_beat: alloc::vec![-1; count],
             probe_sent: alloc::vec![-1; count],
         }
+    }
+
+    /// 逐服务容忍窗（越界索引回落到缺省值——服务数与表长度不一致时不得
+    /// 变成"永不超限"）。
+    pub fn with_limits(limits: &[i64]) -> Self {
+        Self {
+            miss_limits: limits.to_vec(),
+            last_beat: alloc::vec![-1; limits.len()],
+            probe_sent: alloc::vec![-1; limits.len()],
+        }
+    }
+
+    /// 第 `index` 个服务的容忍窗（缺登记 ⇒ 缺省窗）。
+    fn miss_limit_of(&self, index: usize) -> i64 {
+        self.miss_limits
+            .get(index)
+            .copied()
+            .unwrap_or(crate::wiring::HEARTBEAT_MISS_LIMIT_DEFAULT)
     }
 
     /// root 向服务发起请求（探测/驱动）——登记请求在途。
@@ -465,7 +485,7 @@ impl HangMonitor {
             return None;
         }
         let beat = self.last_beat.get(index).copied().unwrap_or(-1);
-        if tick - beat > self.miss_limit {
+        if tick - beat > self.miss_limit_of(index) {
             return Some(HangVerdict::TimedOut {
                 pending_rounds: tick - sent,
             });
@@ -483,9 +503,13 @@ impl HangMonitor {
         }
     }
 
-    /// 心跳缺失容忍轮次（证据行打印用）。
+    /// 缺省心跳缺失容忍轮次（无服务索引的通用路径；逐服务窗见
+    /// [`Self::miss_limit_of`]）。
     pub fn miss_limit(&self) -> i64 {
-        self.miss_limit
+        self.miss_limits
+            .first()
+            .copied()
+            .unwrap_or(crate::wiring::HEARTBEAT_MISS_LIMIT_DEFAULT)
     }
 
     /// 在途探针轮次（证据行打印用；None = 无在途）。
@@ -763,6 +787,46 @@ mod tests {
             Some(crate::supervisor::HangVerdict::TimedOut {
                 pending_rounds: 101
             })
+        );
+    }
+
+    /// 2026-09-14（蓝图 70.15 实弹定位）：容忍窗**逐服务**生效——I/O 密集
+    /// 的 svc-telemetry 不得因单条消息内的同步块 I/O 被误判卡死，而其它
+    /// 服务仍按缺省窗判（真卡死的检出时间不被一起放长）。
+    #[test]
+    fn per_service_miss_limit_only_widens_the_intended_service() {
+        // 服务 0 = svc-telemetry（宽窗）／服务 1 = 普通服务（缺省窗）。
+        let wide = crate::wiring::heartbeat_miss_limit("svc-telemetry");
+        let narrow = crate::wiring::heartbeat_miss_limit("svc-control-dispatch");
+        assert!(
+            wide > narrow,
+            "svc-telemetry 的窗必须严宽于缺省（实测缺陷：块 I/O 长消息被记成卡死）"
+        );
+        assert_eq!(narrow, crate::wiring::HEARTBEAT_MISS_LIMIT_DEFAULT);
+
+        let mut hm = crate::supervisor::HangMonitor::with_limits(&[wide, narrow]);
+        hm.note_request(0, 100);
+        hm.note_request(1, 100);
+        // 缺省窗之外：普通服务已判超限，宽窗服务仍未判。
+        assert!(
+            hm.hang_verdict(1, 100 + narrow + 1).is_some(),
+            "普通服务必须仍在缺省窗判出"
+        );
+        assert_eq!(
+            hm.hang_verdict(0, 100 + narrow + 1),
+            None,
+            "svc-telemetry 在缺省窗内不得被判卡死"
+        );
+        // 宽窗也不是无限：真卡死仍被检出。
+        assert!(
+            hm.hang_verdict(0, 100 + wide + 1).is_some(),
+            "宽窗仍必须有界"
+        );
+        // 越界索引回落到缺省窗（不得因表短而永不超限）。
+        let hm2 = crate::supervisor::HangMonitor::with_limits(&[]);
+        assert_eq!(
+            hm2.miss_limit(),
+            crate::wiring::HEARTBEAT_MISS_LIMIT_DEFAULT
         );
     }
 

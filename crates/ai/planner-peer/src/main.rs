@@ -46,6 +46,59 @@ struct Args {
     request_topic: String,
     response_topic: String,
     client_id: String,
+    /// REG-70.15-R09R10-GATE-DESIGN：负例注入模式（R09 专属门；
+    /// 正常求解后按模式变异应答——目标侧契约/认证层必须 fail-closed）。
+    negative: Option<NegativeMode>,
+    /// 轮转模式：单实例免重启，每 4 响应注入一个负例（四模式轮转）。
+    negative_cycle: bool,
+}
+
+/// 负例变异模式（R09：跨代/过期/约束变异/伪关联——四层防御各咬一口）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NegativeMode {
+    /// ttl_secs = 0（超出 [1, budget.ttl_secs] → 契约 Range 拒绝）。
+    Expired,
+    /// snapshot_id_hex 归零（绑定代次不符 → 契约 Range 拒绝）。
+    Crossgen,
+    /// 首分配功率越预算钳制（> budget.max_power_kw → 契约预算拒绝）。
+    Mutated,
+    /// req_id 错位（伪造关联 → Correlation → Late 丢弃，绝不消费）。
+    Unsigned,
+}
+
+impl NegativeMode {
+    /// 四模式轮转序（`--negative-cycle`：单实例免重启覆盖全部负例）。
+    /// 周期 8：每 8 响应注入 4 负例（四模式各一）+ 4 正常（链路保持活性）。
+    pub const CYCLE: [Option<NegativeMode>; 8] = [
+        None,
+        Some(NegativeMode::Expired),
+        None,
+        Some(NegativeMode::Crossgen),
+        None,
+        Some(NegativeMode::Mutated),
+        None,
+        Some(NegativeMode::Unsigned),
+    ];
+}
+
+impl NegativeMode {
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "expired" => Some(Self::Expired),
+            "crossgen" => Some(Self::Crossgen),
+            "mutated" => Some(Self::Mutated),
+            "unsigned" => Some(Self::Unsigned),
+            _ => None,
+        }
+    }
+    fn word(self) -> &'static str {
+        match self {
+            Self::Expired => "expired",
+            Self::Crossgen => "crossgen",
+            Self::Mutated => "mutated",
+            Self::Unsigned => "unsigned",
+        }
+    }
 }
 
 fn parse_args() -> Args {
@@ -56,6 +109,8 @@ fn parse_args() -> Args {
         request_topic: String::from(DEFAULT_REQUEST_TOPIC),
         response_topic: String::from(DEFAULT_RESPONSE_TOPIC),
         client_id: String::from(DEFAULT_CLIENT_ID),
+        negative: None,
+        negative_cycle: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -72,6 +127,14 @@ fn parse_args() -> Args {
             "--request-topic" => a.request_topic = val!(),
             "--response-topic" => a.response_topic = val!(),
             "--client-id" => a.client_id = val!(),
+            "--negative" => {
+                let v = val!();
+                a.negative = Some(
+                    NegativeMode::parse(&v)
+                        .unwrap_or_else(|| exit_with_usage(&format!("--negative 未知模式 {v}"))),
+                );
+            }
+            "--negative-cycle" => a.negative_cycle = true,
             other => exit_with_usage(&format!("未知参数 {other}")),
         }
     }
@@ -87,7 +150,7 @@ fn parse_args() -> Args {
 /// 无其他退出码（0 = 进程正常退出，未显式使用）。
 fn exit_with_usage(msg: &str) -> ! {
     eprintln!(
-        "planner-peer: {msg}\n用法：eneros-planner-peer --config <planner-peer.toml> \
+        "planner-peer: {msg}\n用法：eneros-planner-peer --config <路径/to/<站点配置>.toml> \
          --state <seq-state.json> [--broker 127.0.0.1:1883] \
          [--request-topic eneros/brain/request] [--response-topic eneros/brain/response] \
          [--client-id eneros-planner-peer]"
@@ -109,6 +172,17 @@ fn main() {
     let cfg = PeerPlannerConfig::parse(&cfg_text)
         .unwrap_or_else(|e| exit_with_usage(&format!("config 解析: {e}")));
 
+    let negative = args.negative;
+    let negative_cycle = args.negative_cycle;
+    if negative_cycle {
+        println!("[planner-peer] NEGATIVE-CYCLE armed（每 4 响应轮转一负例）");
+    }
+    if let Some(mode) = negative {
+        println!(
+            "[planner-peer] NEGATIVE-ARMED mode={}（R09 专属门负例注入）",
+            mode.word()
+        );
+    }
     println!(
         "[planner-peer] READY broker={} request={} response={} battery={}kWh@{}kW steps={} kind={} state={}",
         args.broker,
@@ -129,7 +203,15 @@ fn main() {
     loop {
         match session.next_event() {
             Some(PeerEvent::Request { json }) => {
-                handle_request(&json, &cfg, &mut planner, &mut highs, &mut session);
+                handle_request(
+                    &json,
+                    &cfg,
+                    negative,
+                    negative_cycle,
+                    &mut planner,
+                    &mut highs,
+                    &mut session,
+                );
             }
             // 重连词形已在会话内落——观测事件，无处置。
             Some(PeerEvent::Reconnected { .. }) | None => {}
@@ -143,6 +225,8 @@ fn main() {
 fn handle_request<T: crate::mqtt::PeerTransport>(
     json: &str,
     cfg: &PeerPlannerConfig,
+    negative: Option<NegativeMode>,
+    negative_cycle: bool,
     planner: &mut Planner,
     highs: &mut HighsSolver,
     session: &mut PeerSession<T>,
@@ -157,7 +241,7 @@ fn handle_request<T: crate::mqtt::PeerTransport>(
     // 同一求解器常驻实例（seq/状态文件面同源）。
     match route_version(json) {
         VersionRoute::V2 => {
-            handle_request_v2(json, planner, highs, session);
+            handle_request_v2(json, negative, negative_cycle, planner, highs, session);
             return;
         }
         VersionRoute::V1 => {}
@@ -277,6 +361,8 @@ fn route_version(json: &str) -> VersionRoute {
 /// 目标侧坏应答计数。
 fn handle_request_v2<T: crate::mqtt::PeerTransport>(
     json: &str,
+    negative: Option<NegativeMode>,
+    negative_cycle: bool,
     planner: &mut Planner,
     highs: &mut HighsSolver,
     session: &mut PeerSession<T>,
@@ -331,7 +417,36 @@ fn handle_request_v2<T: crate::mqtt::PeerTransport>(
     let req_id = req.req_id;
     let meta_out: std::cell::RefCell<Option<(usize, bool)>> = std::cell::RefCell::new(None);
     let seqn = match session.respond_reserved(|seq| {
-        let resp = eneros_planner_peer::build_response_v2(req_id, seq, plan.clone(), &meta);
+        let mut resp = eneros_planner_peer::build_response_v2(req_id, seq, plan.clone(), &meta);
+        // 轮转模式：单实例免重启，每 4 响应注入一个负例（四模式轮转）。
+        let mode = negative.or(if negative_cycle {
+            NegativeMode::CYCLE[(seq as usize) % NegativeMode::CYCLE.len()]
+        } else {
+            None
+        });
+        if let Some(mode) = mode {
+            // R09 专属门负例注入：正常求解后按模式变异，**跳过宿主自检**
+            //（负例自证必败——发布它正是门的受试对象）。目标侧契约/认证
+            // 层必须 fail-closed：PEER-V2-REJECT / late 计数 / 零误受理。
+            match mode {
+                NegativeMode::Expired => resp.plan.ttl_secs = 0,
+                NegativeMode::Crossgen => resp.plan.snapshot_id_hex = "0".repeat(32),
+                NegativeMode::Mutated => {
+                    if let Some(a) = resp.plan.assignments.first_mut() {
+                        a.power_kw = req.budget.max_power_kw + 2.0;
+                    }
+                }
+                NegativeMode::Unsigned => {
+                    resp.req_id = resp.req_id.wrapping_add(0x9E37_79B9_7F4A_7C15)
+                }
+            }
+            println!(
+                "[planner-peer] PEER-NEGATIVE mode={} injected（目标侧必须拒绝）",
+                mode.word()
+            );
+            let bytes = serde_json::to_vec(&resp).map_err(|e| format!("encode: {e}"))?;
+            return Ok(bytes);
+        }
         let out = serde_json::to_string(&resp).map_err(|e| format!("encode: {e}"))?;
         let checks = ResponseChecks {
             expect_req_id: req_id,

@@ -133,7 +133,10 @@ pub const PEER_REQUEST_MAX_LEN_V2: usize = 4096;
 /// v2 应答 JSON 尺寸上限（64 项分配 × ~90B + 头部）。
 pub const PEER_RESPONSE_MAX_LEN_V2: usize = 8192;
 /// 分配条数上限（= decision-contract inline assignment 上限；同源约束）。
-pub const PEER_PLAN_MAX_ASSIGNMENTS: usize = 64;
+/// DEC-70-13 裁决（2026-09-15）：分配=intent 1:1，传输容量墙 ≈11 条 ⇒
+/// 单批上限收紧为 **8**（留 3 余量给控制写/回读通道；更长计划拆批、
+/// 每批独立认证——无跨批免认证）。
+pub const PEER_PLAN_MAX_ASSIGNMENTS: usize = 8;
 
 /// 逐资产规格（目标侧事实 → host 模型输入；**不是** host 自持 fixture）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

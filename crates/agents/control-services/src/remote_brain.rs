@@ -360,6 +360,7 @@ impl<L: DecisionBackend + DegradeArmSeam, P: PeerLink> RemoteBrain<L, P> {
             self.bad_responses_total = self.bad_responses_total.saturating_add(1);
             self.last_reject_detail =
                 Some(alloc::format!("unsupported contract version: {probed:?}"));
+            eneros_runtime::println!("[svc-ai-worker] PEER-V2-REJECT unsupported-version");
             return PeerMsgVerdict::Bad;
         }
         let checks = ResponseChecks {
@@ -372,6 +373,7 @@ impl<L: DecisionBackend + DegradeArmSeam, P: PeerLink> RemoteBrain<L, P> {
             let Some(binds) = binds else {
                 self.bad_responses_total = self.bad_responses_total.saturating_add(1);
                 self.last_reject_detail = Some(String::from("v2 response without bound pending"));
+                eneros_runtime::println!("[svc-ai-worker] PEER-V2-REJECT unbound-pending");
                 return PeerMsgVerdict::Bad;
             };
             return match parse_and_validate_v2(json, &checks, &binds) {
@@ -388,6 +390,9 @@ impl<L: DecisionBackend + DegradeArmSeam, P: PeerLink> RemoteBrain<L, P> {
                         self.last_reject_detail = Some(alloc::format!(
                             "v2 response misses requested asset {missing}"
                         ));
+                        eneros_runtime::println!(
+                            "[svc-ai-worker] PEER-V2-REJECT missing-asset {missing}"
+                        );
                         return PeerMsgVerdict::Bad;
                     }
                     if now_ms.saturating_sub(issued_ms) > self.cfg.timeout_ms {
@@ -414,11 +419,15 @@ impl<L: DecisionBackend + DegradeArmSeam, P: PeerLink> RemoteBrain<L, P> {
                 }
                 Err(eneros_intent_contract::PeerContractError::Correlation { .. }) => {
                     self.late_total = self.late_total.saturating_add(1);
+                    eneros_runtime::println!(
+                        "[svc-ai-worker] PEER-V2-LATE correlation（伪造/错位关联应答——丢弃不消费）"
+                    );
                     PeerMsgVerdict::Late
                 }
                 Err(e) => {
                     self.bad_responses_total = self.bad_responses_total.saturating_add(1);
                     self.last_reject_detail = Some(alloc::format!("{e:?}"));
+                    eneros_runtime::println!("[svc-ai-worker] PEER-V2-REJECT {e:?}");
                     PeerMsgVerdict::Bad
                 }
             };
@@ -506,7 +515,7 @@ impl<L: DecisionBackend + DegradeArmSeam, P: PeerLink> RemoteBrain<L, P> {
         //    并烧错误预算）。代次不符 = 丢弃该应答，走 System1（本地兜底
         //    绑定当前输入身份），绝不把旧代计划伪造成新代决策。
         let stale_accepted = match &self.accepted {
-            Some(AcceptedPlan::V2(v2)) => !Self::facts_match_binds(input, &v2.binds),
+            Some(AcceptedPlan::V2(v2)) => !Self::catalog_generation_matches(input, &v2.binds),
             _ => false,
         };
         if stale_accepted {
@@ -516,6 +525,13 @@ impl<L: DecisionBackend + DegradeArmSeam, P: PeerLink> RemoteBrain<L, P> {
             self.last_reject_detail = Some(String::from(
                 "accepted plan generation changed before consume",
             ));
+            if let Some(AcceptedPlan::V2(v2)) = &self.accepted {
+                eneros_runtime::println!(
+                    "[svc-ai-worker] PEER-V2-STALE-DROP catalog-mismatch binds_cv={} input_cv={}",
+                    v2.binds.catalog_version,
+                    input.facts.catalog_version,
+                );
+            }
         }
         if let Some(a) = self.accepted.take() {
             self.consecutive_timeouts = 0;
@@ -598,6 +614,9 @@ impl<L: DecisionBackend + DegradeArmSeam, P: PeerLink> RemoteBrain<L, P> {
                     if !input.bound() {
                         // 结构化计划必须绑定到冻结快照身份（无身份 = 无控制
                         // 资格）：宁可 NoAction，也不造伪身份。
+                        eneros_runtime::println!(
+                            "[svc-ai-worker] PEER-V2-CONSUME-REJECT unbound-trusted-input"
+                        );
                         return Err(DecisionReject::NoAction(String::from(
                             "structured-plan: unbound trusted input",
                         )));
@@ -605,10 +624,13 @@ impl<L: DecisionBackend + DegradeArmSeam, P: PeerLink> RemoteBrain<L, P> {
                     // 目录版本取**可信输入**携带的代次（不是本进程的配置
                     // 值）——与在途请求的绑定同一来源，dispatch 入口重算即
                     // 判同代；两者不一致时由契约绑定比对先行拒绝。
+                    // 重锚定：时域起点取**当前**快照产刻（非应答携带的旧
+                    // 值）——候选身份/时域一体当前代（dispatch 四字段复核
+                    // 可过），远程分配值保留由认证器全量物理复核兜底。
                     let inputs = eneros_control_dispatch::adapter::CandidateInputs::from_snapshot(
                         input.facts.snapshot_id,
                         input.facts.catalog_version,
-                        v2.plan.horizon_start_ms,
+                        input.facts.produced_at_ns / 1_000_000,
                         v2.plan.step_ns,
                         v2.plan.step_count,
                     );
@@ -616,6 +638,9 @@ impl<L: DecisionBackend + DegradeArmSeam, P: PeerLink> RemoteBrain<L, P> {
                         &v2.plan, &inputs, &v2.assets,
                     )
                     .map_err(|e| {
+                        eneros_runtime::println!(
+                            "[svc-ai-worker] PEER-V2-CONSUME-REJECT candidate-build {e}"
+                        );
                         DecisionReject::NoAction(alloc::format!("structured-plan: {e}"))
                     })?;
                     let meta = DecisionMeta {
@@ -669,6 +694,23 @@ impl<L: DecisionBackend + DegradeArmSeam, P: PeerLink> RemoteBrain<L, P> {
                     // schema 的在途请求）。
                     return self.fallback_tick(input, now_ms);
                 }
+                // 70.14 复查修复：**可信输入已绑定但本机没有规格源**（站点未给
+                // `ai-peer` 计划参数 = 实测的 `PLAN-SPEC-NONE`，也是当前生产
+                // 默认装配）⇒ 同样不发 v1 请求。
+                //
+                // 旧实现落下去发 v1：v1 产物是**伪身份**候选（`snapshot_id` =
+                // 请求摘要前 16B、`objective_digest` = 0），在
+                // `TrustedInputPolicy::Required` 下 dispatch 入口必拒 ⇒ 每轮
+                // 白烧一次往返 + EA 记 `DispatchRejected`；连续 3 次即
+                // `Escalated` + 30s 冷却，冷却期内 EA 连 System1 启发式候选也
+                // 一并压制（`error-budget-exhausted` ⇒ NOACTION）——把"这条轨
+                // 不产物"变成"整条控制面间歇停摆"。
+                // 与 `Some(src)/None` 同一处置：**宁可不决策**（fail-closed），
+                // 不产生注定被拒的请求。
+                eneros_runtime::println!(
+                    "[svc-ai-worker] V1-SKIP 可信输入已绑定但无结构化规格源——不发 v1 请求（产物必被 Required 准入拒绝，避免烧错误预算）"
+                );
+                return self.fallback_tick(input, now_ms);
             }
             let req = PeerRequest::new(
                 req_id,
@@ -812,16 +854,19 @@ impl<L: DecisionBackend + DegradeArmSeam, P: PeerLink> RemoteBrain<L, P> {
     /// 快照 id + 目录版本 + 时域起点三元组——与 dispatch 入口
     /// `admit_trusted_input` 的同代判据同集合（答案必须一致；差异 =
     /// 候选在中途被拒）。
-    fn facts_match_binds(
+    /// R09 激活收口（2026-09-15）：消费侧绑定**放宽至目录代次**——
+    /// 快照推进（同目录代次）不再丢弃远程计划，消费时**重锚定**当前代
+    /// （候选身份/时域全取当前输入；远程分配值保留），认证器对重锚计划
+    /// 做全量物理复核、dispatch 入口四字段复核照旧（fail-closed 兜底
+    /// 双层不变）。目录代次 = 合同授权基础，仍逐字节绑定。
+    fn catalog_generation_matches(
         input: &crate::ai_worker::DecisionInput<'_>,
         binds: &eneros_intent_contract::peer::PlanBinds,
     ) -> bool {
         if !input.bound() {
             return false; // 无可信身份 ⇒ 结构化绑定不可维持
         }
-        binds.snapshot_id == input.facts.snapshot_id
-            && binds.catalog_version == input.facts.catalog_version
-            && binds.horizon_start_ms == input.facts.produced_at_ns / 1_000_000
+        binds.catalog_version == input.facts.catalog_version
     }
 
     /// 68.5 WP-68.5.3：D3 lease 武装（接线级——seam issue + 验签 arm；
@@ -1153,6 +1198,33 @@ mod tests {
         }
     }
 
+    /// 任意代次 + **任意目录代次**的绑定输入（目录代次负例用）。
+    fn input_gen_cv(
+        snapshot_id: [u8; 16],
+        produced_ms: u64,
+        catalog_version: u64,
+    ) -> crate::ai_worker::DecisionInput<'static> {
+        let facts: &'static eneros_agent_sdk::snap_input_wire::SnapshotFacts =
+            Box::leak(Box::new(eneros_agent_sdk::snap_input_wire::SnapshotFacts {
+                snapshot_id,
+                provenance_root: [0x3D; 32],
+                cut_time_ns: produced_ms.saturating_mul(1_000_000),
+                produced_at_ns: produced_ms.saturating_mul(1_000_000),
+                catalog_version,
+                catalog_digest8: [1, 2, 3, 4, 5, 6, 7, 8],
+                accepted: 7,
+                missing: 0,
+                completeness: eneros_agent_sdk::snap_input_wire::COMPLETE,
+            }));
+        let t: &'static TrustedTelemetry = Box::leak(Box::new(
+            crate::ai_worker::tests_helpers::minimal_trusted_at(produced_ms),
+        ));
+        crate::ai_worker::DecisionInput {
+            telemetry: t,
+            facts,
+        }
+    }
+
     /// v2 应答（绑定字段与 in-flight 请求一致）。
     fn resp_v2_json(req_id: u64, seq: u64, snapshot_id: [u8; 16], seq_power: (f64, f64)) -> String {
         alloc::format!(
@@ -1289,18 +1361,15 @@ mod tests {
         );
     }
 
-    /// 复查修复：**应答接纳后、消费前输入换代** → 不得消费该应答。
-    ///
-    /// 修复前：消费时以**当前**输入身份 + **应答时域**拼出杂交候选
-    /// （新 snapshot_id/目录 + 旧 horizon），dispatch 入口以
-    /// `候选时域起点与快照产出时刻不符` 必拒 → EA 记 `DispatchRejected`
-    /// （连续 3 次升级 + 冷却），远程计划既执行不了又烧错误预算。
-    /// 修复后：代次不符 = 丢弃该应答并保留 System1（本地启发式，绑定
-    /// 当前输入身份）。
-    ///
-    /// 变异靶：消费时不复核在途绑定 → 本测红（候选功率为远程值 -2.0）。
+    /// R09 激活收口（2026-09-15，DEC-70-13 后继裁决）：**快照代次放宽至
+    /// 目录代次**——应答接纳后、消费前快照推进（同目录代次）⇒ 计划
+    /// **重锚定**当前代消费：候选身份/时域全取当前输入（非杂交：身份与
+    /// 时域一体同代），远程分配值保留；认证器对重锚计划做全量物理复核
+    /// （fail-closed 兜底不变），dispatch 入口四字段复核照旧兜底。
+    /// 变异靶：消费侧仍按快照逐字节绑定（旧 facts_match_binds）→ 本测红
+    /// （stale_generation_accepted_total=1 且候选功率为本地兜底值）。
     #[test]
-    fn accepted_v2_plan_not_consumed_after_generation_change() {
+    fn accepted_v2_plan_rebased_on_same_catalog_generation() {
         use eneros_decision_contract::CandidatePlan;
         let mut b = RemoteBrain::new(HeuristicBackend::new(), MockLink::ok(), cfg());
         b.set_plan_spec_source(Box::new(StubSpecs));
@@ -1310,22 +1379,56 @@ mod tests {
             b.on_peer_message(&resp_v2_json(1, 1, [0x5A; 16], (-2.0, 3.0)), 1_700_000_100),
             PeerMsgVerdict::Accepted
         );
-        // 输入换代（新快照/新产刻；周期 30s）后消费。
+        // 快照换代（新快照/新产刻；同目录代次 3）后消费 ⇒ 重锚。
         let next = input_gen([0x5B; 16], 1_700_000_030_000);
         let w = b
             .decide_full(&next, 1_700_000_030_100)
-            .expect("换代后必须走本地兜底（不是杂交候选）");
-        assert_eq!(b.stale_generation_accepted_total, 1, "换代应答丢弃可数");
-        let cand = CandidatePlan::decode_v1(&w).expect("local candidate");
+            .expect("同目录代次必须重锚消费远程计划");
+        assert_eq!(b.stale_generation_accepted_total, 0, "同目录代次不再丢弃");
+        let cand = CandidatePlan::decode_v1(&w).expect("remote candidate");
         assert_eq!(
             cand.snapshot_id().0,
             [0x5B; 16],
-            "候选身份 = 当前输入（本地兜底绑定）"
+            "候选身份 = 当前输入（重锚非杂交：身份/时域一体当前代）"
+        );
+        assert_eq!(
+            cand.horizon_start_ms(),
+            1_700_000_030_000,
+            "时域重锚 = 当前快照产刻（dispatch 四字段复核可过）"
         );
         assert!(
-            cand.assignments().iter().all(|a| a.power_kw != -2.0),
-            "远程（旧代）分配不得进入候选：{:?}",
+            cand.assignments().iter().any(|a| a.power_kw == -2.0),
+            "远程分配值必须进入重锚候选：{:?}",
             cand.assignments()
+        );
+    }
+
+    /// 目录代次（合同授权基础）变化 ⇒ 仍丢弃（fail-closed 不变）。
+    /// 变异靶：放宽时把目录代次一并放开 → 本测红。
+    #[test]
+    fn accepted_v2_plan_dropped_on_catalog_generation_change() {
+        use eneros_decision_contract::CandidatePlan;
+        let mut b = RemoteBrain::new(HeuristicBackend::new(), MockLink::ok(), cfg());
+        b.set_plan_spec_source(Box::new(StubSpecs));
+        let input = bound_input();
+        b.decide_full(&input, 1_700_000_000_000).expect("tick1");
+        assert_eq!(
+            b.on_peer_message(&resp_v2_json(1, 1, [0x5A; 16], (-2.0, 3.0)), 1_700_000_100),
+            PeerMsgVerdict::Accepted
+        );
+        // 目录换代（contract 授权基础变了）：远程计划不得消费。
+        let next = input_gen_cv([0x5C; 16], 1_700_000_030_000, 4);
+        let w = b
+            .decide_full(&next, 1_700_000_030_100)
+            .expect("目录换代走本地兜底");
+        assert_eq!(
+            b.stale_generation_accepted_total, 1,
+            "目录代次不符仍丢弃可数"
+        );
+        let cand = CandidatePlan::decode_v1(&w).expect("local candidate");
+        assert!(
+            cand.assignments().iter().all(|a| a.power_kw != -2.0),
+            "目录换代后远程分配不得进入候选"
         );
     }
 
@@ -1833,6 +1936,41 @@ mod tests {
             0,
             "无在途"
         );
+    }
+
+    /// 70.14 复查红测：**可信输入已绑定但本机没有规格源**（`PLAN-SPEC-NONE`，
+    /// 当前生产默认装配）⇒ 不得发 v1 请求。
+    ///
+    /// 缺陷形态（旧实现）：只有 `Some(src)/None` 那条臂 fail-closed，`spec_source
+    /// 整体缺失`直接落到 v1 发送——而 v1 产物是伪身份候选（`snapshot_id` =
+    /// 请求摘要前 16B、`objective_digest` = 0），`Required` 准入必拒 ⇒ 每轮白烧
+    /// 一次往返 + EA 记 `DispatchRejected`；连续 3 次触发 `Escalated` + 30s
+    /// 冷却，冷却期连 System1 启发式候选也被压制（控制面间歇停摆）。
+    #[test]
+    fn bound_input_without_spec_source_sends_nothing() {
+        let mut b = RemoteBrain::new(HeuristicBackend::new(), MockLink::ok(), cfg());
+        assert!(b.spec_source.is_none(), "本测前提 = 无规格源");
+        let input = bound_input();
+        b.decide_full(&input, 1_700_000_000_000).expect("兜底");
+        assert!(
+            b.link.sent.is_empty(),
+            "无结构化规格源 ⇒ 不得发 v1（产物必被 Required 拒），实发 {} 条",
+            b.link.sent.len()
+        );
+        assert_eq!(b.triggers_sent, 0);
+        assert!(b.pending.is_none(), "不得留下在途 v1 请求");
+    }
+
+    /// 反向锁：**未绑定**输入（v1 迁移轨）仍照发——本次修复不关掉迁移轨。
+    #[test]
+    fn unbound_input_still_uses_the_v1_migration_track() {
+        let mut b = RemoteBrain::new(HeuristicBackend::new(), MockLink::ok(), cfg());
+        let t = crate::ai_worker::tests_helpers::minimal_trusted_at(10_000);
+        let input = crate::ai_worker::dinp(&t);
+        assert!(!input.bound(), "本测前提 = 未绑定输入");
+        b.decide_full(&input, 10_000).expect("兜底");
+        assert_eq!(b.triggers_sent, 1, "未绑定输入仍走 v1 迁移轨");
+        assert!(!b.link.sent.is_empty());
     }
 
     /// 复查修复：v2 应答必须**覆盖全部请求资产**（"全量分配"判据本体）。
