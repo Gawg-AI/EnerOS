@@ -99,6 +99,9 @@ pub fn test_config(seed: TestConfigSeed) -> DispatchConfig {
         }),
         contracts: Box::new(test_contract_view(u64::from(profile.device_id), 1)),
         profile,
+        // 测试夹具默认单路由（历史形态逐字节）；多资产套件显式覆盖
+        //（DispatchConfig::extra_routes 结构更新注入）。
+        extra_routes: Vec::new(),
     }
     .assemble()
 }

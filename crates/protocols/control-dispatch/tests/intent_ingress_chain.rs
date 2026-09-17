@@ -241,6 +241,85 @@ fn intent_normal_chain_commits() {
     assert!(audit.verify().expect("verify").valid);
 }
 
+/// 蓝图 70 R10：多资产路由——扩展路由资产 (device 2, point 20) 的意图
+/// 命中其注册路由（独立 profile/chain）→ Committed；默认资产意图仍走
+/// 默认路由；未注册目标（未知资产）仍 NotAuthorized 零投递。
+#[test]
+fn intent_multi_route_routes_by_registered_target() {
+    // 扩展路由：asset 2 → device 2 / point 20（同源档案派生 + 独立链实例，
+    // 与生产 prod_profile/prod_chain 同构）。
+    let profile2 = eneros_control_gateway::ControlProfile {
+        lease_ttl_secs: 600,
+        ..eneros_control_gateway::ControlProfile::ai_pcs_setpoint(2, 20, 4, [0x48; 16], EPOCH_SEED)
+    };
+    let mut chain2 = ControlChain::from_profile(KEY, &profile2);
+    let _ = profile2.issue_lease(&mut chain2, now_ms() / 1000);
+    let config = support::test_config_legacy(support::TestConfigSeed {
+        chain: build_chain(),
+        key: KEY.to_vec(),
+        profile: test_profile(),
+        issuer_service: ISSUER,
+        fencing_token: 1 + EPOCH_SEED,
+        now_fn: now_ms,
+        intent_log: Box::new(InMemoryIntentStore::new(64)),
+        delivery: Box::new(StubChannel {
+            outcome: Some(OutcomeFrame::new(OutcomeCode::Applied, 0).encode()),
+            fail: None,
+            delivered: 0,
+        }),
+    });
+    let mut engine = DispatchEngine::new(DispatchConfig {
+        extra_routes: vec![eneros_control_dispatch::AssetRoute {
+            asset_id: 2,
+            profile: profile2,
+            chain: chain2,
+        }],
+        gate: DecisionGate::new(100, 1000.0, 3_600_000),
+        audit_sinks: eneros_control_dispatch::AuditSinks {
+            audit: Some(DecisionAudit::new([0x47; 32])),
+            ..config.audit_sinks
+        },
+        ..config
+    });
+    let tel = trusted_telemetry();
+    // ① 扩展路由资产意图 → 命中资产 2 路由 → Committed。
+    let i2 = PointWriteIntent::new(
+        "mqtt",
+        2,
+        20,
+        eneros_upa_model::PointValue::Float(30.0),
+        1,
+        now_ms(),
+    );
+    let r2 = engine
+        .submit_intent(&i2, &tel, &actor(), 5000)
+        .expect("asset-2 intent");
+    assert_eq!(r2.final_state, DispatchState::Committed, "{r2:?}");
+    // ② 默认资产意图 → 默认路由 → Committed（单路由行为不回退）。
+    let r1 = engine
+        .submit_intent(&intent(2, 50.0), &tel, &actor(), 5000)
+        .expect("default intent");
+    assert_eq!(r1.final_state, DispatchState::Committed, "{r1:?}");
+    // ③ 未知资产（未注册 (device,point)）→ NotAuthorized 零投递。
+    let unknown = PointWriteIntent::new(
+        "mqtt",
+        9,
+        90,
+        eneros_upa_model::PointValue::Float(5.0),
+        1,
+        now_ms(),
+    );
+    let err = engine
+        .submit_intent(&unknown, &tel, &actor(), 5000)
+        .expect_err("deny");
+    assert!(matches!(err, DispatchError::NotAuthorized(_)), "{err:?}");
+    assert_eq!(
+        engine.committed_count(),
+        2,
+        "未知资产零投递（仅两笔资产成交）"
+    );
+}
+
 /// 负例：装配绑定不符（协议层越点写）→ NotAuthorized 零投递。
 #[test]
 fn intent_out_of_binding_denied_zero_delivery() {

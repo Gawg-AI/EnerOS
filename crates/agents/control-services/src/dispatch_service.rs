@@ -37,6 +37,10 @@ pub const DISP_SUBMIT_INTENT: u8 = 2;
 /// ——布局 `[3][CAND wire][TrustedInput wire 234B][actor 1B]`。引擎在入口
 /// 验证候选与可信输入同代（快照/目录/时域/摘要），不匹配整批拒绝。
 pub const DISP_SUBMIT_TRUSTED: u8 = 3;
+/// `[4][optional TrustedInput]`: advance/cancel/reconcile accepted plans.
+pub const DISP_HELD_TICK: u8 = 4;
+/// `[5][batch index]`: bounded per-command report, never a new submission.
+pub const DISP_HELD_QUERY: u8 = 5;
 
 /// 回执状态。
 pub const DISP_OK: u8 = 0;
@@ -89,6 +93,58 @@ pub fn handle_submit(engine: &mut dyn ControlDispatch, req: &[u8]) -> Vec<u8> {
     let Some(&code) = req.first() else {
         return err_receipt("empty request");
     };
+    if code == DISP_HELD_TICK {
+        let input = if req.len() == 1 {
+            None
+        } else {
+            let Some(input) = eneros_agent_sdk::snap_input_wire::TrustedInput::decode(&req[1..])
+            else {
+                return err_receipt("bad held tick input");
+            };
+            Some(input)
+        };
+        let telemetry = input
+            .as_ref()
+            .and_then(|input| decode_trusted(input.telemetry()));
+        if input.is_some() && telemetry.is_none() {
+            return err_receipt("bad held tick telemetry");
+        }
+        return match engine.tick_held(input.as_ref(), telemetry.as_ref()) {
+            Ok(()) => alloc::vec![DISP_OK],
+            Err(error) => err_receipt(&format!("{error:?}")),
+        };
+    }
+    if code == DISP_HELD_QUERY {
+        if req.len() != 2 {
+            return err_receipt("bad held query");
+        }
+        return match engine.query_held() {
+            Ok(reports) => match reports.get(req[1] as usize) {
+                Some(report) => {
+                    let mut out = alloc::vec![DISP_OK];
+                    out.extend_from_slice(b"HQR1");
+                    out.extend_from_slice(&report.batch_id);
+                    out.push(report.final_state as u8);
+                    out.extend_from_slice(&report.events.to_le_bytes());
+                    out.push(report.commands.len() as u8);
+                    for command in &report.commands {
+                        out.extend_from_slice(&command.intent_id);
+                        out.push(command.state as u8);
+                        out.extend_from_slice(&command.attempts.to_le_bytes());
+                        out.push(u8::from(command.readback.is_some()));
+                        out.extend_from_slice(&command.readback.unwrap_or(0.0).to_le_bytes());
+                        let reason = command.reason.as_deref().unwrap_or("").as_bytes();
+                        let len = reason.len().min(128);
+                        out.push(len as u8);
+                        out.extend_from_slice(&reason[..len]);
+                    }
+                    out
+                }
+                None => err_receipt("held batch not found"),
+            },
+            Err(error) => err_receipt(&format!("{error:?}")),
+        };
+    }
     // 蓝图 70.8 WP-70.8.4：可信输入形态（生产入口）。
     if code == DISP_SUBMIT_TRUSTED {
         return handle_submit_trusted(engine, &req[1..]);
@@ -570,6 +626,8 @@ mod tests {
             }),
             contracts: Box::new(contracts),
             profile,
+            // 单资产测试夹具（多资产由 dispatch_assembly 生产装配承载）。
+            extra_routes: alloc::vec::Vec::new(),
         }
         .assemble();
         DispatchConfig {

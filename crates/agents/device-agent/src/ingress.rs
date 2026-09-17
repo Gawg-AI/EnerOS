@@ -362,6 +362,29 @@ impl ReadbackPolicy {
     }
 }
 
+/// 蓝图 70 R10：请求路由目标提取（多收口点分派面）。
+///
+/// 与 [`EnvelopeIngress::process`] 同一解码链（双长度帧剥壳 +
+/// `CommandEnvelope` 解码）；只读目标字段，不做任何验证（验证仍由
+/// 选中的收口点全链执行——本函数绝不放行，仅分派）。解码失败 →
+/// `None`，调用方交默认收口点处理 = 原 Decode 拒绝语义。
+pub fn request_target(payload: &[u8]) -> Option<(u16, u32)> {
+    let envelope_bytes: alloc::vec::Vec<u8> =
+        if payload.len() == eneros_control_gateway::wire::CONTROL_ENVELOPE_LEN_V2 {
+            match eneros_control_gateway::wire::ControlEnvelope::decode(payload) {
+                Ok(ce) if ce.verify_payload_digest() => ce.envelope.to_vec(),
+                _ => return None,
+            }
+        } else {
+            match DeliveryFrame::decode(payload) {
+                Ok(f) => f.envelope.to_vec(),
+                Err(_) => return None,
+            }
+        };
+    let env = CommandEnvelope::decode(&envelope_bytes).ok()?;
+    Some((u16::try_from(env.device_id).unwrap_or(0), env.point_id))
+}
+
 /// 信封输入状态机（蓝图/24 §6.2）。
 pub struct EnvelopeIngress {
     /// 复验链（HMAC/租约/幂等/越权/策略/安全；default-deny）。

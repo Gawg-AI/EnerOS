@@ -170,6 +170,60 @@ impl SnapshotBuilder {
             }
         }
 
+        // 5.5 可选点（policy.optional 语义兑现——蓝图 70 R10：控制合同
+        // 回读点不在 required 集时经此进快照，认证器 readback_ok 为
+        // presence 判定）：缺席/过期/不合格/不可裁决 = **静默省略**（不进
+        // missing/stale/bad——完整性不受可选点影响，[08] §3.2），合格则
+        // 与 required 同通道入 accepted（provenance 覆盖）。
+        for &point in policy.optional.iter() {
+            if policy.required.contains(&point) {
+                continue; // 已按 required 处理（完整性语义优先）
+            }
+            let candidates: Vec<ObservationEvent> = projector
+                .latest_by_source(point)
+                .copied()
+                .filter(|e| e.event_time_ns <= cut)
+                .collect();
+            if candidates.is_empty() {
+                continue;
+            }
+            if let Some(allow) = policy.allowed_sources.as_ref() {
+                if candidates.iter().any(|e| !allow.contains(&e.source_id)) {
+                    continue;
+                }
+            }
+            let (chosen, was_conflict) = match resolver.resolve(point, &candidates) {
+                Some((c, ev))
+                    if !matches!(c.decision, crate::conflict::ConflictDecision::Unresolved) =>
+                {
+                    conflicts.push(c);
+                    (ev, true)
+                }
+                Some(_) => continue, // 不可裁决 → 省略（完整性不受影响）
+                None => (
+                    *candidates
+                        .iter()
+                        .max_by_key(|e| (e.event_time_ns, e.sequence))
+                        .unwrap(),
+                    false,
+                ),
+            };
+            if validate_observation(point, &chosen, cut, now_ns, policy, catalog, version_set)
+                .is_ok()
+            {
+                if was_conflict {
+                    if let Some(c) = conflicts.iter_mut().find(|c| c.point_id == point) {
+                        c.decision = crate::conflict::ConflictDecision::Accepted {
+                            source: chosen.source_id,
+                            sequence: chosen.sequence,
+                        };
+                    }
+                }
+                accepted.push(chosen.into());
+                events_by_point.push((point, chosen));
+            }
+        }
+
         // 6. 派生量（公式注册表；确定性）。
         let mut derived: Vec<DerivedValue> = Vec::new();
         for (_point, ev) in events_by_point.iter() {

@@ -15,7 +15,9 @@ use eneros_control_gateway::ControlProfile;
 use eneros_dual_brain::gate::DecisionGate;
 
 use crate::channel::DeliveryChannel;
-use crate::engine::{AuditSinks, DeliveryBinding, DispatchConfig, IssuerIdentity, SafetyLimits};
+use crate::engine::{
+    AssetRoute, AuditSinks, DeliveryBinding, DispatchConfig, IssuerIdentity, SafetyLimits,
+};
 use crate::feedback::FeedbackPointMapping;
 use crate::intent::IntentStore;
 
@@ -41,6 +43,9 @@ pub struct ConfigSeed {
     pub resources: alloc::boxed::Box<dyn eneros_decision_contract::ResourceRegistry + 'static>,
     /// 控制合同编译视图（缺装配 = 空视图 fail-closed）。
     pub contracts: alloc::boxed::Box<dyn crate::compiler::PlanContractView + 'static>,
+    /// 蓝图 70 R10：per-asset 扩展执行路由（多资产；单资产装配留空——
+    /// 链实例由装配方以同源档案预建，语义与 `chain` 字段一致）。
+    pub extra_routes: alloc::vec::Vec<AssetRoute>,
 }
 
 impl ConfigSeed {
@@ -48,6 +53,7 @@ impl ConfigSeed {
     /// 语法覆盖，完整字面量只在此处）。
     pub fn assemble(self) -> DispatchConfig {
         DispatchConfig {
+            extra_routes: self.extra_routes,
             issuer: IssuerIdentity {
                 chain: self.chain,
                 key: self.key,

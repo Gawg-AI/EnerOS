@@ -97,6 +97,7 @@ impl BatchState {
                 | (Reconciling, Failed)
                 | (Reconciling, Compensating)
                 | (Reconciling, ManualIntervention)
+                | (Compensating, Executing)
                 | (Compensating, Compensated)
                 | (Compensating, ManualIntervention)
         )
@@ -148,6 +149,7 @@ impl CmdState {
                 | (Reconciling, Applied)
                 | (Reconciling, Failed)
                 | (Applied, Compensating)
+                | (Compensating, Executing)
                 | (Compensating, Compensated)
         )
     }
@@ -217,6 +219,15 @@ pub enum ReconcileOutcome {
 
 /// 执行器 seam：生产 = 12 步合核 adapter（engine）；测试 = 故障注入执行器。
 pub trait SagaExecutor {
+    /// Synchronize the command journal only after the Saga's Applied event is
+    /// durable. An error stops the batch before its next external write.
+    fn applied_durable(
+        &mut self,
+        _intent: &CommandIntent,
+        _readback: Option<f64>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
     /// 执行单命令（含 authorize/persist/deliver/ack/readback/journal）。
     fn execute(&mut self, intent: &CommandIntent, attempt: u32) -> CmdOutcome;
     /// readback-first 对账（[10] §3.4：超时后先 readback，不盲发）。
@@ -255,6 +266,12 @@ pub struct SagaEvent {
     pub at_ms: u64,
 }
 
+/// Acknowledges an event only after durable storage has committed it. A failed
+/// append may have reached storage: the caller must reopen before continuing.
+pub trait SagaEventStore {
+    fn append(&mut self, event: &SagaEvent) -> Result<(), String>;
+}
+
 /// 命令批内单命令状态。
 #[derive(Debug, Clone)]
 struct SagaCommand {
@@ -272,6 +289,7 @@ pub struct CmdReport {
     pub state: CmdState,
     pub attempts: u32,
     pub readback: Option<f64>,
+    pub reason: Option<String>,
 }
 
 /// 驱动结果。
@@ -294,6 +312,8 @@ pub struct BatchSaga {
     events: Vec<SagaEvent>,
     event_seq: u64,
     policy: SagaPolicy,
+    event_store: Option<alloc::boxed::Box<dyn SagaEventStore>>,
+    persistence_failed: bool,
 }
 
 impl BatchSaga {
@@ -323,7 +343,16 @@ impl BatchSaga {
             events: Vec::new(),
             event_seq: 0,
             policy,
+            event_store: None,
+            persistence_failed: false,
         }
+    }
+
+    /// Attach the durable event stream belonging to this batch. Restored events
+    /// are already present in the store and must not be appended a second time.
+    pub fn with_event_store(mut self, store: alloc::boxed::Box<dyn SagaEventStore>) -> Self {
+        self.event_store = Some(store);
+        self
     }
 
     pub fn state(&self) -> BatchState {
@@ -334,6 +363,17 @@ impl BatchSaga {
     }
     pub fn batch_id(&self) -> &[u8; 16] {
         &self.batch_id
+    }
+
+    /// Terminate every unsent command after a restart, invalid input, or expiry.
+    /// Sent commands retain their state and can only be reconciled by `drive`.
+    pub fn cancel_pending(&mut self, reason: &str, now_ms: u64) -> Result<(), String> {
+        for index in 0..self.commands.len() {
+            if self.commands[index].state == CmdState::Pending {
+                self.record_command(index, CmdState::Blocked, 0, [0; 32], None, reason, now_ms)?;
+            }
+        }
+        Ok(())
     }
 
     /// 从事件日志恢复（[10] §3.5 启动扫描的批级形态）。
@@ -398,29 +438,9 @@ impl BatchSaga {
         {
             return None;
         }
-        // 批已转 Compensating 但尚无命令开始补偿（截断点在批转型与首条
-        // 补偿记录之间）：物理状态已知（Applied 集合未变）——恢复安全：
-        // 回 Executing 让 settle 重入补偿（补偿键独立派生、幂等）。
-        if saga.state == BatchState::Compensating {
-            saga.state = BatchState::Executing;
-        }
-        if saga.state.is_terminal() {
-            return Some(saga);
-        }
-        // 恢复语义（[10] §3.4 at-least-once + 幂等键）：崩溃时在途的命令
-        // （Executing/Unknown/Reconciling）重置为 Pending——重启后重提交，
-        // 双重效果由 executor 幂等键/日志兜底；批 Reconciling → Executing。
-        for c in &mut saga.commands {
-            if matches!(
-                c.state,
-                CmdState::Executing | CmdState::Unknown | CmdState::Reconciling
-            ) {
-                c.state = CmdState::Pending;
-            }
-        }
-        if saga.state == BatchState::Reconciling {
-            saga.state = BatchState::Executing;
-        }
+        // Preserve replayed states exactly. In-flight commands must reconcile
+        // before any new write; rewriting them to Pending both resends effects
+        // and makes subsequent expected-previous events impossible to replay.
         Some(saga)
     }
 
@@ -473,6 +493,7 @@ impl BatchSaga {
         )?;
         let c = &mut self.commands[idx];
         c.state = to;
+        c.attempts = c.attempts.max(attempt);
         c.digest = digest;
         if readback.is_some() {
             c.readback = readback;
@@ -492,9 +513,11 @@ impl BatchSaga {
         if self.events.len() >= MAX_SAGA_EVENTS {
             return Err(String::from("saga event log full"));
         }
-        self.event_seq += 1;
-        self.events.push(SagaEvent {
-            seq: self.event_seq,
+        if self.persistence_failed {
+            return Err(String::from("saga persistence uncertain; reopen required"));
+        }
+        let event = SagaEvent {
+            seq: self.event_seq + 1,
             batch_id: self.batch_id,
             kind,
             attempt,
@@ -502,24 +525,41 @@ impl BatchSaga {
             readback,
             reason: reason.into(),
             at_ms,
-        });
+        };
+        if let Some(store) = &mut self.event_store {
+            if let Err(error) = store.append(&event) {
+                self.persistence_failed = true;
+                return Err(error);
+            }
+        }
+        self.event_seq = event.seq;
+        self.events.push(event);
         Ok(())
     }
 
     /// 依赖失败链传播（Blocked 标记；[10] §3.3.7）。
-    fn propagate_blocked(&mut self) {
+    fn propagate_blocked(&mut self, now_ms: u64) -> Result<(), String> {
         loop {
             let mut changed = false;
-            for &(a, b) in &self.edges {
+            for edge in 0..self.edges.len() {
+                let (a, b) = self.edges[edge];
                 let sa = self.commands[a as usize].state;
                 let sb = self.commands[b as usize].state;
                 if matches!(sa, CmdState::Failed | CmdState::Blocked) && sb == CmdState::Pending {
-                    self.commands[b as usize].state = CmdState::Blocked;
+                    self.record_command(
+                        b as usize,
+                        CmdState::Blocked,
+                        0,
+                        [0; 32],
+                        None,
+                        "dependency failed",
+                        now_ms,
+                    )?;
                     changed = true;
                 }
             }
             if !changed {
-                break;
+                return Ok(());
             }
         }
     }
@@ -537,6 +577,14 @@ impl BatchSaga {
         ex: &mut E,
         now_ms: u64,
     ) -> Result<DriveReport, String> {
+        if self.persistence_failed {
+            return Err(String::from("saga persistence uncertain; reopen required"));
+        }
+        for command in &self.commands {
+            if command.state == CmdState::Applied {
+                ex.applied_durable(&command.intent, command.readback)?;
+            }
+        }
         match self.state {
             BatchState::Pending => {
                 self.transition(BatchState::Authorizing, "saga start", now_ms)?;
@@ -547,12 +595,49 @@ impl BatchSaga {
             BatchState::Authorizing => {
                 self.transition(BatchState::Executing, "resumed (authorized)", now_ms)?;
             }
-            BatchState::Executing => {}
+            BatchState::Executing | BatchState::Reconciling => {}
+            BatchState::Compensating => {
+                self.transition(BatchState::Executing, "resume before compensation", now_ms)?;
+            }
             other => return Err(alloc::format!("drive on non-resumable state {other:?}")),
         }
 
+        // Recover before considering ready commands. Readback is the only
+        // allowed operation for a command whose send may already have happened.
+        for idx in 0..self.commands.len() {
+            if !matches!(
+                self.commands[idx].state,
+                CmdState::Executing | CmdState::Unknown | CmdState::Reconciling
+            ) {
+                continue;
+            }
+            if self.commands[idx].state == CmdState::Executing {
+                self.record_command(
+                    idx,
+                    CmdState::Unknown,
+                    self.commands[idx].attempts,
+                    self.commands[idx].digest,
+                    None,
+                    "recovery: send outcome unknown",
+                    now_ms,
+                )?;
+            }
+            if self.state == BatchState::Executing {
+                self.transition(BatchState::Reconciling, "recovery readback-first", now_ms)?;
+            }
+            self.reconcile_one(ex, idx, now_ms)?;
+            if self.commands[idx].state == CmdState::Applied {
+                ex.applied_durable(&self.commands[idx].intent, self.commands[idx].readback)?;
+            }
+            if self.state.is_terminal() {
+                return Ok(self.report());
+            }
+        }
+        if self.state == BatchState::Reconciling {
+            self.transition(BatchState::Executing, "recovery reconciled", now_ms)?;
+        }
         loop {
-            self.propagate_blocked();
+            self.propagate_blocked(now_ms)?;
             // ready set（[10] §3.3.2：DAG ready + max_parallel + 故障域；
             // not_before [10] §2.3：未到期命令不进 ready——留待到期 tick，
             // 不让其反复占位导致空转）。
@@ -570,21 +655,22 @@ impl BatchSaga {
             let take = ready.len().min(self.policy.max_parallel.max(1) as usize);
             for &idx in ready.iter().take(take) {
                 // 批过期：停止执行剩余命令（[10] §3.5：旧计划过期不继续）。
-                if now_ms > self.deadline_ms {
+                if now_ms >= self.deadline_ms
+                    || now_ms >= self.commands[idx].intent.valid_until_ms()
+                {
                     self.record_command(
                         idx,
                         CmdState::Blocked,
                         0,
                         [0; 32],
                         None,
-                        "batch expired",
+                        "batch or command expired",
                         now_ms,
                     )?;
                     continue;
                 }
                 let intent = self.commands[idx].intent;
                 let attempt = self.commands[idx].attempts + 1;
-                self.commands[idx].attempts = attempt;
                 // [10] §3.2：投递前 append（Pending → Executing）。
                 self.record_command(
                     idx,
@@ -654,6 +740,9 @@ impl BatchSaga {
                         }
                     }
                 }
+                if self.commands[idx].state == CmdState::Applied {
+                    ex.applied_durable(&self.commands[idx].intent, self.commands[idx].readback)?;
+                }
             }
             if self.state != BatchState::Executing {
                 break;
@@ -673,15 +762,17 @@ impl BatchSaga {
         idx: usize,
         now_ms: u64,
     ) -> Result<(), String> {
-        self.record_command(
-            idx,
-            CmdState::Reconciling,
-            self.commands[idx].attempts,
-            [0; 32],
-            None,
-            "reconcile start",
-            now_ms,
-        )?;
+        if self.commands[idx].state != CmdState::Reconciling {
+            self.record_command(
+                idx,
+                CmdState::Reconciling,
+                self.commands[idx].attempts,
+                [0; 32],
+                None,
+                "reconcile start",
+                now_ms,
+            )?;
+        }
         let intent = self.commands[idx].intent;
         match ex.reconcile(&intent) {
             ReconcileOutcome::ConfirmedApplied {
@@ -725,6 +816,11 @@ impl BatchSaga {
                                 "double-verify failed",
                                 now_ms,
                             )?;
+                            self.transition(
+                                BatchState::ManualIntervention,
+                                "insufficient independent readback evidence",
+                                now_ms,
+                            )?;
                         }
                     }
                 }
@@ -765,7 +861,7 @@ impl BatchSaga {
 
     /// 终局：全 Applied → Completed；有失败按策略（[10] §3.3.8/9）。
     fn settle<E: SagaExecutor>(&mut self, ex: &mut E, now_ms: u64) -> Result<(), String> {
-        self.propagate_blocked();
+        self.propagate_blocked(now_ms)?;
         if self.state.is_terminal() {
             return Ok(()); // 对账已判人工
         }
@@ -837,7 +933,6 @@ impl BatchSaga {
                         }
                     };
                     let attempt = self.commands[*idx].attempts + 1;
-                    self.commands[*idx].attempts = attempt;
                     self.record_command(
                         *idx,
                         CmdState::Compensating,
@@ -900,6 +995,14 @@ impl BatchSaga {
                     state: c.state,
                     attempts: c.attempts,
                     readback: c.readback,
+                    reason: self.events.iter().rev().find_map(|e| match e.kind {
+                        EventKind::Command { intent_id, .. }
+                            if intent_id == c.intent.intent_id().0 =>
+                        {
+                            Some(e.reason.clone())
+                        }
+                        _ => None,
+                    }),
                 })
                 .collect(),
             events: self.event_seq,

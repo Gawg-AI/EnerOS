@@ -1,178 +1,346 @@
-{"ts": 1789466812.7636435, "event": "BROKER-LISTEN", "port": 1883, "telemetry_topic": "eneros/eneros-agent/telemetry"}
-{"ts": 1789466813.7517, "event": "CONNACK", "conn": "32962"}
-{"ts": 1789466813.751888, "event": "SUBSCRIBE", "conn": "32962", "topics": [["eneros/brain/request", 1]]}
-{"ts": 1789466825.0909956, "event": "CONNACK", "conn": "57252"}
-{"ts": 1789466825.0921228, "event": "SUBSCRIBE", "conn": "57252", "topics": [["eneros/control", 0]]}
-{"ts": 1789466825.0924869, "event": "SUBSCRIBE", "conn": "57252", "topics": [["eneros/brain/response", 1]]}
-{"ts": 1789466825.0926702, "event": "SUBSCRIBE", "conn": "57252", "topics": [["eneros/mgmt/request", 1]]}
-{"ts": 1789466857.6056957, "event": "PUBLISH", "conn": "57252", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789466857.60583, "event": "TELFRAME", "conn": "57252", "frame_seq": 0, "items": 1, "len": 90}
-{"ts": 1789466857.6059034, "event": "PUBACK->publisher", "conn": "57252", "pid": 4}
-{"ts": 1789466877.0403526, "event": "PUBLISH", "conn": "57252", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789466877.04052, "event": "TELFRAME", "conn": "57252", "frame_seq": 1, "items": 1, "len": 90}
-{"ts": 1789466877.0406418, "event": "PUBACK->publisher", "conn": "57252", "pid": 5}
-{"ts": 1789466877.3406968, "event": "PUBLISH", "conn": "57252", "topic": "eneros/brain/request", "payload_len": 619, "qos": 1}
-{"ts": 1789466877.3409498, "event": "PUBACK->publisher", "conn": "57252", "pid": 6}
-{"ts": 1789466877.3811677, "event": "PUBLISH", "conn": "32962", "topic": "eneros/brain/response", "payload_len": 948, "qos": 1}
-{"ts": 1789466877.381482, "event": "PUBACK->publisher", "conn": "32962", "pid": 2}
-{"ts": 1789466896.4495382, "event": "CONNACK", "conn": "32938"}
-{"ts": 1789466896.4497533, "event": "SUBSCRIBE", "conn": "32938", "topics": [["eneros/control", 0]]}
-{"ts": 1789466896.4499056, "event": "SUBSCRIBE", "conn": "32938", "topics": [["eneros/brain/response", 1]]}
-{"ts": 1789466896.450043, "event": "SUBSCRIBE", "conn": "32938", "topics": [["eneros/mgmt/request", 1]]}
-{"ts": 1789466897.05452, "event": "PUBLISH", "conn": "32938", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789466897.054674, "event": "TELFRAME", "conn": "32938", "frame_seq": 2, "items": 1, "len": 90}
-{"ts": 1789466897.054769, "event": "PUBACK->publisher", "conn": "32938", "pid": 10}
-{"ts": 1789466917.2102911, "event": "PUBLISH", "conn": "32938", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789466917.2104526, "event": "TELFRAME", "conn": "32938", "frame_seq": 3, "items": 1, "len": 90}
-{"ts": 1789466917.2105465, "event": "PUBACK->publisher", "conn": "32938", "pid": 11}
-{"ts": 1789466937.7423851, "event": "PUBLISH", "conn": "32938", "topic": "eneros/brain/request", "payload_len": 621, "qos": 1}
-{"ts": 1789466937.7426162, "event": "PUBACK->publisher", "conn": "32938", "pid": 12}
-{"ts": 1789466937.7830932, "event": "PUBLISH", "conn": "32962", "topic": "eneros/brain/response", "payload_len": 949, "qos": 1}
-{"ts": 1789466937.7833183, "event": "PUBACK->publisher", "conn": "32962", "pid": 3}
-{"ts": 1789466937.9728272, "event": "PUBLISH", "conn": "32938", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789466937.9729967, "event": "TELFRAME", "conn": "32938", "frame_seq": 4, "items": 1, "len": 90}
-{"ts": 1789466937.9731033, "event": "PUBACK->publisher", "conn": "32938", "pid": 13}
-{"ts": 1789466937.9887218, "event": "PUBLISH", "conn": "32938", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789466937.9888732, "event": "TELFRAME", "conn": "32938", "frame_seq": 4, "items": 1, "len": 90}
-{"ts": 1789466937.9889605, "event": "PUBACK->publisher", "conn": "32938", "pid": 14}
-{"ts": 1789466938.026525, "event": "PUBLISH", "conn": "32938", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789466938.0266986, "event": "TELFRAME", "conn": "32938", "frame_seq": 5, "items": 1, "len": 90}
-{"ts": 1789466938.026786, "event": "PUBACK->publisher", "conn": "32938", "pid": 15}
-{"ts": 1789466942.191295, "event": "PUBLISH", "conn": "32938", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789466942.191451, "event": "TELFRAME", "conn": "32938", "frame_seq": 6, "items": 1, "len": 90}
-{"ts": 1789466942.1915452, "event": "PUBACK->publisher", "conn": "32938", "pid": 16}
-{"ts": 1789466943.7114837, "event": "PUBLISH", "conn": "32938", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789466943.7116342, "event": "TELFRAME", "conn": "32938", "frame_seq": 0, "items": 1, "len": 90}
-{"ts": 1789466943.7117262, "event": "PUBACK->publisher", "conn": "32938", "pid": 17}
-{"ts": 1789466970.2417352, "event": "PUBLISH", "conn": "32938", "topic": "eneros/brain/request", "payload_len": 621, "qos": 1}
-{"ts": 1789466970.2419739, "event": "PUBACK->publisher", "conn": "32938", "pid": 18}
-{"ts": 1789466970.2821193, "event": "PUBLISH", "conn": "32962", "topic": "eneros/brain/response", "payload_len": 949, "qos": 1}
-{"ts": 1789466970.282333, "event": "PUBACK->publisher", "conn": "32962", "pid": 4}
-{"ts": 1789466991.3467157, "event": "PUBLISH", "conn": "32938", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789466991.3468597, "event": "TELFRAME", "conn": "32938", "frame_seq": 1, "items": 1, "len": 90}
-{"ts": 1789466991.3469272, "event": "PUBACK->publisher", "conn": "32938", "pid": 19}
-{"ts": 1789466991.6008062, "event": "CONNACK", "conn": "60842"}
-{"ts": 1789466991.6009681, "event": "SUBSCRIBE", "conn": "60842", "topics": [["eneros/control", 0]]}
-{"ts": 1789466991.601156, "event": "SUBSCRIBE", "conn": "60842", "topics": [["eneros/brain/response", 1]]}
-{"ts": 1789466991.601292, "event": "SUBSCRIBE", "conn": "60842", "topics": [["eneros/mgmt/request", 1]]}
-{"ts": 1789466991.6014347, "event": "PUBLISH", "conn": "60842", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789466991.6015248, "event": "TELFRAME", "conn": "60842", "frame_seq": 1, "items": 1, "len": 90}
-{"ts": 1789466991.6015918, "event": "PUBACK->publisher", "conn": "60842", "pid": 23}
-{"ts": 1789466991.8673816, "event": "PUBLISH", "conn": "60842", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789466991.8675253, "event": "TELFRAME", "conn": "60842", "frame_seq": 2, "items": 1, "len": 90}
-{"ts": 1789466991.867616, "event": "PUBACK->publisher", "conn": "60842", "pid": 24}
-{"ts": 1789467045.394186, "event": "PUBLISH", "conn": "60842", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789467045.3943455, "event": "TELFRAME", "conn": "60842", "frame_seq": 3, "items": 1, "len": 90}
-{"ts": 1789467045.3944457, "event": "PUBACK->publisher", "conn": "60842", "pid": 25}
-{"ts": 1789467045.7181764, "event": "PUBLISH", "conn": "60842", "topic": "eneros/brain/request", "payload_len": 621, "qos": 1}
-{"ts": 1789467045.7183988, "event": "PUBACK->publisher", "conn": "60842", "pid": 26}
-{"ts": 1789467045.7591734, "event": "PUBLISH", "conn": "32962", "topic": "eneros/brain/response", "payload_len": 949, "qos": 1}
-{"ts": 1789467045.7593555, "event": "PUBACK->publisher", "conn": "32962", "pid": 5}
-{"ts": 1789467067.6249738, "event": "PUBLISH", "conn": "60842", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789467067.6251457, "event": "TELFRAME", "conn": "60842", "frame_seq": 4, "items": 1, "len": 90}
-{"ts": 1789467067.6252434, "event": "PUBACK->publisher", "conn": "60842", "pid": 27}
-{"ts": 1789467102.8673413, "event": "BROKER-LISTEN", "port": 1883, "telemetry_topic": "eneros/eneros-agent/telemetry"}
-{"ts": 1789467103.8043427, "event": "CONNACK", "conn": "38600"}
-{"ts": 1789467103.8045375, "event": "SUBSCRIBE", "conn": "38600", "topics": [["eneros/brain/request", 1]]}
-{"ts": 1789467106.461411, "event": "CONNACK", "conn": "38610"}
-{"ts": 1789467106.461596, "event": "SUBSCRIBE", "conn": "38610", "topics": [["eneros/control", 0]]}
-{"ts": 1789467106.4617262, "event": "SUBSCRIBE", "conn": "38610", "topics": [["eneros/brain/response", 1]]}
-{"ts": 1789467106.4618297, "event": "SUBSCRIBE", "conn": "38610", "topics": [["eneros/mgmt/request", 1]]}
-{"ts": 1789467106.4619513, "event": "PUBLISH", "conn": "38610", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789467106.461998, "event": "TELFRAME", "conn": "38610", "frame_seq": 5, "items": 1, "len": 90}
-{"ts": 1789467106.4620519, "event": "PUBACK->publisher", "conn": "38610", "pid": 32}
-{"ts": 1789467106.4622395, "event": "PUBLISH", "conn": "38610", "topic": "eneros/brain/request", "payload_len": 621, "qos": 1}
-{"ts": 1789467106.4623141, "event": "PUBACK->publisher", "conn": "38610", "pid": 33}
-{"ts": 1789467106.5031025, "event": "PUBLISH", "conn": "38600", "topic": "eneros/brain/response", "payload_len": 949, "qos": 1}
-{"ts": 1789467106.5033398, "event": "PUBACK->publisher", "conn": "38600", "pid": 2}
-{"ts": 1789467129.4503057, "event": "CONNACK", "conn": "53986"}
-{"ts": 1789467129.450469, "event": "SUBSCRIBE", "conn": "53986", "topics": [["eneros/control", 0]]}
-{"ts": 1789467129.4505877, "event": "SUBSCRIBE", "conn": "53986", "topics": [["eneros/brain/response", 1]]}
-{"ts": 1789467129.4506817, "event": "SUBSCRIBE", "conn": "53986", "topics": [["eneros/mgmt/request", 1]]}
-{"ts": 1789467129.4815357, "event": "PUBLISH", "conn": "53986", "topic": "eneros/eneros-agent/telemetry", "payload_len": 165, "qos": 1}
-{"ts": 1789467129.4816911, "event": "TELFRAME", "conn": "53986", "frame_seq": 6, "items": 2, "len": 165}
-{"ts": 1789467129.4817758, "event": "PUBACK->publisher", "conn": "53986", "pid": 37}
-{"ts": 1789467130.0626051, "event": "PUBLISH", "conn": "53986", "topic": "eneros/brain/request", "payload_len": 621, "qos": 1}
-{"ts": 1789467130.0628154, "event": "PUBACK->publisher", "conn": "53986", "pid": 38}
-{"ts": 1789467130.1030986, "event": "PUBLISH", "conn": "38600", "topic": "eneros/brain/response", "payload_len": 949, "qos": 1}
-{"ts": 1789467130.103353, "event": "PUBACK->publisher", "conn": "38600", "pid": 3}
-{"ts": 1789467149.2674372, "event": "CONNACK", "conn": "50284"}
-{"ts": 1789467149.2676082, "event": "SUBSCRIBE", "conn": "50284", "topics": [["eneros/control", 0]]}
-{"ts": 1789467149.2677073, "event": "SUBSCRIBE", "conn": "50284", "topics": [["eneros/brain/response", 1]]}
-{"ts": 1789467149.2677934, "event": "SUBSCRIBE", "conn": "50284", "topics": [["eneros/mgmt/request", 1]]}
-{"ts": 1789467149.7018526, "event": "PUBLISH", "conn": "50284", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789467149.702052, "event": "TELFRAME", "conn": "50284", "frame_seq": 7, "items": 1, "len": 90}
-{"ts": 1789467149.7021685, "event": "PUBACK->publisher", "conn": "50284", "pid": 42}
-{"ts": 1789467170.2373974, "event": "PUBLISH", "conn": "50284", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789467170.2375565, "event": "TELFRAME", "conn": "50284", "frame_seq": 8, "items": 1, "len": 90}
-{"ts": 1789467170.2376564, "event": "PUBACK->publisher", "conn": "50284", "pid": 43}
-{"ts": 1789467170.356607, "event": "PUBLISH", "conn": "50284", "topic": "eneros/brain/request", "payload_len": 621, "qos": 1}
-{"ts": 1789467170.356828, "event": "PUBACK->publisher", "conn": "50284", "pid": 44}
-{"ts": 1789467170.3971126, "event": "PUBLISH", "conn": "38600", "topic": "eneros/brain/response", "payload_len": 949, "qos": 1}
-{"ts": 1789467170.3973348, "event": "PUBACK->publisher", "conn": "38600", "pid": 4}
-{"ts": 1789467189.3975809, "event": "CONNACK", "conn": "44242"}
-{"ts": 1789467189.3977497, "event": "SUBSCRIBE", "conn": "44242", "topics": [["eneros/control", 0]]}
-{"ts": 1789467189.397881, "event": "SUBSCRIBE", "conn": "44242", "topics": [["eneros/brain/response", 1]]}
-{"ts": 1789467189.398018, "event": "SUBSCRIBE", "conn": "44242", "topics": [["eneros/mgmt/request", 1]]}
-{"ts": 1789467208.373837, "event": "PUBLISH", "conn": "44242", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789467208.3740265, "event": "TELFRAME", "conn": "44242", "frame_seq": 9, "items": 1, "len": 90}
-{"ts": 1789467208.3741667, "event": "PUBACK->publisher", "conn": "44242", "pid": 48}
-{"ts": 1789467210.1400971, "event": "PUBLISH", "conn": "44242", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789467210.1402118, "event": "TELFRAME", "conn": "44242", "frame_seq": 10, "items": 1, "len": 90}
-{"ts": 1789467210.1402738, "event": "PUBACK->publisher", "conn": "44242", "pid": 49}
-{"ts": 1789467230.2347744, "event": "PUBLISH", "conn": "44242", "topic": "eneros/brain/request", "payload_len": 621, "qos": 1}
-{"ts": 1789467230.2350142, "event": "PUBACK->publisher", "conn": "44242", "pid": 50}
-{"ts": 1789467230.2771027, "event": "PUBLISH", "conn": "38600", "topic": "eneros/brain/response", "payload_len": 949, "qos": 1}
-{"ts": 1789467230.2772765, "event": "PUBACK->publisher", "conn": "38600", "pid": 5}
-{"ts": 1789467248.6654716, "event": "PUBLISH", "conn": "44242", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789467248.6656008, "event": "TELFRAME", "conn": "44242", "frame_seq": 11, "items": 1, "len": 90}
-{"ts": 1789467248.665667, "event": "PUBACK->publisher", "conn": "44242", "pid": 51}
-{"ts": 1789467248.8617, "event": "CONNACK", "conn": "43832"}
-{"ts": 1789467248.8618686, "event": "SUBSCRIBE", "conn": "43832", "topics": [["eneros/control", 0]]}
-{"ts": 1789467248.8620017, "event": "SUBSCRIBE", "conn": "43832", "topics": [["eneros/brain/response", 1]]}
-{"ts": 1789467248.8621852, "event": "SUBSCRIBE", "conn": "43832", "topics": [["eneros/mgmt/request", 1]]}
-{"ts": 1789467248.862348, "event": "PUBLISH", "conn": "43832", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789467248.8624394, "event": "TELFRAME", "conn": "43832", "frame_seq": 11, "items": 1, "len": 90}
-{"ts": 1789467248.8625202, "event": "PUBACK->publisher", "conn": "43832", "pid": 55}
-{"ts": 1789467254.8398294, "event": "CONNACK", "conn": "43842"}
-{"ts": 1789467254.8399982, "event": "SUBSCRIBE", "conn": "43842", "topics": [["eneros/brain/request", 1]]}
-{"ts": 1789467269.3815007, "event": "PUBLISH", "conn": "43832", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789467269.381631, "event": "TELFRAME", "conn": "43832", "frame_seq": 12, "items": 1, "len": 90}
-{"ts": 1789467269.3816965, "event": "PUBACK->publisher", "conn": "43832", "pid": 56}
-{"ts": 1789467288.2673447, "event": "PUBLISH", "conn": "43832", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789467288.2675045, "event": "TELFRAME", "conn": "43832", "frame_seq": 13, "items": 1, "len": 90}
-{"ts": 1789467288.2676034, "event": "PUBACK->publisher", "conn": "43832", "pid": 57}
-{"ts": 1789467288.5672193, "event": "PUBLISH", "conn": "43832", "topic": "eneros/brain/request", "payload_len": 621, "qos": 1}
-{"ts": 1789467288.5674458, "event": "PUBACK->publisher", "conn": "43832", "pid": 58}
-{"ts": 1789467288.7770963, "event": "PUBLISH", "conn": "43842", "topic": "eneros/brain/response", "payload_len": 949, "qos": 1}
-{"ts": 1789467288.7772899, "event": "PUBACK->publisher", "conn": "43842", "pid": 2}
-{"ts": 1789467311.098716, "event": "PUBLISH", "conn": "43832", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789467311.0988805, "event": "TELFRAME", "conn": "43832", "frame_seq": 14, "items": 1, "len": 90}
-{"ts": 1789467311.0989773, "event": "PUBACK->publisher", "conn": "43832", "pid": 59}
-{"ts": 1789467311.391388, "event": "PUBLISH", "conn": "43832", "topic": "eneros/brain/request", "payload_len": 622, "qos": 1}
-{"ts": 1789467311.3916101, "event": "PUBACK->publisher", "conn": "43832", "pid": 60}
-{"ts": 1789467311.6180916, "event": "PUBLISH", "conn": "43842", "topic": "eneros/brain/response", "payload_len": 951, "qos": 1}
-{"ts": 1789467311.6182911, "event": "PUBACK->publisher", "conn": "43842", "pid": 3}
-{"ts": 1789467330.7092593, "event": "CONNACK", "conn": "40340"}
-{"ts": 1789467330.709437, "event": "SUBSCRIBE", "conn": "40340", "topics": [["eneros/control", 0]]}
-{"ts": 1789467330.7095604, "event": "SUBSCRIBE", "conn": "40340", "topics": [["eneros/brain/response", 1]]}
-{"ts": 1789467330.709653, "event": "SUBSCRIBE", "conn": "40340", "topics": [["eneros/mgmt/request", 1]]}
-{"ts": 1789467331.3485107, "event": "PUBLISH", "conn": "40340", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789467331.3487155, "event": "TELFRAME", "conn": "40340", "frame_seq": 15, "items": 1, "len": 90}
-{"ts": 1789467331.348859, "event": "PUBACK->publisher", "conn": "40340", "pid": 64}
-{"ts": 1789467352.5054681, "event": "PUBLISH", "conn": "40340", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
-{"ts": 1789467352.5056295, "event": "TELFRAME", "conn": "40340", "frame_seq": 16, "items": 1, "len": 90}
-{"ts": 1789467352.5057275, "event": "PUBACK->publisher", "conn": "40340", "pid": 65}
-{"ts": 1789467454.9943774, "event": "BROKER-LISTEN", "port": 1883, "telemetry_topic": "eneros/eneros-agent/telemetry"}
-{"ts": 1789467455.2411811, "event": "CONNACK", "conn": "57426"}
-{"ts": 1789467455.2413445, "event": "SUBSCRIBE", "conn": "57426", "topics": [["eneros/control", 0]]}
-{"ts": 1789467455.2414896, "event": "SUBSCRIBE", "conn": "57426", "topics": [["eneros/brain/response", 1]]}
-{"ts": 1789467455.2416103, "event": "SUBSCRIBE", "conn": "57426", "topics": [["eneros/mgmt/request", 1]]}
-{"ts": 1789467455.241772, "event": "PUBLISH", "conn": "57426", "topic": "eneros/brain/request", "payload_len": 622, "qos": 1}
-{"ts": 1789467455.2418337, "event": "PUBACK->publisher", "conn": "57426", "pid": 70}
-{"ts": 1789467455.2419794, "event": "PUBLISH", "conn": "57426", "topic": "eneros/brain/request", "payload_len": 622, "qos": 1}
-{"ts": 1789467455.2420309, "event": "PUBACK->publisher", "conn": "57426", "pid": 71}
-{"ts": 1789467455.7879777, "event": "PUBLISH", "conn": "57426", "topic": "eneros/brain/request", "payload_len": 622, "qos": 1}
-{"ts": 1789467455.7881773, "event": "PUBACK->publisher", "conn": "57426", "pid": 72}
-{"ts": 1789467456.8530998, "event": "CONNACK", "conn": "58730"}
-{"ts": 1789467456.8532908, "event": "SUBSCRIBE", "conn": "58730", "topics": [["eneros/brain/request", 1]]}
+{"ts": 1789660188.1225321, "event": "BROKER-LISTEN", "port": 1883, "telemetry_topic": "eneros/eneros-agent/telemetry"}
+{"ts": 1789660189.106909, "event": "CONNACK", "conn": "46794"}
+{"ts": 1789660189.107045, "event": "SUBSCRIBE", "conn": "46794", "topics": [["eneros/brain/request", 1]]}
+{"ts": 1789660200.618303, "event": "CONNACK", "conn": "55550"}
+{"ts": 1789660200.6196308, "event": "SUBSCRIBE", "conn": "55550", "topics": [["eneros/control", 0]]}
+{"ts": 1789660200.6199844, "event": "SUBSCRIBE", "conn": "55550", "topics": [["eneros/brain/response", 1]]}
+{"ts": 1789660200.620148, "event": "SUBSCRIBE", "conn": "55550", "topics": [["eneros/mgmt/request", 1]]}
+{"ts": 1789660292.131753, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660292.1319335, "event": "TELFRAME", "conn": "55550", "frame_seq": 0, "items": 1, "len": 90}
+{"ts": 1789660292.1320467, "event": "PUBACK->publisher", "conn": "55550", "pid": 4}
+{"ts": 1789660295.2300956, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660295.2302601, "event": "TELFRAME", "conn": "55550", "frame_seq": 1, "items": 1, "len": 90}
+{"ts": 1789660295.2303696, "event": "PUBACK->publisher", "conn": "55550", "pid": 5}
+{"ts": 1789660299.6209986, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660299.6211677, "event": "TELFRAME", "conn": "55550", "frame_seq": 2, "items": 1, "len": 90}
+{"ts": 1789660299.6212645, "event": "PUBACK->publisher", "conn": "55550", "pid": 6}
+{"ts": 1789660302.7960384, "event": "PUBLISH", "conn": "55550", "topic": "eneros/brain/request", "payload_len": 852, "qos": 1}
+{"ts": 1789660302.7963128, "event": "PUBACK->publisher", "conn": "55550", "pid": 7}
+{"ts": 1789660302.8369155, "event": "PUBLISH", "conn": "46794", "topic": "eneros/brain/response", "payload_len": 1305, "qos": 1}
+{"ts": 1789660302.837184, "event": "PUBACK->publisher", "conn": "46794", "pid": 2}
+{"ts": 1789660306.0906513, "event": "PUBLISH", "conn": "55550", "topic": "eneros/brain/request", "payload_len": 852, "qos": 1}
+{"ts": 1789660306.09091, "event": "PUBACK->publisher", "conn": "55550", "pid": 8}
+{"ts": 1789660306.1328883, "event": "PUBLISH", "conn": "46794", "topic": "eneros/brain/response", "payload_len": 1305, "qos": 1}
+{"ts": 1789660306.1331263, "event": "PUBACK->publisher", "conn": "46794", "pid": 3}
+{"ts": 1789660306.653687, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660306.6538508, "event": "TELFRAME", "conn": "55550", "frame_seq": 3, "items": 1, "len": 90}
+{"ts": 1789660306.6539433, "event": "PUBACK->publisher", "conn": "55550", "pid": 9}
+{"ts": 1789660310.9895356, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660310.9896948, "event": "TELFRAME", "conn": "55550", "frame_seq": 4, "items": 1, "len": 90}
+{"ts": 1789660310.989805, "event": "PUBACK->publisher", "conn": "55550", "pid": 10}
+{"ts": 1789660316.222812, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660316.2230039, "event": "TELFRAME", "conn": "55550", "frame_seq": 5, "items": 1, "len": 90}
+{"ts": 1789660316.22311, "event": "PUBACK->publisher", "conn": "55550", "pid": 11}
+{"ts": 1789660317.0768633, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660317.0770068, "event": "TELFRAME", "conn": "55550", "frame_seq": 6, "items": 1, "len": 90}
+{"ts": 1789660317.07707, "event": "PUBACK->publisher", "conn": "55550", "pid": 12}
+{"ts": 1789660319.328812, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660319.3289392, "event": "TELFRAME", "conn": "55550", "frame_seq": 0, "items": 1, "len": 90}
+{"ts": 1789660319.329004, "event": "PUBACK->publisher", "conn": "55550", "pid": 13}
+{"ts": 1789660329.8490293, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660329.8492115, "event": "TELFRAME", "conn": "55550", "frame_seq": 1, "items": 1, "len": 90}
+{"ts": 1789660329.849316, "event": "PUBACK->publisher", "conn": "55550", "pid": 14}
+{"ts": 1789660332.7689624, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660332.7691278, "event": "TELFRAME", "conn": "55550", "frame_seq": 2, "items": 1, "len": 90}
+{"ts": 1789660332.7692301, "event": "PUBACK->publisher", "conn": "55550", "pid": 15}
+{"ts": 1789660351.1863875, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660351.1865585, "event": "TELFRAME", "conn": "55550", "frame_seq": 3, "items": 1, "len": 90}
+{"ts": 1789660351.1866605, "event": "PUBACK->publisher", "conn": "55550", "pid": 16}
+{"ts": 1789660353.470794, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660353.4709535, "event": "TELFRAME", "conn": "55550", "frame_seq": 4, "items": 1, "len": 90}
+{"ts": 1789660353.4710548, "event": "PUBACK->publisher", "conn": "55550", "pid": 17}
+{"ts": 1789660354.526134, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660354.5262868, "event": "TELFRAME", "conn": "55550", "frame_seq": 5, "items": 1, "len": 90}
+{"ts": 1789660354.526382, "event": "PUBACK->publisher", "conn": "55550", "pid": 18}
+{"ts": 1789660357.3965983, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660357.3967614, "event": "TELFRAME", "conn": "55550", "frame_seq": 6, "items": 1, "len": 90}
+{"ts": 1789660357.3968716, "event": "PUBACK->publisher", "conn": "55550", "pid": 19}
+{"ts": 1789660359.6162734, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660359.6164265, "event": "TELFRAME", "conn": "55550", "frame_seq": 7, "items": 1, "len": 90}
+{"ts": 1789660359.6165206, "event": "PUBACK->publisher", "conn": "55550", "pid": 20}
+{"ts": 1789660361.6413207, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660361.641495, "event": "TELFRAME", "conn": "55550", "frame_seq": 8, "items": 1, "len": 90}
+{"ts": 1789660361.6416292, "event": "PUBACK->publisher", "conn": "55550", "pid": 21}
+{"ts": 1789660364.4341319, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660364.434295, "event": "TELFRAME", "conn": "55550", "frame_seq": 9, "items": 1, "len": 90}
+{"ts": 1789660364.4343913, "event": "PUBACK->publisher", "conn": "55550", "pid": 22}
+{"ts": 1789660365.6651113, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660365.6652439, "event": "TELFRAME", "conn": "55550", "frame_seq": 10, "items": 1, "len": 90}
+{"ts": 1789660365.6653128, "event": "PUBACK->publisher", "conn": "55550", "pid": 23}
+{"ts": 1789660367.6018112, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660367.60194, "event": "TELFRAME", "conn": "55550", "frame_seq": 11, "items": 1, "len": 90}
+{"ts": 1789660367.6020043, "event": "PUBACK->publisher", "conn": "55550", "pid": 24}
+{"ts": 1789660370.5762475, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660370.5764546, "event": "TELFRAME", "conn": "55550", "frame_seq": 12, "items": 1, "len": 90}
+{"ts": 1789660370.576592, "event": "PUBACK->publisher", "conn": "55550", "pid": 25}
+{"ts": 1789660373.0594344, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660373.0595694, "event": "TELFRAME", "conn": "55550", "frame_seq": 13, "items": 1, "len": 90}
+{"ts": 1789660373.0596447, "event": "PUBACK->publisher", "conn": "55550", "pid": 26}
+{"ts": 1789660373.8958066, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660373.8960254, "event": "TELFRAME", "conn": "55550", "frame_seq": 14, "items": 1, "len": 90}
+{"ts": 1789660373.896126, "event": "PUBACK->publisher", "conn": "55550", "pid": 27}
+{"ts": 1789660376.3875875, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660376.3878033, "event": "TELFRAME", "conn": "55550", "frame_seq": 15, "items": 1, "len": 90}
+{"ts": 1789660376.3879266, "event": "PUBACK->publisher", "conn": "55550", "pid": 28}
+{"ts": 1789660379.023748, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660379.023922, "event": "TELFRAME", "conn": "55550", "frame_seq": 16, "items": 1, "len": 90}
+{"ts": 1789660379.0240185, "event": "PUBACK->publisher", "conn": "55550", "pid": 29}
+{"ts": 1789660382.3063421, "event": "PUBLISH", "conn": "55550", "topic": "eneros/brain/request", "payload_len": 852, "qos": 1}
+{"ts": 1789660382.3065133, "event": "PUBACK->publisher", "conn": "55550", "pid": 30}
+{"ts": 1789660382.3478813, "event": "PUBLISH", "conn": "46794", "topic": "eneros/brain/response", "payload_len": 1305, "qos": 1}
+{"ts": 1789660382.3480918, "event": "PUBACK->publisher", "conn": "46794", "pid": 4}
+{"ts": 1789660383.2637594, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660383.2639215, "event": "TELFRAME", "conn": "55550", "frame_seq": 17, "items": 1, "len": 90}
+{"ts": 1789660383.2640033, "event": "PUBACK->publisher", "conn": "55550", "pid": 31}
+{"ts": 1789660385.7482216, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660385.7483497, "event": "TELFRAME", "conn": "55550", "frame_seq": 18, "items": 1, "len": 90}
+{"ts": 1789660385.7484148, "event": "PUBACK->publisher", "conn": "55550", "pid": 32}
+{"ts": 1789660388.4558346, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660388.4559975, "event": "TELFRAME", "conn": "55550", "frame_seq": 19, "items": 1, "len": 90}
+{"ts": 1789660388.4560974, "event": "PUBACK->publisher", "conn": "55550", "pid": 33}
+{"ts": 1789660390.5291367, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660390.5292902, "event": "TELFRAME", "conn": "55550", "frame_seq": 20, "items": 1, "len": 90}
+{"ts": 1789660390.5293865, "event": "PUBACK->publisher", "conn": "55550", "pid": 34}
+{"ts": 1789660393.725593, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660393.725751, "event": "TELFRAME", "conn": "55550", "frame_seq": 21, "items": 1, "len": 90}
+{"ts": 1789660393.7258558, "event": "PUBACK->publisher", "conn": "55550", "pid": 35}
+{"ts": 1789660395.8976605, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660395.897831, "event": "TELFRAME", "conn": "55550", "frame_seq": 22, "items": 1, "len": 90}
+{"ts": 1789660395.8979368, "event": "PUBACK->publisher", "conn": "55550", "pid": 36}
+{"ts": 1789660396.8659532, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660396.866125, "event": "TELFRAME", "conn": "55550", "frame_seq": 23, "items": 1, "len": 90}
+{"ts": 1789660396.8662207, "event": "PUBACK->publisher", "conn": "55550", "pid": 37}
+{"ts": 1789660399.3009953, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660399.3011634, "event": "TELFRAME", "conn": "55550", "frame_seq": 24, "items": 1, "len": 90}
+{"ts": 1789660399.3012621, "event": "PUBACK->publisher", "conn": "55550", "pid": 38}
+{"ts": 1789660402.0754542, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660402.0756238, "event": "TELFRAME", "conn": "55550", "frame_seq": 25, "items": 1, "len": 90}
+{"ts": 1789660402.0757265, "event": "PUBACK->publisher", "conn": "55550", "pid": 39}
+{"ts": 1789660402.914526, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660402.9146736, "event": "TELFRAME", "conn": "55550", "frame_seq": 26, "items": 1, "len": 90}
+{"ts": 1789660402.9147625, "event": "PUBACK->publisher", "conn": "55550", "pid": 40}
+{"ts": 1789660405.2302299, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660405.2303739, "event": "TELFRAME", "conn": "55550", "frame_seq": 27, "items": 1, "len": 90}
+{"ts": 1789660405.2304459, "event": "PUBACK->publisher", "conn": "55550", "pid": 41}
+{"ts": 1789660408.5861342, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660408.5862985, "event": "TELFRAME", "conn": "55550", "frame_seq": 28, "items": 1, "len": 90}
+{"ts": 1789660408.5864055, "event": "PUBACK->publisher", "conn": "55550", "pid": 42}
+{"ts": 1789660410.6334534, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660410.6336663, "event": "TELFRAME", "conn": "55550", "frame_seq": 29, "items": 1, "len": 90}
+{"ts": 1789660410.6337848, "event": "PUBACK->publisher", "conn": "55550", "pid": 43}
+{"ts": 1789660412.8278954, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660412.828054, "event": "TELFRAME", "conn": "55550", "frame_seq": 30, "items": 1, "len": 90}
+{"ts": 1789660412.8281527, "event": "PUBACK->publisher", "conn": "55550", "pid": 44}
+{"ts": 1789660416.0110419, "event": "PUBLISH", "conn": "55550", "topic": "eneros/brain/request", "payload_len": 852, "qos": 1}
+{"ts": 1789660416.0112743, "event": "PUBACK->publisher", "conn": "55550", "pid": 45}
+{"ts": 1789660416.182912, "event": "PUBLISH", "conn": "46794", "topic": "eneros/brain/response", "payload_len": 1305, "qos": 1}
+{"ts": 1789660416.1831598, "event": "PUBACK->publisher", "conn": "46794", "pid": 5}
+{"ts": 1789660419.1747904, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660419.1749325, "event": "TELFRAME", "conn": "55550", "frame_seq": 31, "items": 1, "len": 90}
+{"ts": 1789660419.1749945, "event": "PUBACK->publisher", "conn": "55550", "pid": 46}
+{"ts": 1789660420.010271, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660420.0104399, "event": "TELFRAME", "conn": "55550", "frame_seq": 32, "items": 1, "len": 90}
+{"ts": 1789660420.010594, "event": "PUBACK->publisher", "conn": "55550", "pid": 47}
+{"ts": 1789660422.3705757, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660422.37074, "event": "TELFRAME", "conn": "55550", "frame_seq": 33, "items": 1, "len": 90}
+{"ts": 1789660422.3708684, "event": "PUBACK->publisher", "conn": "55550", "pid": 48}
+{"ts": 1789660425.5716774, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660425.5718617, "event": "TELFRAME", "conn": "55550", "frame_seq": 34, "items": 1, "len": 90}
+{"ts": 1789660425.5719838, "event": "PUBACK->publisher", "conn": "55550", "pid": 49}
+{"ts": 1789660426.4208183, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660426.4210212, "event": "TELFRAME", "conn": "55550", "frame_seq": 35, "items": 1, "len": 90}
+{"ts": 1789660426.4211612, "event": "PUBACK->publisher", "conn": "55550", "pid": 50}
+{"ts": 1789660429.093455, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660429.0936027, "event": "TELFRAME", "conn": "55550", "frame_seq": 36, "items": 1, "len": 90}
+{"ts": 1789660429.093666, "event": "PUBACK->publisher", "conn": "55550", "pid": 51}
+{"ts": 1789660430.6884444, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660430.6885629, "event": "TELFRAME", "conn": "55550", "frame_seq": 37, "items": 1, "len": 90}
+{"ts": 1789660430.6886287, "event": "PUBACK->publisher", "conn": "55550", "pid": 52}
+{"ts": 1789660431.8823087, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660431.8824651, "event": "TELFRAME", "conn": "55550", "frame_seq": 38, "items": 1, "len": 90}
+{"ts": 1789660431.882563, "event": "PUBACK->publisher", "conn": "55550", "pid": 53}
+{"ts": 1789660433.039317, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660433.0394557, "event": "TELFRAME", "conn": "55550", "frame_seq": 39, "items": 1, "len": 90}
+{"ts": 1789660433.0395207, "event": "PUBACK->publisher", "conn": "55550", "pid": 54}
+{"ts": 1789660434.6687348, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660434.6688652, "event": "TELFRAME", "conn": "55550", "frame_seq": 40, "items": 1, "len": 90}
+{"ts": 1789660434.66893, "event": "PUBACK->publisher", "conn": "55550", "pid": 55}
+{"ts": 1789660435.9641879, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660435.9643445, "event": "TELFRAME", "conn": "55550", "frame_seq": 41, "items": 1, "len": 90}
+{"ts": 1789660435.9644396, "event": "PUBACK->publisher", "conn": "55550", "pid": 56}
+{"ts": 1789660437.3914437, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660437.3915806, "event": "TELFRAME", "conn": "55550", "frame_seq": 42, "items": 1, "len": 90}
+{"ts": 1789660437.3916514, "event": "PUBACK->publisher", "conn": "55550", "pid": 57}
+{"ts": 1789660439.4323666, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660439.4325337, "event": "TELFRAME", "conn": "55550", "frame_seq": 43, "items": 1, "len": 90}
+{"ts": 1789660439.4326346, "event": "PUBACK->publisher", "conn": "55550", "pid": 58}
+{"ts": 1789660440.2754498, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660440.2756422, "event": "TELFRAME", "conn": "55550", "frame_seq": 44, "items": 1, "len": 90}
+{"ts": 1789660440.2757435, "event": "PUBACK->publisher", "conn": "55550", "pid": 59}
+{"ts": 1789660442.8915422, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660442.8916667, "event": "TELFRAME", "conn": "55550", "frame_seq": 45, "items": 1, "len": 90}
+{"ts": 1789660442.891742, "event": "PUBACK->publisher", "conn": "55550", "pid": 60}
+{"ts": 1789660445.1512659, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660445.1514478, "event": "TELFRAME", "conn": "55550", "frame_seq": 46, "items": 1, "len": 90}
+{"ts": 1789660445.1515496, "event": "PUBACK->publisher", "conn": "55550", "pid": 61}
+{"ts": 1789660446.268591, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660446.268772, "event": "TELFRAME", "conn": "55550", "frame_seq": 47, "items": 1, "len": 90}
+{"ts": 1789660446.2688837, "event": "PUBACK->publisher", "conn": "55550", "pid": 62}
+{"ts": 1789660451.351971, "event": "PUBLISH", "conn": "55550", "topic": "eneros/brain/request", "payload_len": 852, "qos": 1}
+{"ts": 1789660451.3522687, "event": "PUBACK->publisher", "conn": "55550", "pid": 63}
+{"ts": 1789660451.3928761, "event": "PUBLISH", "conn": "46794", "topic": "eneros/brain/response", "payload_len": 1305, "qos": 1}
+{"ts": 1789660451.393064, "event": "PUBACK->publisher", "conn": "46794", "pid": 6}
+{"ts": 1789660452.2796423, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660452.2798238, "event": "TELFRAME", "conn": "55550", "frame_seq": 48, "items": 1, "len": 90}
+{"ts": 1789660452.279923, "event": "PUBACK->publisher", "conn": "55550", "pid": 64}
+{"ts": 1789660454.569187, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660454.569398, "event": "TELFRAME", "conn": "55550", "frame_seq": 49, "items": 1, "len": 90}
+{"ts": 1789660454.569502, "event": "PUBACK->publisher", "conn": "55550", "pid": 65}
+{"ts": 1789660457.6600325, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660457.6601899, "event": "TELFRAME", "conn": "55550", "frame_seq": 50, "items": 1, "len": 90}
+{"ts": 1789660457.6602776, "event": "PUBACK->publisher", "conn": "55550", "pid": 66}
+{"ts": 1789660459.8543682, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660459.854521, "event": "TELFRAME", "conn": "55550", "frame_seq": 51, "items": 1, "len": 90}
+{"ts": 1789660459.854613, "event": "PUBACK->publisher", "conn": "55550", "pid": 67}
+{"ts": 1789660461.0104241, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660461.010585, "event": "TELFRAME", "conn": "55550", "frame_seq": 52, "items": 1, "len": 90}
+{"ts": 1789660461.0106797, "event": "PUBACK->publisher", "conn": "55550", "pid": 68}
+{"ts": 1789660463.188616, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660463.1887672, "event": "TELFRAME", "conn": "55550", "frame_seq": 53, "items": 1, "len": 90}
+{"ts": 1789660463.1888804, "event": "PUBACK->publisher", "conn": "55550", "pid": 69}
+{"ts": 1789660465.9253066, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660465.9254863, "event": "TELFRAME", "conn": "55550", "frame_seq": 54, "items": 1, "len": 90}
+{"ts": 1789660465.9255815, "event": "PUBACK->publisher", "conn": "55550", "pid": 70}
+{"ts": 1789660468.0748343, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660468.0750186, "event": "TELFRAME", "conn": "55550", "frame_seq": 55, "items": 1, "len": 90}
+{"ts": 1789660468.0751529, "event": "PUBACK->publisher", "conn": "55550", "pid": 71}
+{"ts": 1789660469.0642712, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660469.0644274, "event": "TELFRAME", "conn": "55550", "frame_seq": 56, "items": 1, "len": 90}
+{"ts": 1789660469.0645227, "event": "PUBACK->publisher", "conn": "55550", "pid": 72}
+{"ts": 1789660472.599498, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660472.5996642, "event": "TELFRAME", "conn": "55550", "frame_seq": 57, "items": 1, "len": 90}
+{"ts": 1789660472.5997632, "event": "PUBACK->publisher", "conn": "55550", "pid": 73}
+{"ts": 1789660474.8438916, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660474.844064, "event": "TELFRAME", "conn": "55550", "frame_seq": 58, "items": 1, "len": 90}
+{"ts": 1789660474.8441606, "event": "PUBACK->publisher", "conn": "55550", "pid": 74}
+{"ts": 1789660476.9075108, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660476.9076765, "event": "TELFRAME", "conn": "55550", "frame_seq": 59, "items": 1, "len": 90}
+{"ts": 1789660476.9077923, "event": "PUBACK->publisher", "conn": "55550", "pid": 75}
+{"ts": 1789660480.0010426, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660480.0011964, "event": "TELFRAME", "conn": "55550", "frame_seq": 60, "items": 1, "len": 90}
+{"ts": 1789660480.0012763, "event": "PUBACK->publisher", "conn": "55550", "pid": 76}
+{"ts": 1789660481.0576994, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660481.0578332, "event": "TELFRAME", "conn": "55550", "frame_seq": 61, "items": 1, "len": 90}
+{"ts": 1789660481.0579, "event": "PUBACK->publisher", "conn": "55550", "pid": 77}
+{"ts": 1789660485.5128088, "event": "PUBLISH", "conn": "55550", "topic": "eneros/brain/request", "payload_len": 852, "qos": 1}
+{"ts": 1789660485.5130355, "event": "PUBACK->publisher", "conn": "55550", "pid": 78}
+{"ts": 1789660485.5539382, "event": "PUBLISH", "conn": "46794", "topic": "eneros/brain/response", "payload_len": 1305, "qos": 1}
+{"ts": 1789660485.5541635, "event": "PUBACK->publisher", "conn": "46794", "pid": 7}
+{"ts": 1789660486.1591175, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660486.1592755, "event": "TELFRAME", "conn": "55550", "frame_seq": 62, "items": 1, "len": 90}
+{"ts": 1789660486.1593776, "event": "PUBACK->publisher", "conn": "55550", "pid": 79}
+{"ts": 1789660489.6940112, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660489.694153, "event": "TELFRAME", "conn": "55550", "frame_seq": 63, "items": 1, "len": 90}
+{"ts": 1789660489.694223, "event": "PUBACK->publisher", "conn": "55550", "pid": 80}
+{"ts": 1789660491.9054298, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660491.905578, "event": "TELFRAME", "conn": "55550", "frame_seq": 64, "items": 1, "len": 90}
+{"ts": 1789660491.9056718, "event": "PUBACK->publisher", "conn": "55550", "pid": 81}
+{"ts": 1789660492.8421743, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660492.8423414, "event": "TELFRAME", "conn": "55550", "frame_seq": 65, "items": 1, "len": 90}
+{"ts": 1789660492.8424466, "event": "PUBACK->publisher", "conn": "55550", "pid": 82}
+{"ts": 1789660495.1771085, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660495.1772685, "event": "TELFRAME", "conn": "55550", "frame_seq": 66, "items": 1, "len": 90}
+{"ts": 1789660495.1773648, "event": "PUBACK->publisher", "conn": "55550", "pid": 83}
+{"ts": 1789660497.9182777, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660497.9184375, "event": "TELFRAME", "conn": "55550", "frame_seq": 67, "items": 1, "len": 90}
+{"ts": 1789660497.9185333, "event": "PUBACK->publisher", "conn": "55550", "pid": 84}
+{"ts": 1789660498.7575676, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660498.757719, "event": "TELFRAME", "conn": "55550", "frame_seq": 68, "items": 1, "len": 90}
+{"ts": 1789660498.757881, "event": "PUBACK->publisher", "conn": "55550", "pid": 85}
+{"ts": 1789660501.2365813, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660501.2367673, "event": "TELFRAME", "conn": "55550", "frame_seq": 69, "items": 1, "len": 90}
+{"ts": 1789660501.2368944, "event": "PUBACK->publisher", "conn": "55550", "pid": 86}
+{"ts": 1789660504.447229, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660504.447438, "event": "TELFRAME", "conn": "55550", "frame_seq": 70, "items": 1, "len": 90}
+{"ts": 1789660504.4475105, "event": "PUBACK->publisher", "conn": "55550", "pid": 87}
+{"ts": 1789660506.394824, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660506.3949807, "event": "TELFRAME", "conn": "55550", "frame_seq": 71, "items": 1, "len": 90}
+{"ts": 1789660506.395091, "event": "PUBACK->publisher", "conn": "55550", "pid": 88}
+{"ts": 1789660508.8783686, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660508.878532, "event": "TELFRAME", "conn": "55550", "frame_seq": 72, "items": 1, "len": 90}
+{"ts": 1789660508.8786306, "event": "PUBACK->publisher", "conn": "55550", "pid": 89}
+{"ts": 1789660511.5519547, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660511.552109, "event": "TELFRAME", "conn": "55550", "frame_seq": 73, "items": 1, "len": 90}
+{"ts": 1789660511.552205, "event": "PUBACK->publisher", "conn": "55550", "pid": 90}
+{"ts": 1789660512.4878187, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660512.4879737, "event": "TELFRAME", "conn": "55550", "frame_seq": 74, "items": 1, "len": 90}
+{"ts": 1789660512.4880488, "event": "PUBACK->publisher", "conn": "55550", "pid": 91}
+{"ts": 1789660514.7372358, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660514.7373695, "event": "TELFRAME", "conn": "55550", "frame_seq": 75, "items": 1, "len": 90}
+{"ts": 1789660514.73744, "event": "PUBACK->publisher", "conn": "55550", "pid": 92}
+{"ts": 1789660516.6311176, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660516.6312802, "event": "TELFRAME", "conn": "55550", "frame_seq": 76, "items": 1, "len": 90}
+{"ts": 1789660516.6313787, "event": "PUBACK->publisher", "conn": "55550", "pid": 93}
+{"ts": 1789660519.9227138, "event": "PUBLISH", "conn": "55550", "topic": "eneros/brain/request", "payload_len": 852, "qos": 1}
+{"ts": 1789660519.9228969, "event": "PUBACK->publisher", "conn": "55550", "pid": 94}
+{"ts": 1789660519.9638636, "event": "PUBLISH", "conn": "46794", "topic": "eneros/brain/response", "payload_len": 1305, "qos": 1}
+{"ts": 1789660519.9640288, "event": "PUBACK->publisher", "conn": "46794", "pid": 8}
+{"ts": 1789660520.8025687, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660520.8027327, "event": "TELFRAME", "conn": "55550", "frame_seq": 77, "items": 1, "len": 90}
+{"ts": 1789660520.802839, "event": "PUBACK->publisher", "conn": "55550", "pid": 95}
+{"ts": 1789660522.2244601, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660522.2246177, "event": "TELFRAME", "conn": "55550", "frame_seq": 78, "items": 1, "len": 90}
+{"ts": 1789660522.224714, "event": "PUBACK->publisher", "conn": "55550", "pid": 96}
+{"ts": 1789660524.3255413, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660524.3257086, "event": "TELFRAME", "conn": "55550", "frame_seq": 79, "items": 1, "len": 90}
+{"ts": 1789660524.3258162, "event": "PUBACK->publisher", "conn": "55550", "pid": 97}
+{"ts": 1789660525.597485, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660525.5976157, "event": "TELFRAME", "conn": "55550", "frame_seq": 80, "items": 1, "len": 90}
+{"ts": 1789660525.597692, "event": "PUBACK->publisher", "conn": "55550", "pid": 98}
+{"ts": 1789660526.74955, "event": "PUBLISH", "conn": "55550", "topic": "eneros/eneros-agent/telemetry", "payload_len": 90, "qos": 1}
+{"ts": 1789660526.7496867, "event": "TELFRAME", "conn": "55550", "frame_seq": 81, "items": 1, "len": 90}
+{"ts": 1789660526.749751, "event": "PUBACK->publisher", "conn": "55550", "pid": 99}
+{"ts": 1789660553.3548295, "event": "BROKER-LISTEN", "port": 1883, "telemetry_topic": "eneros/eneros-agent/telemetry"}
+{"ts": 1789660554.305418, "event": "CONNACK", "conn": "37780"}
+{"ts": 1789660554.3055701, "event": "SUBSCRIBE", "conn": "37780", "topics": [["eneros/brain/request", 1]]}
+{"ts": 1789660564.2899458, "event": "CONNACK", "conn": "41340"}
+{"ts": 1789660564.2902296, "event": "SUBSCRIBE", "conn": "41340", "topics": [["eneros/control", 0]]}
+{"ts": 1789660564.290386, "event": "SUBSCRIBE", "conn": "41340", "topics": [["eneros/brain/response", 1]]}
+{"ts": 1789660564.290492, "event": "SUBSCRIBE", "conn": "41340", "topics": [["eneros/mgmt/request", 1]]}
+{"ts": 1789660564.2906618, "event": "PUBLISH", "conn": "41340", "topic": "eneros/brain/request", "payload_len": 852, "qos": 1}
+{"ts": 1789660564.290747, "event": "PUBACK->publisher", "conn": "41340", "pid": 103}
+{"ts": 1789660564.3309045, "event": "PUBLISH", "conn": "37780", "topic": "eneros/brain/response", "payload_len": 1305, "qos": 1}
+{"ts": 1789660564.331163, "event": "PUBACK->publisher", "conn": "37780", "pid": 2}
+{"ts": 1789660598.215025, "event": "PUBLISH", "conn": "41340", "topic": "eneros/brain/request", "payload_len": 852, "qos": 1}
+{"ts": 1789660598.2152665, "event": "PUBACK->publisher", "conn": "41340", "pid": 104}
+{"ts": 1789660598.2568796, "event": "PUBLISH", "conn": "37780", "topic": "eneros/brain/response", "payload_len": 1305, "qos": 1}
+{"ts": 1789660598.2570598, "event": "PUBACK->publisher", "conn": "37780", "pid": 3}
+{"ts": 1789660632.0002873, "event": "PUBLISH", "conn": "41340", "topic": "eneros/brain/request", "payload_len": 853, "qos": 1}
+{"ts": 1789660632.0005152, "event": "PUBACK->publisher", "conn": "41340", "pid": 105}
+{"ts": 1789660632.040899, "event": "PUBLISH", "conn": "37780", "topic": "eneros/brain/response", "payload_len": 1307, "qos": 1}
+{"ts": 1789660632.0411584, "event": "PUBACK->publisher", "conn": "37780", "pid": 4}
+{"ts": 1789660666.4861686, "event": "PUBLISH", "conn": "41340", "topic": "eneros/brain/request", "payload_len": 853, "qos": 1}
+{"ts": 1789660666.486412, "event": "PUBACK->publisher", "conn": "41340", "pid": 106}
+{"ts": 1789660666.5269043, "event": "PUBLISH", "conn": "37780", "topic": "eneros/brain/response", "payload_len": 1307, "qos": 1}
+{"ts": 1789660666.5271592, "event": "PUBACK->publisher", "conn": "37780", "pid": 5}
+{"ts": 1789660701.648508, "event": "PUBLISH", "conn": "41340", "topic": "eneros/brain/request", "payload_len": 853, "qos": 1}
+{"ts": 1789660701.6487434, "event": "PUBACK->publisher", "conn": "41340", "pid": 107}
+{"ts": 1789660701.688905, "event": "PUBLISH", "conn": "37780", "topic": "eneros/brain/response", "payload_len": 1307, "qos": 1}
+{"ts": 1789660701.689224, "event": "PUBACK->publisher", "conn": "37780", "pid": 6}
+{"ts": 1789660705.3286967, "event": "CONNACK", "conn": "60910"}
+{"ts": 1789660705.3288763, "event": "SUBSCRIBE", "conn": "60910", "topics": [["eneros/brain/request", 1]]}
+{"ts": 1789660735.0139728, "event": "PUBLISH", "conn": "41340", "topic": "eneros/brain/request", "payload_len": 853, "qos": 1}
+{"ts": 1789660735.0142214, "event": "PUBACK->publisher", "conn": "41340", "pid": 108}
+{"ts": 1789660735.0559125, "event": "PUBLISH", "conn": "60910", "topic": "eneros/brain/response", "payload_len": 1307, "qos": 1}
+{"ts": 1789660735.0561557, "event": "PUBACK->publisher", "conn": "60910", "pid": 2}
+{"ts": 1789660770.2476346, "event": "PUBLISH", "conn": "41340", "topic": "eneros/brain/request", "payload_len": 853, "qos": 1}
+{"ts": 1789660770.2478223, "event": "PUBACK->publisher", "conn": "41340", "pid": 109}
+{"ts": 1789660770.2888916, "event": "PUBLISH", "conn": "60910", "topic": "eneros/brain/response", "payload_len": 1307, "qos": 1}
+{"ts": 1789660770.2890997, "event": "PUBACK->publisher", "conn": "60910", "pid": 3}
+{"ts": 1789660804.2044294, "event": "PUBLISH", "conn": "41340", "topic": "eneros/brain/request", "payload_len": 853, "qos": 1}
+{"ts": 1789660804.2046611, "event": "PUBACK->publisher", "conn": "41340", "pid": 110}
+{"ts": 1789660804.2779286, "event": "PUBLISH", "conn": "60910", "topic": "eneros/brain/response", "payload_len": 1307, "qos": 1}
+{"ts": 1789660804.2781918, "event": "PUBACK->publisher", "conn": "60910", "pid": 4}
+{"ts": 1789661225.3842063, "event": "BROKER-LISTEN", "port": 1883, "telemetry_topic": "eneros/eneros-agent/telemetry"}
+{"ts": 1789661227.3785193, "event": "CONNACK", "conn": "55474"}
+{"ts": 1789661227.3787146, "event": "SUBSCRIBE", "conn": "55474", "topics": [["eneros/brain/request", 1]]}

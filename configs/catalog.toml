@@ -49,6 +49,14 @@ device_id = 2             # 站内遥测网关（点 1-7）
 topology_node_id = 2
 
 [[asset]]
+asset_id = 2
+site_id = 1
+tenant_id = 1
+kind = "battery"           # PCS-2 电池储能（蓝图 70 R10 多资产）
+device_id = 8              # PCS-2 控制设备（点 1005-1009；点表协议映射）
+topology_node_id = 2       # 与 PCS-1 同 DER 母线
+
+[[asset]]
 asset_id = 10
 site_id = 1
 tenant_id = 1
@@ -99,7 +107,7 @@ point_id = 4
 asset_id = 1
 schema_id = 1
 unit = "ratio"
-role = "measurement"
+role = "soc"
 
 [[point_semantics]]
 point_id = 5
@@ -162,6 +170,44 @@ asset_id = 1
 schema_id = 1
 unit = "ratio"
 role = "measurement"
+
+# PCS-2 功率遥测（控制回读源；蓝图 70 R10 多资产）
+[[point_semantics]]
+point_id = 1005
+asset_id = 2
+schema_id = 1
+unit = "kW"
+role = "measurement"
+
+[[point_semantics]]
+point_id = 1006
+asset_id = 2
+schema_id = 1
+unit = "ratio"
+role = "soc"
+
+[[point_semantics]]
+point_id = 1007
+asset_id = 2
+schema_id = 1
+unit = "ratio"
+role = "measurement"
+
+[[point_semantics]]
+point_id = 1008
+asset_id = 2
+schema_id = 1
+unit = "ratio"
+role = "measurement"
+
+# PCS-2 控制设定点（kW；回读=功率遥测点 1005；蓝图 70 R10）
+[[point_semantics]]
+point_id = 1009
+asset_id = 2
+schema_id = 1
+unit = "kW"
+role = "control"
+readback_point_id = 1005
 
 # --- 反馈槽（槽序 = TrustedFeedbackBuilder 字段声明序；单源） ---
 [[feedback_slot]]
@@ -270,6 +316,28 @@ priority = "remote"
 safe_state = "hold"
 lost_link = "hold"
 
+# PCS-2 控制合同（蓝图 70 R10 多资产；±500 kW / ramp 与合同 1 同族）
+[[control_contract]]
+contract_id = 2
+asset_id = 2
+point_id = 1009
+unit = "kW"
+class = "setpoint"
+min = -500.0
+max = 500.0
+ramp_kw_per_s = 3.3333     # 200 kW/min ÷ 60（与合同 1 同族）
+settle_ms = 30000
+min_on_ms = 0
+min_off_ms = 0
+max_starts = 1
+readback_point_id = 1005
+tolerance_kw = 0.1
+reversible = true
+compensation = false
+priority = "remote"
+safe_state = "hold"
+lost_link = "hold"
+
 # --- 物理参数铭牌（蓝图 70.8 WP-70.8.3） ---
 # 包络求交、认证电池参数与计划模型的物理输入唯一来源；与目录同代。
 # 缺铭牌的资产不可控（fail-closed，不从 host fixture 补值）。
@@ -287,6 +355,22 @@ ramp_up_kw_s = 3.3333         # 200 kW/min ÷ 60
 ramp_down_kw_s = 3.3333
 soc_min = 0.05                # 可用 SOC 下限（认证 MinSoc 硬约束来源）
 soc_max = 0.95                # 可用 SOC 上限（认证 MaxSoc 硬约束来源）
+
+# PCS-2 铭牌（蓝图 70 R10 多资产；50 kWh 电池）
+[[nameplate]]
+asset_id = 2
+capacity_kwh = 50.0           # PCS-2 电池额定容量
+eta_c = 0.95
+eta_d = 0.95
+energy_max_kwh = 50.0
+p_min_kw = -500.0             # 与 control_contract 2 一致（合同为最终收紧项）
+p_max_kw = 500.0
+q_min_kvar = 0.0
+q_max_kvar = 0.0
+ramp_up_kw_s = 3.3333
+ramp_down_kw_s = 3.3333
+soc_min = 0.05
+soc_max = 0.95
 
 # --- 安全约束目录（状态告警阈值；与 safety-validator 语义对齐） ---
 [[safety_constraint]]

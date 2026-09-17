@@ -821,3 +821,31 @@ fn unavailable_state_store_fails_closed() {
         Err(StoreError::Unavailable)
     );
 }
+
+#[test]
+fn region_rejects_complete_future_schema_instead_of_loading_older_slot() {
+    let mut media = MemIo::new(1024);
+    let mut payload = 1u64.to_le_bytes().to_vec();
+    payload.extend_from_slice(
+        &St {
+            value: 7,
+            label: [0; 8],
+        }
+        .encode()
+        .unwrap(),
+    );
+    let old = eneros_durable_state::encode_record(&eneros_durable_state::MAGIC_STATE, 1, &payload);
+    media.bytes[..old.len()].copy_from_slice(&old);
+    payload[..8].copy_from_slice(&2u64.to_le_bytes());
+    let future =
+        eneros_durable_state::encode_record(&eneros_durable_state::MAGIC_STATE, 2, &payload);
+    media.bytes[512..512 + future.len()].copy_from_slice(&future);
+    let mut store = RegionStateStore::<St, _>::new(media, 0, 1024);
+    assert!(
+        matches!(
+            store.load(),
+            Err(StoreError::UnsupportedVersion { schema: 2, .. })
+        ),
+        "valid newer schema must block rollback, not silently restore stale ownership"
+    );
+}

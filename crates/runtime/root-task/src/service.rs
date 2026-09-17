@@ -2013,15 +2013,21 @@ fn control_chain_synth_ingest(
 /// 观测 → 冻结快照 → 独立认证 → dispatch 全链在合成装配可证（R09/R10 前置）。
 /// 旧 TelemetrySample 兼容轨（上行）保持不变，两轨并存。
 ///
-/// 节奏：每第 3 个 round 一批（qemu-test TCG 实测 round ≈1s ⇒ ≈0.3 Hz 批
-/// ≈3.4 事件/s，与 modbus 采集负载同量级；快照每 SNAP_EVERY_BATCHES=8 批
-/// 一建 ⇒ 建距 ≈26s，须落在 60s 输入新鲜度窗内——16 round 一批在实弹窗里
-/// 使 EA 恒 snapshot-stale，见 2026-09-15 探针窗）。结果只上证据行：受理
-/// 数缺失时下游 SNAPSHOT/Committed 词形缺失即为门判据——不伪造、不静默
-/// 重试风暴。
+/// 节奏：每第 16 个 round 一批（qemu-test TCG 实测 round ≈0.6–1s ⇒ 批
+/// ≈10–16s；快照每 SNAP_EVERY_BATCHES=8 批一建 ⇒ 建距 ≈80–128s）。
+/// R10 时域覆盖（2026-09-17 调整，%3 → %16）：DEC-70-13 ① 要求冻结输入
+/// 与包络生命周期 ≥ 计划时域（4×15s=60s）——旧 %3 节奏（建距 ≈14–26s，
+/// 随 TCG 波动）在换代即取消未发步的多步语义下，单计划最多执行步 0，
+/// 多时段完成结构性不可达。放缓到建距 ≥ 时域后，单计划四步全程在同一
+/// 代内执行；建距 > 输入新鲜度窗（60s）的尾段仍是诚实的
+/// `SNAP_REJECT_STALE`（零推理零新写）。仅影响 qemu-test-synth 测试装配
+/// （feature 门控），生产装配零变化。
+#[cfg(all(target_os = "none", feature = "sel4-eipc", feature = "qemu-test-synth"))]
+const SYNTH_OBS_EVERY_ROUNDS: u64 = 16;
+
 #[cfg(all(target_os = "none", feature = "sel4-eipc", feature = "qemu-test-synth"))]
 fn synth_obs_ingest(telemetry_ep: u64, seq: u64, epoch: &mut u64, now: u64) {
-    if seq % 3 != 0 {
+    if seq % SYNTH_OBS_EVERY_ROUNDS != 0 {
         return;
     }
     let now_ns = now.saturating_mul(1_000_000);

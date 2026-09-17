@@ -1,0 +1,127 @@
+{
+  "schema": "eneros.candidate-evidence.v1",
+  "matrix_id": "core-70",
+  "candidate_id": "47b0068b1dfa6d37cdd924aff8821cabc63eeccc68d67ae9e9ee1b5cd0b6a15a",
+  "source_commit": "b9b88cb7bfa9441734973c80e31353c4b9e0fbd8",
+  "dirty_tree_digest": "57bf802f09d73558f3eb836be9c51355ec9a6f52e9c97059979f06984fc0b12e",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "artifacts": [
+    {
+      "name": "qemu-prod",
+      "profile": "qemu-prod",
+      "path": "target/eneros/artifacts/qemu-prod/eneros-qemu-prod.raw",
+      "sha256": "c227599f6a22ba8a55bcd890a09686b87581325b0789916fa4f518a996da3040"
+    },
+    {
+      "name": "qemu-test",
+      "profile": "qemu-test",
+      "path": "target/eneros/artifacts/qemu-test/eneros-qemu-test.raw",
+      "sha256": "784706cbe7c0268de1a54bb0218d0612699d6f370ffe298d738f2c81c6c75f2b"
+    },
+    {
+      "name": "qemu-test-combined",
+      "profile": "qemu-test",
+      "path": "target/evidence70-vol7/eneros-combined.raw",
+      "sha256": "38bdb1e56261ddeb205d1d62f28c1ecd976a4364a889f3d6c9e511974052b123"
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "CORE-70-R01",
+      "artifact": "qemu-prod",
+      "envelope": "evidence/70/70.15/47b0068b1dfa6d37cdd924aff8821cabc63eeccc68d67ae9e9ee1b5cd0b6a15a/CORE-70-R01.envelope.json",
+      "envelope_sha256": "c1b2eb0b4e3b70bbb80dae0c187a2f5e4965daa91a3612d1d76ed4e5581dcc2f",
+      "detail": "VOL70.1 // L2",
+      "tested_sha256": "66656fbc388ed596e227814057e4c021d8691087a346e14b8413e76c1d997bc6"
+    },
+    {
+      "case_id": "CORE-70-R02",
+      "artifact": "qemu-prod",
+      "envelope": "evidence/70/70.15/47b0068b1dfa6d37cdd924aff8821cabc63eeccc68d67ae9e9ee1b5cd0b6a15a/CORE-70-R02.envelope.json",
+      "envelope_sha256": "5fdd756b8b64f0f99ef69aa3da4c2e0a6ade47683796bd63ff04d8ec7f913626",
+      "detail": "VOL70.2 // L2",
+      "tested_sha256": "48086efc8ec50ddee1a0c4b4c1df3fb77302870b8e4bccf655bfcdef9595f02d"
+    },
+    {
+      "case_id": "CORE-70-R03",
+      "artifact": "qemu-prod",
+      "envelope": "evidence/70/70.15/47b0068b1dfa6d37cdd924aff8821cabc63eeccc68d67ae9e9ee1b5cd0b6a15a/CORE-70-R03.envelope.json",
+      "envelope_sha256": "5000cdaae67a50a22d57cef2583da0183613081eb6363973bb90efc544cc22d3",
+      "detail": "VOL70.2-R03 // L2",
+      "tested_sha256": "8e4d559fb797fed9241c6b683e206b6f03c255e46a5e321c017a9b62a1bcef34"
+    },
+    {
+      "case_id": "CORE-70-R04",
+      "artifact": "qemu-prod",
+      "envelope": "evidence/70/70.15/47b0068b1dfa6d37cdd924aff8821cabc63eeccc68d67ae9e9ee1b5cd0b6a15a/CORE-70-R04.envelope.json",
+      "envelope_sha256": "71dedc92f1a512a2c5c2d8d74dc7c33ddb5b038cd7456a43dc5f29c171524b78",
+      "detail": "VOL70.3 // L2",
+      "tested_sha256": "5655746f9679b40c32acb6eed27bc902e65d094b7ba6a462dc7d934594ae2864"
+    },
+    {
+      "case_id": "CORE-70-R05",
+      "artifact": "qemu-test",
+      "envelope": "evidence/70/70.15/47b0068b1dfa6d37cdd924aff8821cabc63eeccc68d67ae9e9ee1b5cd0b6a15a/CORE-70-R05.envelope.json",
+      "envelope_sha256": "a20813f94f2b5602e2799f95c3556112ae516d39237252be1a70f44a30775f5a",
+      "detail": "VOL70.4 // INTEROP",
+      "tested_sha256": "f941a3b789e3373df1e52e41835043570ec75c1b50006e600db294047c8e516f"
+    },
+    {
+      "case_id": "CORE-70-R06",
+      "artifact": "qemu-prod",
+      "envelope": "evidence/70/70.15/47b0068b1dfa6d37cdd924aff8821cabc63eeccc68d67ae9e9ee1b5cd0b6a15a/CORE-70-R06.envelope.json",
+      "envelope_sha256": "141fd2c0c4d742ba6a6961ba385021646aae421f91a03d0615fc3cf805a521d6",
+      "detail": "VOL70.5 // L3",
+      "tested_sha256": "d0daabfd032a347d18be18c107377ac4ba40bb9d32a96d06d0ad22d49c39bd1f"
+    },
+    {
+      "case_id": "CORE-70-R07",
+      "artifact": "qemu-test",
+      "envelope": "evidence/70/70.15/47b0068b1dfa6d37cdd924aff8821cabc63eeccc68d67ae9e9ee1b5cd0b6a15a/CORE-70-R07.envelope.json",
+      "envelope_sha256": "a73e963d2712ba18f284bee00958dfcee53247ef91591e6fbb583fe45c9601d6",
+      "detail": "VOL70.6 // L2",
+      "tested_sha256": "95ae2acef6350d96f3083604ade5c8cf77c2bec957a6de3bf931c42477062bc0"
+    },
+    {
+      "case_id": "CORE-70-R08",
+      "artifact": "qemu-test-combined",
+      "envelope": "evidence/70/70.15/47b0068b1dfa6d37cdd924aff8821cabc63eeccc68d67ae9e9ee1b5cd0b6a15a/CORE-70-R08.envelope.json",
+      "envelope_sha256": "144d2cc0d6eef1c71f53998ea39cb824ca0175bedb81e90768e0dd9cf0c25336",
+      "detail": "VOL70.7 // L3",
+      "tested_sha256": "d7a2511e82c88733983e8bb1e0168acbf288c089b5c9a7483de247ff3ad56196"
+    },
+    {
+      "case_id": "CORE-70-R09",
+      "artifact": "qemu-test",
+      "envelope": "evidence/70/70.15/47b0068b1dfa6d37cdd924aff8821cabc63eeccc68d67ae9e9ee1b5cd0b6a15a/CORE-70-R09.envelope.json",
+      "envelope_sha256": "2a071e334a55e93ee6a32908d8651b5a3498d40cbd341a25d8883afee33ef90c",
+      "detail": "VOL70.89 // L3",
+      "tested_sha256": "0f2106a9ff75514170812961ee54fb11bc1544195c068513aa2af0c6abf016b7"
+    },
+    {
+      "case_id": "CORE-70-R10",
+      "artifact": "qemu-test",
+      "envelope": "evidence/70/70.15/47b0068b1dfa6d37cdd924aff8821cabc63eeccc68d67ae9e9ee1b5cd0b6a15a/CORE-70-R10.envelope.json",
+      "envelope_sha256": "50f549835e87fbb61696575e56d91f4cac08a3a07381c001007ad1ddaa4e64a9",
+      "detail": "R10-HELD // L3",
+      "tested_sha256": "4fea27ca8b2eb89bb316c50da4954d824f1ea78e6f1f475d88571660bf9697a2"
+    },
+    {
+      "case_id": "CORE-70-R12",
+      "artifact": "qemu-test-combined",
+      "envelope": "evidence/70/70.15/47b0068b1dfa6d37cdd924aff8821cabc63eeccc68d67ae9e9ee1b5cd0b6a15a/CORE-70-R12.envelope.json",
+      "envelope_sha256": "af5b38a62dccb9cad95b79f18f85fa212f3852ee244d3010241698ceec7cfc4c",
+      "detail": "evidence42-candidate-check // GATE",
+      "tested_sha256": "d7a2511e82c88733983e8bb1e0168acbf288c089b5c9a7483de247ff3ad56196"
+    }
+  ],
+  "blocked": [
+    {
+      "case_id": "CORE-70-R11",
+      "blocker": "EXT-70-HW",
+      "reason": "实板未到货，无 bring-up 记录"
+    }
+  ],
+  "exemptions": []
+}

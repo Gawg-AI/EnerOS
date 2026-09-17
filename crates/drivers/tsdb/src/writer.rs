@@ -22,7 +22,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use eneros_fs::{FileMode, FileSystem, Lfs};
+use eneros_fs::{FileSystem, Lfs};
 
 use crate::compression::Compressor;
 use crate::error::TsdbError;
@@ -174,13 +174,14 @@ pub fn flush_chunk(
     next_chunk_id: &mut u32,
     key: &(DeviceId, MetricId),
 ) -> Result<(), TsdbError> {
-    let chunk = match chunks.remove(key) {
+    let chunk = match chunks.get(key) {
         Some(c) => c,
         None => return Ok(()),
     };
 
     // Skip empty chunks (no data points).
     if chunk.header.point_count == 0 {
+        chunks.remove(key);
         return Ok(());
     }
 
@@ -221,31 +222,102 @@ pub fn flush_chunk(
     let payload_crc = eneros_ipc_wire::crc32(&payload);
     let mut header = chunk.header.clone();
     header.crc32 = payload_crc;
-    drop(payload);
 
     // 22 §2.W3.4：原子写（锁定 3）——写临时文件 → rename（掉电中断不
     // 产生半写 chunk；读时 CRC 校验拒绝损坏）。
-    let tmp_path = format!("{path}.tmp");
-    let mut file = fs.create(&tmp_path, FileMode::default_file())?;
-    file.write(fs, &header.to_bytes())?;
-    file.write(fs, &(compressed_ts.len() as u32).to_le_bytes())?;
-    file.write(fs, &(compressed_val.len() as u32).to_le_bytes())?;
-    file.write(fs, &(compressed_qual.len() as u32).to_le_bytes())?;
-    file.write(fs, &compressed_ts)?;
-    file.write(fs, &compressed_val)?;
-    file.write(fs, &compressed_qual)?;
-    fs.rename(&tmp_path, &path)?;
+    // File::write opens/syncs the file on each call. Seven tiny writes caused
+    // seven metadata/data commits per chunk (9063 block RPCs for a seven-series
+    // checkpoint). Preserve the exact header/length/column wire in one write.
+    let header_bytes = header.to_bytes();
+    let mut file_bytes = Vec::with_capacity(header_bytes.len() + 12 + payload.len());
+    file_bytes.extend_from_slice(&header_bytes);
+    file_bytes.extend_from_slice(&(compressed_ts.len() as u32).to_le_bytes());
+    file_bytes.extend_from_slice(&(compressed_val.len() as u32).to_le_bytes());
+    file_bytes.extend_from_slice(&(compressed_qual.len() as u32).to_le_bytes());
+    file_bytes.extend_from_slice(&payload);
+    fs.write_file(&path, &file_bytes)?;
 
     // Update the index with the new chunk entry.
     let chunk_id = *next_chunk_id;
     *next_chunk_id += 1;
+    index.remove_matching(|entry| entry.file_path == path);
     index.add(
         chunk.header.start_time,
         path,
         chunk_id,
         chunk.header.point_count,
     );
+    chunks.remove(key); // Only release accepted points after the atomic write succeeds.
 
+    Ok(())
+}
+
+/// Checkpoints extend the last partial chunk by atomic replacement. Rewriting
+/// an old prefix plus the new suffix preserves every previously durable point
+/// even if the index update fails. Ordinary `compact` retains its explicit
+/// chunk-boundary behavior. Work per series is bounded by max_points_per_chunk.
+pub(crate) fn flush_checkpoint_chunks(
+    config: &TsdbConfig,
+    chunks: &mut BTreeMap<(DeviceId, MetricId), ColumnarChunk>,
+    index: &mut TimeIndex,
+    fs: &mut Lfs,
+    compressor: &dyn Compressor,
+    next_chunk_id: &mut u32,
+) -> Result<(), TsdbError> {
+    let keys: Vec<_> = chunks.keys().copied().collect();
+    for key in keys {
+        let incoming = &chunks[&key];
+        let previous = index
+            .find_last(|entry| crate::reader::path_matches(&entry.file_path, key.0, key.1))
+            .cloned();
+        let mut replacement = None;
+        if let Some(entry) = previous.filter(|entry| {
+            entry
+                .point_count
+                .saturating_add(incoming.header.point_count)
+                <= config.max_points_per_chunk
+                && incoming.header.end_time.saturating_sub(entry.time) <= config.chunk_duration_ms
+        }) {
+            // Read the file's actual count: a crash after chunk replacement but
+            // before index commit can leave a conservatively smaller index count.
+            let old = crate::reader::read_chunk_file(fs, compressor, &entry.file_path)?;
+            if !old.is_empty()
+                && old.len() + incoming.timestamps.len() <= config.max_points_per_chunk as usize
+                && old
+                    .last()
+                    .is_some_and(|p| p.timestamp < incoming.header.start_time)
+            {
+                let mut combined = ColumnarChunk::new(&old[0]);
+                for point in old {
+                    combined.timestamps.push(point.timestamp);
+                    combined.values.push(point.value);
+                    combined.qualities.push(point.quality.as_u8());
+                }
+                combined.timestamps.extend_from_slice(&incoming.timestamps);
+                combined.values.extend_from_slice(&incoming.values);
+                combined.qualities.extend_from_slice(&incoming.qualities);
+                combined.header.point_count = combined.timestamps.len() as u32;
+                combined.header.end_time = incoming.header.end_time;
+                replacement = Some(combined);
+            }
+        }
+        if let Some(combined) = replacement {
+            let mut staged = BTreeMap::new();
+            staged.insert(key, combined);
+            flush_chunk(
+                config,
+                &mut staged,
+                index,
+                fs,
+                compressor,
+                next_chunk_id,
+                &key,
+            )?;
+            chunks.remove(&key);
+        } else {
+            flush_chunk(config, chunks, index, fs, compressor, next_chunk_id, &key)?;
+        }
+    }
     Ok(())
 }
 

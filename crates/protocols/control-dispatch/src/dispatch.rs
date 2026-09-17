@@ -93,6 +93,19 @@ pub enum DispatchError {
 
 /// 唯一控制写出口 trait（WP-40.6 深接口）。
 pub trait ControlDispatch {
+    /// Periodic owner tick, including when the planner has no new proposal.
+    fn tick_held(
+        &mut self,
+        _input: Option<&eneros_agent_sdk::snap_input_wire::TrustedInput>,
+        _telemetry: Option<&TrustedTelemetry>,
+    ) -> Result<(), DispatchError> {
+        Ok(())
+    }
+
+    fn query_held(&self) -> Result<Vec<crate::saga::DriveReport>, DispatchError> {
+        Ok(Vec::new())
+    }
+
     /// 提交提议计划。
     ///
     /// `deadline_ms` = 端到端截止（相对 now 的毫秒预算；超时 → 明确错误，

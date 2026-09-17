@@ -48,7 +48,10 @@ use eneros_telemetry_model::event::ObservationEvent;
 /// 样本缓冲上限（有界）。
 pub const MAX_BUFFERED_SAMPLES: usize = 256;
 /// 评估器配置（服务装配期注入；覆盖点由部署配置决定）。
-pub const DEFAULT_CONTROL_HORIZON_MS: u64 = 30_000;
+/// 单源 = `eneros_decision_contract::CONTROL_HORIZON_MS`（DEC-70-13 ①：
+/// 包络生命周期 ≥ 计划时域 4×15s=60s；2026-09-17 前本地 30s 双胞胎常量
+/// 使多时段计划第 3 步起被拒）。重导出仅为既有调用点兼容。
+pub const DEFAULT_CONTROL_HORIZON_MS: u64 = eneros_decision_contract::CONTROL_HORIZON_MS;
 
 /// 快照响应（TrustedTelemetry wire）。
 pub const SNAPSHOT_OK: u8 = 0;
@@ -66,19 +69,19 @@ pub const STATE_BINDINGS: eneros_safety_validator::StateBindings =
 
 /// 输入新鲜度**策略窗**（蓝图 [08] §9：**待实测冻结**的设计输入，不是
 /// 性能承诺）。**不是**输入可否用于控制的唯一判据——载荷自身的控制
-/// 有效期（`TrustedTelemetry::valid_until_ms` = 产刻 + 控制窗 30s，下游
-/// dispatch 以同一字段裁决）是第一上界；本窗只能更紧，不得更松
-/// （放宽到超过载荷有效期只会把"输入过期"变成 dispatch 的
-/// `TelemetryExpired`，EA 按 `DispatchRejected` 记账并烧错误预算——复查
-/// 修复前的 60s 即此形态）。
+/// 有效期（`TrustedTelemetry::valid_until_ms` = 产刻 + 控制窗 60s
+/// ＝DEC-70-13 计划时域，下游 dispatch 以同一字段裁决）是第一上界；
+/// 本窗只能更紧，不得更松（放宽到超过载荷有效期只会把"输入过期"变成
+/// dispatch 的 `TelemetryExpired`，EA 按 `DispatchRejected` 记账并烧错误
+/// 预算——复查修复前的 60s 即此形态）。
 ///
 /// 派生依据（单一来源 = 生产冻结节奏）：决策输入是 svc-telemetry 每
 /// `SNAP_EVERY_BATCHES`(=8) 个 OBS 批构建一次的**冻结快照**。实测刷新
-/// 周期 ≈18–45s（70.5 窗：859 EA tick / 4 次 SNAP-BUILT）——**比载荷
-/// 控制窗（30s）更长**，故当前形态下每个冻结周期只有窗内那部分 tick 能
-/// 取得可用输入（其余为 `SNAP_REJECT_STALE` 诚实拒绝：零推理零新写、
-/// 不计失败）。真正的收紧（缩短冻结节奏或放大控制窗使二者相容）是站点
-/// 侧决策，见执行卡"输入新鲜度与冻结节奏的紧耦合"登记。
+/// 周期 ≈18–45s（70.5 窗：859 EA tick / 4 次 SNAP-BUILT）。控制窗
+/// 30s→60s（DEC-70-13 ①：≥ 计划时域）后，多数冻结周期全程可用；跨过
+/// 60s 的尾段仍为 `SNAP_REJECT_STALE` 诚实拒绝（零推理零新写、不计
+/// 失败）。站点侧如需进一步收紧（缩短冻结节奏或调整控制窗），见执行卡
+/// "输入新鲜度与冻结节奏的紧耦合"登记。
 pub const DEFAULT_INPUT_FRESHNESS_MS: u64 = 60_000;
 
 /// 快照输入拒绝（结构化；调用方必须零决策、零新写）。
@@ -1169,13 +1172,21 @@ mod tests {
         let valid_until = produced + DEFAULT_CONTROL_HORIZON_MS; // 控制窗内有效
         let mut svc = service_with_input(frozen_input(produced, valid_until));
 
-        // ① 载荷仍有效（龄 20s < 30s）→ 受理。
-        assert!(svc.snapshot_input(produced + 20_000).is_ok());
+        // ① 载荷仍有效（龄 40s < 60s 控制窗 = DEC-70-13 计划时域）→ 受理。
+        assert!(svc.snapshot_input(produced + 40_000).is_ok());
 
-        // ② 载荷已过期（龄 40s：仍在 60s 策略窗内）→ 必须 Stale。
-        match svc.snapshot_input(produced + 40_000) {
+        // ② 载荷有效期比策略窗更紧时必须先拒（两侧上界都生效：
+        // min(策略窗 60s, 载荷 30s)——多时段计划时域 60s（DEC-70-13 ①）
+        // 后，"载荷更紧"由显式短有效期载荷承载）。
+        let mut tighter = service_with_input(frozen_input(produced, produced + 30_000));
+        match tighter.snapshot_input(produced + 40_000) {
             Err(SnapshotInputReject::Stale { age_ms }) => assert_eq!(age_ms, 40_000),
             other => panic!("超出载荷有效期必须 Stale（不得受理给 dispatch 拒）: {other:?}"),
+        }
+        // ②b 载荷 60s 窗自身到期（龄 70s > 60s ≥ 策略窗）→ 同样 Stale。
+        match svc.snapshot_input(produced + 70_000) {
+            Err(SnapshotInputReject::Stale { age_ms }) => assert_eq!(age_ms, 70_000),
+            other => panic!("超出载荷有效期必须 Stale: {other:?}"),
         }
 
         // ③ 策略窗更紧时同样拒绝（两侧上界都生效：min(策略窗, 载荷有效期)）。
@@ -1746,7 +1757,12 @@ mod tests {
             assert_eq!((b.voltage, b.current, b.frequency, b.soc), (1u32, 2, 3, 4));
             assert_eq!(cfg.max_skew_ms, 1000);
             assert!(cfg.require_integrity);
-            assert_eq!(cfg.control_horizon_ms, 30_000);
+            // 控制窗单源 = DEC-70-13 ①（≥ 计划时域 4×15s=60s）。
+            assert_eq!(cfg.control_horizon_ms, DEFAULT_CONTROL_HORIZON_MS);
+            assert_eq!(
+                cfg.control_horizon_ms,
+                eneros_decision_contract::CONTROL_HORIZON_MS
+            );
             // coverage 同源 = control-dispatch feedback 单源（非空）。
             assert!(!cfg.coverage.points.is_empty());
         }

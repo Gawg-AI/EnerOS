@@ -39,6 +39,7 @@ pub mod dispatch;
 pub mod durable_intent;
 pub mod engine;
 pub mod feedback;
+pub mod held_plan;
 pub mod intent;
 pub mod journal;
 pub mod plan_hold;
@@ -54,8 +55,8 @@ pub use config_seed::ConfigSeed;
 pub use dispatch::DispatchState;
 pub use dispatch::{AuthenticatedActor, ControlDispatch, DispatchError, DispatchReceipt};
 pub use engine::{
-    AuditSinks, DeliveryBinding, DispatchConfig, DispatchEngine, IssuerIdentity, SafetyLimits,
-    TrustedInputPolicy,
+    AssetRoute, AuditSinks, DeliveryBinding, DispatchConfig, DispatchEngine, IssuerIdentity,
+    SafetyLimits, TrustedInputPolicy,
 };
 pub use feedback::{FeedbackPointMapping, TrustedFeedbackBuilder, PROD_FEEDBACK_MAPPING};
 pub use intent::{InMemoryIntentStore, IntentRecord, IntentStore, IntentStoreError};

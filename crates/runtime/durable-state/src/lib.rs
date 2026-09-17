@@ -417,12 +417,14 @@ impl<S, Io: PersistIo> RegionStateStore<S, Io> {
             // 撕裂/坏 CRC/坏 payload 的槽 → 忽略（另一槽保有上一完整代次）。
             let payload = match decode_record(s) {
                 Ok((magic, payload)) if magic == MAGIC_STATE => payload.to_vec(),
+                Ok(_) => return Err(StoreError::Corrupt),
+                Err(error @ StoreError::UnsupportedVersion { .. }) => return Err(error),
                 _ => continue,
             };
-            let (generation, state) = match S::decode(&payload) {
-                Ok(x) => x,
-                Err(_) => continue,
-            };
+            // CRC-valid but undecodable state is not a torn write. Loading an
+            // older slot could resurrect superseded commands or bypass a new
+            // schema's ownership.
+            let (generation, state) = S::decode(&payload)?;
             if best
                 .as_ref()
                 .map(|(g, _, _)| generation.0 > g.0)

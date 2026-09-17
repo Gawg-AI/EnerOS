@@ -37,6 +37,17 @@ pub enum ChannelError {
 /// 编码后的 `ControlEnvelope`；`timeout_ms` = 端到端超时。返回服务端
 /// 结构化回执字节（`OutcomeFrame`）。
 pub trait DeliveryChannel {
+    /// Independent read-only device observation. An unavailable read path never
+    /// falls back to delivery or a cached command value.
+    fn readback(
+        &mut self,
+        _device: u32,
+        _point: u32,
+        _timeout_ms: u64,
+    ) -> Result<f64, ChannelError> {
+        Err(ChannelError::Unreachable)
+    }
+
     /// 投递并等待回执。
     fn deliver(
         &mut self,

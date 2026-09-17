@@ -1,0 +1,38 @@
+{
+  "decision": "G5 cadence + separate host production-budget saturation; no target audit saturation claim",
+  "sources": [
+    {
+      "path": "evidence/70/70.15/r10-review/vol1-before-serial.log",
+      "sha256": "9ee79e5dc56c783259223702e23f0aa40dd059a4a6a983e2716dca52a63b886c",
+      "bytes": 51833313,
+      "counts": {
+        "agent=OK": 96,
+        "dispatch=Committed": 96,
+        "CONTROL-CHAIN: round=": 8939,
+        "SNAP-BUILT": 29,
+        "snapshot-stale": 8562,
+        "soc-deadband": 0,
+        "PANIC:": 0,
+        "memory allocation of": 0
+      }
+    },
+    {
+      "path": "evidence/70/70.1/qemu-serial-longwindow-20260914.log",
+      "sha256": "b5739f1e3dfbdee2b84a0d939a18a38550292794f49e7d995610065c9629aa97",
+      "bytes": 17522917,
+      "counts": {
+        "agent=OK": 20,
+        "dispatch=Committed": 17,
+        "CONTROL-CHAIN: round=": 21947,
+        "SNAP-BUILT": 25,
+        "snapshot-stale": 19747,
+        "soc-deadband": 0,
+        "PANIC:": 1,
+        "memory allocation of": 1
+      }
+    }
+  ],
+  "status": "superseded 2026-09-17: TSDB repair disproves structural sub-512 limit",
+  "current_decision": "restore target agent=OK > 512, retain G1-G7 and host saturation",
+  "counterexample": "evidence/70/70.15/batch/vol2-checkpoint3.log: 4230 commits, checkpoints 17/50 all OK, dropped 0"
+}

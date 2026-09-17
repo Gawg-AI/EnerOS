@@ -20,14 +20,14 @@
 #   尾判  窗尾 5000 行控制进展 + 设备回读（全窗数量不替代尾部进展）。
 #   全窗  零 PANIC / 零分配失败（judge G1-G2 单源）。
 #
-#   用法：DL=660 tools/run70-vol4-gate.sh
+#   用法：DL=1000 tools/run70-vol4-gate.sh（段5 长断链 420s 后须覆盖全窗）
 set -uo pipefail
 source "$(dirname "$0")/gate-env.sh"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 EVROOT="$ROOT/evidence/70/70.4"
 RUN="$ROOT/target/evidence70-vol4"
-DL="${DL:-650}"
+DL="${DL:-1000}"
 W="${W:-w1}"
 mkdir -p "$EVROOT" "$RUN"
 FAIL=0
@@ -182,10 +182,14 @@ sleep 2
 PEER_PID=$!
 sleep 100
 
-# ---- 段5：broker kill-9 长断链（100s > 90s arm 阈值 → LEASE-ARMED）-------
-echo "[gate] 段5：kill -9 broker（长断链 100s——必武装）"
+# ---- 段5：broker kill-9 长断链（420s ≥ 3×miss 最坏墙钟 → LEASE-ARMED）----
+# 2026-09-17 适配：synth 馈电节奏 %3→%16（R10 时域覆盖，DEC-70-13 ①）
+# 后快照轮换 ≈80–128s、请求按轮换分簇——100s 断窗攒不满 3 次 miss
+#（unhealthy_after=3 × timeout 30s，含无效输入间隙）。420s 覆盖 ≥3 轮
+# 换 ≥6 次尝试最坏形。判据不变（LEASE-ARMED 必须出现）。
+echo "[gate] 段5：kill -9 broker（长断链 420s——必武装）"
 kill -9 $BROKER_PID 2>/dev/null || true
-sleep 100
+sleep 420
 echo "[gate] 段5：重启 broker（恢复锚2——仅可观测重连/订阅；AI 退出归 70.9 安全边界）"
 ANCHOR2=$(wc -l < "$DIR/qemu-serial.log" 2>/dev/null || echo 0); ANCHOR2=${ANCHOR2:-0}
 BT_A2=$(wc -l < "$DIR/broker-transcript.jsonl" 2>/dev/null || echo 0); BT_A2=${BT_A2:-0}

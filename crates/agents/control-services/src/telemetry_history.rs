@@ -24,7 +24,7 @@ use eneros_agent_sdk::block_io::{BlockIo, EipcBlockDevice, EipcSend};
 use eneros_agent_sdk::history_wire::{HistPointWire, HistoryPageSource, PAGE_RECORDS};
 use eneros_fs::{FsError, Lfs};
 use eneros_storage::driver::BlockDevice;
-use eneros_storage::partition::RegionScope;
+use eneros_storage::partition::{CachedBlocks, RegionScope};
 use eneros_tsdb::schema::{DataQuality, DeviceId, MetricId, TimeSeriesPoint, TsdbConfig};
 use eneros_tsdb::TimeSeriesDB;
 
@@ -246,16 +246,18 @@ impl TelemetryHistorySink for TsdbHistorySink {
             // = checkpoint 前的未持久账（RPO 观测；行尾追加——旧 gate 的
             // `ms=[0-9]*` 提取不受影响）。
             eneros_runtime::println!(
-                "[svc-telemetry] TSDB-CHECKPOINT-DUR ms={} items={} pending_batches={}",
+                "[svc-telemetry] TSDB-CHECKPOINT-DUR ms={} items={} pending_batches={} status={}",
                 dur,
                 batch.len(),
-                pending_snapshot
+                pending_snapshot,
+                if ck.is_ok() { "OK" } else { "ERR" }
             );
             r.and(ck)
         } else {
             r
         };
-        if r.is_err() {
+        if let Err(error) = r {
+            eneros_runtime::println!("[svc-telemetry] TSDB-DISK-ERROR reason={error}");
             self.disk_errors += 1;
             return Err(());
         }
@@ -420,13 +422,21 @@ pub fn open_disk_history<C: EipcSend + Clone + 'static>(
 
     // 先 mount（保数据）；仅当坏超级块才格式化重试（fresh face 保用权）。
     let fs = {
-        match RegionScope::new(face.clone(), base_block_4k, fs_blocks) {
+        match RegionScope::new(
+            CachedBlocks::<16, _>::new(face.clone()),
+            base_block_4k,
+            fs_blocks,
+        ) {
             Ok(scope) => match Lfs::mount(alloc::boxed::Box::new(scope)) {
                 Ok(fs) => fs,
                 Err(FsError::BadSuperBlock) => {
                     let dev2 = face.clone();
-                    let scope2 =
-                        RegionScope::new(dev2, base_block_4k, fs_blocks).map_err(|_| ())?;
+                    let scope2 = RegionScope::new(
+                        CachedBlocks::<16, _>::new(dev2),
+                        base_block_4k,
+                        fs_blocks,
+                    )
+                    .map_err(|_| ())?;
                     Lfs::format(alloc::boxed::Box::new(scope2)).map_err(|_| ())?
                 }
                 Err(_) => return Err(()),
@@ -480,7 +490,10 @@ mod spec_c_chain_tests {
         disk: alloc::rc::Rc<core::cell::RefCell<alloc::vec::Vec<u8>>>,
         region_bytes: u64,
         cmds: alloc::rc::Rc<core::cell::Cell<u64>>,
+        read_cmds: alloc::rc::Rc<core::cell::Cell<u64>>,
+        write_cmds: alloc::rc::Rc<core::cell::Cell<u64>>,
         fail_next_write: alloc::rc::Rc<core::cell::Cell<bool>>,
+        write_budget: alloc::rc::Rc<core::cell::Cell<Option<u64>>>,
     }
 
     impl FakeStorage {
@@ -491,7 +504,10 @@ mod spec_c_chain_tests {
                 )),
                 region_bytes,
                 cmds: alloc::rc::Rc::new(core::cell::Cell::new(0)),
+                read_cmds: alloc::rc::Rc::new(core::cell::Cell::new(0)),
+                write_cmds: alloc::rc::Rc::new(core::cell::Cell::new(0)),
                 fail_next_write: alloc::rc::Rc::new(core::cell::Cell::new(false)),
+                write_budget: alloc::rc::Rc::new(core::cell::Cell::new(None)),
             }
         }
         fn take_handle(&self) -> Self {
@@ -499,7 +515,10 @@ mod spec_c_chain_tests {
                 disk: alloc::rc::Rc::clone(&self.disk),
                 region_bytes: self.region_bytes,
                 cmds: alloc::rc::Rc::clone(&self.cmds),
+                read_cmds: alloc::rc::Rc::clone(&self.read_cmds),
+                write_cmds: alloc::rc::Rc::clone(&self.write_cmds),
                 fail_next_write: alloc::rc::Rc::clone(&self.fail_next_write),
+                write_budget: alloc::rc::Rc::clone(&self.write_budget),
             }
         }
         /// 布防单发写失败（下一次 do_write 失败一次后自动解除）。
@@ -519,6 +538,12 @@ mod spec_c_chain_tests {
             Ok(())
         }
         fn do_write(&self, off: u64, data: &[u8]) -> Result<(), ()> {
+            if let Some(left) = self.write_budget.get() {
+                if left == 0 {
+                    return Err(());
+                }
+                self.write_budget.set(Some(left - 1));
+            }
             if self.fail_next_write.get() {
                 self.fail_next_write.set(false);
                 return Err(());
@@ -546,6 +571,7 @@ mod spec_c_chain_tests {
             let mut resp = DriverResponse::new(r.correlation, ST_OK, 0xA1);
             match sub {
                 BLK_CMD_READ => {
+                    self.read_cmds.set(self.read_cmds.get() + 1);
                     if (r.payload_len as usize) < 1 + OFF_BYTES + 4 {
                         return Err(());
                     }
@@ -559,6 +585,7 @@ mod spec_c_chain_tests {
                     resp.payload_len = n as u16;
                 }
                 BLK_CMD_WRITE => {
+                    self.write_cmds.set(self.write_cmds.get() + 1);
                     if (r.payload_len as usize) < 1 + OFF_BYTES {
                         return Err(());
                     }
@@ -974,5 +1001,143 @@ mod spec_c_chain_tests {
             wm.checkpoint_due(t9 + CHECKPOINT_EVERY_BATCHES * 1_000),
             "批数窗重试点必须照常触发"
         );
+    }
+    /// Production-shaped checkpoint: seven distinct safety series, rather than
+    /// seven samples of one series. Bound block traffic independently of the
+    /// QEMU wall-clock gate, which must still pass on the target image.
+    #[test]
+    fn multi_series_checkpoint_budget_and_restart() {
+        let storage = FakeStorage::new(REGION_BLOCKS_512 * 512);
+        let io = BlockIo::new(storage.take_handle(), "svc-storage", 0, 5_000);
+        let (mut chain, reader) = open_disk_history(io, 0, REGION_BLOCKS_512).unwrap();
+        let start = storage.cmd_count();
+        let reads = storage.read_cmds.get();
+        let writes = storage.write_cmds.get();
+        for batch in 0..CHECKPOINT_EVERY_BATCHES {
+            let records: Vec<_> = (1..=7)
+                .map(|point| rec(1_000 + batch, 2, point, point as f64, 0))
+                .collect();
+            chain.write_batch(&records).unwrap();
+        }
+        let calls = storage.cmd_count() - start;
+        std::println!(
+            "[r10-multi-series] rpc={calls} reads={} writes={}",
+            storage.read_cmds.get() - reads,
+            storage.write_cmds.get() - writes
+        );
+        drop(chain);
+        drop(reader);
+        let io = BlockIo::new(storage.take_handle(), "svc-storage", 0, 5_000);
+        let (_, reader) = open_disk_history(io, 0, REGION_BLOCKS_512).unwrap();
+        for point in 1..=7 {
+            let page = reader.query_page(point, 100, 0).unwrap();
+            assert_eq!(page.total, CHECKPOINT_EVERY_BATCHES as u32);
+            assert!(page.rows.iter().all(|row| row.value == point as f64));
+        }
+        // Keep at least a sixfold reduction from the measured 9063-RPC baseline.
+        // Do not infer a wall-clock gate result from a host operation count.
+        assert!(
+            calls <= 1_500,
+            "seven-series checkpoint used {calls} RPCs (budget 1500, baseline 9063)"
+        );
+    }
+    #[test]
+    fn failed_checkpoint_retains_accepted_points_for_retry() {
+        let storage = FakeStorage::new(REGION_BLOCKS_512 * 512);
+        let io = BlockIo::new(storage.take_handle(), "svc-storage", 0, 5_000);
+        let (mut chain, reader) = open_disk_history(io, 0, REGION_BLOCKS_512).unwrap();
+        for batch in 0..CHECKPOINT_EVERY_BATCHES - 1 {
+            chain
+                .write_batch(&[rec(1_000 + batch, 2, 4, batch as f64, 0)])
+                .unwrap();
+        }
+        storage.arm_one_write_failure();
+        assert!(chain.write_batch(&[rec(1_007, 2, 4, 7.0, 0)]).is_err());
+        chain.disk.db.borrow_mut().checkpoint().unwrap();
+        drop(chain);
+        drop(reader);
+        let io = BlockIo::new(storage.take_handle(), "svc-storage", 0, 5_000);
+        let (_, reader) = open_disk_history(io, 0, REGION_BLOCKS_512).unwrap();
+        let page = reader.query_page(4, 100, 0).unwrap();
+        for previously_accepted in 0..7 {
+            assert!(
+                page.rows
+                    .iter()
+                    .any(|r| r.value == previously_accepted as f64),
+                "lost previously accepted point {previously_accepted}"
+            );
+        }
+    }
+    #[test]
+    fn repeated_checkpoints_fit_volume_and_preserve_all_series() {
+        let storage = FakeStorage::new(REGION_BLOCKS_512 * 512);
+        let io = BlockIo::new(storage.take_handle(), "svc-storage", 0, 5_000);
+        let (mut chain, reader) = open_disk_history(io, 0, REGION_BLOCKS_512).unwrap();
+        for batch in 0..512 {
+            let records: Vec<_> = (1..=7)
+                .map(|point| rec(1_000 + batch, 2, point, batch as f64, 0))
+                .collect();
+            assert!(
+                chain.write_batch(&records).is_ok(),
+                "checkpoint failed at batch {batch}"
+            );
+        }
+        assert_eq!(chain.disk.pending_batches(), 0);
+        drop(chain);
+        drop(reader);
+        let io = BlockIo::new(storage.take_handle(), "svc-storage", 0, 5_000);
+        let (_, reader) = open_disk_history(io, 0, REGION_BLOCKS_512).unwrap();
+        for point in 1..=7 {
+            let page = reader.query_page(point, 512, 0).unwrap();
+            assert_eq!(page.total, 512);
+        }
+    }
+    #[test]
+    fn checkpoint_every_rpc_cut_keeps_previously_durable_points() {
+        let mut completed = false;
+        for cut in 0..1024 {
+            let storage = FakeStorage::new(REGION_BLOCKS_512 * 512);
+            let io = BlockIo::new(storage.take_handle(), "svc-storage", 0, 5_000);
+            let (mut chain, reader) = open_disk_history(io, 0, REGION_BLOCKS_512).unwrap();
+            for batch in 0..8 {
+                chain
+                    .write_batch(&[rec(1_000 + batch, 2, 4, batch as f64, 0)])
+                    .unwrap();
+            }
+            for batch in 8..15 {
+                chain
+                    .write_batch(&[rec(1_000 + batch, 2, 4, batch as f64, 0)])
+                    .unwrap();
+            }
+            storage.write_budget.set(Some(cut));
+            let result = chain.write_batch(&[rec(1_015, 2, 4, 15.0, 0)]);
+            storage.write_budget.set(None);
+            drop(chain);
+            drop(reader);
+            let io = BlockIo::new(storage.take_handle(), "svc-storage", 0, 5_000);
+            let (_, reader) = open_disk_history(io, 0, REGION_BLOCKS_512).unwrap();
+            let page = reader
+                .query_page(4, 32, 0)
+                .expect("old checkpoint remains readable");
+            assert_eq!(
+                page.total as usize,
+                page.rows.len(),
+                "cut {cut}: recovered index count must match chunk contents"
+            );
+            for value in 0..8 {
+                assert!(
+                    page.rows.iter().any(|r| r.value == value as f64),
+                    "cut {cut}: lost durable value {value}"
+                );
+            }
+            if result.is_ok() {
+                assert_eq!(page.total, 16);
+                assert_eq!(page.rows.len(), 16);
+                completed = true;
+                std::println!("[r10-checkpoint-cuts] checked={}", cut + 1);
+                break;
+            }
+        }
+        assert!(completed, "campaign must reach the completed checkpoint");
     }
 }

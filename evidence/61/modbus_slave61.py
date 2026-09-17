@@ -26,14 +26,20 @@ VALUES = {
     0x0107: 120,   # P1001 PCS 有功功率 kW（scale 0.1 → 12.0）
     0x0108: 5000,  # P1002（scale 0.01 → 50.00）
     0x0109: 400,   # P1003（scale 0.1 → 40.0）
+    # 蓝图 70 R10 多资产：PCS-2 遥测（scale 镜像 PCS-1，点表 device 8）。
+    0x0110: 90,    # P1005 PCS-2 有功功率 kW（scale 0.1 → 9.0）
+    0x0111: 3000,  # P1006（scale 0.01 → 30.00）
+    0x0112: 250,   # P1007（scale 0.1 → 25.0）
+    0x0201: 0,     # P1009 PCS-2 控制点（有功功率 setpoint，kW raw=值 ×1.0）
 }
 
-# 线圈（FC1）——P1004 数字量（slave 2 / 0x010A）。
+# 线圈（FC1）——P1004/P1008 数字量（slave 2 / 0x010A、0x0113）。
 COILS = {
     0x010A: 0,
+    0x0113: 0,
 }
 
-WRITEABLE = {0x0200}
+WRITEABLE = {0x0200, 0x0201}
 
 
 def log(transcript, entry):
@@ -42,7 +48,8 @@ def log(transcript, entry):
             f.write(json.dumps(entry) + "\n")
 
 
-def conn_handler(conn, conn_id, transcript, wrong_scale=1.0, reject_writes=False, fail_readback=False):
+def conn_handler(conn, conn_id, transcript, wrong_scale=1.0, reject_writes=False,
+                 fail_readback=False, reject_addrs=()):
     buf = b""
     try:
         while True:
@@ -134,15 +141,24 @@ def conn_handler(conn, conn_id, transcript, wrong_scale=1.0, reject_writes=False
                     if reject_writes:
                         log(transcript, {"event": "WRITE-FI", "conn": conn_id,
                                          "tid": tid, "func": "fc06",
-                                         "addr": hex(addr),
+                                         "addr": hex(addr), "ts": time.time(),
                                          "injected": "reject-writes"})
+                        resp_pdu = bytes([0x86, 0x02])
+                    elif addr in reject_addrs:
+                        # R10 部分失败注入（蓝图 70）：按址拒写——仅指定寄存器
+                        # 的 FC06 得异常应答（其余写入照常 ACK），用于单资产
+                        # 写失败、另一资产健康的多资产部分失败场景。
+                        log(transcript, {"event": "WRITE-FI", "conn": conn_id,
+                                         "tid": tid, "func": "fc06",
+                                         "addr": hex(addr), "ts": time.time(),
+                                         "injected": "reject-write-addr"})
                         resp_pdu = bytes([0x86, 0x02])
                     elif addr in WRITEABLE:
                         VALUES[addr] = value
                         resp_pdu = bytes([0x06]) + pdu[1:5]
                         log(transcript, {"event": "WRITE", "conn": conn_id, "tid": tid,
                                          "unit": unit, "func": "fc06", "addr": hex(addr),
-                                         "value": value})
+                                         "ts": time.time(), "value": value})
                     else:
                         log(transcript, {"event": "ERROR", "conn": conn_id, "tid": tid,
                                          "func": "fc06", "addr": hex(addr),
@@ -173,6 +189,9 @@ def main():
                     help="故障注入：FC03 读控制点 0x0200 回异常（读回不可得）")
     ap.add_argument("--reject-writes", action="store_true",
                     help="故障注入：写单寄存器一律拒绝（illegal-data-address）")
+    ap.add_argument("--reject-write-addr", type=lambda s: int(s, 0), action="append",
+                    default=[], help="故障注入：仅这些寄存器地址的 FC06 拒绝"
+                    "（可重复；如 0x0201=单资产写失败）")
     args = ap.parse_args()
     time.sleep(args.serve_after)
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -187,7 +206,7 @@ def main():
         cid += 1
         log(args.transcript, {"event": "CONNECT", "conn": cid})
         conn_handler(conn, cid, args.transcript, args.wrong_readback_scale,
-                     args.reject_writes, args.fail_readback)
+                     args.reject_writes, args.fail_readback, set(args.reject_write_addr))
 
 
 if __name__ == "__main__":

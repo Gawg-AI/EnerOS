@@ -658,12 +658,14 @@ fn open_snap_volume<C: EipcSend + Clone + 'static>(
     );
     let base_4k = base_block_512 / 8;
     let blocks_4k = (region_blocks_512 / 8).min(64);
-    let scope = RegionScope::new(face.clone(), base_4k, blocks_4k).ok()?;
+    let scope =
+        RegionScope::new(CachedBlocks::<4, _>::new(face.clone()), base_4k, blocks_4k).ok()?;
     match Lfs::mount(alloc::boxed::Box::new(scope)) {
         Ok(fs) => Some(fs),
         Err(eneros_fs::FsError::BadSuperBlock) => {
             // 首次上电：显式格式化一次（fresh face；仅让渡区段内）。
-            let scope2 = RegionScope::new(face, base_4k, blocks_4k).ok()?;
+            let scope2 =
+                RegionScope::new(CachedBlocks::<4, _>::new(face), base_4k, blocks_4k).ok()?;
             Lfs::format(alloc::boxed::Box::new(scope2)).ok()
         }
         Err(_) => None,
@@ -805,6 +807,10 @@ fn snapshot_file_stem(id: &[u8; 16]) -> String {
 /// 快照政策（68.4 执行卡裁决与判据对齐）：
 /// - required = 生产安全覆盖点（`safety_coverage()` 单源——catalog parity
 ///   测试保证目录覆盖与之相等）；
+/// - optional = **控制合同回读点 − required**（蓝图 70 R10 多资产：认证器
+///   `readback_ok` 为 presence 判定——合同回读点必须在快照受理观测里；
+///   不在安全覆盖集的回读点（如 PCS-2 的 1005）经 optional 进快照——
+///   缺席不影响完整性，不把快照健康耦合到每台 PCS 的遥测）；
 /// - require_integrity = **false**：builder integrity 门只认
 ///   `Authenticated`，生产采集轨 integrity = `LocalTrustedEdge`（本机
 ///   可信边，modbus/iec104 ingest 唯一赋值点）——政策取生产事实，不放宽
@@ -816,11 +822,23 @@ fn build_policy(
     repo: &CatalogRepository,
     coverage_points: Vec<u32>,
 ) -> eneros_snapshot_service::SnapshotPolicy {
+    let mut optional: Vec<u32> = repo
+        .control_contracts()
+        .map(|c| c.readback_point_id)
+        .chain(
+            repo.asset_ids()
+                .into_iter()
+                .filter_map(|id| repo.asset_soc_point(id)),
+        )
+        .filter(|&p| p != 0 && !coverage_points.contains(&p))
+        .collect();
+    optional.sort_unstable();
+    optional.dedup();
     eneros_snapshot_service::SnapshotPolicy {
         purpose_id: SNAP_PURPOSE_ID,
         policy_version: 1,
         required: coverage_points,
-        optional: Vec::new(),
+        optional,
         allowed_lateness_ns: 600_000_000_000,
         max_age_ns: 600_000_000_000,
         min_quality_bits_ok: true,
@@ -1433,5 +1451,42 @@ mod tests {
             .expect("spawn");
         h.join()
             .expect("open+append path must survive at provisioned stack");
+    }
+    #[test]
+    fn snapshot_reads_have_bounded_block_roundtrips() {
+        let storage = FakeStorage::new((DISK_END * 512) as usize);
+        let mut face = make_face(&storage);
+        face.set_snapshot_catalog(prod_module_catalog(), 1_000);
+        let mut seq = 0;
+        for round in 1..=SNAP_EVERY_BATCHES {
+            let events: Vec<_> = coverage_fixture_points()
+                .map(|p| {
+                    seq += 1;
+                    obs(p, seq, 1_000 + round, fixture_value(p, 0))
+                })
+                .collect();
+            face.on_obs_batch(&events, 1_000 + round);
+        }
+        let id = face
+            .current_input()
+            .expect("frozen input")
+            .facts()
+            .snapshot_id;
+        let expected = face.snapshot_blob(&id).unwrap();
+        let start = storage.cmds().len();
+        for _ in 0..4 {
+            assert_eq!(face.snapshot_blob(&id).unwrap(), expected);
+        }
+        let calls = storage.cmds().len() - start;
+        // Four blob fetches share an unchanged tiny volume. At most four full
+        // 4 KiB reads (10 EIPC fragments each) per fetch is the storage budget.
+        assert!(
+            calls <= 160,
+            "repeated snapshot reads used {calls} block RPCs"
+        );
+        drop(face);
+        let mut reopened = open_snap_volume(make_io(&storage), SNAP_BASE, SNAP_BLOCKS_512).unwrap();
+        let path = alloc::format!("{}/{}.snap", SNAP_DIR, snapshot_file_stem(&id));
+        assert_eq!(read_snap_file(&mut reopened, &path).unwrap(), expected);
     }
 }

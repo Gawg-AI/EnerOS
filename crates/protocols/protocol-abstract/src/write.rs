@@ -225,6 +225,27 @@ pub fn decode_intent_request(buf: &[u8]) -> Option<(PointWriteIntent, u8)> {
     Some((intent, buf[1 + WRITE_INTENT_WIRE_LEN]))
 }
 
+/// Read-only master query, disjoint from the write payload. Version 1 carries
+/// only a device and a point; there is no value that could become a write.
+pub const OP_MASTER_READ: u8 = 0x12;
+pub fn encode_master_read_payload(device: u32, point: u32) -> [u8; 10] {
+    let mut out = [0; 10];
+    out[0] = OP_MASTER_READ;
+    out[1] = 1;
+    out[2..6].copy_from_slice(&device.to_le_bytes());
+    out[6..10].copy_from_slice(&point.to_le_bytes());
+    out
+}
+pub fn decode_master_read_payload(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() != 10 || bytes[0] != OP_MASTER_READ || bytes[1] != 1 {
+        return None;
+    }
+    Some((
+        u32::from_le_bytes(bytes[2..6].try_into().ok()?),
+        u32::from_le_bytes(bytes[6..10].try_into().ok()?),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,5 +404,23 @@ mod tests {
         let mut buf = encode_master_write_payload(1, 2, 3.0);
         buf[0] = 0x99; // 子码不符
         assert!(decode_master_write_payload(&buf).is_none());
+    }
+    #[test]
+    fn master_read_wire_is_disjoint_and_strict() {
+        let wire = encode_master_read_payload(0x1122_3344, 1007);
+        assert_eq!(decode_master_read_payload(&wire), Some((0x1122_3344, 1007)));
+        assert!(decode_master_write_payload(&wire).is_none());
+        assert!(decode_master_read_payload(&encode_master_write_payload(1, 2, 3.0)).is_none());
+        for size in 0..wire.len() {
+            assert!(decode_master_read_payload(&wire[..size]).is_none());
+        }
+        let mut extra = wire.to_vec();
+        extra.push(0);
+        assert!(decode_master_read_payload(&extra).is_none());
+        for index in [0, 1] {
+            let mut wrong = wire;
+            wrong[index] ^= 0xff;
+            assert!(decode_master_read_payload(&wrong).is_none());
+        }
     }
 }

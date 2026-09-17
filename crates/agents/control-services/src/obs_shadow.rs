@@ -399,8 +399,8 @@ mod tests {
             .find(|s| s.source_id == 1)
             .expect("source 1（root 合成源）必须注册为 OBS 来源——否则合成装配的快照链不可证");
         assert!(
-            src.point_min <= 1 && (src.point_max == 0 || src.point_max >= 1004),
-            "来源 1 授权面须覆盖合成馈电声明点跨度 1..=1004，实际 {:?}",
+            src.point_min <= 1 && (src.point_max == 0 || src.point_max >= 1009),
+            "来源 1 授权面须覆盖合成馈电声明点跨度 1..=1009（含 PCS-2 回读 1005），实际 {:?}",
             (src.point_min, src.point_max)
         );
         assert!(
@@ -445,7 +445,7 @@ mod tests {
         let descriptors = descriptors_from_config(&table.sources, &table.points);
         let eval = crate::telemetry::evaluator_config(1, alloc::vec::Vec::new());
         let mut shadow = ObsShadow::new(descriptors, eval);
-        // 100 批 × 11 事件 = 1100 > cap 1024：全程必须零拒绝。
+        // 100 批 × 12 事件 = 1200 > cap 1024：全程必须零拒绝。
         let mut total_accepted = 0usize;
         let mut total_rejected = 0usize;
         for batch in 0..100u64 {
@@ -464,7 +464,7 @@ mod tests {
         }
         assert_eq!(
             (total_accepted, total_rejected),
-            (1100, 0),
+            (1200, 0),
             "影子收件箱不得在容量处楔死（Overflow = 消费后排空缺失）"
         );
     }
@@ -476,8 +476,8 @@ mod tests {
         let table = live_points_table();
         assert_eq!(
             SYNTH_FEED.len(),
-            11,
-            "馈电声明点全集 = 网关 1..7 + PCS 1001..1004"
+            12,
+            "馈电声明点全集 = 网关 1..7 + PCS-1 1001..1004 + PCS-2 1005"
         );
         for sp in SYNTH_FEED.iter() {
             let rec = table

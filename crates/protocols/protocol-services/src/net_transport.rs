@@ -330,6 +330,39 @@ pub struct TcpStreamHandle<D: NetDevice> {
     connected: bool,
 }
 
+impl<D: NetDevice> TcpStreamHandle<D> {
+    fn recv_with_clock(
+        &mut self,
+        buf: &mut [u8],
+        mut now_ms: impl FnMut() -> u64,
+    ) -> Result<usize, TransportError> {
+        if !self.connected {
+            return Err(TransportError::Closed);
+        }
+        let mut stack = self.stack.borrow_mut();
+        let mut tcp = TcpSocket::new(self.id);
+        // TLS record retries rely on each Timeout representing the requested
+        // duration. Poll iterations vary with CPU/network load and are not ms.
+        let start = now_ms();
+        loop {
+            let now = now_ms();
+            stack.poll(now);
+            if tcp.state(&stack.iface).is_closed() {
+                return Err(TransportError::Closed);
+            }
+            if let Ok(n) = tcp.recv(&mut stack.iface, buf) {
+                if n > 0 {
+                    return Ok(n);
+                }
+            }
+            if now_ms().saturating_sub(start) >= self.recv_timeout_ms.max(1) {
+                return Err(TransportError::Timeout);
+            }
+            core::hint::spin_loop();
+        }
+    }
+}
+
 impl<D: NetDevice + 'static> TransportHandle for TcpStreamHandle<D> {
     fn send(&mut self, data: &[u8]) -> Result<(), TransportError> {
         if !self.connected {
@@ -354,24 +387,7 @@ impl<D: NetDevice + 'static> TransportHandle for TcpStreamHandle<D> {
     }
 
     fn recv(&mut self, buf: &mut [u8]) -> Result<usize, TransportError> {
-        if !self.connected {
-            return Err(TransportError::Closed);
-        }
-        let mut stack = self.stack.borrow_mut();
-        let mut tcp = TcpSocket::new(self.id);
-        for _ in 0..self.recv_timeout_ms.max(1) {
-            let now = eneros_time::get_monotonic_ns() / 1_000_000;
-            stack.poll(now);
-            if tcp.state(&stack.iface).is_closed() {
-                return Err(TransportError::Closed);
-            }
-            if let Ok(n) = tcp.recv(&mut stack.iface, buf) {
-                if n > 0 {
-                    return Ok(n);
-                }
-            }
-        }
-        Err(TransportError::Timeout)
+        self.recv_with_clock(buf, || eneros_time::get_monotonic_ns() / 1_000_000)
     }
 
     fn close(&mut self) -> Result<(), TransportError> {
@@ -1160,6 +1176,26 @@ mod tests {
             recv_timeout_ms: 1,
             connected: true,
         }
+    }
+
+    #[test]
+    fn tcp_recv_timeout_measures_elapsed_time_not_poll_count() {
+        let (dev, _rx, _tx) = ScriptedNet::new();
+        let stack = Rc::new(TcRefCell::new(stack_with(dev)));
+        let mut h = handle_with_live_socket(&stack);
+        TcpSocket::new(h.id)
+            .listen(&mut stack.borrow_mut().iface, 12345)
+            .unwrap();
+        h.set_recv_timeout_ms(20);
+        let mut polls = 0u64;
+        let result = h.recv_with_clock(&mut [0; 64], || {
+            polls += 1;
+            // Twenty stack polls per millisecond: polling is not a timer.
+            polls / 20
+        });
+        assert_eq!(result, Err(TransportError::Timeout));
+        assert!(polls / 20 >= 20, "20ms recv expired after {}ms", polls / 20);
+        assert!(polls / 20 <= 21, "deadline was not bounded");
     }
 
     fn socket_count(stack: &Rc<TcRefCell<NetStack<ScriptedNet>>>) -> usize {

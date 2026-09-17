@@ -112,6 +112,32 @@ pub fn master_write_v2(
     }
 }
 
+/// Read a declared point from the device without invoking any writer.
+pub fn master_read(
+    registry: &eneros_protocol_abstract::VecPointRegistry,
+    plugin: &crate::modbus_ingest::SharedPlugin,
+    device: u32,
+    point: u32,
+) -> Option<f64> {
+    let device = u16::try_from(device).ok()?;
+    let mapping = registry.resolve(point)?;
+    if mapping.device_id != device {
+        return None;
+    }
+    let read = plugin
+        .borrow_mut()
+        .read_point(crate::now_ms(), mapping)
+        .ok()?;
+    let actual = mapping.to_engineering(read.raw);
+    if !read.ok || !actual.is_finite() {
+        return None;
+    }
+    eneros_runtime::println!(
+        "[svc-modbus-tcp] MASTER-RECONCILE device={device} point={point} actual={actual}"
+    );
+    Some(actual)
+}
+
 #[cfg(test)]
 mod tests {
     use eneros_protocol_abstract::{ProtocolAddress, ProtocolPointMapping, VecPointRegistry};
@@ -383,6 +409,38 @@ mod tests {
             .start(&cfg, &mut factory, &mut reg)
             .expect("scripted start");
         Rc::new(RefCell::new(plugin))
+    }
+
+    #[test]
+    fn reconciliation_reads_without_any_write_request() {
+        let handle = Rc::new(RefCell::new(ScriptedMasterHandle {
+            script: RefCell::new(VecDeque::from([ScriptedResp::Frame(vec![
+                0, 0, 0, 0, 0, 5, 1, 3, 2, 0x12, 0x34,
+            ])])),
+            last_sent: RefCell::new(Vec::new()),
+        }));
+        let mut plugin = eneros_modbus_tcp::plugin::TcpPlugin::new();
+        let mut factory = ScriptedFactory {
+            handle: handle.clone(),
+        };
+        let mut cfg = eneros_protocol_abstract::ProtocolConfig::default();
+        cfg.insert("peer", "10.0.0.1:502");
+        let mut reg = VecPointRegistry::new(vec![mapping(100, 1)]);
+        plugin.start(&cfg, &mut factory, &mut reg).unwrap();
+        let plugin = Rc::new(RefCell::new(plugin));
+        assert_eq!(master_read(&reg, &plugin, 0x10001, 100), None);
+        assert_eq!(master_read(&reg, &plugin, 2, 100), None);
+        assert_eq!(master_read(&reg, &plugin, 1, 999), None);
+        assert!(handle.borrow().last_sent.borrow().is_empty());
+        assert_eq!(master_read(&reg, &plugin, 1, 100), Some(466.0));
+        let handle = handle.borrow();
+        let sent = handle.last_sent.borrow();
+        assert_eq!(sent.len(), 12);
+        assert_eq!(
+            sent[7], 3,
+            "only Modbus FC03 is permitted for reconciliation"
+        );
+        assert!(handle.script.borrow().is_empty());
     }
 
     const TOL: f64 = 5.0; // < control-gateway PCS_SETPOINT_READBACK_TOL_KW

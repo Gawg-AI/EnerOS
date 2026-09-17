@@ -1,0 +1,42 @@
+{
+  "schema": "eneros.gate-run-record.v1",
+  "case_id": "CORE-70-R10",
+  "gate_id": "R10-HELD",
+  "command": "tools/run70-r10-held.sh（段A 健康多时段 480s + 段B 脏断电重启续接 480s×2 + 段C 0x201 拒写部分失败 480s）",
+  "exit_code": 0,
+  "recorded_at": "2026-09-17T18:54:56Z",
+  "ran_artifact_sha256": "4fea27ca8b2eb89bb316c50da4954d824f1ea78e6f1f475d88571660bf9697a2",
+  "ran_artifact_sha256_source": "evidence/70/70.15/r10-held/image.sha256",
+  "raw_log": {
+    "name": "r10-held.log",
+    "bytes": 1371,
+    "sha256": "5df087394f428fda7083cd070b9323916df630839528a865bdc3d77798e2816e",
+    "resident": "handoff-bundle",
+    "note": ".gitignore `*.log`：原始日志随移交包分发，本记录绑定其摘要"
+  },
+  "verdict_lines": [
+    "[✓][A1] v2 请求 assets=2 steps=4（×22）",
+    "[✓][A2] PLAN-HELD（×1）",
+    "[✓][A3] HELD-BATCH Completed（×1）",
+    "[✓][A6] 零 PANIC/零分配失败",
+    "[✓][B0] kill 前持有+已确认（PLAN-HELD ×1 / Applied ×10）",
+    "[✓][B1] 重启 HELD-STORE-OPEN OK（×1）",
+    "[✓][B2] 未发步取消 Blocked（×2）",
+    "[✓][B3] 已确认前缀保留（2 条，零重复执行）",
+    "[✓][B4] 重启窗 FC06 ×4 ≤ 新投递 ×4（无无主写；对账只读）",
+    "[✓][B5] 零 PANIC",
+    "[✓][C1] PLAN-HELD（×1）",
+    "[✓][C2] 部分失败注入生效（0x200 写 ×5 / 0x201 拒 ×1）",
+    "[✓][C3] 混合终态（Applied ×1 / 非完成 ×3）",
+    "[✓][C4] 零 PANIC",
+    "=== R10-HELD-GATE: PASS ==="
+  ],
+  "verdict": "PASS",
+  "candidate": {
+    "candidate_id": "47b0068b1dfa6d37cdd924aff8821cabc63eeccc68d67ae9e9ee1b5cd0b6a15a",
+    "source_commit": "b9b88cb7bfa9441734973c80e31353c4b9e0fbd8",
+    "dirty_tree_digest": "57bf802f09d73558f3eb836be9c51355ec9a6f52e9c97059979f06984fc0b12e",
+    "artifact_sha256": "784706cbe7c0268de1a54bb0218d0612699d6f370ffe298d738f2c81c6c75f2b",
+    "profile": "qemu-test"
+  }
+}

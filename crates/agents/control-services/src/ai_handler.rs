@@ -701,6 +701,8 @@ pub mod target {
         plan_source: Option<(
             eneros_semantic_catalog::CatalogRepository,
             eneros_config_bundle::ai_peer::PlanParams,
+            crate::certifier_service::EipcBlobSource,
+            alloc::vec::Vec<(u64, u32, u32)>,
         )>,
     ) -> ! {
         // 决策审计（ADR-0042 边界：dual-brain/audit 为决策语义门面）。
@@ -721,7 +723,7 @@ pub mod target {
             cfg,
             catalog_version,
         );
-        if let Some((repo, params)) = plan_source {
+        if let Some((repo, params, blobs, bindings)) = plan_source {
             let objective_word = params.objective_word();
             eneros_runtime::println!(
                 "[svc-ai-worker] PLAN-SPEC-ACTIVE steps={} step_ns={} objective={} prices={}",
@@ -738,7 +740,9 @@ pub mod target {
                     params.step_ns,
                     params.step_count,
                     cfg.max_power_kw,
-                ),
+                    alloc::boxed::Box::new(blobs),
+                )
+                .with_control_bindings(bindings),
             ));
         } else {
             eneros_runtime::println!(

@@ -79,6 +79,24 @@ impl CatalogRepository {
         for p in bundle.points {
             repo.points.insert(p.point_id, p);
         }
+        let mut soc_assets = BTreeSet::new();
+        for p in repo
+            .points
+            .values()
+            .filter(|p| p.role == crate::decode::ROLE_SOC)
+        {
+            if p.unit_code
+                != eneros_telemetry_model::unit_catalog::code_of(
+                    eneros_telemetry_model::PhysicalUnit::Dimensionless,
+                )
+                || !soc_assets.insert(p.asset_id)
+            {
+                return Err(CatalogError::new(
+                    CatalogErrorKind::ActivationRejected,
+                    alloc::format!("invalid-or-ambiguous-soc:{}", p.asset_id),
+                ));
+            }
+        }
         if !bundle.feedback.is_empty() {
             let mut slots = FeedbackSlots {
                 grid_up: 0,
@@ -350,6 +368,21 @@ impl EnergizedView {
 }
 
 impl SemanticCatalog for CatalogRepository {
+    fn asset_soc_point(&self, asset_id: u64) -> Option<u32> {
+        self.points
+            .values()
+            .find(|p| p.asset_id == asset_id && p.role == crate::decode::ROLE_SOC)
+            .map(|p| p.point_id)
+            // Legacy catalogs bind one feedback SOC. It belongs only to the asset
+            // explicitly named by that point; never share it with another battery.
+            .or_else(|| {
+                self.feedback
+                    .and_then(|f| self.points.get(&f.soc))
+                    .filter(|p| p.asset_id == asset_id)
+                    .map(|p| p.point_id)
+            })
+    }
+
     fn version_set(&self) -> VersionSet {
         self.header.map(|h| h.versions).unwrap_or(VersionSet::ZERO)
     }

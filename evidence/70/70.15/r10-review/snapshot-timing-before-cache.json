@@ -1,0 +1,46 @@
+{
+  "status": "diagnostic run interrupted after reproducing stale-input latency; not a gate verdict",
+  "image_sha256": "060d27c10bc151bf6a11ed2f59eb5d3f569ca13d7abc5b09d1db43ac4fe3a9c6",
+  "samples": [
+    {
+      "produced_ms": 33263,
+      "completed_ms": 71560,
+      "latency_ms": 38297
+    },
+    {
+      "produced_ms": 82365,
+      "completed_ms": 113360,
+      "latency_ms": 30995
+    },
+    {
+      "produced_ms": 125434,
+      "completed_ms": 150557,
+      "latency_ms": 25123
+    },
+    {
+      "produced_ms": 162469,
+      "completed_ms": 194358,
+      "latency_ms": 31889
+    },
+    {
+      "produced_ms": 206712,
+      "completed_ms": 233158,
+      "latency_ms": 26446
+    },
+    {
+      "produced_ms": 244572,
+      "completed_ms": 277078,
+      "latency_ms": 32506
+    },
+    {
+      "produced_ms": 289575,
+      "completed_ms": 316557,
+      "latency_ms": 26982
+    },
+    {
+      "produced_ms": 327966,
+      "completed_ms": 366756,
+      "latency_ms": 38790
+    }
+  ]
+}

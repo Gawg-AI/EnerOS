@@ -714,7 +714,7 @@ trial 臂读取该计数（`BOOT-TRIAL-PROBE pre_count=`）。实测链
 | REG-70.15-R09-R10-UNPROVABLE | `evidence/70/70.8…70.11`（未建立） | **部分解封（2026-09-15，验证面）**：合成装配的 OBS 生产轨已打通（`REG-70.8-SYNTH-NO-OBS` 收口：`SYNTH-OBS accepted` → `SNAP-BUILT pts=8` → EA `status=OK` → `PLAN-COMPILED` → delivered，探针窗实弹）——"观测→冻结快照→认证→计划编译→投递"主链在 qemu-test 装配**可证**。**剩余缺口（如实）**：CORE-70-R09/R10 的 required 语义（认证器跨代/过期/变异/失联/伪证书负例注入；多资产多时段/迟到/部分失败/重启续接/重复批）仍**无专属门与窗**（`evidence/70/70.8…70.11` 未建立），且多步计划投递面受 `DEC-70-13`（包络生命周期 vs 计划时域）与传输容量墙约束——case 证据在专属门建成前维持 MISSING，不以探针窗代填 | 本表 |
 | REG-70.15-R03-WINDOW-SCOPE | `tools/run70-r03-powercut.sh`、`crates/drivers/storage/src/driver/virtio_blk.rs`（注入夹具） | **登记（P3，窗口范围口径，2026-09-15）**：CORE-70-R03 的四子面（慢盘/满盘/flush-write 失败/checkpoint 断电）中，**断电恢复**已由掉电窗承载（脏断电 kill -9 ×2 + 复用盘恢复判据）；慢盘/满盘/flush-fail 三子面为**驱动单元红测**承载（`RamMmio::stall_next`/`fail_next` 注入 + 保留背压红测）——窗口级注入面未建，如实登记不以单元证据代填窗口证据；窗口级故障注入归后续门建设（E70-E 口径） | 本表 |
 | DEC-70-13 裁决（2026-09-15，实施侧 bounded 裁决） | `crates/protocols/control-dispatch/src/{engine,plan_hold}.rs`、`REG-70.10-TRANSPORT-CAPS` | **裁决落定（多步计划投递面三则）**：①**包络生命周期 ≥ 计划时域**——单代认证包络的 valid_until 是批内全部命令的执行上界；跨期步由既有 `PLAN-COMMAND-SKIP-EXPIRED` 显式跳过，**不跨代续用旧包络**（无续期机制——fail-closed 优先）；②**单批 intent 上限 = 8**（容量墙 ≈11 留 3 余量给控制写/回读），更长计划拆批、每批独立走完整认证（无跨批免认证）；③**跨代续接 = 重新认证**——重启/换代后剩余步走"新快照→新认证→新投递"全链，代价一次认证往返（站端认证器无外网依赖，可接受）。plan_hold 接线由此确定为"按批重认证编排"，不建跨代包络续期 | 本表 |
-| REG-70.15-R09R10-GATE-DESIGN | `tools/run70-vol89-gate.sh`（已建成）、`crates/ai/planner-peer`（`--negative` 四模式）、`crates/agents/control-services/src/remote_brain.rs`（`PEER-V2-REJECT`/`PEER-V2-LATE` 词形） | **部分建成（2026-09-15，R09 专属门首跑）**：**激活前置打通**——`configs/ai-peer.toml` 补 plan 参数（激活 v2 结构化轨）+ 装配切 **qemu-test-synth**（qemu-prod 强制 ReleaseTls:8883 而 peer 仅明文 ⇒ 提案链结构性不通；QemuTest 显式允许明文）+ broker 端口对齐（compile→relink 顺序铁律：束嵌 ELF）。**首窗实测**：11 条结构化请求到达 peer、HiGHS 求解 optimal、应答发布 ✓；expired/crossgen 目标侧拒绝词形 ✓（R2/R3）；unsigned 伪造关联被 Correlation→Late 丢弃路径接收 ✓（R5 计数未达门限）；零 PANIC ✓（R7）。**两个剩余集成缺口（门正确咬住）**：①应答投递有损（11 发布→5 送达 worker，broker→target 订阅转发丢包）；②**代次竞争**——accepted 远程计划在下一 tick 被快照换代复核丢弃（"accepted plan generation changed before consume" ×2，STALE-DROP 诊断行）⇒ used=true=0。修法方向：响应 RTT 快于快照重建（svc-mqtt driven 轮询提速）或消费侧绑定放宽至目录代次（dispatch 时域复核兜底）。**R10**：DEC-70-13 批上限已落地（`PEER_PLAN_MAX_ASSIGNMENTS` 64→8，t3 测试重构为超批负例+2×4 合规正例）；多资产目录手术（asset 2+点集+从站寄存器）待建——级联面已映射（coverage 完备集/parity/夹具） | 本表 |
+| REG-70.15-R09R10-GATE-DESIGN | `tools/run70-vol89-gate.sh`（已建成）、`crates/ai/planner-peer`（`--negative` 四模式）、`crates/agents/control-services/src/remote_brain.rs`（`PEER-V2-REJECT`/`PEER-V2-LATE` 词形） | **部分建成（2026-09-15，R09 专属门首跑）**：**激活前置打通**——`configs/ai-peer.toml` 补 plan 参数（激活 v2 结构化轨）+ 装配切 **qemu-test-synth**（qemu-prod 强制 ReleaseTls:8883 而 peer 仅明文 ⇒ 提案链结构性不通；QemuTest 显式允许明文）+ broker 端口对齐（compile→relink 顺序铁律：束嵌 ELF）。**首窗实测**：11 条结构化请求到达 peer、HiGHS 求解 optimal、应答发布 ✓；expired/crossgen 目标侧拒绝词形 ✓（R2/R3）；unsigned 伪造关联被 Correlation→Late 丢弃路径接收 ✓（R5 计数未达门限）；零 PANIC ✓（R7）。**两个剩余集成缺口（门正确咬住）**：①应答投递有损（11 发布→5 送达 worker，broker→target 订阅转发丢包）；②**代次竞争**——accepted 远程计划在下一 tick 被快照换代复核丢弃（"accepted plan generation changed before consume" ×2，STALE-DROP 诊断行）⇒ used=true=0。修法方向：响应 RTT 快于快照重建（svc-mqtt driven 轮询提速）或消费侧绑定放宽至目录代次（dispatch 时域复核兜底）。**R10**：DEC-70-13 批上限已落地（`PEER_PLAN_MAX_ASSIGNMENTS` 64→8，t3 测试重构为超批负例+2×4 合规正例）；**工程已落地（2026-09-16，R10 会话）**：①per-asset 控制绑定架构——`control_contract_bindings`（每可控资产一点；歧义/缺失 fail-closed）+ `fetch_control_binding`→`Vec<(asset,device,point)>`（点表一次往返）+ 引擎**多路由**（`AssetRoute{asset_id,profile,chain}`，`DispatchConfig::extra_routes`，信封/语义摘要/爬坡基线/SBO/链复验按命令路由执行——每资产独立链实例，写链/仲裁器/settle 安全语义零放宽；仲裁在途登记按涉备键集）+ `PlannerView` 绑定注册表化（asset→device 来自点表解析）+ svc-device-agent 多收口点（`request_target` 路由分派，未注册目标归默认收口点 default-deny）；②多资产目录手术——asset 2（battery/device 8/node 2）+ 合同 2（点 1009@0x0201、回读 1005、±500/ramp 3.33）+ 铭牌 2（50kWh）+ 点语义 1005..1009 + 从站寄存器 0x0110..0x0113/0x0201 + synth 馈电 +1005（认证器 readback_ok 承重面）+ 来源授权面 1/2 扩至 1009；生产目录载荷 1556/1664B（余量 108B，容量墙再临） | 本表 |
 ## G-70.15-B. 蓝图 70.15 批量完整窗重跑与候选链重录（2026-09-15）
 
 > 修复面（队列自恢复 + 描述符回收 + INTENT_RETENTION 有界驻留 + 768 KiB 堆 + 逐服务看门狗
@@ -905,3 +905,196 @@ ttl 拒绝 ×1）、**R3 ✓**（crossgen 绑定代次拒绝 ×1）、**R5 部�
   dispatch 引擎多 profile 准入——写链/仲裁器/settle 路径的安全关键面，不宜在
   长会话尾段仓促实施）+ 多资产目录手术（asset 2 + PCS-2 点集 + 从站寄存器；
   级联面已映射）。DEC-70-13 批上限与 2×4 求解器测试已先行落地。
+
+### 12. CORE-70-R10 开发与续验（2026-09-16 起，尚未收官）
+
+- **per-asset 控制绑定架构（红测先行）**：`control_contract_bindings` 多绑定注册表
+  （同资产歧义由仓库激活层 `asset-multi-contract` 拒绝——守卫在更深一层，注册表层保持
+  纵深防御）+ `fetch_control_binding` 多绑定化（cfg 放宽 `any(test,sel4)`，host 假件
+  3 例：双绑定产出/缺点 fail-closed/传输缺失）+ **引擎多路由**（`AssetRoute` +
+  `ConfigSeed.extra_routes`→`DispatchConfig.extra_routes`；`execute_core` 路由化——
+  信封签发/语义摘要/爬坡基线/SBO 选择/链复验全部按命令命中路由执行，每资产独立链实例；
+  `arbitrate` 按设备键参数化，批量按涉备集逐一裁决+清账；`last_confirmed` 基线按键
+  (device,point) 经 `ExecutionCtx.target` 单点传递；装配期 (device,point) 双绑 assert）
+  + `PlannerView` 绑定注册表化（构造期逐条对目录合同校验；未注册资产 None fail-closed）
+  + svc-device-agent 多收口点（`request_target` 与 process 同链解码只读分派；未注册
+  目标归默认收口点=原拒绝语义）。红测：`intent_multi_route_routes_by_registered_target`
+  （扩展路由资产 Committed + 默认资产 Committed + 未知资产 NotAuthorized 零投递）。
+- **多资产目录手术（按新架构重做）**：catalog.toml +asset 2/合同 2/铭牌 2/点语义
+  1005..1009；points.toml +PCS-2 五点（device 8，从站 2 寄存器 0x0110..0x0113+0x0201，
+  scale 镜像 PCS-1）；来源 1/2 授权面 1004→1009；slave61.py +VALUES/WRITEABLE/COILS；
+  synth 馈电 +1005（`[SynthPoint; 12]`——含 asset 2 分配的远程计划要过独立认证，
+  认证器 `readback_ok` 要求 1005 在快照受理观测里，此为 vol89 窗承重点）。
+  **容量**：生产目录编译载荷 1556/1664B——REG-70.8.3-CATALOG-CAPACITY 余量仅 108B，
+  蓝图级扩容裁决更紧。coverage 完备集/parity 未动（1005 presence 判定不入完备集）。
+- **撤回旧学习态归因（2026-09-17 独立复核）**：前轮把低提交率归因于
+  学习收敛，并将 09-15 的 2237 次确认称为异常窗，证据不足。09-14 的
+  20 OK 日志包含内存 PANIC，不能充作健康基线。后续逐阶段计时显示
+  TSDB 检查点阻塞冻结快照发布，输入到达时已过 30 秒有效期；零死区日志
+  不支持该窗由学习停止控制。见下方存储复核与 vol2-checkpoint3 实证。
+- **可选回读点快照接入（R10 认证失败根因）**：builder 只遍历
+  `policy.required`——`optional` 字段声明「缺席不影响完整性」却从未被消费；
+  合同 2 的回读点 1005 不在安全覆盖集 ⇒ 不进快照 ⇒ 认证器对 asset 2 恒判
+  `contract-incomplete`（串口 `TRUSTED-ERR Envelope(2,…contract-incomplete)`
+  实证，首窗 R10 计划全拒）。修复两半：①builder 补 5.5 段——optional 点合格
+  （在场/新鲜/合格/可裁决）则与 required 同通道入 accepted，缺席/不合格
+  **静默省略**（不进 missing/stale/bad，完整性不受可选点影响）；②生产政策
+  `build_policy` 从目录合同派生 optional = 合同回读点 − required（目录单源，
+  不动 coverage 完备集——与 REG-70.15-CORE-CHAIN-SINGLE-GAP 的 1001 入覆盖
+  集路径正交）。红测：optional 在场入快照+缺席不拒（snapshot-service）。
+- **夹具级联**：semantic-catalog 生产形状夹具（assets 3/points 17/contracts 2）、
+  catalog_gateway（注册表双绑定+极小目录歧义负例）、catalog_spec_source（双资产规格）、
+  resource-registry（PlannerView 注册表形态 + 独立极小变体目录避容量墙）、obs_shadow
+  （镜像锁 12 点/1200 事件/授权面 1009）、dispatch_assembly/dispatch_service
+  ConfigSeed 补字段。全量回归 **9073/0**、fmt/clippy 0、aarch64 目标侧编译过。
+- **vol89 门 R10 探针转硬判据**（assets=2 缺失=FAIL）；实弹窗装配词形逐行核验：
+  `CATALOG-BINDING point=10 device=1 asset=1` + `point=1009 device=8 asset=2`、
+  `CONTRACT-VIEW-ACTIVE contracts=2`、`REGISTRY-ACTIVE binding=(1,10)…asset=1 n=1` +
+  `binding=(8,1009)…asset=2 n=2`、双 ingress lease_ok=true、零 PANIC。
+
+
+#### R10 续验：R01 判据裁决（2026-09-17 更新，撤回 09-16 降标）
+
+保留目标压力窗 `agent=OK > 512`，另保留 G1–G7 与生产 64KiB 审计预算
+10000 次追加测试。G5 的 `floor(DL/45)` 是最低控制活性，512 是旧内存故障点
+的压力覆盖；不能用前者替代后者。交接优先选项 (a) 的“结构性不可达”前提
+已被存储修复后的目标实测推翻，最终 R01 须重新越过该故障点。
+
+09-16 的中间窗（`r10-review/vol1-before-serial.log`）确有 96 次确认、
+8562 次 snapshot-stale，G1–G7 当时通过，但它只证明存在节流，不能证明
+架构上必须低于 512。09-14 的 20 OK / 17 Committed 基线还含 telemetry
+alloc PANIC，不是健康验收基线。保留原始日志及 `vol1-calibration.json`
+作为被撤回诊断的审计记录，不能作为放宽压力门槛的依据。
+
+反证为 `evidence/70/70.15/batch/vol2-checkpoint3.log`：prod 镜像
+`dd33b676ec5c2e73b12d388eaa07078fca25e2d9a757ce8c6f46d4a36dcc5003`，
+420 秒首启 + 1200 秒复用，4230 次确认、4792 轮，各相位确认
+[1005,1092,1098,1035]，G1–G7 PASS。首启/复用检查点 17/50 次全部成功，
+数据丢弃 0，复用盘打开旧 points=15。这是存储修复的中间验收，尚不是新增
+生产计划持有代码的最终树证据。10000 次审计测试仍独立验证容量585、
+9415次 BufferFull 可观测、旧记录及链头保持；不冒充目标审计满载证明。
+
+
+#### R10 独立续验（2026-09-17，录制尚未开始）
+
+本节先前的学习收敛归因和“assets=2 即 R10”结论不能作为完成依据。
+当前生产 `run_typed` 仍不持有未来步；`BatchSaga` 和 `PlanHolder` 尚无生产驱动，
+故 R10 多时段、部分失败、掉电续接尚未获得目标证据。12 case 统一录制和提交仍待完成。
+
+已复现并修复：空持有器 tick 越界；Saga 未注册路由 panic；批内 Unknown 被后继
+Committed 覆盖；Saga 重启将 Executing 改回 Pending 导致重发；对账误入执行入口；
+IntentRecord 写盘遗漏 plan_sha256；多电池共用一个 SOC；计划输入将观测网关 ID
+误作控制设备 ID。回归日志位于 `evidence/70/70.15/r10-review/`，其中 red/green
+文件保留失败与修复后的真实结果。对账现在使用无写载荷的独立 Modbus FC03 查询。
+
+中间版本门结果：vol1（1300s）PASS；vol2（420+1200s）FAIL，仅 G5（16 < 26）；
+vol5（560s）PASS。随后代码已变化，这些结果不能冒充最终树的统一候选证据。
+vol2 时间诊断首次两窗：生成到 OBS 完成分别 38297ms/30995ms，超过 30000ms
+控制有效期，推翻“只因学习收敛”的单因结论。快照读取成本红测：同一 blob 四次
+读取产生 468 次块 RPC；正在验证有界读缓存，时间戳与 G5 门限均未放宽。
+
+
+#### 2026-09-17 存储与控制链追加复核（中间树，不是最终候选）
+
+- `vol2-tsdb.log` 的脚本输出 PASS（reuse 5061 Committed），但 37 次
+  `TSDB-DISK-DROPPED`、pending_batches 最高 260；这个 PASS **撤销作为验收依据**。
+  `vol2-tsdb-rejudge.json` 已按新增持久成功判据判负。R02 正常窗现在必须有
+  `status=OK` 的 checkpoint，零 ERR/零丢批；故障注入窗 R03 仍单独核对失败与恢复。
+- SnapshotFace 缓存 4×4 KiB、TSDB 缓存 16×4 KiB；总计最多 80 KiB，未扩大
+  服务堆。TSDB 文件保持原 wire，将七次小写合为一次；七路 host 批窗从
+  9063 降为 1176 块 RPC（仅成本回归，不能代替目标时长判据）。实弹中
+  checkpoint 首阶段约 7–12s，原 26–38s 同步停顿的来源已定位。
+- 实际 TSDB LFS 卷仍是 256 KiB（声明区段预留 8 MiB，不冒充已可用容量）。
+  512 批×7 路红测在第 448 批失败；原子追加到有界尾 chunk 后重挂可查全量。
+  没有扩大几何、删历史或放宽持久水位来通过。新索引也改为原子替换；
+  启动按 CRC 校验过的文件重建实际计数，解决 chunk 已换而索引未换的断电边界。
+- 故障注入覆盖第二次 checkpoint 每个块 RPC 写入截止点，原已确认点必须
+  全保留；worktree 只还原旧索引写法即复现历史数据不可查。另有文件原子覆盖
+  基线 A/B：旧实现先 remove 目标，故障后 NotFound；修复后仅完整旧值/新值。
+- 写失败时保留已受理 TSDB 缓冲，修复原 `chunks.remove` 提前丢失可重试点。
+  自动不可逆计划现在拒绝（无人工批准能力）；高优先级抢占未知结果必须先对账，
+  不再以不同幂等键的新写冒充对账。两项控制链红测修复后通过。
+- 原统一录制脚本已设前置阻断并删除以 assets=2/DEFERRED 伪证 R10 的配方。
+  临时 DEBUG-r10 时间诊断已撤去；最终重建和全门复跑仍未完成。
+
+生产批入口裁决见 ADR-0054：在 dispatch 内持有完整认证计划，Saga 事件先持久
+后推进，冷启动旧未发步不按新单调时钟补发，剩余需求重新取可信输入并认证。
+该决策仅冻结实施边界，**不代表生产入口已接入**。续验另复现冷启动后 journal
+有未知记录但 arbiter 来源表为空时，新计划仍能写入；现已阻止这种新键投递，
+同批重放仍返回原未知回执，相关红/绿测试在 `restart-arbiter-*` 日志。
+本次全仓 host 回归 9094 passed / 0 failed，fmt/clippy 零告警；此统计先于最后
+一项冷启动仲裁修复（后者已单独通过 control-dispatch 全套），不可当最终树验收。
+
+
+#### 2026-09-17 生产持有入口接入中（尚未统一录制）
+
+ADR-0054 已登记。新增 HeldPlans 数据区 `[25736,25992)`（512B块），双
+64KiB 槽，不移动旧区段。dispatch 可信多命令入口现在持有整份候选、证书
+验证材料、可信输入与编译意图，Saga 事件先持久后推进；“已持有”返回
+Persisted，只有全批完成才可返回 Committed。周期 tick 先于 EA 冷却/worker
+不可用/无动作分支；无可信输入或重启时，原未发步明确取消，已发未知效果
+只读对账。新增逐命令状态、回读与未执行原因查询。每批最多8条、整计划
+最多2批（16条）的内部存储界；peer wire 当前仍限8 assignments，扩展及
+三资源目标验收尚未完成，不能据内部容量宣称目标完整支持。
+
+已通过主机“只提交一次、四步独立 tick、重启保留已确认且取消未发步”链测。
+丢失 ACK 的两次独立回读还必须持久更新原 intent journal 后才能放行下一步，
+该问题已有红绿回归。Saga 事件存储确认失败会毒化实例，重新加载前禁止续写。
+另修复 durable-state 忽略 CRC 完整未来格式而回退旧槽的问题：现在明确拒载；
+基线 worktree 红测在 `held-schema-baseline-red.log`。生产目标编译、崩溃注入、
+输入保留租约、完整 R10 多场景实弹仍待完成；不得用 assets=2 或 DEFERRED 放行。
+
+
+#### 2026-09-18 R10 收官：控制窗违约修复 + 专属门建成 + 全门马拉松统一重录（终态）
+
+**控制窗双胞胎缺陷（DEC-70-13 ① 违约，R10 门首跑实弹捕获）**：
+`telemetry.rs::DEFAULT_CONTROL_HORIZON_MS=30s` 与
+`resource-registry/provider.rs::base_env` 的 +30s 各写一份，而计划时域
+= 4×15s=60s（DEC-70-13：包络生命周期 ≥ 计划时域）。多时段计划第 3 步
+（+45s）起超包络窗，认证器 `Envelope { asset_id }` 拒（串口 TRUSTED-ERR
+实证）——30s 是单命令时代遗留，DEC-70-13 裁决后未同步。修复：
+`eneros-decision-contract::CONTROL_HORIZON_MS=60_000` 单源，两处引用；
+红测 `base_env_validity_covers_control_horizon`（+30s 变异必红，已咬合）。
+受影响测试两例按原意更新（载荷有效期显式更紧形态承载"min(策略窗,载荷)"
+不变式；evalcfg 锁单源常量）。
+
+**synth 批节奏与 R10 时域**：qemu-test-synth 每 3 round 一批 ⇒ 快照轮换
+≈14–26s < 60s 时域；换代即取消未发步（DEC-70-13 ③ 设计语义）⇒ 单计划
+最多执行步 0。`SYNTH_OBS_EVERY_ROUNDS` 3→16（轮换 ≈80–128s ≥ 时域；
+仅测试装配 feature 门控，生产零影响）。**连带适配**：vol4 段5 长断链
+100s→420s（请求按轮换分簇后 miss 攒满须覆盖 3 轮换最坏形；判据本身
+不变——LEASE-ARMED 必须出现，×641 实证武装）；vol4 DL 650→1000。
+
+**R10 专属门（tools/run70-r10-held.sh，三窗）终态全绿**：
+- 段A 健康多时段：v2 请求 assets=2 steps=4 ×22、PLAN-HELD、
+  HELD-BATCH Completed、Applied ×14、传输级写后同址读回 ×8、
+  双资产写入（0x200×5 / 0x201×3）、写时刻跨度 34s（多时段分步发放）、
+  零 PANIC；
+- 段B 脏断电重启续接（同盘 kill -9 后二启）：HELD-STORE-OPEN OK、
+  未发步取消 Blocked ×2、已确认前缀保留（2 条 intent 零重复执行）、
+  重启窗 FC06 ×4 全部可归因到新投递（dispatch=Committed ×4；对账只读）——
+  ADR-0054 持有链掉电续接合同首次目标侧完整验证；
+- 段C 部分失败（slave --reject-write-addr 0x201 按址拒写注入）：
+  0x200 写 ×5（资产1 健康）∧ 0x201 WRITE-FI ×1（资产2 被拒）、
+  混合终态（Applied ×1 / Failed+Blocked ×3）、批 Failed——部分失败
+  不吞健康资产。
+- 判据器两处修正（如实）：map_receipt 对新鲜应用不上浮 readback（对账
+  路径专属）⇒ A4b 改传输面取证（写后同址 FC03 读回同值）；A5b 跨度
+  取整秒（bash 算术无浮点，浮点比较静默归 0 实测咬过）。slave61.py
+  新增 --reject-write-addr 与 WRITE/WRITE-FI 的 ts 字段；门每段清
+  transcript（跨运行残留旧条目会炸 ts 提取）。录制器 verdict_lines
+  正则扩展 [An]/[Bn]/[Cn] 判据段与 R10-HELD-GATE 终判行家族。
+
+**全门马拉松（冻结树统一重跑，全部 PASS）**：vol3（DL=1200）、
+vol1（DL=1300；rounds=3972 / agent=OK=3728 **越过 512 压力线**——
+交接期"512 与 G5 结构性冲突"判断被存储修复后的最终树推翻）、vol2
+（SEED 420+REUSE 1200）、R03 掉电（300×3）、vol5（DL=560；R6 伪
+principal 拒绝 BadSignature ×2——TCP recv 按墙钟计时修复的实弹验证，
+此前轮询计数冒充毫秒使 TLS 记录停顿宽限实际 ~5ms，会话反复 ConnectionReset
+重连掉订阅）、vol4（DL=1000）、vol6（DL=700）、vol7（DL=700+T2 420）、
+vol89（DL=1440；UEFI 间歇冻结重跑一次后过）、R10 门。全量 host 回归
+9102/0、fmt/clippy 0。**UEFI 冻结两次（vol89/R10 各一）与端口残留一次
+（R10 门早退未清编队——已修 kill_window）如实登记，重跑即过。**
+
+R10 的 12 case 统一录制与本登记段为同树最终态；peer wire 仍限 8
+assignments（2 资产×4 步恰好满载），三资源扩展维持未验收登记。

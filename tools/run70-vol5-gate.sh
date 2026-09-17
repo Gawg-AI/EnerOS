@@ -111,6 +111,15 @@ echo "OTA-ANCHOR fresh fp(4B)=${OTA_ANCHOR_HEX:0:8}"
 # ——bundle 在 cargo build 时嵌入业务服务 ELF，镜像构建后改配置无效）。
 MQTT_TOML="$ROOT/configs/protocol-mqtt.toml"
 cp -f "$MQTT_TOML" "$RUN/protocol-mqtt.toml.bak"
+# 编译/启动提前失败也恢复调用前配置；正常路径的 mv 已移除备份时为空操作。
+restore_mqtt_config() {
+  if [ -f "$RUN/protocol-mqtt.toml.bak" ]; then
+    mv -f "$RUN/protocol-mqtt.toml.bak" "$MQTT_TOML"
+  fi
+}
+trap restore_mqtt_config EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 python3 - "$MQTT_TOML" "$TLS_PORT" <<'PYEOF'
 import sys, re
 p, port = sys.argv[1], sys.argv[2]
@@ -157,6 +166,7 @@ cargo xtask run qemu-prod \
   --net-mode present --net-user --net-protocols present \
   --reset-bootctrl --ready-marker product-ready --qmp-deadline-secs "$DL" >/dev/null 2>&1 &
 QEMU_JOB=$!
+WINDOW_STARTED=$SECONDS
 
 # R6 负例：实时定时注入（QEMU 启动 +75s 墙钟触发——串口文件滞后约
 # 250s，以文件为触发的注入会落进窗内串口静默段之后；+90s 时订阅已
@@ -182,7 +192,10 @@ grep -q "PRODUCT-READY: true" "$DIR/qemu-serial.log" || {
   echo "PRODUCT-READY 未达"; kill $QEMU_JOB $PMOD $P104 $BROKER_PID 2>/dev/null || true
   sleep 2; kill -9 $(pgrep -f "qemu-system") 2>/dev/null || true; exit 6; }
 
-sleep 130  # 控制链/遥测/TLS 流样本（含 forger 注入段）
+# DL 是从 harness 启动计时的完整窗长。旧的 READY 后 sleep 130 提前
+# 截断主窗，8 次注入仅落下 3 次；不得以扩大注入计划代替真实运行时间。
+remaining=$((DL - (SECONDS - WINDOW_STARTED)))
+if [ "$remaining" -gt 0 ]; then sleep "$remaining"; fi
 
 # 终止序：qemu-system 先 -9（管道 EOF → harness 排空串口尾部），再杀 harness/编队
 kill -9 $(pgrep -f "qemu-system") 2>/dev/null || true
@@ -235,7 +248,7 @@ SENT=$(grep -ac "FORGED-MGT-PUBLISH" "$DIR/forge.transcript.jsonl" 2>/dev/null |
 if [ "$n" -ge 1 ]; then
   echo "[✓][R6] 伪 principal 拒绝（$n；forger 发送 $SENT）"
 else
-  echo "[✗][R6] 伪 principal 拒绝缺失（forger 发送 $SENT——>0 则为真安全面失败，0 为注入未落地）"; FAIL=1
+  echo "[✗][R6] 伪 principal 拒绝缺失（forger 发送 $SENT；须核对 broker 投递与目标接收，发送不等于入口已处理）"; FAIL=1
 fi
 
 cp -f "$S" "$EVROOT/wa.qemu-serial.log"

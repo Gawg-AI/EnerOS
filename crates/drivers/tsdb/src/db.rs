@@ -36,7 +36,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use eneros_fs::{FileMode, FileSystem, FsError, Lfs, OpenFlags};
+use eneros_fs::{FileSystem, FsError, Lfs, OpenFlags};
 
 use crate::compression::{make_compressor, Compressor};
 use crate::error::TsdbError;
@@ -96,6 +96,28 @@ impl TimeSeriesDB {
 
         // Create the compressor from the configured compression type.
         let compressor = make_compressor(config.compression);
+
+        // A completed atomic chunk replacement may precede the atomic index
+        // replacement at a crash boundary. Rebuild counts from CRC-checked
+        // referenced files, one file at a time; never discard a durable prefix.
+        let mut recovered_index = TimeIndex::new();
+        for entry in index.find_range(0, u64::MAX) {
+            let points = reader::read_chunk_file(&mut fs, compressor.as_ref(), &entry.file_path)?;
+            if points.len() < entry.point_count as usize
+                || points
+                    .first()
+                    .map_or(true, |point| point.timestamp != entry.time)
+            {
+                return Err(TsdbError::IndexCorrupted);
+            }
+            recovered_index.add(
+                entry.time,
+                entry.file_path.clone(),
+                entry.chunk_id,
+                points.len() as u32,
+            );
+        }
+        let index = recovered_index;
 
         Ok(Self {
             fs,
@@ -398,7 +420,14 @@ impl TimeSeriesDB {
     /// 批次边界"后方 ACK"的落盘原语）。写放大代价见审计表 §四。
     pub fn checkpoint(&mut self) -> Result<(), TsdbError> {
         if !self.chunks.is_empty() {
-            self.compact()?;
+            writer::flush_checkpoint_chunks(
+                &self.config,
+                &mut self.chunks,
+                &mut self.index,
+                &mut self.fs,
+                self.compressor.as_ref(),
+                &mut self.next_chunk_id,
+            )?;
         }
         save_index(&mut self.fs, &self.config.data_dir, &self.index)?;
         self.fs.sync()?;
@@ -614,8 +643,7 @@ fn cleanup_tmp_residue(fs: &mut Lfs, data_dir: &str) -> Result<(), TsdbError> {
 fn save_index(fs: &mut Lfs, data_dir: &str, index: &TimeIndex) -> Result<(), TsdbError> {
     let path = index_path(data_dir);
     let data = index.serialize();
-    let mut file = fs.create(&path, FileMode::default_file())?;
-    file.write(fs, &data)?;
+    fs.write_file(&path, &data)?;
     Ok(())
 }
 

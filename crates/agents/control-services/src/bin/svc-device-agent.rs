@@ -53,8 +53,11 @@ pub extern "C" fn _start(
 
 #[cfg(target_os = "none")]
 struct DeviceAgentHandler {
-    /// WP-A.1：密钥不可得 ⇒ None（拒载态：一切控制写 Denied，串口留判定行）。
-    ingress: Option<eneros_device_agent::EnvelopeIngress>,
+    /// WP-A.1：密钥不可得 ⇒ 空（拒载态：一切控制写 Denied，串口留判定行）。
+    /// 蓝图 70 R10：**多收口点注册表**——每绑定一条 (device, point,
+    /// EnvelopeIngress)（独立复验链，与签发侧路由表同构）；[0] = 默认
+    /// 收口点（未注册目标的 Decode/Policy 拒绝语义归它，default-deny）。
+    ingresses: alloc::vec::Vec<(u16, u32, eneros_device_agent::EnvelopeIngress)>,
     devices: eneros_device_agent::DeviceRegistry,
 }
 
@@ -80,43 +83,60 @@ impl DeviceAgentHandler {
         } else {
             None
         };
-        // 62 v0.315.0 WP-62.1.4（S7）：fetch_control_binding 改收装配入口
-        // 拉取的目录（本装配仍恰好 1 次 catalog 往返，与改造前一致）。
-        let binding = match &mut config_client {
-            Some(c) => eneros_control_services::catalog_gateway::fetch_catalog(c).and_then(|cat| {
-                eneros_control_services::cfg_bindings::fetch_control_binding(&cat, c)
-            }),
+        // 62 v0.315.0 WP-62.1.4（S7）：fetch_control_binding 收装配入口
+        // 拉取的目录（本装配仍恰好 1 次 catalog 往返）。蓝图 70 R10：
+        // 绑定注册表（每可控资产一条）——首绑定 = 默认收口点，其余绑定
+        // 追加（每条独立复验链，与签发侧扩展路由同构同源）。
+        let bindings: alloc::vec::Vec<(u64, u32, u32)> = match &mut config_client {
+            Some(c) => eneros_control_services::catalog_gateway::fetch_catalog(c)
+                .and_then(|cat| {
+                    eneros_control_services::cfg_bindings::fetch_control_binding(&cat, c)
+                })
+                .unwrap_or_default(),
             None => {
                 eneros_runtime::println!(
                     "[svc-device-agent] config EP NOT granted —— 控制绑定缺失（fail-closed）"
                 );
-                None
+                alloc::vec::Vec::new()
             }
         };
-        let (device_id, point_id) = binding.unwrap_or((0, 0));
-        let profile = prod_profile(device_id, point_id);
+        let (device_id, point_id) = bindings.first().map(|&(_, d, p)| (d, p)).unwrap_or((0, 0));
         // SPEC WP-A.1：信封密钥经 svc-config `security` 节注入取得；
         // 全零/短键/缺节 ⇒ CHAIN-KEY-MISSING 拒载（None 态 default-deny）。
         let chain_key: Option<[u8; 32]> = match &mut config_client {
             Some(c) => eneros_control_services::cfg_bindings::fetch_control_chain_key(c),
             None => None,
         };
-        let ingress = match chain_key {
+        let mut ingresses: alloc::vec::Vec<(u16, u32, eneros_device_agent::EnvelopeIngress)> =
+            alloc::vec::Vec::new();
+        match chain_key {
             Some(key) => {
-                let i = eneros_device_agent::EnvelopeIngress::from_profile(&key, &profile, now);
-                eneros_runtime::println!(
-                    "[svc-device-agent] ingress: constructed (lease_ok={})",
-                    i.lease_ok()
-                );
-                Some(i)
+                for &(asset, d, p) in &bindings {
+                    let profile = prod_profile(d, p);
+                    let i = eneros_device_agent::EnvelopeIngress::from_profile(&key, &profile, now);
+                    eneros_runtime::println!(
+                        "[svc-device-agent] ingress: constructed asset={asset} device={d} point={p} (lease_ok={})",
+                        i.lease_ok()
+                    );
+                    ingresses.push((u16::try_from(d).unwrap_or(0), p, i));
+                }
+                if ingresses.is_empty() {
+                    // 绑定注册表缺失 → 0/0 fail-closed 收口点（全部拒绝）。
+                    let profile = prod_profile(0, 0);
+                    let i = eneros_device_agent::EnvelopeIngress::from_profile(&key, &profile, now);
+                    eneros_runtime::println!(
+                        "[svc-device-agent] ingress: fail-closed 0/0 (lease_ok={})",
+                        i.lease_ok()
+                    );
+                    ingresses.push((0, 0, i));
+                }
             }
             None => {
                 eneros_runtime::println!(
                     "[svc-device-agent] CHAIN-KEY-MISSING reason=unavailable —— 信封密钥不可得（缺节/解码失败/全零或短键），拒载（fail-closed）"
                 );
-                None
             }
-        };
+        }
         // 虚拟 PCS 设备（profile 声明 virtual-pcs 时装配；写/读回为真实
         // 寄存器语义——串口 VIRTUAL-PCS 行为外部观察证据）。
         let mut devices = eneros_device_agent::DeviceRegistry::new();
@@ -148,17 +168,28 @@ impl DeviceAgentHandler {
                 );
             }
         }
-        Self { ingress, devices }
+        Self { ingresses, devices }
     }
 }
 
 #[cfg(target_os = "none")]
 impl eneros_control_services::ControlServiceHandler for DeviceAgentHandler {
     fn handle(&mut self, req: &[u8], resp: &mut alloc::vec::Vec<u8>, now_ms: u64) -> bool {
-        // 请求 = ControlEnvelope 字节 → ingress 处理 → OutcomeFrame；
-        // WP-A.1 拒载态（密钥不可得）⇒ 一律 Policy 拒绝帧。
-        let out = match &mut self.ingress {
-            Some(i) => i.process(&mut self.devices, req, now_ms),
+        // 请求 = ControlEnvelope 字节 → 目标路由 → 收口点处理 →
+        // OutcomeFrame。蓝图 70 R10：按信封目标 (device,point) 分派到
+        // 对应收口点（验证仍全链执行）；未注册目标/解码失败 → 默认
+        // 收口点（[0]）= 原 default-deny 语义；拒载态 ⇒ 一律 Policy
+        // 拒绝帧。
+        let target = eneros_device_agent::request_target(req);
+        let idx = target
+            .and_then(|(d, p)| {
+                self.ingresses
+                    .iter()
+                    .position(|(rd, rp, _)| *rd == d && *rp == p)
+            })
+            .unwrap_or(0);
+        let out = match self.ingresses.get_mut(idx) {
+            Some((_, _, i)) => i.process(&mut self.devices, req, now_ms),
             None => eneros_device_agent::IngressOutcome::Denied {
                 class: eneros_device_agent::DenyClass::Policy,
                 reason: alloc::string::String::from("chain-key-missing (service refused)"),

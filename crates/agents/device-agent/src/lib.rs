@@ -76,8 +76,8 @@ pub use delivery::{
 pub use device_type::{DeviceSnapshot, DeviceState, DeviceType};
 pub use error::DeviceError;
 pub use ingress::{
-    outcome_to_frame, verify_handshake_response, DenyClass, EnvelopeIngress, IngressError,
-    IngressOutcome, ReadbackKind, ReadbackPolicy, HANDSHAKE_LEN,
+    outcome_to_frame, request_target, verify_handshake_response, DenyClass, EnvelopeIngress,
+    IngressError, IngressOutcome, ReadbackKind, ReadbackPolicy, HANDSHAKE_LEN,
 };
 pub use persist::{
     encode_wal, parse_snapshot, parse_wal, serialize_snapshot, PersistError, WalEntry,

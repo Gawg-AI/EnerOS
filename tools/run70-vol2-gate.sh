@@ -106,6 +106,10 @@ cp -f "$S2" "$EVROOT/reuse.qemu-serial.log"
 cp -f "$D/eneros-data.raw" "$EVROOT/seed.eneros-data.raw"
 
 FAIL=0
+# A checkpoint attempt is not a durable commit. This normal workload does not
+# inject storage faults; dropped batches or missing success evidence are failures.
+python3 "$ROOT/tools/run70_gate_judge.py" --tsdb-persistence "$S1" || FAIL=1
+python3 "$ROOT/tools/run70_gate_judge.py" --tsdb-persistence "$S2" || FAIL=1
 # ---- R1：复用盘 TSDB 保数据（mount 不重建卷：旧 points >0）----------
 # seed 末次 CHECKPOINT 后的 points 与 reuse 首次 OPEN points 对照。
 SEED_PTS=$(grep -o "TSDB-CHECKPOINT-DUR ms=[0-9]* items=[0-9]* pending_batches=[0-9]*" "$S1" | tail -1)
@@ -113,7 +117,8 @@ OPEN_LINE=$(grep -a "TSDB-DISK-OPEN" "$S2" | head -1)
 echo "[R1] seed 末次 ck：$SEED_PTS"
 echo "[R1] reuse OPEN：$OPEN_LINE"
 grep -aq "TSDB-DISK-OPEN" "$S2" || { echo "[✗][R1] 复用盘未走 TSDB-DISK-OPEN（mount 失败/重建）"; FAIL=1; }
-POINTS=$(echo "$OPEN_LINE" | grep -o "points=[0-9]*" | grep -o "[0-9]*$")
+POINTS=$(python3 "$ROOT/tools/run70_gate_judge.py" --tsdb-open-points "$S2")
+echo "[R1] reuse 首个 OPEN points=${POINTS:-missing}（允许并发串口插行）"
 [ -n "$POINTS" ] && [ "$POINTS" -gt 0 ] || { echo "[✗][R1] 复用盘旧点数=$POINTS（卷被重建/数据丢失）"; FAIL=1; }
 
 # ---- R2：复用盘恢复后决策链恢复进展（判据器 G4/G5 相位判据）--------

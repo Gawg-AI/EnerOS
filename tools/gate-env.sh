@@ -146,7 +146,7 @@ gate_build_prelude() {
 # 构建缓存戳（REG-70.15-BUILD-NONDETERMINISM 治理，2026-09-15）：
 # 同树 + 同 ROOT_TASK_FEATURES 的重链接/镜像只做一次——后续门共享同一
 # 份镜像字节（"门间共享同一镜像副本"路线），候选身份在单次收口扫描内
-# 单产物闭合。树状态 = HEAD + tracked 工作树摘要 + 重链接脚本摘要 +
+# 单产物闭合。树状态 = HEAD + tracked/untracked 工作树摘要 + 重链接脚本摘要 +
 # feature 集；任一变化 → 戳失效 → 重建。
 # 注意：跨 feature 交替（qemu-prod ↔ qemu-test-synth）必然使戳失效并
 # 重链接（合成装配与生产装配是不同闭包）——扫描编排按 feature 分组
@@ -159,8 +159,15 @@ gate_build_stamp() {  # $1 = features 字符串（可空）
   # 变化 ⇒ 戳失效，诚实重建）。
   # 树摘要用 **git diff HEAD 内容哈希**（2026-09-15 vol89 实弹教训：porcelain
   # 行摘要对"已修改文件的内容再编辑"不敏感 ⇒ 缓存吞掉诊断构建）。
-  local tree envsig
-  tree="$(git rev-parse HEAD 2>/dev/null)-$(git diff HEAD 2>/dev/null | sha256sum | cut -d' ' -f1)"
+  local tree envsig untracked file
+  # New source files must invalidate the cache even before git add. Evidence and
+  # build output are excluded, matching candidate tree identity.
+  untracked="$(
+    while IFS= read -r -d '' file; do
+      sha256sum -- "$file"
+    done < <(git ls-files --others --exclude-standard -z -- . ':(exclude)evidence/**' ':(exclude)target/**')
+  )"
+  tree="$(git rev-parse HEAD 2>/dev/null)-$(git diff HEAD -- . ':(exclude)evidence/**' ':(exclude)target/**' | sha256sum | cut -d' ' -f1)-$untracked"
   envsig="$(printenv 2>/dev/null | grep -E '^ENEROS_' | sort | sha256sum | cut -d' ' -f1)"
   printf '%s-%s-%s-%s' "$tree" "${1:-none}" "$envsig" \
     "$(sha256sum "$ROOT/third_party/sel4-build-rust.sh" 2>/dev/null | cut -d' ' -f1)" \

@@ -438,3 +438,12 @@ status = "Accepted"
 supersedes = []
 superseded_by = ""
 decision_digest = ""
+
+[[adrs]]
+id = "ADR-0054"
+path = "docs/adr/ADR-0054-held-plan-production-entry.md"
+title = "站点计划由 dispatch 持有，按 Saga 事件先持久后执行"
+status = "Accepted"
+supersedes = []
+superseded_by = ""
+decision_digest = ""

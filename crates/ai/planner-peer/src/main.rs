@@ -68,16 +68,20 @@ enum NegativeMode {
 
 impl NegativeMode {
     /// 四模式轮转序（`--negative-cycle`：单实例免重启覆盖全部负例）。
-    /// 周期 8：每 8 响应注入 4 负例（四模式各一）+ 4 正常（链路保持活性）。
+    /// 周期 8：**首 4 响应 = 四模式各一**（蓝图 70 R10 会话前置——broker→
+    /// target 应答投递有损且随窗内时间恶化（REG-70.15-R09R10 投递有损治理：
+    /// 首周期 2/2 命中、次周期 0/2），每模式的首注入必须落在链路最新鲜的
+    /// 前四拍，判据（每模式目标侧拒绝词形 ≥1）才能脱离投递抽奖）；后 4
+    /// 响应正常（链路保持活性）。
     pub const CYCLE: [Option<NegativeMode>; 8] = [
-        None,
         Some(NegativeMode::Expired),
-        None,
-        Some(NegativeMode::Crossgen),
-        None,
         Some(NegativeMode::Mutated),
-        None,
+        Some(NegativeMode::Crossgen),
         Some(NegativeMode::Unsigned),
+        None,
+        None,
+        None,
+        None,
     ];
 }
 

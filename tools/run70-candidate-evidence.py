@@ -114,9 +114,13 @@ def save_index(path: Path, index: dict) -> None:
 
 
 def verdict_lines(log: Path) -> list[str]:
-    """判据行快照：门的 ✓/✗ 行 + 最终判据行（原始日志摘要之外的可读面）。"""
+    """判据行快照：门的 ✓/✗ 行 + 最终判据行（原始日志摘要之外的可读面）。
+
+    判据段字母通用（vol 系 [Rn]、R10 专属门 [An]/[Bn]/[Cn]——2026-09-17
+    随 R10-HELD 门引入）；终判行含 R10-HELD-GATE 家族。"""
     pat = re.compile(
-        r"^\[[✓✗]\]\[R\d+\]|^=* ?VOL70\.[0-9]+[A-Z0-9 _.-]*:|^CHECK-CURRENT"
+        r"^\[[✓✗]\]\[[A-Z]+\d+\]|^=* ?VOL70\.[0-9]+[A-Z0-9 _.-]*:|^=* ?R10-HELD-GATE:"
+        r"|^CHECK-CURRENT"
         r"|^CANDIDATE-CHECK|^test result:|^candidate-check red tests:"
     )
     out = []

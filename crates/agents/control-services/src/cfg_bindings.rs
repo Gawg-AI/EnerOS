@@ -3,9 +3,11 @@
 //! 硬编码于产品装配（`PROD_DEVICE_ID`/`PROD_POINT_ID` 已退休）。
 //!
 //! 蓝图 61 v0.314.33（[08] §2.5 迁移）：**「首个 Control 点」选择已删除**——
-//! 绑定点由 SemanticCatalog 显式给出（点语义 role=control 且带控制合同，
-//! 恰好一个；歧义/缺失 → None fail-closed），设备短 ID 仍为协议映射
-//! （points.toml 点 → device）。退出 gate：生产无手写 first control
+//! 绑定点由 SemanticCatalog 显式给出（点语义 role=control 且带控制合同）。
+//! 蓝图 70 R10 多资产：绑定升级为**注册表**——每可控资产一点
+//! （`control_contract_bindings`）；注册表缺失/同资产歧义 → None
+//! fail-closed，设备短 ID 仍为协议映射（points.toml 点 → device）。
+//! 退出 gate：生产无手写 first control
 //! binding（[08] §2.7）。
 //!
 //! 请求/响应 wire（`CFG1` ConfigGet + 4B LE 前缀）单一来源 = agent-sdk
@@ -17,35 +19,49 @@
 #[cfg(any(test, feature = "sel4"))]
 use eneros_agent_sdk::config_gateway::{config_get, ConfigStep};
 
-/// 获取控制点绑定（设备/点）。
+/// 获取控制点绑定注册表（蓝图 70 R10 多资产）：每可控资产一条
+/// `(asset_id, device_id, point_id)`。
 ///
 /// `catalog` = 装配入口一次拉取的目录（62 v0.315.0 WP-62.1.4 S7：本函数
 /// 不再自取 catalog——一次装配四视图同代）；`config` = svc-config EIPC
-/// 客户端（授予槽由装配方传入，仍用于 `points` 一次往返）；返回
-/// `(device_id, point_id)`。
+/// 客户端（授予槽由装配方传入，仍用于 `points` **一次**往返——全部绑定
+/// 点在同一次解码内逐点解析设备短 ID）。
 ///
-/// v0.314.33 语义：目录显式绑定点（[`crate::catalog_gateway::
-/// control_contract_point`]）+ 点表解析设备短 ID；目录缺失/歧义/点不在
-/// 表 → None（fail-closed）。
-#[cfg(feature = "sel4")]
+/// 语义：目录控制绑定注册表（[`crate::catalog_gateway::
+/// control_contract_bindings`]，每可控资产恰一点；缺失/歧义 → None
+/// fail-closed）+ 点表解析设备短 ID；任一绑定点不在表 → None
+/// （fail-closed——装配错误不允许目录凭空创建写目标）。
+#[cfg(any(test, feature = "sel4"))]
 pub fn fetch_control_binding<T: eneros_agent_sdk::config_gateway::ConfigEntrySource>(
     catalog: &crate::catalog_gateway::LoadedCatalog,
     config: &mut T,
-) -> Option<(u32, u32)> {
+) -> Option<alloc::vec::Vec<(u64, u32, u32)>> {
     use crate::catalog_gateway;
-    // 1. 目录 → 显式绑定点（role=control 且带合同，恰好一个；歧义拒绝）。
-    let Some(point) = catalog_gateway::control_contract_point(&catalog.repo) else {
+    // 1. 目录 → 控制绑定注册表（每可控资产恰一点；歧义/缺失拒绝）。
+    let Some(bindings) = catalog_gateway::control_contract_bindings(&catalog.repo) else {
         eneros_runtime::println!(
-            "[control-bindings] 目录无唯一控制绑定点 —— fail-closed（绑定缺失）"
+            "[control-bindings] 目录控制绑定注册表不可得（缺失/歧义）—— fail-closed（绑定缺失）"
         );
         return None;
     };
     // 2. 点表 → 设备短 ID（协议映射；点必须真实存在——不存在 = 装配
-    //    错误，不允许目录凭空创建写目标）。
+    //    错误，不允许目录凭空创建写目标）。全部绑定点**一次往返**解析。
     let got = config_get(config, "points", |body| {
         let cfg_id = eneros_config_bundle::ConfigId::from_static("points");
         match eneros_config_bundle::points::decode_points(body, &cfg_id) {
-            Ok(table) => Ok(table.find(point).map(|rec| (rec.device_id as u32, point))),
+            Ok(table) => {
+                let mut out = alloc::vec::Vec::with_capacity(bindings.len());
+                for &(asset, point) in &bindings {
+                    let Some(rec) = table.find(point) else {
+                        eneros_runtime::println!(
+                            "[control-bindings] 目录绑定点 {point} 不在点表 —— fail-closed（绑定缺失）"
+                        );
+                        return Ok(None);
+                    };
+                    out.push((asset, rec.device_id as u32, point));
+                }
+                Ok(Some(out))
+            }
             Err(e) => {
                 eneros_runtime::println!("[control-bindings] points decode FAIL: {e:?}");
                 Err(ConfigStep::DecodeFailed)
@@ -55,19 +71,18 @@ pub fn fetch_control_binding<T: eneros_agent_sdk::config_gateway::ConfigEntrySou
     // wire 失败呈现（词形 = 今日 `ConfigError` Debug 逐字：Transport/
     // TooShort/LengthPrefix——分类单点后按步映射，R2）。
     match got {
-        Ok(Some((device, point))) => {
-            eneros_runtime::println!(
-                "[control-bindings] CATALOG-BINDING point={point} device={device} (explicit, gen={})",
-                catalog.generation
-            );
-            Some((device, point))
+        Ok(Some(resolved)) => {
+            for &(asset, device, point) in &resolved {
+                // 词形锚（61/62 门 grep）：`CATALOG-BINDING point=<p>
+                // device=<d>` 前缀逐字节保持；asset 追加在行尾。
+                eneros_runtime::println!(
+                    "[control-bindings] CATALOG-BINDING point={point} device={device} asset={asset} (explicit, gen={})",
+                    catalog.generation
+                );
+            }
+            Some(resolved)
         }
-        Ok(None) => {
-            eneros_runtime::println!(
-                "[control-bindings] 目录绑定点 {point} 不在点表 —— fail-closed（绑定缺失）"
-            );
-            None
-        }
+        Ok(None) => None, // 缺点已在闭包内留行（fail-closed）
         Err(ConfigStep::Unavailable) => {
             eneros_runtime::println!("[control-bindings] ConfigGet(points) EIPC fail: Transport");
             None
@@ -286,5 +301,90 @@ mod tests {
             src.contains("C: eneros_agent_sdk::chunked::RawIpc"),
             "chain key 取数须保持泛型接口（host 可测）"
         );
+    }
+
+    // ---- 蓝图 70 R10：多绑定注册表（host 假件首次可达；cfg 放宽先例 =
+    //      fetch_control_chain_key 同口径）----
+
+    /// 点表 ConfigEntrySource 假件（返回编译后的 configs/points.toml；
+    /// None = 传输缺失语义路径）。
+    struct FakePointsSource {
+        points: Option<Vec<u8>>,
+    }
+
+    impl eneros_agent_sdk::config_gateway::ConfigEntrySource for FakePointsSource {
+        fn config_entry(&mut self, id: &str) -> Option<Vec<u8>> {
+            match id {
+                "points" => self.points.clone(),
+                _ => None,
+            }
+        }
+    }
+
+    fn points_payload() -> Vec<u8> {
+        // ConfigGet 管道协议：4B LE 长度前缀 + canonical payload。
+        let body = eneros_config_bundle::toml_compile::compile_points(include_str!(
+            "../../../../configs/points.toml"
+        ))
+        .expect("compile points")
+        .payload;
+        let mut out = Vec::with_capacity(4 + body.len());
+        out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        out.extend_from_slice(&body);
+        out
+    }
+
+    fn prod_catalog() -> crate::catalog_gateway::LoadedCatalog {
+        let toml = include_str!("../../../../configs/catalog.toml");
+        let compiled = eneros_config_bundle::toml_compile::compile_catalog(toml).expect("compile");
+        let repo = eneros_semantic_catalog::decode::decode_catalog(&compiled.payload)
+            .and_then(eneros_semantic_catalog::CatalogRepository::build)
+            .expect("repo");
+        crate::catalog_gateway::LoadedCatalog {
+            repo,
+            generation: 1,
+        }
+    }
+
+    /// R10 红测：双合同目录 → 双 (asset,device,point) 绑定均产出
+    /// （点表**一次**往返解析全部设备短 ID；asset 1→device 1/点 10、
+    /// asset 2→device 8/点 1009）。
+    #[test]
+    fn binding_registry_resolves_both_assets_from_points_table() {
+        let cat = prod_catalog();
+        let mut src = FakePointsSource {
+            points: Some(points_payload()),
+        };
+        assert_eq!(
+            fetch_control_binding(&cat, &mut src),
+            Some(vec![(1, 1, 10), (2, 8, 1009)])
+        );
+    }
+
+    /// 绑定点不在点表 → None（fail-closed——目录不得凭空创建写目标）。
+    #[test]
+    fn binding_registry_missing_point_fails_closed() {
+        let cat = prod_catalog();
+        // 点表无控制点（仅一个无关 MQTT 点）：绑定点 10/1009 解析失败。
+        let body = eneros_config_bundle::toml_compile::compile_points(
+            "[[point]]\npoint_id = 7001\ndevice_id = 7\nprotocol = \"mqtt\"\naddr.mqtt = { topic = \"plant/pv/power\" }\ndata_type = \"analog\"\nscale = 1.0\noffset = 0.0\nperiod_ms = 5000\n\n[[source]]\nsource_id = 7\nprotocol = \"mqtt\"\ntenant_id = 1\nsite_id = 1\npoint_min = 7001\npoint_max = 7001\nmax_events_per_s = 10\n",
+        )
+        .expect("compile points")
+        .payload;
+        let mut framed = Vec::with_capacity(4 + body.len());
+        framed.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        framed.extend_from_slice(&body);
+        let mut src = FakePointsSource {
+            points: Some(framed),
+        };
+        assert_eq!(fetch_control_binding(&cat, &mut src), None);
+    }
+
+    /// 点表传输缺失 → None（ConfigStep::Unavailable 词形路径）。
+    #[test]
+    fn binding_registry_transport_missing_fails_closed() {
+        let cat = prod_catalog();
+        let mut src = FakePointsSource { points: None };
+        assert_eq!(fetch_control_binding(&cat, &mut src), None);
     }
 }

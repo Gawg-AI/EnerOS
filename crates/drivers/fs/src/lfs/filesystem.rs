@@ -46,6 +46,7 @@ use eneros_storage::ScopedBlockDevice;
 use littlefs2::fs::{Allocation, Filesystem, OpenOptions};
 use littlefs2::io::Error as LfsError;
 use littlefs2::io::SeekFrom as LfsSeekFrom;
+use littlefs2::io::Write as _;
 use littlefs2::path::PathBuf;
 
 use crate::error::FsError;
@@ -430,11 +431,17 @@ impl FileSystem for Lfs {
         let tmp_path = alloc::format!("{path}.tmp");
         // 清理上次崩溃残留的 tmp。
         let _ = self.remove(&tmp_path);
-        self.create(&tmp_path, FileMode::default_file())?;
-        self.write_file_at(&tmp_path, 0, data)?;
-        // 原子替换目标（littlefs2 rename 覆盖语义；先清目标防 rename 语义
-        // 差异——崩溃时 tmp 保留，旧数据在 remove 前仍完整）。
-        let _ = self.remove(path);
+        // One open/create/write/close transaction. Separating create and write
+        // commits empty metadata before data and doubles the small-file cost.
+        let lfs_tmp = make_path(&tmp_path)?;
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open_and_then(&self.fs, &lfs_tmp, |file| file.write_all(data))
+            .map_err(FsError::from)?;
+        // littlefs rename replaces an existing regular file atomically; removing
+        // the destination first would create a crash window with no old value.
         self.rename(&tmp_path, path)
     }
 }
@@ -1059,6 +1066,8 @@ mod tests {
         data: StdRc<std::cell::RefCell<std::vec::Vec<u8>>>,
         block0_reads: StdRc<StdCell<u64>>,
         reads: StdRc<StdCell<u64>>,
+        write_budget: StdRc<StdCell<Option<usize>>>,
+        writes: StdRc<StdCell<usize>>,
         blocks: u64,
     }
 
@@ -1068,11 +1077,23 @@ mod tests {
                 data: StdRc::new(std::cell::RefCell::new(vec![0u8; (blocks * 4096) as usize])),
                 block0_reads: StdRc::new(StdCell::new(0)),
                 reads: StdRc::new(StdCell::new(0)),
+                write_budget: StdRc::new(StdCell::new(None)),
+                writes: StdRc::new(StdCell::new(0)),
                 blocks,
             }
         }
         fn reads(&self) -> u64 {
             self.reads.get()
+        }
+        fn before_write(&self) -> Result<(), eneros_storage::StorageError> {
+            if let Some(left) = self.write_budget.get() {
+                if left == 0 {
+                    return Err(eneros_storage::StorageError::WriteProtected);
+                }
+                self.write_budget.set(Some(left - 1));
+            }
+            self.writes.set(self.writes.get() + 1);
+            Ok(())
         }
     }
 
@@ -1108,6 +1129,7 @@ mod tests {
                     max: self.blocks,
                 });
             }
+            self.before_write()?;
             let off = (block_idx * 4096) as usize;
             let mut d = self.data.borrow_mut();
             d[off..off + buf.len()].copy_from_slice(buf);
@@ -1120,6 +1142,7 @@ mod tests {
                     max: self.blocks,
                 });
             }
+            self.before_write()?;
             let off = (block_idx * 4096) as usize;
             let mut d = self.data.borrow_mut();
             d[off..off + 4096].fill(0);
@@ -1199,5 +1222,39 @@ mod tests {
                 "掉电后文件 {i} 必须完整"
             );
         }
+    }
+    #[test]
+    fn atomic_overwrite_survives_every_block_write_cut() {
+        let old = vec![0x31; 6000];
+        let new = vec![0x72; 7000];
+        let mut successful = false;
+        for cut in 0..64 {
+            let media = SharedMedia::new(64);
+            let result = {
+                let mut fs = Lfs::format(boxed_mock_scope(media.clone(), BlockRole::Data)).unwrap();
+                fs.write_file("/value", &old).unwrap();
+                media.write_budget.set(Some(cut));
+                fs.write_file("/value", &new)
+            };
+            media.write_budget.set(None);
+            let mut rebooted =
+                Lfs::mount(boxed_mock_scope(media.clone(), BlockRole::Data)).unwrap();
+            let recovered = rebooted
+                .read_file("/value")
+                .expect("atomic replacement must retain a complete value");
+            assert!(
+                recovered == old || recovered == new,
+                "partial contents after cut {cut}"
+            );
+            if result.is_ok() {
+                assert_eq!(recovered, new);
+                successful = true;
+                break;
+            }
+        }
+        assert!(
+            successful,
+            "campaign must include the completed replacement"
+        );
     }
 }

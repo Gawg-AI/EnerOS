@@ -32,7 +32,7 @@ cd "$ROOT"
 source "$(dirname "$0")/gate-env.sh"
 EVROOT="$ROOT/evidence/70/70.89"
 RUN="$ROOT/target/evidence70-vol89"
-DL="${DL:-1440}"  # 段长：s1 240 + 4×120 负例 + s6 400 ≈ 1360 ≤ DL
+DL="${DL:-1440}"  # 段长：s1 240 + 负例 900 + s6 400 ≈ 1540（DL 可外覆）
 mkdir -p "$EVROOT" "$RUN"
 FAIL=0
 
@@ -121,10 +121,10 @@ kill_peer() {
 start_peer "" "s1-healthy"
 sleep 240
 kill_peer
-# 段2 负例轮转（单实例 --negative-cycle：每 4 响应注入一负例，四模式
-# 轮转覆盖全窗——消除 6 次 peer 重启的竞态/投递退化）
+# 段2 负例轮转（单实例 --negative-cycle：首 4 响应四模式各一（前置注入
+# ——投递有损随窗内时间恶化，见 peer CYCLE 注），此后每 4 响应 4 负例）
 start_peer "cycle" "neg-cycle"
-sleep 700
+sleep 900
 kill_peer
 echo "[neg-cycle] 注入段结束"
 # 段3 恢复（正常 peer，验证 fail-closed 后链路复活 + used=true 恢复）
@@ -186,9 +186,11 @@ TAIL_USED=$(tail -n "$((N_TOT / 4))" "$S" | grep -ac "REMOTE-BRAIN used=true" ||
   || { echo "[✗][R6] 恢复段零 used=true"; FAIL=1; }
 
 # R10 多资产：结构化请求必须覆盖 ≥2 资产（目录手术 asset 2 生效面）。
+# 2026-09-16（R10 工程落地）：探针转**硬判据**——assets=2 缺失 = 门 FAIL
+#（多资产计划证据是 CORE-70-R10 的出口条件，不再 informational）。
 N2=$(grep -ac "PEER-REQ-V2 .* assets=2 " "$D"/peer-s1-healthy.log 2>/dev/null || true); N2=${N2:-0}
 [ "$N2" -ge 1 ] && echo "[✓][R10] 多资产请求（assets=2 ×$N2）" \
-  || { echo "[i][R10] assets=2 ×$N2——多资产计划证据（DEC-70-13 批上限内）"; }
+  || { echo "[✗][R10] assets=2 ×$N2——多资产计划证据缺失（目录手术未生效）"; FAIL=1; }
 # R7 全窗零 PANIC（判据器 G1 同口径）
 PANICS=$(grep -aci "PANIC\|memory allocation of" "$S" || true)
 [ "$PANICS" -eq 0 ] && echo "[✓][R7] 全窗零 PANIC" \

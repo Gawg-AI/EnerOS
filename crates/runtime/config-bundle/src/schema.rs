@@ -449,6 +449,8 @@ pub mod catalog {
     pub const ROLE_MEASUREMENT: u8 = 1;
     pub const ROLE_CONTROL: u8 = 2;
     pub const ROLE_SWITCH_STATE: u8 = 3;
+    /// Asset-specific state of charge, dimensionless fraction in [0, 1].
+    pub const ROLE_SOC: u8 = 4;
 
     /// 反馈槽码（与 TrustedFeedbackBuilder 槽序对齐）。
     pub const FEEDBACK_SLOT_GRID_UP: u8 = 1;

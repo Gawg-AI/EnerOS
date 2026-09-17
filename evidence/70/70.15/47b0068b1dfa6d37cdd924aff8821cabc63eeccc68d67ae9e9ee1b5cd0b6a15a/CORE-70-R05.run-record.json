@@ -1,0 +1,42 @@
+{
+  "schema": "eneros.gate-run-record.v1",
+  "case_id": "CORE-70-R05",
+  "gate_id": "VOL70.4",
+  "command": "tools/run70-vol4-gate.sh（DL=1000；qemu-test 装配 + 段1 240s + 段5 长断链 420s——synth 节奏适配后 miss 攒满须覆盖 3 轮换）",
+  "exit_code": 0,
+  "recorded_at": "2026-09-17T18:54:52Z",
+  "ran_artifact_sha256": "f941a3b789e3373df1e52e41835043570ec75c1b50006e600db294047c8e516f",
+  "ran_artifact_sha256_source": "evidence/70/70.4/image.sha256",
+  "raw_log": {
+    "name": "vol4.log",
+    "bytes": 3558,
+    "sha256": "7671a1b8e98cba45b2a7a9da2f0e7402715d57102388efb365cffab8c2725103",
+    "resident": "handoff-bundle",
+    "note": ".gitignore `*.log`：原始日志随移交包分发，本记录绑定其摘要"
+  },
+  "verdict_lines": [
+    "[✓][R1] 零 PANIC / 零分配失败",
+    "[✓][R2] 段1 used=true（7）",
+    "[✓][R3] 锚1 后目标侧新连接 CONNACK=3",
+    "[✓][R3] 锚1 后新订阅 SUBSCRIBE=5",
+    "[✓][R3] 锚1 后授权控制进展 Committed=63",
+    "[✓][R3] 锚1 后设备采集回读 modbus ACQ=625",
+    "[✓][R5] LEASE-ARMED（长断链武装可观测）",
+    "[✓][R5] 锚2 后 MQTT 面重连 CONNACK=1",
+    "[✓][R5] 锚2 后订阅恢复 SUBSCRIBE=1",
+    "[✓][R5] 锚2 后降级态持续可观测 used=false（462）",
+    "[✓][R5] DEGRADE-OBS 武装观测行=640（uses 倒计时=退出路径可见）",
+    "[✓][R6] 服务编队 READY（无服务静默死亡）",
+    "[✓][R6] 尾部控制进展（末轮在日志 99% 处，总 1529087 行）",
+    "[✓][R6] 尾部设备回读（尾 3 万行 ACQ=37）",
+    "=== VOL70.4 GATE: PASS ==="
+  ],
+  "verdict": "PASS",
+  "candidate": {
+    "candidate_id": "47b0068b1dfa6d37cdd924aff8821cabc63eeccc68d67ae9e9ee1b5cd0b6a15a",
+    "source_commit": "b9b88cb7bfa9441734973c80e31353c4b9e0fbd8",
+    "dirty_tree_digest": "57bf802f09d73558f3eb836be9c51355ec9a6f52e9c97059979f06984fc0b12e",
+    "artifact_sha256": "784706cbe7c0268de1a54bb0218d0612699d6f370ffe298d738f2c81c6c75f2b",
+    "profile": "qemu-test"
+  }
+}

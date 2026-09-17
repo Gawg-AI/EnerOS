@@ -3,8 +3,10 @@
 #   压力形 = 69.5 窗同形（modbus/iec104 从站 + MQTT broker，peer 刻意离线
 #   → 决策链最高轮速）。69.5 窗在 512 次 agent=OK 处因决策审计 Vec 扩容
 #   （1024×112=114688B）PANIC（evidence/69/vol69.5/qemu-serial.log:203189）；
-#   本窗要求**越过原失败点继续存活**：零 PANIC、零分配失败、尾部相位
-#   仍有有效控制进展。
+#   2026-09-17 复核撤回降标：TSDB 阻塞修复后 vol2 1200s 有 4230 次
+#   Committed，零检查点失败/丢弃；512 并非架构上不可达。恢复 >512 的
+#   目标压力覆盖，G5 仍是另一项最小活性判据，两者不能互相替代。
+#   段0 另保留生产 64KiB 审计预算的 host 10000 次满容量验证。
 #   判据单源 = tools/run70_gate_judge.py（G1–G7，无 alloc.rs 豁免——
 #   69.5 的豁免正是 F70-7-02 缺陷）；本脚本先跑其负例自检，再实弹。
 #   长稳态窗（≥10000 轮且 ≥2h，P 建议值）预算裁决后以
@@ -23,6 +25,9 @@ mkdir -p "$EVROOT" "$RUN"
 # ---- 段0：判据器负例自检（注入 alloc PANIC/尾部死亡/缺日志/旧样本）----
 python3 "$ROOT/tools/run70_gate_judge.py" --selftest || {
   echo "判据器自检 FAIL——门不可信"; exit 2; }
+# 同一生产实现/预算，显式覆盖旧扩容点及满载拒绝，失败不得进入目标窗。
+cargo test -p eneros-dual-brain --features coordinator --lib --locked \
+  audit::tests::test_audit_production_budget_survives_10000_decisions -- --exact || exit 2
 
 gate_cleanup_env 5577 5582 2404 1883
 kill -9 $(pgrep -f "mqtt_telemetry_broker.py") 2>/dev/null || true
@@ -101,8 +106,11 @@ python3 "$ROOT/tools/run70_gate_judge.py" "$S" "$MIN_ROUNDS" \
 RC=$?
 ROUNDS=$(grep -c "CONTROL-CHAIN: round=" "$S")
 OK_N=$(grep -c "agent=OK" "$S")
-echo "[summary] rounds=$ROUNDS agent=OK=$OK_N（原失败点=512 OK；门限=$MIN_ROUNDS 轮）"
-[ "$OK_N" -gt 512 ] || { echo "[✗] agent=OK 未越过原失败点 512"; RC=1; }
+echo "[summary] rounds=$ROUNDS agent=OK=$OK_N（目标压力需越过512；审计满载另见段0 host；门限=$MIN_ROUNDS 轮）"
+if [ "$OK_N" -le 512 ]; then
+  echo "[FAIL] target pressure did not cross original 512-decision failure point"
+  RC=1
+fi
 if [ "$RC" -eq 0 ]; then
   echo "=== VOL70.1 QEMU WINDOW: PASS ==="
 else

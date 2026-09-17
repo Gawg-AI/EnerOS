@@ -14,7 +14,7 @@ use eneros_config_bundle::schema::catalog;
 pub use eneros_config_bundle::schema::catalog::{
     ASSET_FLAG_TOMBSTONE, CONTRACT_CLASS_SETPOINT, CONTRACT_CLASS_SWITCH, FEEDBACK_SLOT_DC_BUS_V,
     FEEDBACK_SLOT_GRID_UP, FEEDBACK_SLOT_OVERCURRENT, FEEDBACK_SLOT_OVERTEMP, FEEDBACK_SLOT_SOC,
-    ROLE_CONTROL, ROLE_MEASUREMENT, ROLE_SWITCH_STATE, SAFETY_KIND_OVERCURRENT,
+    ROLE_CONTROL, ROLE_MEASUREMENT, ROLE_SOC, ROLE_SWITCH_STATE, SAFETY_KIND_OVERCURRENT,
     SAFETY_KIND_OVERTEMP,
 };
 use eneros_config_bundle::schema::catalog_kinds;
@@ -293,7 +293,10 @@ pub fn decode_catalog(payload: &[u8]) -> Result<CatalogBundle, CatalogError> {
                     alloc::format!("point {point_id} unit {unit_code}"),
                 ));
             }
-            let role_ok = matches!(role, ROLE_MEASUREMENT | ROLE_CONTROL | ROLE_SWITCH_STATE);
+            let role_ok = matches!(
+                role,
+                ROLE_MEASUREMENT | ROLE_CONTROL | ROLE_SWITCH_STATE | ROLE_SOC
+            );
             if !role_ok {
                 return Err(r.bad_value("point-unknown-role"));
             }
@@ -819,12 +822,15 @@ mod tests {
         let bundle = decode_catalog(&compiled.payload).unwrap();
         let hdr = bundle.header.unwrap();
         assert_eq!(hdr.versions.generation, 1);
-        assert_eq!(bundle.assets.len(), 2);
+        // 2026-09-16（蓝图 70 R10）：+asset 2（PCS-2，多资产）。
+        assert_eq!(bundle.assets.len(), 3);
         // 2026-09-14：PCS-1 的功率回读/遥测点进目录（+3 语义）；覆盖点数
         // +1（合同回读点 1001 必须进冻结快照的必收点集）。
-        assert_eq!(bundle.points.len(), 12);
+        // 2026-09-16：+PCS-2 点语义 1005..1009（+5，多资产回读/控制面）。
+        assert_eq!(bundle.points.len(), 17);
         assert_eq!(bundle.feedback.len(), 5);
         assert_eq!(bundle.coverage.len(), 8);
-        assert_eq!(bundle.contracts.len(), 1);
+        // 蓝图 70 R10：合同 2（asset 2 / 点 1009）。
+        assert_eq!(bundle.contracts.len(), 2);
     }
 }

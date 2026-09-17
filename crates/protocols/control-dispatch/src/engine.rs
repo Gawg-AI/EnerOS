@@ -122,8 +122,12 @@ pub fn schedule_energy_kwh(s: &eneros_energy_lp_model::result::ScheduleResult) -
 /// `control_mode` / `now_fn` 六个单项。字段集合与类型零变化（分组只改
 /// 组织）；装配种子见 [`crate::config_seed::ConfigSeed`]。
 pub struct DispatchConfig {
-    /// 签发身份与授权束（谁在签发、凭什么签发）。
+    /// 签发身份与授权束（谁在签发、凭什么签发）＝默认资产路由。
     pub issuer: IssuerIdentity,
+    /// 蓝图 70 R10：默认路由之外的 per-asset 扩展执行路由（多资产；
+    /// 单资产装配留空——行为与旧单路由形态逐字节一致）。路由表禁双绑
+    /// 同一 (device,point)（含默认路由；装配面静态可查）。
+    pub extra_routes: alloc::vec::Vec<AssetRoute>,
     /// 速率/能量预算闸（check 在 submit；record 仅在 confirmed dispatch）。
     pub gate: DecisionGate,
     /// SPEC WP-A.2：护栏限值束。
@@ -185,6 +189,10 @@ impl Default for TrustedInputPolicy {
 /// 签发身份与授权束（蓝图 69.4 WP-69.4.4 分组）——授权链、信封签名
 /// 密钥、同源档案、fencing token、签发服务与代次：信封签发路径成束
 /// 消费，禁再散抄。
+///
+/// 蓝图 70 R10：本束承载**默认资产路由**；更多资产的执行路由经
+/// [`DispatchConfig::extra_routes`] 注入（与默认路由同构，见
+/// [`AssetRoute`]）。
 pub struct IssuerIdentity {
     /// 授权链（gateway/lease/idempotency/policy/safety/SBO——default-deny）。
     pub chain: ControlChain,
@@ -199,6 +207,23 @@ pub struct IssuerIdentity {
     pub issuer_service: [u8; 16],
     /// 签发服务 epoch（重启计数）。
     pub issuer_epoch: u64,
+}
+
+/// 蓝图 70 R10：per-asset 执行路由（装配期冻结，运行期只读）。
+///
+/// 与默认路由（[`IssuerIdentity::chain`]/[`IssuerIdentity::profile`]）
+/// 同构：信封签发与 12 步链复验按本路由执行——每资产独立链实例
+/// （重放缓存/幂等/SBO/租约各自成立，安全语义零放宽、零共享）。
+/// 路由键 = `profile` 的 `(device_id, point_id)`（点表协议映射单源；
+/// 与 [`IssuerIdentity::profile`] 重复即装配错误——路由表禁双绑同一
+/// (device,point)）。
+pub struct AssetRoute {
+    /// 全局资产 id（诊断/观测面；路由判定不消费）。
+    pub asset_id: u64,
+    /// 同源档案（语义同 [`IssuerIdentity::profile`]）。
+    pub profile: ControlProfile,
+    /// 授权链实例（语义同 [`IssuerIdentity::chain`]）。
+    pub chain: ControlChain,
 }
 
 /// SPEC WP-A.2：护栏限值束（工程单位见各字段；测试域可自由构造）。
@@ -266,11 +291,11 @@ pub struct DispatchEngine {
     arbiter: crate::arbiter::CommandArbiter,
     /// WP-5.3：资源控制模式。
     control_mode: crate::arbiter::ControlMode,
-    chain: ControlChain,
     key: Vec<u8>,
-    /// 同源档案（蓝图 55）：lease_id/policy_version/device_id/point_id 的
-    /// 单一来源。
-    profile: ControlProfile,
+    /// 蓝图 70 R10：per-asset 执行路由表（routes[0] = 默认路由 = 装配
+    /// issuer；其后为 extra_routes）。信封签发/链复验/SBO/爬坡基线全部
+    /// 按命令命中的路由执行——每资产独立链实例，安全语义零放宽。
+    routes: alloc::vec::Vec<AssetRoute>,
     fencing_token: u64,
     issuer_service: [u8; 16],
     issuer_epoch: u64,
@@ -321,6 +346,8 @@ pub struct DispatchEngine {
     /// setpoint（值, 确认时刻 ms）——单点爬坡检查的参照基线。仅内存
     /// （重启后无参照 = 首命令放行；跨重启的爬坡基线归对账/点表）。
     last_confirmed: BTreeMap<(u32, u32), (f64, u64)>,
+    held_plans: Option<crate::held_plan::DurablePlans>,
+    held_store_unavailable: bool,
 }
 
 // ==========================================================================
@@ -861,6 +888,10 @@ struct ExecutionCtx<'a> {
     energy: f64,
     /// 连续 setpoint 值（AppliedConfirmed 时更新爬坡基线；离散 None）。
     setpoint_kw: Option<f64>,
+    /// 蓝图 70 R10：命令语义目标 (device, point)——AppliedConfirmed 爬坡
+    /// 基线按键（多资产各键独立；单资产形态 = 旧 (profile.device,profile.point)
+    /// 逐字节一致）。
+    target: (u32, u32),
 }
 
 /// 结算编排面（`DispatchEngine` 内聚实现；host/target 同源）。
@@ -994,12 +1025,10 @@ impl SettleDispatch for DispatchEngine {
                 "[svc-control-dispatch] EXEC-JOURNAL applied-confirmed（独立回读匹配→Committed）"
             );
             // 复查 FIX（61 §3.4）：记录最近 AppliedConfirmed setpoint
-            //（单点爬坡基线；仅 ActivePowerKw 有连续量语义）。
+            //（单点爬坡基线；仅 ActivePowerKw 有连续量语义）。蓝图 70 R10：
+            // 基线按键 = 命令语义目标 (device,point)（多资产各键独立）。
             if let Some(v) = ctx.setpoint_kw {
-                self.last_confirmed.insert(
-                    (self.profile.device_id, self.profile.point_id),
-                    (v, (self.now_fn)()),
-                );
+                self.last_confirmed.insert(ctx.target, (v, (self.now_fn)()));
             }
             // 步骤 11：confirmed dispatch 才记账。
             self.gate.record(started, ctx.energy);
@@ -1110,15 +1139,36 @@ impl DispatchEngine {
     /// 构造。
     pub fn new(config: DispatchConfig) -> Self {
         let pending = config.audit_sinks.intent_log.pending();
+        // 蓝图 70 R10：路由表 = 默认路由（issuer）打头 + 扩展路由；
+        // (device,point) 双绑 = 装配错误（信封签发面二义）→ 拒绝装配
+        // 之外的处理不可行（构造无 Result），此处 panic 与装配期静态
+        // 校验同律——错误装配在首次构造即暴露，不带病运行。
+        let mut routes = alloc::vec::Vec::with_capacity(1 + config.extra_routes.len());
+        routes.push(AssetRoute {
+            asset_id: 0, // 默认路由（历史单资产形态；asset id 未入身份束）
+            profile: config.issuer.profile,
+            chain: config.issuer.chain,
+        });
+        for r in config.extra_routes {
+            assert!(
+                routes
+                    .iter()
+                    .all(|e| e.profile.device_id != r.profile.device_id
+                        || e.profile.point_id != r.profile.point_id),
+                "extra route duplicates (device,point): ({}, {})",
+                r.profile.device_id,
+                r.profile.point_id
+            );
+            routes.push(r);
+        }
         let mut engine = Self {
             resources: config.resources,
             contracts: config.contracts,
             compiler_policy: config.compiler_policy,
             arbiter: crate::arbiter::CommandArbiter::new(256),
             control_mode: config.control_mode,
-            chain: config.issuer.chain,
             key: config.issuer.key,
-            profile: config.issuer.profile,
+            routes,
             fencing_token: config.issuer.fencing_token,
             issuer_service: config.issuer.issuer_service,
             issuer_epoch: config.issuer.issuer_epoch,
@@ -1153,6 +1203,8 @@ impl DispatchEngine {
             audit_append_count: 0,
             last_seq: BTreeMap::new(),
             last_confirmed: BTreeMap::new(),
+            held_plans: None,
+            held_store_unavailable: false,
         };
         // 启动恢复播种：durable 未决记录（v1 遗留 Applied/Persisted 或
         // 崩溃窗口遗留）→ Reconciling。投递与否不可证明——重放零投递、
@@ -1184,6 +1236,14 @@ impl DispatchEngine {
     /// 更新 fencing token（租约续期后）。
     pub fn update_fencing_token(&mut self, token: u64) {
         self.fencing_token = token;
+    }
+
+    /// 蓝图 70 R10：按 (device,point) 解析执行路由索引（点表协议映射
+    /// 键；未注册目标 → None——调用方 fail-closed 拒绝）。
+    fn route_index_for(&self, device: u32, point: u32) -> Option<usize> {
+        self.routes
+            .iter()
+            .position(|r| r.profile.device_id == device && r.profile.point_id == point)
     }
 
     // 蓝图 63 WP-63.1.2：观测/可写分离——以下只读观测面是外部读这六个
@@ -1317,21 +1377,45 @@ impl DispatchEngine {
     /// 入口换为 [`PointWriteIntent`]）。重放门 + 链幂等双防重复 sequence。
     /// WP-5.3（[10] §4.1）：投递前唯一 Arbiter 裁决。迁移期映射：
     /// Reject ⇒ NotAuthorized（零投递）；MergeInSolver ⇒ ProposalInvalid
-    /// （可叠加服务回 solver）；Preempt ⇒ 放行——在途命令由 journal 同键
-    /// 幂等对账兜底（先 reconcile 后执行的等效语义，登记项：显式取消面）。
+    /// （可叠加服务回 solver）；Preempt ⇒ 对账完成前拒绝新写。新意图的
+    /// 幂等键与在途命令不同，不能用同键去重冒充抢占前对账。
     fn arbitrate(
         &mut self,
         source: crate::arbiter::CommandSource,
         valid_now: bool,
+        device_id: u32,
     ) -> Result<(), DispatchError> {
+        self.arbitrate_owned(source, valid_now, device_id, None)
+    }
+
+    fn arbitrate_owned(
+        &mut self,
+        source: crate::arbiter::CommandSource,
+        valid_now: bool,
+        device_id: u32,
+        owner: Option<eneros_decision_contract::PlanId>,
+    ) -> Result<(), DispatchError> {
+        if self.held_device_busy(device_id, owner)? {
+            return Err(DispatchError::NotAuthorized(String::from(
+                "arbiter: device owned by held plan",
+            )));
+        }
         let in_flight = !self.journal.pending().is_empty();
+        if in_flight && self.arbiter.in_flight_source(device_id).is_none() {
+            // Boot recovery rebuilds the journal, but cannot prove the old
+            // source/device scope from legacy records. An empty arbitration
+            // map must not turn that uncertainty into permission for a new key.
+            return Err(DispatchError::NotAuthorized(String::from(
+                "arbiter: reconcile required for recovered or unscoped pending intent",
+            )));
+        }
         if !in_flight {
             // journal 真值自愈：无非终态记录 = 在途已收敛，清登记。
-            self.arbiter.clear_in_flight(self.profile.device_id);
+            self.arbiter.clear_in_flight(device_id);
         }
         let req = crate::arbiter::ArbitrationRequest {
             source,
-            device_id: self.profile.device_id,
+            device_id,
             lease_valid: true, // 租约/权限由 12 步链 Gateway 全查（纵深）
             valid_now,
             preemptible_target: true,
@@ -1344,19 +1428,16 @@ impl DispatchEngine {
         };
         match self.arbiter.decide(&req, &ctx) {
             crate::arbiter::Decision::Proceed => {
-                self.arbiter
-                    .register_in_flight(self.profile.device_id, source);
+                self.arbiter.register_in_flight(device_id, source);
                 Ok(())
             }
             crate::arbiter::Decision::Preempt(_, losers) => {
-                // 迁移期：在途 = journal 非终态，同键重入即对账（零盲发）。
-                eneros_runtime::println!(
-                    "[svc-control-dispatch] ARBITER-PREEMPT loser={:?}",
+                // Preserve the existing owner until the unknown physical effect
+                // has actually been reconciled. Priority alone is not evidence.
+                Err(DispatchError::NotAuthorized(alloc::format!(
+                    "arbiter: reconcile required before preempting {:?}",
                     losers.first().map(|l| l.source)
-                );
-                self.arbiter
-                    .register_in_flight(self.profile.device_id, source);
-                Ok(())
+                )))
             }
             crate::arbiter::Decision::Reject(losers) => {
                 Err(DispatchError::NotAuthorized(alloc::format!(
@@ -1394,18 +1475,23 @@ impl DispatchEngine {
         let mut states: Vec<DispatchState> = Vec::with_capacity(12);
         states.push(DispatchState::Proposed);
 
-        // 步骤 1：意图校验——目标设备/点必须等于装配绑定（WP-47.2 点表
-        // 绑定；防协议层越点写）+ 值域有限。
-        if intent.device_id as u32 != self.profile.device_id
-            || intent.point_id != self.profile.point_id
-        {
+        // 步骤 1：意图校验——目标 (device,point) 必须命中装配绑定注册表
+        // （WP-47.2 点表绑定 + 蓝图 70 R10 多资产路由；防协议层越点写）
+        // + 值域有限。未注册目标 = 未知资产意图，一律拒绝（fail-closed）。
+        let route_idx = self.route_index_for(intent.device_id as u32, intent.point_id);
+        let Some(route_idx) = route_idx else {
             return Err(DispatchError::NotAuthorized(format!(
-                "intent target device={} point={} 与装配绑定 device={} point={} 不符",
-                intent.device_id, intent.point_id, self.profile.device_id, self.profile.point_id
+                "intent target device={} point={} 未绑定本 dispatch（绑定注册表无此 (device,point) 路由）",
+                intent.device_id, intent.point_id
             )));
-        }
-        // WP-5.3（[10] §4.1）：协议入站写同经唯一 Arbiter（调度机构类）。
-        self.arbitrate(crate::arbiter::CommandSource::GridOperatorConfirmed, true)?;
+        };
+        // WP-5.3（[10] §4.1）：协议入站写同经唯一 Arbiter（调度机构类；
+        // 在途登记按意图目标设备——多资产各键独立）。
+        self.arbitrate(
+            crate::arbiter::CommandSource::GridOperatorConfirmed,
+            true,
+            u32::from(intent.device_id),
+        )?;
 
         let power_kw = match intent.value {
             PointValue::Float(f) if f.is_finite() => f,
@@ -1479,6 +1565,7 @@ impl DispatchEngine {
             started,
             states,
             deadline_ms,
+            route_idx,
         )
     }
 
@@ -1515,15 +1602,16 @@ impl DispatchEngine {
         // 经严格 adapter 进入 CandidatePlan（[17] .28"经严格 adapter 进入
         // CandidatePlan"），合核只消费 typed 产物（含 PlanTyped 身份）。
         // 旧 facade reader（70B wire 读臂）已于 v0.329.0 删除（蓝图 69.4）。
+        // 蓝图 70 R10：legacy 单资产 facade 绑定默认路由（routes[0]）。
         let plan = crate::adapter::proposal_to_candidate(
             proposal,
             (
-                u64::from(self.profile.device_id),
-                u16::try_from(self.profile.device_id).unwrap_or(0),
-                self.profile.point_id,
+                u64::from(self.routes[0].profile.device_id),
+                u16::try_from(self.routes[0].profile.device_id).unwrap_or(0),
+                self.routes[0].profile.point_id,
                 0,
             ),
-            eneros_telemetry_model::unit_catalog::code_of(self.profile.unit),
+            eneros_telemetry_model::unit_catalog::code_of(self.routes[0].profile.unit),
             1, // catalog_version（.35 registry 落地前的 profile 单源常量）
         )?;
         let energy = schedule_energy_kwh(&proposal.schedule);
@@ -1565,7 +1653,7 @@ impl DispatchEngine {
         telemetry: &TrustedTelemetry,
         actor: &AuthenticatedActor,
         deadline_ms: u64,
-        trusted: Option<&eneros_agent_sdk::snap_input_wire::SnapshotFacts>,
+        trusted: Option<&eneros_agent_sdk::snap_input_wire::TrustedInput>,
     ) -> Result<DispatchReceipt, DispatchError> {
         let started = (self.now_fn)();
         if !plan.is_valid_at(started) {
@@ -1573,7 +1661,7 @@ impl DispatchEngine {
         }
         // 蓝图 70.8 WP-70.8.4：**可信输入准入**。入口只验证、绝不改写
         // 候选身份——不匹配即整批拒绝（零投递）。
-        self.admit_trusted_input(plan, trusted, started)?;
+        self.admit_trusted_input(plan, trusted.map(|input| input.facts()), started)?;
         // 63 WP-63.1.3：states 恒为推进链起点（原调用点同构构造，本体内
         // 不增删）。
         let states: Vec<DispatchState> =
@@ -1638,7 +1726,7 @@ impl DispatchEngine {
             &applied,
             &self.compiler_policy,
             started,
-            u64::from(self.profile.device_id),
+            u64::from(self.routes[0].profile.device_id),
         )
         .map_err(|e| DispatchError::ProposalInvalid(alloc::format!("compile: {e}")))?;
 
@@ -1662,14 +1750,27 @@ impl DispatchEngine {
             &first_digest[..4],
         );
 
-        // 装配预检（fail-closed，不半执行）：全部意图必须绑定本 dispatch
-        // 设备——多设备投递面待 WP-5.2 Saga 卷（登记项）。
+        // An irreversible command needs an explicit approval capability. The
+        // automatic plan entry has none: reject the entire batch before writes.
+        if !outcome.manual_approval.is_empty() {
+            return Err(DispatchError::NotAuthorized(String::from(
+                "manual approval required for irreversible plan commands",
+            )));
+        }
+
+        // 装配预检（fail-closed，不半执行）：全部意图的 (device,point)
+        // 必须命中绑定注册表路由（蓝图 70 R10 多资产；未注册目标拒绝，
+        // 不半执行）+ 全局功率上限护栏。
         for batch in &outcome.batches {
             for intent in batch.intents() {
-                if u32::from(intent.device_id()) != self.profile.device_id {
+                if self
+                    .route_index_for(u32::from(intent.device_id()), intent.point_id())
+                    .is_none()
+                {
                     return Err(DispatchError::ProposalInvalid(alloc::format!(
-                        "compile: intent device {} 未绑定本 dispatch（多设备执行面待 Saga 卷）",
-                        intent.device_id()
+                        "compile: intent device {} point {} 未绑定本 dispatch（绑定注册表无此路由）",
+                        intent.device_id(),
+                        intent.point_id()
                     )));
                 }
                 if intent.power_kw().abs() > self.max_power_kw {
@@ -1682,8 +1783,129 @@ impl DispatchEngine {
             }
         }
 
-        // WP-5.3（[10] §4.1）：投递前唯一 Arbiter 裁决。
-        self.arbitrate(crate::arbiter::CommandSource::SiteOptimizer, true)?;
+        // The durable entry owns every future step. A production multi-command
+        // plan must not fall through to the legacy caller-driven replay loop.
+        if plan.step_count() > 1
+            || outcome
+                .batches
+                .iter()
+                .map(|b| b.intents().len())
+                .sum::<usize>()
+                > 1
+        {
+            if self.held_plans.is_some() {
+                let input = trusted.ok_or_else(|| {
+                    DispatchError::NotAuthorized(String::from("held plan requires trusted input"))
+                })?;
+                let horizon_end = plan.horizon_start_ms().saturating_add(
+                    plan.step_ns().saturating_mul(u64::from(plan.step_count())) / 1_000_000,
+                );
+                if horizon_end > telemetry.valid_until_ms
+                    || horizon_end > certificate.valid_until_ms()
+                    || outcome
+                        .batches
+                        .iter()
+                        .flat_map(|b| b.intents())
+                        .any(|i| i.valid_until_ms() > telemetry.valid_until_ms)
+                {
+                    return Err(DispatchError::ProposalInvalid(String::from(
+                        "held horizon exceeds trusted telemetry",
+                    )));
+                }
+                return self.accept_held_plan(
+                    plan,
+                    reply,
+                    input,
+                    telemetry,
+                    actor,
+                    &outcome.batches,
+                );
+            }
+            if matches!(self.trusted_input, TrustedInputPolicy::Required) {
+                return Err(DispatchError::IntentPersistFailed(String::from(
+                    "held plan storage unavailable",
+                )));
+            }
+        }
+
+        // WP-5.3（[10] §4.1）：投递前唯一 Arbiter 裁决——按批内涉备逐一
+        // 裁决并登记在途（蓝图 70 R10 多资产：在途登记按设备键，各键
+        // 独立成立；任一设备拒绝 = 整批不投递，语义与单资产一致）。
+        let mut involved: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
+        for batch in &outcome.batches {
+            for intent in batch.intents() {
+                let d = u32::from(intent.device_id());
+                if !involved.contains(&d) {
+                    involved.push(d);
+                }
+            }
+        }
+        let legacy_single = crate::compiler::is_legacy_single_command_plan(plan);
+        // A repeated partial batch must return its unresolved receipt before
+        // attempting to reserve devices belonging to still-unsent successors.
+        let mut unresolved = None;
+        for intent in outcome.batches.iter().flat_map(|batch| batch.intents()) {
+            let key = crate::compiler::plan_command_correlation(
+                plan.id(),
+                intent.intent_id(),
+                legacy_single,
+            );
+            let digest = eneros_protocol_abstract::write::semantic_command_digest(
+                u32::from(intent.device_id()),
+                intent.point_id(),
+                CommandValue::ActivePowerKw(intent.power_kw()),
+            );
+            match self.journal.lookup(&key, &digest) {
+                Some(JournalHit::Conflict) => {
+                    return Err(DispatchError::IdempotencyConflict(String::from(
+                        "batch replay semantic mismatch",
+                    )))
+                }
+                Some(JournalHit::Current(record)) if !record.status.is_terminal() => {
+                    unresolved.get_or_insert(record);
+                }
+                _ => {}
+            }
+        }
+        if let Some(record) = unresolved {
+            return Ok(Self::receipt_from_journal(
+                &record,
+                record.command_id,
+                record.key,
+                started,
+                (self.now_fn)(),
+                "batch replay: reconciliation pending",
+            ));
+        }
+        for &d in &involved {
+            // A known command may query its journal while the resource is held.
+            // This bypass is only for matching semantic digests; a new command
+            // still goes through arbitration and cannot overwrite an unknown effect.
+            let replay_only = outcome
+                .batches
+                .iter()
+                .flat_map(|b| b.intents())
+                .filter(|i| u32::from(i.device_id()) == d)
+                .all(|i| {
+                    let key = crate::compiler::plan_command_correlation(
+                        plan.id(),
+                        i.intent_id(),
+                        legacy_single,
+                    );
+                    let digest = eneros_protocol_abstract::write::semantic_command_digest(
+                        d,
+                        i.point_id(),
+                        eneros_telemetry_model::command::CommandValue::ActivePowerKw(i.power_kw()),
+                    );
+                    matches!(
+                        self.journal.lookup(&key, &digest),
+                        Some(JournalHit::Current(_))
+                    )
+                });
+            if !replay_only {
+                self.arbitrate(crate::arbiter::CommandSource::SiteOptimizer, true, d)?;
+            }
+        }
 
         // —— 逐命令合核（批序 = 编译序；失败阻断后继）——
         // not_before 语义：未来步不当拍投递（留待到期 tick——键已由编译
@@ -1696,7 +1918,6 @@ impl DispatchEngine {
         // （REG-70.FL-MULTISTEP-REPLAY）。现补对称证据行 + 计数：
         // 延期步数逐次可对账，投递面是否真有后续 tick 来接手，
         // 从"看不出来"变成"看得出"。
-        let legacy_single = crate::compiler::is_legacy_single_command_plan(plan);
         let mut delivered_any = false;
         let mut last_receipt = None;
         let mut deferred_steps = 0u32;
@@ -1713,7 +1934,7 @@ impl DispatchEngine {
                     );
                     continue;
                 }
-                if now > intent.valid_until_ms() {
+                if now >= intent.valid_until_ms() {
                     expired_steps = expired_steps.saturating_add(1);
                     eneros_runtime::println!(
                         "[svc-control-dispatch] PLAN-COMMAND-SKIP-EXPIRED intent={:02x?}",
@@ -1729,6 +1950,10 @@ impl DispatchEngine {
                 // typed 路径能量预算估算（WP-64.3.2.3 单源）。
                 let (window_secs, energy_est) = intent_window_estimate(intent, now, plan.ttl_ms());
                 let energy = energy_kwh.or(Some(energy_est));
+                // 蓝图 70 R10：逐命令按其绑定路由执行（预检已保证命中）。
+                let route_idx = self
+                    .route_index_for(u32::from(intent.device_id()), intent.point_id())
+                    .expect("预检已保证 (device,point) 命中路由表");
                 let receipt = self.execute_core(
                     CoreCommand {
                         identity: CoreIdentity::PlanCommand { correlation },
@@ -1745,8 +1970,22 @@ impl DispatchEngine {
                     started,
                     states.clone(),
                     deadline_ms,
+                    route_idx,
                 )?;
                 delivered_any = true;
+                // 物理结果未知/拒绝是 Ok(receipt)，并不等于命令成功。
+                // 必须阻断后继，不能让末条 Committed 覆盖前项失败；未知
+                // 目标保留仲裁在途登记，其他尚未投递目标释放登记。
+                if !receipt.final_state.is_committed() {
+                    for &d in &involved {
+                        if d != u32::from(intent.device_id())
+                            || receipt.final_state != DispatchState::Indeterminate
+                        {
+                            self.arbiter.clear_in_flight(d);
+                        }
+                    }
+                    return Ok(receipt);
+                }
                 last_receipt = Some(receipt);
             }
         }
@@ -1757,13 +1996,15 @@ impl DispatchEngine {
             expired_steps,
             u32::from(delivered_any),
         );
+        // 蓝图 70 R10：在途登记按涉备逐一清账（与仲裁登记同键集）。
+        for &d in &involved {
+            self.arbiter.clear_in_flight(d);
+        }
         if !delivered_any {
-            self.arbiter.clear_in_flight(self.profile.device_id);
             return Err(DispatchError::ProposalInvalid(alloc::format!(
                 "计划无到期命令（未来步留待到期 tick）：deferred={deferred_steps} expired={expired_steps}"
             )));
         }
-        self.arbiter.clear_in_flight(self.profile.device_id);
         Ok(last_receipt.expect("delivered_any ⇒ 非 None"))
     }
 
@@ -1887,6 +2128,9 @@ impl DispatchEngine {
     ///
     /// 关键不变量（附录 B 卡 2）：两入口都只允许 `ActorKind::Ai`——合并后
     /// 此门唯一存在，语义一字不改。
+    /// 蓝图 70 R10：route_idx 入参（多资产执行路由；参数 7→8——成束重构
+    /// 与 run_typed 同律，归 70.11 计划持有模块落地时统一收拢）。
+    #[allow(clippy::too_many_arguments)]
     fn execute_core(
         &mut self,
         cmd: CoreCommand,
@@ -1895,6 +2139,7 @@ impl DispatchEngine {
         started: u64,
         mut states: Vec<DispatchState>,
         deadline_ms: u64,
+        route_idx: usize,
     ) -> Result<DispatchReceipt, DispatchError> {
         // 步骤 3：actor/capability/lease/fencing（+ 步骤 4：safety catalog）。
         // 只允许 AI 决策链角色（产品闭环唯一决策方；协议入站写沿用 AI
@@ -1921,6 +2166,13 @@ impl DispatchEngine {
             }
         };
         let now_secs = started / 1000;
+        // 蓝图 70 R10：本命令的执行路由（预检/准入已保证命中）——信封、
+        // 语义摘要、爬坡基线、SBO 与链复验全部按此路由的 (device,point)
+        // 与链实例执行（每资产独立链，安全语义零放宽）。
+        let (route_device, route_point) = {
+            let p = &self.routes[route_idx].profile;
+            (p.device_id, p.point_id)
+        };
         // 61 v0.314.25 §3.5.8：`power_kw → On/Off` 映射删除——连续功率以
         // ActivePowerKw setpoint 授权与执行（不再伪装成开关）。
         let value = CommandValue::ActivePowerKw(cmd.power_kw);
@@ -1929,23 +2181,26 @@ impl DispatchEngine {
         // 同计划重放 / 同 (protocol,seq) 跨重启重放均返回原结果，不重复写。
         // 61 v0.314.24：ControlEnvelope 提前构建（纯装配，无副作用）——
         // journal 预检需要命令摘要；投递复用同一实例。
-        let buf = EnvelopeBuilder::new(
-            command_id,
-            self.profile.device_id,
-            self.profile.point_id,
-            ControlCommand::Single(SingleCommand::On), // legacy 占位；value 覆盖
-            now_secs,
-            now_secs.saturating_add(cmd.ttl_secs),
-            self.issuer_service,
-        )
-        .lease(self.profile.lease_id, self.fencing_token)
-        .policy_version(self.profile.policy_version)
-        .sequence(sequence)
-        .actor_kind(ActorKind::Ai)
-        .idempotency_key(correlation)
-        .value(value)
-        .build(&self.key)
-        .encode();
+        let buf = {
+            let route = &self.routes[route_idx];
+            EnvelopeBuilder::new(
+                command_id,
+                route.profile.device_id,
+                route.profile.point_id,
+                ControlCommand::Single(SingleCommand::On), // legacy 占位；value 覆盖
+                now_secs,
+                now_secs.saturating_add(cmd.ttl_secs),
+                self.issuer_service,
+            )
+            .lease(route.profile.lease_id, self.fencing_token)
+            .policy_version(route.profile.policy_version)
+            .sequence(sequence)
+            .actor_kind(ActorKind::Ai)
+            .idempotency_key(correlation)
+            .value(value)
+            .build(&self.key)
+            .encode()
+        };
         let expires_ms = started.saturating_add(cmd.ttl_secs * 1000);
         let envelope = ControlEnvelope::new_v3(
             correlation,
@@ -1961,8 +2216,8 @@ impl DispatchEngine {
         // AuthorizedCommand.command_digest（canonical V3 头摘要）另由
         // gateway 签发，供 writer 绑定验证——两者用途不同、并存不冲突。
         let command_digest = eneros_protocol_abstract::write::semantic_command_digest(
-            self.profile.device_id,
-            self.profile.point_id,
+            route_device,
+            route_point,
             value,
         );
 
@@ -1999,14 +2254,12 @@ impl DispatchEngine {
         // max_ramp_per_sec）；超限拒绝（零投递）。首命令无参照放行
         // （跨重启基线不持久——归对账/点表，Phase 1 收编）。
         if let CommandValue::ActivePowerKw(v) = value {
-            if let Some(&(last_v, last_ms)) = self
-                .last_confirmed
-                .get(&(self.profile.device_id, self.profile.point_id))
+            if let Some(&(last_v, last_ms)) = self.last_confirmed.get(&(route_device, route_point))
             {
                 let dt_secs = ((self.now_fn)().saturating_sub(last_ms)) as f64 / 1_000.0;
                 // dt 下限 1s：同拍/倒挂重发不放大许可，也不除零。
                 let rate = (v - last_v).abs() / dt_secs.max(1.0);
-                let limit = self
+                let limit = self.routes[route_idx]
                     .profile
                     .control_contract()
                     .map(|c| c.max_ramp_per_sec)
@@ -2023,9 +2276,14 @@ impl DispatchEngine {
         }
 
         // SBO：选择+执行原子（ControlGateway 九步链，不双头授权）。
-        self.chain.sbo_select(self.profile.point_id, now_secs);
+        // 蓝图 70 R10：选择键与链实例均取本命令路由（每资产独立）。
         let fb: FeedbackBundle = self.feedback_builder.build(telemetry, now_secs);
-        match self.chain.execute(&buf, now_secs, &fb) {
+        let chain_outcome = {
+            let route = &mut self.routes[route_idx];
+            route.chain.sbo_select(route.profile.point_id, now_secs);
+            route.chain.execute(&buf, now_secs, &fb)
+        };
+        match chain_outcome {
             ChainOutcome::Executed { .. } => {
                 // 61 v0.314.24：journal 登记 Authorized（执行事实起点）。
                 // journal 满 → Err 零投递（fail-closed，不伪造可投递）。
@@ -2114,6 +2372,7 @@ impl DispatchEngine {
             response: None,
             energy: 0.0,
             setpoint_kw: None,
+            target: (route_device, route_point),
         };
 
         // 步骤 4.5（SPEC-SERIES-2026-08-27/A WP-A.2）：AI 电气护栏——
@@ -2229,6 +2488,7 @@ impl DispatchEngine {
             response: None,
             energy: cmd.energy_kwh.unwrap_or(0.0),
             setpoint_kw,
+            target: (route_device, route_point),
         };
         self.deliver_and_settle(response, states, &deliver_ctx)
     }
@@ -2463,8 +2723,19 @@ impl DispatchEngine {
 }
 
 impl ControlDispatch for DispatchEngine {
+    fn tick_held(
+        &mut self,
+        input: Option<&eneros_agent_sdk::snap_input_wire::TrustedInput>,
+        telemetry: Option<&TrustedTelemetry>,
+    ) -> Result<(), DispatchError> {
+        self.drive_held_plans(input, telemetry).map(|_| ())
+    }
+
+    fn query_held(&self) -> Result<Vec<crate::saga::DriveReport>, DispatchError> {
+        self.held_plan_reports()
+    }
     fn default_asset_id(&self) -> u64 {
-        u64::from(self.profile.device_id)
+        u64::from(self.routes[0].profile.device_id)
     }
 
     fn submit(
@@ -2530,7 +2801,7 @@ impl ControlDispatch for DispatchEngine {
             telemetry,
             actor,
             deadline_ms,
-            Some(trusted.facts()),
+            Some(trusted),
         )
     }
 }
@@ -2619,10 +2890,9 @@ impl DispatchEngine {
 /// - `execute`：走 [`DispatchEngine::execute_core`]-equivalent 链
 ///   （PlanCommand 身份：幂等键 = intent_id 派生 / legacy 单命令 = PlanId
 ///   ——journal 同键防重复投递）；
-/// - `reconcile`（[10] §3.4 readback-first）：同幂等键再入合核——journal
-///   命中返回当前真实状态，**零投递**；Committed ⇒ ConfirmedApplied
-///   （driver 再做第二次独立校验），Indeterminate ⇒ 人工，Failed ⇒ 确认
-///   未生效；
+/// - `reconcile`（[10] §3.4 readback-first）：只调用设备独立读取接口，
+///   不重入执行链、不追加意图、不发送写命令；读值匹配后由 driver
+///   再次独立读取确认，读失败交人工处理。
 /// - `compensate`：补偿派生键（`"comp"` 域分隔）全新执行——新意图、
 ///   新授权、新 journal 条目，不改写历史。
 pub struct EngineSagaExecutor<'a> {
@@ -2710,7 +2980,30 @@ impl<'a> EngineSagaExecutor<'a> {
         power_override_kw: Option<f64>,
     ) -> Result<DispatchReceipt, DispatchError> {
         let started = (self.engine.now_fn)();
+        if started < intent.valid_from_ms() || started >= intent.valid_until_ms() {
+            return Err(DispatchError::ProposalInvalid(String::from(
+                "saga command outside validity window",
+            )));
+        }
         let (window_secs, energy_est) = intent_window_estimate(intent, started, self.plan_ttl_ms);
+        // 恢复的批可能引用已移除的路由：与普通意图入口同样拒绝，
+        // 不能让未注册目标使整个服务 panic。
+        let route_idx = self
+            .engine
+            .route_index_for(u32::from(intent.device_id()), intent.point_id())
+            .ok_or_else(|| {
+                DispatchError::NotAuthorized(alloc::format!(
+                    "saga target device={} point={} 未绑定本 dispatch",
+                    intent.device_id(),
+                    intent.point_id()
+                ))
+            })?;
+        self.engine.arbitrate_owned(
+            crate::arbiter::CommandSource::SiteOptimizer,
+            true,
+            u32::from(intent.device_id()),
+            Some(self.plan_id),
+        )?;
         self.engine.execute_core(
             CoreCommand {
                 identity: CoreIdentity::PlanCommand { correlation },
@@ -2729,6 +3022,7 @@ impl<'a> EngineSagaExecutor<'a> {
             started,
             alloc::vec![DispatchState::Proposed, DispatchState::Validated],
             self.deadline_ms,
+            route_idx,
         )
     }
 
@@ -2762,6 +3056,20 @@ impl<'a> EngineSagaExecutor<'a> {
 }
 
 impl SagaExecutor for EngineSagaExecutor<'_> {
+    fn applied_durable(
+        &mut self,
+        intent: &eneros_decision_contract::CommandIntent,
+        readback: Option<f64>,
+    ) -> Result<(), String> {
+        let correlation = crate::compiler::plan_command_correlation(
+            &self.plan_id,
+            intent.intent_id(),
+            self.legacy_single,
+        );
+        self.engine
+            .settle_saga_applied(intent, correlation, readback)
+    }
+
     fn execute(
         &mut self,
         intent: &eneros_decision_contract::CommandIntent,
@@ -2785,38 +3093,7 @@ impl SagaExecutor for EngineSagaExecutor<'_> {
     }
 
     fn reconcile(&mut self, intent: &eneros_decision_contract::CommandIntent) -> ReconcileOutcome {
-        let correlation = crate::compiler::plan_command_correlation(
-            &self.plan_id,
-            intent.intent_id(),
-            self.legacy_single,
-        );
-        match self.execute_intent(intent, correlation, None) {
-            Ok(r) => match r.final_state {
-                // journal 命中 AppliedConfirmed（历史读回证据）→ 第一重
-                // 确认；driver 发起第二次独立校验（[10] §3.5）。
-                DispatchState::Committed => ReconcileOutcome::ConfirmedApplied {
-                    readback: intent.power_kw(),
-                    double_verified: false,
-                },
-                DispatchState::Indeterminate => ReconcileOutcome::ResolvedManual {
-                    reason: String::from("journal indeterminate——需人工/点表对账"),
-                },
-                DispatchState::Rejected | DispatchState::Failed => {
-                    ReconcileOutcome::FailedConfirmed {
-                        reason: r.note.unwrap_or_default(),
-                    }
-                }
-                other => ReconcileOutcome::ResolvedManual {
-                    reason: alloc::format!("in-flight: {other:?}——不盲发"),
-                },
-            },
-            Err(DispatchError::DeliveryTimeout) => ReconcileOutcome::ResolvedManual {
-                reason: String::from("reconcile timeout"),
-            },
-            Err(e) => ReconcileOutcome::ResolvedManual {
-                reason: alloc::format!("{e:?}"),
-            },
-        }
+        self.engine.reconcile_saga_intent(intent, self.deadline_ms)
     }
 
     fn compensate(
@@ -3509,3 +3786,57 @@ mod unit_tests {
         ));
     }
 }
+
+impl DispatchEngine {
+    fn reconcile_saga_intent(
+        &mut self,
+        intent: &eneros_decision_contract::CommandIntent,
+        deadline_ms: u64,
+    ) -> ReconcileOutcome {
+        // Never enter execute_core here: a missing journal is not permission to
+        // send, and replaying its receipt twice is not two independent reads.
+        let Some(contract) = self.contracts.plan_contract(intent.asset_id()) else {
+            return ReconcileOutcome::ResolvedManual {
+                reason: String::from("readback contract missing"),
+            };
+        };
+        if self
+            .route_index_for(u32::from(intent.device_id()), intent.point_id())
+            .is_none()
+            || contract.readback_point_id == 0
+        {
+            return ReconcileOutcome::ResolvedManual {
+                reason: String::from("readback route missing"),
+            };
+        }
+        match self.delivery.readback(
+            u32::from(intent.device_id()),
+            contract.readback_point_id,
+            deadline_ms,
+        ) {
+            Ok(actual) if actual.is_finite() => {
+                if (actual - intent.power_kw()).abs()
+                    <= eneros_control_gateway::PCS_SETPOINT_READBACK_TOL_KW
+                {
+                    ReconcileOutcome::ConfirmedApplied {
+                        readback: actual,
+                        double_verified: false,
+                    }
+                } else {
+                    ReconcileOutcome::FailedConfirmed {
+                        reason: alloc::format!(
+                            "independent readback {actual} != {}",
+                            intent.power_kw()
+                        ),
+                    }
+                }
+            }
+            other => ReconcileOutcome::ResolvedManual {
+                reason: alloc::format!("independent readback unavailable: {other:?}"),
+            },
+        }
+    }
+}
+
+#[path = "held_engine.rs"]
+mod held_engine;

@@ -54,6 +54,14 @@ pub use objective::{
 /// 合同 wire 版本（V1；[06] §4.3 兼容矩阵 N-1 读窗口一个版本）。
 pub const CONTRACT_WIRE_V1: u16 = 1;
 
+/// 控制窗（DEC-70-13 ①：**包络生命周期 ≥ 计划时域**——单代认证包络的
+/// valid_until 是批内全部命令的执行上界）。配置时域 = 4 步 × 15s = 60s
+/// （`configs/ai-peer.toml` plan 参数 + `ttl_secs` 同源），本常量是
+/// 遥测载荷有效期与资源包络有效期的**单一来源**（此前两侧各写 30s 双胞
+/// 胎常量，第 3 步起超窗被认证器 `Envelope` 拒——R10 多时段结构性不可达，
+/// 2026-09-17 R10 门实弹捕获）。
+pub const CONTROL_HORIZON_MS: u64 = 60_000;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -342,68 +342,68 @@ pub fn registry_from_catalog(
 
 /// planner 只读视图（实现 decision-contract::ResourceRegistry——命令批
 /// 编译的绑定权威；本模块唯一实现，写入面在 dispatch 之外）。
+///
+/// 蓝图 70 R10：**多资产绑定注册表**——每可控资产一条
+/// `(asset_id, device, point)`；设备短 ID 属协议映射（points 表，由装配
+/// 方解析注入），点/单位以目录合同为权威（构造期逐条校验）。
 pub struct PlannerView {
     repo: eneros_semantic_catalog::CatalogRepository,
-    /// 控制点设备短 ID（协议映射，装配方从 points 表解析）。
-    pub device_id: u16,
-    /// 控制点（catalog 合同权威）。
-    pub point_id: u32,
-    pub unit_code: u16,
+    /// 控制绑定注册表（asset_id → (device, point, unit)；构造期已对
+    /// 目录合同逐条校验）。
+    bindings: alloc::collections::BTreeMap<u64, (u16, u32, u16)>,
 }
 
 impl PlannerView {
-    /// 由目录 + 装配解析的设备构建。
+    /// 由目录 + 装配解析的绑定注册表构建（蓝图 70 R10 多资产；单资产
+    /// 装配传单条——行为与旧单绑定形态一致）。
+    ///
+    /// fail-closed（RegistryError）：
+    /// - 空绑定表（无可控资产）；
+    /// - 同资产重复条目；
+    /// - 任一条目的目录合同缺失，或合同点与条目不符（注册表不得偏离
+    ///   目录合同权威；单位自合同取得，不在装配面发明）。
     pub fn new(
         repo: eneros_semantic_catalog::CatalogRepository,
-        device_id: u16,
+        bindings: &[(u64, u16, u32)],
     ) -> Result<Self, RegistryError> {
-        let vs = repo.version_set();
-        // 显式控制绑定点（唯一；歧义 → 拒绝）。
-        let point = repo
-            .points_with_role(eneros_semantic_catalog::decode::ROLE_CONTROL)
-            .find_map(|(pid, sem)| {
-                repo.asset_control_contract(sem.asset_id, vs.contract_version)
-                    .map(|_| pid)
-            })
-            .ok_or_else(|| RegistryError {
-                kind: RegistryErrorKind::NoControlContract,
-                detail: "no-unique-control-point".into(),
-            })?;
-        if repo
-            .points_with_role(eneros_semantic_catalog::decode::ROLE_CONTROL)
-            .find(|(pid, sem)| {
-                sem.asset_id != 0
-                    && repo
-                        .asset_control_contract(sem.asset_id, vs.contract_version)
-                        .is_some()
-                    && *pid != point
-            })
-            .is_some()
-        {
+        if bindings.is_empty() {
             return Err(RegistryError {
                 kind: RegistryErrorKind::NoControlContract,
-                detail: "ambiguous-control-points".into(),
+                detail: "no-controllable-asset".into(),
             });
         }
-        let asset_of_point = repo.asset_of_point(point).ok_or_else(|| RegistryError {
-            kind: RegistryErrorKind::UnknownAsset,
-            detail: "control-point-unbound".into(),
-        })?;
-        let (point_id, unit_code) = {
+        let vs = repo.version_set();
+        let mut table = alloc::collections::BTreeMap::new();
+        for &(asset_id, device, point) in bindings {
+            if table.insert(asset_id, (device, point, 0)).is_some() {
+                return Err(RegistryError {
+                    kind: RegistryErrorKind::NoControlContract,
+                    detail: alloc::format!("duplicate-asset:{asset_id}"),
+                });
+            }
             let contract = repo
-                .control_contract_for_asset(asset_of_point)
+                .asset_control_contract(asset_id, vs.contract_version)
                 .ok_or_else(|| RegistryError {
                     kind: RegistryErrorKind::NoControlContract,
-                    detail: "no-contract-for-control-point".into(),
+                    detail: alloc::format!("no-contract-for-asset:{asset_id}"),
                 })?;
-            (contract.point_id, contract.unit_code)
-        };
+            if contract.point_id != point {
+                return Err(RegistryError {
+                    kind: RegistryErrorKind::NoControlContract,
+                    detail: alloc::format!("binding-contract-mismatch:{asset_id}"),
+                });
+            }
+            table.insert(asset_id, (device, contract.point_id, contract.unit_code));
+        }
         Ok(Self {
             repo,
-            device_id,
-            point_id,
-            unit_code,
+            bindings: table,
         })
+    }
+
+    /// 控制绑定注册表（asset_id → (device, point, unit)；装配判定行用）。
+    pub fn bindings(&self) -> &alloc::collections::BTreeMap<u64, (u16, u32, u16)> {
+        &self.bindings
     }
 }
 
@@ -425,11 +425,8 @@ impl eneros_decision_contract::ResourceRegistry for PlannerView {
     }
 
     fn asset_control_binding(&self, asset_id: u64) -> Option<(u16, u32, u16)> {
-        let vs = self.repo.version_set();
-        let contract = self
-            .repo
-            .asset_control_contract(asset_id, vs.contract_version)?;
-        Some((self.device_id, contract.point_id, contract.unit_code))
+        // 蓝图 70 R10：绑定注册表逐资产解析（构造期已对目录合同校验）。
+        self.bindings.get(&asset_id).copied()
     }
 
     fn catalog_version(&self) -> u64 {
@@ -453,17 +450,63 @@ mod tests {
         eneros_semantic_catalog::open(&compiled.payload).unwrap()
     }
 
-    /// 生产目录 + 测试变体（仅测试内编译，不改生产 TOML）：
+    /// 独立极小目录（非生产 TOML 派生；蓝图 70 R10 起生产目录自带
+    /// asset 2 且已近载荷上界 REG-70.8.3-CATALOG-CAPACITY——变体从零
+    /// 构造避墙并与生产漂移脱钩）：
+    /// - battery(1)/battery(2) 合同 + 铭牌齐全 → registered 桶；
     /// - grid(10) 补控制合同但**无铭牌** → 锁 `skipped_no_nameplate` 桶；
-    /// - 追加第二块可控电池(2)（合同 + 铭牌）→ 锁超容拒绝可数。
+    /// - cap=1 时 battery(2) 超容拒绝 → 锁 `skipped_capacity` 可数。
     fn cat_variant() -> eneros_semantic_catalog::CatalogRepository {
-        let toml = include_str!("../../../../configs/catalog.toml");
-        let extra = r#"
+        let toml = r#"
+generation = 1
+valid_from_ns = 0
+valid_until_ns = 0
+mapping_version = 1
+topology_version = 1
+asset_version = 1
+contract_version = 1
+safety_version = 1
+
+[[schema]]
+id = 1
+version = 1
+
+[[topology_node]]
+id = 1
+kind = "grid"
+
+[[asset]]
+asset_id = 1
+site_id = 1
+tenant_id = 1
+kind = "battery"
+
 [[asset]]
 asset_id = 2
 site_id = 1
 tenant_id = 1
 kind = "battery"
+
+[[asset]]
+asset_id = 10
+site_id = 1
+tenant_id = 1
+kind = "grid"
+
+[[point_semantics]]
+point_id = 10
+asset_id = 1
+schema_id = 1
+unit = "kW"
+role = "control"
+readback_point_id = 1001
+
+[[point_semantics]]
+point_id = 1001
+asset_id = 1
+schema_id = 1
+unit = "kW"
+role = "measurement"
 
 [[point_semantics]]
 point_id = 20
@@ -480,37 +523,6 @@ schema_id = 1
 unit = "kW"
 role = "measurement"
 
-[[control_contract]]
-contract_id = 3
-asset_id = 2
-point_id = 20
-unit = "kW"
-class = "setpoint"
-min = -200.0
-max = 200.0
-readback_point_id = 2003
-priority = "remote"
-safe_state = "hold"
-lost_link = "hold"
-
-[[nameplate]]
-asset_id = 2
-capacity_kwh = 50.0
-eta_c = 0.9
-eta_d = 0.9
-energy_max_kwh = 50.0
-p_min_kw = -200.0
-p_max_kw = 200.0
-q_min_kvar = 0.0
-q_max_kvar = 0.0
-ramp_up_kw_s = 1.0
-ramp_down_kw_s = 1.0
-soc_min = 0.05
-soc_max = 0.95
-
-# grid(10) 补控制合同（仍无铭牌）。回读点取 2002（不占用生产目录已声明的
-# 1001..1004——2026-09-14 起 PCS-1 的功率回读/遥测点进了目录，测试变体
-# 必须避开这些 id 才不与生产 `[[point_semantics]]` 撞车）。
 [[point_semantics]]
 point_id = 11
 asset_id = 10
@@ -526,22 +538,96 @@ schema_id = 1
 unit = "kW"
 role = "measurement"
 
+[[feedback_slot]]
+slot = "grid_up"
+point_id = 1001
+
+[[feedback_slot]]
+slot = "soc"
+point_id = 1001
+
+[[feedback_slot]]
+slot = "dc_bus_v"
+point_id = 1001
+
+[[feedback_slot]]
+slot = "overcurrent"
+point_id = 1001
+
+[[feedback_slot]]
+slot = "overtemp"
+point_id = 1001
+
+[[control_contract]]
+contract_id = 1
+asset_id = 1
+point_id = 10
+unit = "kW"
+class = "setpoint"
+min = -500.0
+max = 500.0
+readback_point_id = 1001
+priority = "remote"
+safe_state = "hold"
+lost_link = "hold"
+
 [[control_contract]]
 contract_id = 2
+asset_id = 2
+point_id = 20
+unit = "kW"
+class = "setpoint"
+min = -200.0
+max = 200.0
+readback_point_id = 2003
+priority = "remote"
+safe_state = "hold"
+lost_link = "hold"
+
+[[control_contract]]
+contract_id = 3
 asset_id = 10
 point_id = 11
 unit = "kW"
 class = "setpoint"
 min = -100.0
 max = 100.0
-readback_point_id = 1002
+readback_point_id = 2002
 priority = "remote"
 safe_state = "hold"
 lost_link = "hold"
+
+[[nameplate]]
+asset_id = 1
+capacity_kwh = 100.0
+eta_c = 0.95
+eta_d = 0.95
+energy_max_kwh = 100.0
+p_min_kw = -500.0
+p_max_kw = 500.0
+q_min_kvar = 0.0
+q_max_kvar = 0.0
+ramp_up_kw_s = 1.0
+ramp_down_kw_s = 1.0
+soc_min = 0.05
+soc_max = 0.95
+
+[[nameplate]]
+asset_id = 2
+capacity_kwh = 50.0
+eta_c = 0.9
+eta_d = 0.9
+energy_max_kwh = 50.0
+p_min_kw = -200.0
+p_max_kw = 200.0
+q_min_kvar = 0.0
+q_max_kvar = 0.0
+ramp_up_kw_s = 1.0
+ramp_down_kw_s = 1.0
+soc_min = 0.05
+soc_max = 0.95
 "#;
-        let compiled =
-            eneros_config_bundle::toml_compile::compile_catalog(&alloc::format!("{toml}{extra}"))
-                .unwrap();
+        let compiled = eneros_config_bundle::toml_compile::compile_catalog(toml).unwrap();
         eneros_semantic_catalog::open(&compiled.payload).unwrap()
     }
 
@@ -941,11 +1027,18 @@ lost_link = "hold"
     fn registry_from_catalog_registers_nameplate_assets_only() {
         let catalog = cat();
         let (reg, report) = registry_from_catalog(&catalog, 16);
-        assert_eq!(report.assets_seen, 2, "目录资产 = battery(1) + grid(10)");
-        assert_eq!(report.registered, 1, "仅电池有控制合同 + 铭牌");
+        assert_eq!(
+            report.assets_seen, 3,
+            "目录资产 = battery(1) + battery(2) + grid(10)"
+        );
+        assert_eq!(
+            report.registered, 2,
+            "双电池有控制合同 + 铭牌（R10 多资产）"
+        );
         assert_eq!(report.skipped_no_contract, 1, "grid 无控制合同");
-        assert_eq!(reg.len(), 1);
+        assert_eq!(reg.len(), 2);
         assert!(reg.asset_ids().any(|a| a == 1));
+        assert!(reg.asset_ids().any(|a| a == 2));
 
         // 铭牌 → 包络（同代快照）：电池可用，能量窗随 SOC 收紧。
         let snap = snapshot(&catalog, 0.6, 0.0, 0.0, 1.0, 1_000_000);
@@ -999,8 +1092,8 @@ lost_link = "hold"
         let catalog = cat();
         let (reg, report) = registry_from_catalog(&catalog, 16);
         assert_report_reconciles(&report);
-        assert_eq!(report.assets_seen, 2, "battery(1) + grid(10)");
-        assert_eq!(report.registered, 1);
+        assert_eq!(report.assets_seen, 3, "battery(1) + battery(2) + grid(10)");
+        assert_eq!(report.registered, 2);
         assert_eq!(report.skipped_no_contract, 1, "grid 无控制合同");
         assert_eq!(report.skipped_no_nameplate, 0, "grid 无合同先命中");
         assert_eq!(report.skipped_unknown_kind, 0);
@@ -1009,7 +1102,7 @@ lost_link = "hold"
         // grid 无铭牌（跳过理由可核）；tombstone 99 不可见（枚举面语义）。
         assert_eq!(catalog.nameplate(10), None);
         assert!(!catalog.asset_ids().contains(&99));
-        assert_eq!(reg.len(), 1);
+        assert_eq!(reg.len(), 2, "双电池登记（R10 多资产）");
     }
 
     /// 恒等式 + 分桶负例（变体目录）：grid(10) 有合同无铭牌 →
@@ -1066,11 +1159,18 @@ lost_link = "hold"
     fn planner_view_binding_authoritative() {
         use eneros_decision_contract::ResourceRegistry as _;
         let repo = cat();
-        let view = PlannerView::new(repo.clone(), 1u16).unwrap();
-        assert_eq!(view.point_id, 10);
+        // 蓝图 70 R10：绑定注册表形态（单资产 = 旧行为；合同点不符即
+        // 拒绝）。catalog.toml 合同 1 = 点 10/kW(码 6)。
+        let view = PlannerView::new(repo.clone(), &[(1, 1, 10)]).unwrap();
         assert!(view.asset_exists(1));
         assert_eq!(view.asset_control_binding(1), Some((1, 10, 6)));
         assert_eq!(view.catalog_version(), repo.version_set().contract_version);
+        // 未注册资产 → None（fail-closed；可控池判据单源）。
+        assert_eq!(view.asset_control_binding(2), None);
+        // 合同点不符 → 拒绝。
+        assert!(PlannerView::new(repo.clone(), &[(1, 1, 99)]).is_err());
+        // 空绑定表 → 拒绝。
+        assert!(PlannerView::new(repo, &[]).is_err());
     }
 
     #[test]
@@ -1123,5 +1223,37 @@ lost_link = "hold"
         assert_eq!(r.generation, before + 1);
         // 注册表世代/摘要证据（[08] §4.8 门）。
         assert_ne!(r.digest(), [0u8; 32]);
+    }
+    #[test]
+    fn battery_soc_is_asset_specific_and_missing_is_rejected() {
+        let catalog = cat();
+        let (registry, _) = registry_from_catalog(&catalog, 64);
+        let mut snap = snapshot(&catalog, 0.6, 0.0, 0.0, 1.0, 1_000_000);
+        let mut readback = snap.observations[0];
+        readback.event.asset_id = 2;
+        readback.event.device_id = 8;
+        readback.event.point_id = 1005;
+        readback.event.value = eneros_telemetry_model::event::ObservationValue::F64(0.0);
+        snap.observations.push(readback);
+        assert!(
+            registry
+                .evaluate(2, 1_000_000, &catalog, &snap, &ResilienceInputs::default())
+                .is_err(),
+            "PCS-2 must not borrow PCS-1 SOC"
+        );
+        let mut soc = snap.observations[1];
+        soc.event.asset_id = 2;
+        soc.event.device_id = 8;
+        soc.event.point_id = 1006;
+        soc.event.value = eneros_telemetry_model::event::ObservationValue::F64(0.02);
+        snap.observations.push(soc);
+        let env = registry
+            .evaluate(2, 1_000_000, &catalog, &snap, &ResilienceInputs::default())
+            .unwrap();
+        assert_eq!(env.energy_max_kwh, 1.0);
+        assert_eq!(
+            env.p_max_kw, 0.0,
+            "empty PCS-2 cannot discharge despite PCS-1 SOC=60%"
+        );
     }
 }

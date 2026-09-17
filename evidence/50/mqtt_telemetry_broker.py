@@ -47,6 +47,47 @@ class Broker:
         self.frames_seen = []
         self.rejected_frames = 0
 
+    def start_retransmit(self, interval=1.5, max_age=8.0):
+        """QoS1 未确认出站帧的 DUP 重传（at-least-once 语义兑现）。
+
+        无重传时，订阅方（guest slirp 慢读）丢一帧 = 永久丢——负例注入
+        与 peer 应答投递退化为抽奖（REG-70.15-R09R10 投递有损治理实测：
+        16 发布 → 2-3 消费）。重传至 PUBACK 或 max_age；目标侧按 pid/
+        correlation 幂等（重放/迟到路径既有）。
+        """
+
+        def loop():
+            while True:
+                time.sleep(interval)
+                now = time.time()
+                with self._lock:
+                    due = [
+                        (conn, p, k, t0)
+                        for conn, lst in list(self.inflight.items())
+                        for (p, k, t0) in lst
+                        if now - t0 >= interval
+                    ]
+                for conn, pid, pkt, t0 in due:
+                    if now - t0 > max_age:
+                        with self._lock:
+                            self.inflight[conn] = [
+                                e for e in self.inflight.get(conn, []) if e[0] != pid
+                            ]
+                        continue
+                    dup = bytes([pkt[0] | 0x08]) + pkt[1:]
+                    try:
+                        conn.sendall(dup)
+                        self.log("RETRANSMIT", pid=pid, age=round(now - t0, 2))
+                    except OSError:
+                        self.subs.pop(conn, None)
+                        self.inflight.pop(conn, None)
+                        try:
+                            conn.close()
+                        except OSError:
+                            pass
+
+        threading.Thread(target=loop, daemon=True).start()
+
     def log(self, event, **kw):
         rec = {"ts": time.time(), "event": event, **kw}
         print(json.dumps(rec, ensure_ascii=False), flush=True)
@@ -111,7 +152,9 @@ class Broker:
                     try:
                         conn.sendall(pkt)
                         if q > 0:
-                            self.inflight.setdefault(conn, []).append((pid, pkt))
+                            self.inflight.setdefault(conn, []).append(
+                                (pid, pkt, time.time())
+                            )
                     except OSError:
                         # 死订阅者清理（REG-70.15-R09 投递有损治理）：断连后
                         # 不再参与路由，避免屏蔽同主题的存活订阅者。
@@ -176,7 +219,7 @@ class Broker:
             elif kind == 4:  # PUBACK（订阅方确认）
                 pid = int.from_bytes(body[:2], "big")
                 self.inflight[conn] = [
-                    (p, k) for (p, k) in self.inflight.get(conn, []) if p != pid
+                    (p, k, t0) for (p, k, t0) in self.inflight.get(conn, []) if p != pid
                 ]
             elif kind == 12:  # PINGREQ
                 conn.sendall(bytes([0xD0, 0x00]))
@@ -204,6 +247,7 @@ def main():
         allow_reuse_address = True
         daemon_threads = True
 
+    broker.start_retransmit()
     broker.log("BROKER-LISTEN", port=args.port, telemetry_topic=args.telemetry_topic)
     sys.stderr.write("TELBROKER-READY\n")
     sys.stderr.flush()

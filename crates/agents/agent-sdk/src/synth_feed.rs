@@ -54,9 +54,11 @@ const fn code(unit: eneros_telemetry_model::PhysicalUnit) -> u16 {
     unit_catalog::code_of(unit)
 }
 
-/// 馈电声明点全集（网关遥测 1..7 + PCS-1 1001..1004 + PCS-2 1005；值取
+/// 馈电声明点全集（网关 1..7 + PCS-1 1001/1003/1004 + PCS-2 1005/1006；值取
 /// 45/61 从站应答值经 scale×raw 的工程量，全部落各点声明值域内）。
-pub const SYNTH_FEED: [SynthPoint; 11] = [
+// Keep the 12-frame transport bound: PCS-1 SOC is already supplied by point 4;
+// omit its unused percentage display point 1002.
+pub const SYNTH_FEED: [SynthPoint; 12] = [
     SynthPoint {
         point_id: 1,
         asset_id: 1,
@@ -119,13 +121,6 @@ pub const SYNTH_FEED: [SynthPoint; 11] = [
         value: 12.0,
     },
     SynthPoint {
-        point_id: 1002,
-        asset_id: 1,
-        device_id: 1,
-        unit_code: code(eneros_telemetry_model::PhysicalUnit::Dimensionless),
-        value: 50.0,
-    },
-    SynthPoint {
         point_id: 1003,
         asset_id: 1,
         device_id: 1,
@@ -138,6 +133,23 @@ pub const SYNTH_FEED: [SynthPoint; 11] = [
         device_id: 1,
         unit_code: code(eneros_telemetry_model::PhysicalUnit::Dimensionless),
         value: 1.0,
+    },
+    // 蓝图 70 R10 多资产：PCS-2 功率回读（合同 2 的 readback 点——认证器
+    // readback_ok 为 presence 判定，快照受理观测必须含 1005，含 asset 2
+    // 分配的远程计划才能过独立认证）。
+    SynthPoint {
+        point_id: 1005,
+        asset_id: 2,
+        device_id: 8,
+        unit_code: code(eneros_telemetry_model::PhysicalUnit::Kilowatts),
+        value: 9.0,
+    },
+    SynthPoint {
+        point_id: 1006,
+        asset_id: 2,
+        device_id: 8,
+        unit_code: code(eneros_telemetry_model::PhysicalUnit::Dimensionless),
+        value: 0.30,
     },
 ];
 

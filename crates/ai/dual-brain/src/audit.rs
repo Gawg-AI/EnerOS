@@ -365,4 +365,36 @@ mod tests {
         assert_eq!(audit.logger.store().capacity_entries(), expected_cap);
         assert!(audit.logger.store().byte_budget() <= DECISION_AUDIT_BUDGET_BYTES);
     }
+
+    /// R01：用生产预算越过旧 512→1024 扩容点及新容量上限，持续满载
+    /// 拒绝仍保持链头/旧记录/容量。host 压力证据不冒充目标堆实测。
+    #[test]
+    fn test_audit_production_budget_survives_10000_decisions() {
+        let mut audit = DecisionAudit::with_budget([0x35; 32], DECISION_AUDIT_BUDGET_BYTES);
+        let cap = audit.logger.store().capacity_entries();
+        assert!(cap > 512);
+        let record = rec(0);
+        for _ in 0..cap {
+            audit.log_decision(&record).expect("生产预算内入链");
+        }
+        let last_seq = audit.chain_state().last_seq;
+        let entries = audit.read_range(1, cap as u64).unwrap();
+        for _ in cap..10_000 {
+            assert!(matches!(
+                audit.log_decision(&record),
+                Err(AuditError::BufferFull)
+            ));
+            assert_eq!(audit.chain_state().last_seq, last_seq);
+            assert_eq!(audit.chain_state().entry_count, cap as u64);
+            assert_eq!(audit.logger.store().capacity_entries(), cap);
+        }
+        assert_eq!(audit.dropped_count(), (10_000 - cap) as u64);
+        let after = audit.read_range(1, cap as u64).unwrap();
+        assert_eq!(after.len(), entries.len());
+        for (before, after) in entries.iter().zip(&after) {
+            assert_eq!(before.seq, after.seq);
+            assert_eq!(before.event_hash, after.event_hash);
+        }
+        assert!(audit.verify().unwrap().valid);
+    }
 }

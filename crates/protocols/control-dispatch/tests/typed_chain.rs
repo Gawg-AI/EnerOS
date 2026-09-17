@@ -874,3 +874,688 @@ fn trusted_input_admission_rejects_mismatch_family() {
         "{err:?}"
     );
 }
+
+/// R10：批首命令结果未知时不能继续写另一资产，更不能用末条成功覆盖未知。
+#[test]
+fn multi_asset_unknown_stops_batch_and_is_not_reported_committed() {
+    use eneros_control_dispatch::DispatchState;
+    use eneros_decision_contract::{
+        Assignment, CandidatePlan, CandidatePlanParts, PlanId, SnapshotId, SolveStatusKind,
+    };
+    struct Registry;
+    impl eneros_decision_contract::ResourceRegistry for Registry {
+        fn asset_exists(&self, id: u64) -> bool {
+            matches!(id, 1 | 2)
+        }
+        fn asset_control_binding(&self, id: u64) -> Option<(u16, u32, u16)> {
+            match id {
+                1 => Some((1, 10, 6)),
+                2 => Some((2, 20, 6)),
+                _ => None,
+            }
+        }
+        fn catalog_version(&self) -> u64 {
+            1
+        }
+    }
+    struct Channel(Rc<RefCell<usize>>);
+    impl DeliveryChannel for Channel {
+        fn deliver(
+            &mut self,
+            _: &str,
+            _: &[u8],
+            _: u64,
+        ) -> Result<Vec<u8>, eneros_control_dispatch::ChannelError> {
+            let mut n = self.0.borrow_mut();
+            *n += 1;
+            if *n == 1 {
+                Ok(vec![0xff])
+            } else {
+                Ok(eneros_control_gateway::wire::OutcomeFrame::new(
+                    eneros_control_gateway::wire::OutcomeCode::Applied,
+                    0,
+                )
+                .encode()
+                .to_vec())
+            }
+        }
+    }
+    let count = Rc::new(RefCell::new(0));
+    let mut config = support::test_config_legacy(support::TestConfigSeed {
+        chain: build_chain(),
+        key: KEY.to_vec(),
+        profile: test_profile(),
+        issuer_service: ISSUER,
+        fencing_token: 1 + EPOCH_SEED,
+        now_fn: now_ms,
+        intent_log: Box::new(InMemoryIntentStore::new(64)),
+        delivery: Box::new(Channel(count.clone())),
+    });
+    let profile = ControlProfile {
+        lease_ttl_secs: 600,
+        ..ControlProfile::ai_pcs_setpoint(2, 20, 4, [0x48; 16], EPOCH_SEED)
+    };
+    let mut chain = ControlChain::from_profile(KEY, &profile);
+    profile.issue_lease(&mut chain, now_ms() / 1000).unwrap();
+    config
+        .extra_routes
+        .push(eneros_control_dispatch::AssetRoute {
+            asset_id: 2,
+            profile,
+            chain,
+        });
+    config.resources = Box::new(Registry);
+    let mut contracts = support::test_contract_view(1, 1);
+    contracts.insert(
+        2,
+        eneros_control_dispatch::compiler::PlanContract {
+            class: 2,
+            readback_point_id: 1005,
+            reversible: 1,
+            min: -500.0,
+            max: 500.0,
+            settle_ms: 0,
+            compensable: false,
+        },
+    );
+    config.contracts = Box::new(contracts);
+    let mut engine = DispatchEngine::new(config);
+    let plan = CandidatePlan::from_parts(CandidatePlanParts {
+        id: PlanId([0x79; 16]),
+        snapshot_id: SnapshotId([2; 16]),
+        objective_digest: [0xaa; 32],
+        resource_catalog_version: 1,
+        horizon_start_ms: now_ms(),
+        step_ns: 10_000_000_000,
+        step_count: 1,
+        solver_status: SolveStatusKind::Optimal,
+        objective_value: 1.0,
+        relative_gap: 0.0,
+        max_primal_residual: 0.0,
+        elapsed_ms: 1,
+        model_digest: [0xbb; 32],
+        input_digest: [0xcc; 32],
+        assignments: vec![
+            Assignment {
+                asset_id: 1,
+                device_id: 1,
+                point_id: 10,
+                power_kw: 5.0,
+                unit_code: 6,
+                step_index: 1,
+            },
+            Assignment {
+                asset_id: 2,
+                device_id: 2,
+                point_id: 20,
+                power_kw: 5.0,
+                unit_code: 6,
+                step_index: 1,
+            },
+        ],
+        issued_at_ms: now_ms(),
+        ttl_ms: 60_000,
+    })
+    .unwrap();
+    let receipt = engine
+        .submit_typed(&plan, "pcs", &trusted_telemetry(), &actor(), 5000)
+        .unwrap();
+    assert_eq!(
+        receipt.final_state,
+        DispatchState::Indeterminate,
+        "未知不能被后继成功覆盖"
+    );
+    assert_eq!(*count.borrow(), 1, "未知后必须阻断批内后继");
+    assert_eq!(engine.committed_count(), 0);
+    let replay = engine
+        .submit_typed(&plan, "pcs", &trusted_telemetry(), &actor(), 5000)
+        .unwrap();
+    assert_eq!(replay.final_state, DispatchState::Indeterminate);
+    assert_eq!(
+        *count.borrow(),
+        1,
+        "same-key read must not resend or advance successor"
+    );
+}
+
+#[test]
+fn irreversible_plan_requires_manual_approval_before_any_delivery() {
+    let (ingress, devices) = device_side();
+    let delivered = Rc::new(RefCell::new(0));
+    let mut config = support::test_config_legacy(support::TestConfigSeed {
+        chain: build_chain(),
+        key: KEY.to_vec(),
+        profile: test_profile(),
+        issuer_service: ISSUER,
+        fencing_token: 1 + EPOCH_SEED,
+        now_fn: now_ms,
+        intent_log: Box::new(InMemoryIntentStore::new(64)),
+        delivery: Box::new(CountingChannel {
+            ingress,
+            devices,
+            delivered: delivered.clone(),
+        }),
+    });
+    config.contracts = Box::new(support::test_contract_view(1, 0));
+    let mut engine = DispatchEngine::new(config);
+    let result = engine.submit(&proposal(5.0), &trusted_telemetry(), &actor(), 5_000);
+    assert!(
+        matches!(result, Err(DispatchError::NotAuthorized(ref why)) if why.contains("manual approval")),
+        "irreversible plan result: {result:?}"
+    );
+    assert_eq!(*delivered.borrow(), 0);
+}
+
+#[test]
+fn higher_priority_intent_cannot_write_over_unknown_plan_effect() {
+    struct UnknownChannel(Rc<RefCell<usize>>);
+    impl DeliveryChannel for UnknownChannel {
+        fn deliver(
+            &mut self,
+            _: &str,
+            _: &[u8],
+            _: u64,
+        ) -> Result<Vec<u8>, eneros_control_dispatch::ChannelError> {
+            *self.0.borrow_mut() += 1;
+            Ok(vec![0xff])
+        }
+    }
+    let delivered = Rc::new(RefCell::new(0));
+    let mut engine = engine_with(Box::new(UnknownChannel(delivered.clone())));
+    let first = engine
+        .submit(&proposal(5.0), &trusted_telemetry(), &actor(), 5_000)
+        .unwrap();
+    assert_eq!(
+        first.final_state,
+        eneros_control_dispatch::DispatchState::Indeterminate
+    );
+    let intent = eneros_protocol_abstract::write::PointWriteIntent::new(
+        "grid",
+        1,
+        10,
+        eneros_upa_model::PointValue::Float(10.0),
+        1,
+        now_ms(),
+    );
+    let result = engine.submit_intent(&intent, &trusted_telemetry(), &actor(), 5_000);
+    assert!(
+        matches!(result, Err(DispatchError::NotAuthorized(ref why)) if why.contains("reconcile")),
+        "unknown effect must settle before preemption: {result:?}"
+    );
+    assert_eq!(
+        *delivered.borrow(),
+        1,
+        "new key must not overwrite an unknown physical effect"
+    );
+}
+
+#[test]
+fn restart_pending_journal_blocks_a_new_command_key() {
+    let (ingress, devices) = device_side();
+    let delivered = Rc::new(RefCell::new(0));
+    let mut store = InMemoryIntentStore::new(64);
+    store
+        .append(&IntentRecord {
+            command_id: [0x81; 16],
+            correlation_id: [0x82; 16],
+            issued_at_ms: now_ms() - 1000,
+            expires_at_ms: now_ms() + 10_000,
+            target_device: "pcs".into(),
+            power_kw: 5.0,
+            input_digest: None,
+            state: eneros_control_dispatch::DispatchState::Indeterminate,
+            command_digest: Some(eneros_protocol_abstract::write::semantic_command_digest(
+                1,
+                10,
+                eneros_telemetry_model::command::CommandValue::ActivePowerKw(5.0),
+            )),
+            attempt: 1,
+            receipt_digest: None,
+            plan_sha256: Some([0x83; 32]),
+        })
+        .unwrap();
+    let mut engine = DispatchEngine::new(support::test_config_legacy(support::TestConfigSeed {
+        chain: build_chain(),
+        key: KEY.to_vec(),
+        profile: test_profile(),
+        issuer_service: ISSUER,
+        fencing_token: 1 + EPOCH_SEED,
+        now_fn: now_ms,
+        intent_log: Box::new(store),
+        delivery: Box::new(CountingChannel {
+            ingress,
+            devices,
+            delivered: delivered.clone(),
+        }),
+    }));
+    let result = engine.submit(&proposal(10.0), &trusted_telemetry(), &actor(), 5_000);
+    assert!(
+        result.is_err(),
+        "new plan must wait for recovered unknown: {result:?}"
+    );
+    assert_eq!(*delivered.borrow(), 0);
+}
+
+thread_local! { static HELD_CLOCK: std::cell::Cell<u64> = const { std::cell::Cell::new(1_700_000_000_000) }; }
+fn held_now() -> u64 {
+    HELD_CLOCK.with(|clock| clock.get())
+}
+
+#[derive(Clone)]
+struct HeldMedia(Rc<RefCell<eneros_durable_state::MemIo>>);
+impl eneros_durable_state::PersistIo for HeldMedia {
+    fn read(
+        &mut self,
+        offset: u64,
+        bytes: &mut [u8],
+    ) -> Result<(), eneros_durable_state::StoreError> {
+        self.0.borrow_mut().read(offset, bytes)
+    }
+    fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), eneros_durable_state::StoreError> {
+        self.0.borrow_mut().write(offset, bytes)
+    }
+    fn flush(&mut self) -> Result<(), eneros_durable_state::StoreError> {
+        self.0.borrow_mut().flush()
+    }
+    fn capacity(&self) -> u64 {
+        self.0.borrow().capacity
+    }
+}
+struct HeldChannel {
+    inner: CountingChannel,
+    lose_ack: bool,
+    actual: Rc<std::cell::Cell<f64>>,
+}
+impl DeliveryChannel for HeldChannel {
+    fn deliver(
+        &mut self,
+        _: &str,
+        payload: &[u8],
+        _: u64,
+    ) -> Result<Vec<u8>, eneros_control_dispatch::ChannelError> {
+        *self.inner.delivered.borrow_mut() += 1;
+        let out = self.inner.ingress.borrow_mut().process(
+            &mut self.inner.devices.borrow_mut(),
+            payload,
+            held_now(),
+        );
+        let frame = eneros_device_agent::outcome_to_frame(&out);
+        if frame.code == eneros_device_agent::CODE_APPLIED {
+            let signed = ControlEnvelope::decode(payload)
+                .unwrap()
+                .decode_inner()
+                .unwrap();
+            if let eneros_telemetry_model::command::CommandValue::ActivePowerKw(power) =
+                signed.value
+            {
+                self.actual.set(power);
+            }
+        }
+        if self.lose_ack {
+            self.lose_ack = false;
+            return Err(eneros_control_dispatch::ChannelError::Timeout);
+        }
+        Ok(eneros_device_agent::outcome_to_frame(&out)
+            .encode()
+            .to_vec())
+    }
+    fn readback(
+        &mut self,
+        _device: u32,
+        _point: u32,
+        _timeout_ms: u64,
+    ) -> Result<f64, eneros_control_dispatch::ChannelError> {
+        Ok(self.actual.get())
+    }
+}
+
+fn held_fixture(media: HeldMedia, delivered: Rc<RefCell<u64>>) -> DispatchEngine {
+    held_fixture_fault(media, delivered, false)
+}
+fn held_fixture_fault(
+    media: HeldMedia,
+    delivered: Rc<RefCell<u64>>,
+    lose_ack: bool,
+) -> DispatchEngine {
+    held_fixture_channels(
+        media,
+        delivered,
+        lose_ack,
+        Rc::new(std::cell::Cell::new(0.0)),
+        Box::new(InMemoryIntentStore::new(64)),
+    )
+}
+fn held_fixture_channels<Io: eneros_durable_state::PersistIo + 'static>(
+    media: Io,
+    delivered: Rc<RefCell<u64>>,
+    lose_ack: bool,
+    actual: Rc<std::cell::Cell<f64>>,
+    intent_log: Box<dyn IntentStore>,
+) -> DispatchEngine {
+    let (ingress, devices) = device_side();
+    let config = support::test_config(support::TestConfigSeed {
+        chain: build_chain(),
+        key: KEY.to_vec(),
+        profile: test_profile(),
+        issuer_service: ISSUER,
+        fencing_token: 1 + EPOCH_SEED,
+        now_fn: held_now,
+        intent_log,
+        delivery: Box::new(HeldChannel {
+            lose_ack,
+            actual,
+            inner: CountingChannel {
+                ingress,
+                devices,
+                delivered,
+            },
+        }),
+    });
+    let mut engine = DispatchEngine::new(support::with_fixture_certifier(config));
+    engine.install_held_plans(
+        eneros_control_dispatch::held_plan::DurablePlans::open(media, 0, 131_072).unwrap(),
+    );
+    engine
+}
+fn held_candidate() -> (
+    eneros_decision_contract::CandidatePlan,
+    eneros_agent_sdk::snap_input_wire::TrustedInput,
+) {
+    use eneros_agent_sdk::snap_input_wire::{SnapshotFacts, TrustedInput, COMPLETE};
+    use eneros_decision_contract::{
+        Assignment, CandidatePlan, CandidatePlanParts, PlanId, SnapshotId, SolveStatusKind,
+    };
+    let facts = SnapshotFacts {
+        snapshot_id: [0x52; 16],
+        provenance_root: [0xCC; 32],
+        cut_time_ns: now_ms() * 1_000_000,
+        produced_at_ns: now_ms() * 1_000_000,
+        catalog_version: 1,
+        catalog_digest8: [5; 8],
+        accepted: 6,
+        missing: 0,
+        completeness: COMPLETE,
+    };
+    let plan = CandidatePlan::from_parts(CandidatePlanParts {
+        id: PlanId([0x72; 16]),
+        snapshot_id: SnapshotId(facts.snapshot_id),
+        objective_digest: eneros_decision_contract::objective_binding_v1(
+            &facts.snapshot_id,
+            1,
+            now_ms(),
+            5_000_000_000,
+            4,
+        ),
+        resource_catalog_version: 1,
+        horizon_start_ms: now_ms(),
+        step_ns: 5_000_000_000,
+        step_count: 4,
+        solver_status: SolveStatusKind::Optimal,
+        objective_value: 1.0,
+        relative_gap: 0.0,
+        max_primal_residual: 0.0,
+        elapsed_ms: 10,
+        model_digest: [0xBB; 32],
+        input_digest: facts.provenance_root,
+        assignments: (1..=4)
+            .map(|step| Assignment {
+                asset_id: 1,
+                device_id: 1,
+                point_id: 10,
+                power_kw: f64::from(step),
+                unit_code: 6,
+                step_index: step,
+            })
+            .collect(),
+        issued_at_ms: now_ms(),
+        ttl_ms: 20_000,
+    })
+    .unwrap();
+    (plan, TrustedInput::new(facts, [0; 144]))
+}
+
+#[test]
+fn durable_plan_submitted_once_runs_four_steps_and_restart_cancels_unsent() {
+    use eneros_control_dispatch::saga::{BatchState, CmdState};
+    let (plan, input) = held_candidate();
+    for restart in [false, true] {
+        HELD_CLOCK.with(|clock| clock.set(now_ms()));
+        let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+            131_072,
+        ))));
+        let delivered = Rc::new(RefCell::new(0));
+        let mut engine = held_fixture(media.clone(), delivered.clone());
+        let receipt = engine
+            .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+            .unwrap();
+        assert_eq!(
+            receipt.final_state,
+            eneros_control_dispatch::DispatchState::Persisted,
+            "accepted future steps cannot claim whole-plan Committed"
+        );
+        assert_eq!(*delivered.borrow(), 1);
+        if restart {
+            drop(engine);
+            // A new process whose monotonic clock restarted cannot reinterpret
+            // the old plan windows and send their pending suffix.
+            HELD_CLOCK.with(|clock| clock.set(10));
+            engine = held_fixture(media.clone(), delivered.clone());
+            engine.drive_held_plans(None, None).unwrap();
+            assert_eq!(*delivered.borrow(), 1);
+            let report = engine.held_plan_reports().unwrap().remove(0);
+            assert_eq!(report.final_state, BatchState::Failed);
+            assert_eq!(report.commands[0].state, CmdState::Applied);
+            assert!(report.commands[1..]
+                .iter()
+                .all(|c| c.state == CmdState::Blocked && c.attempts == 0));
+        } else {
+            for step in 1..=3 {
+                HELD_CLOCK.with(|clock| clock.set(now_ms() + step * 5_000));
+                engine
+                    .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+                    .unwrap();
+                assert_eq!(
+                    *delivered.borrow(),
+                    step + 1,
+                    "independent tick drives the retained future command"
+                );
+            }
+            let report = engine.held_plan_reports().unwrap().remove(0);
+            assert_eq!(report.final_state, BatchState::Completed);
+            assert!(report
+                .commands
+                .iter()
+                .all(|c| c.state == CmdState::Applied && c.attempts == 1));
+            engine
+                .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+                .unwrap();
+            assert_eq!(*delivered.borrow(), 4);
+            drop(engine);
+            let reopened = held_fixture(media, delivered.clone());
+            assert_eq!(
+                reopened.held_plan_reports().unwrap()[0],
+                report,
+                "durable query survives restart"
+            );
+        }
+    }
+}
+
+#[test]
+fn durable_plan_readback_settles_unknown_journal_before_next_step() {
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let delivered = Rc::new(RefCell::new(0));
+    let mut engine = held_fixture_fault(media, delivered.clone(), true);
+    let (plan, input) = held_candidate();
+    engine
+        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .unwrap();
+    assert_eq!(*delivered.borrow(), 1);
+    assert!(
+        engine.pending_intents().is_empty(),
+        "double independent readback must durably settle the unknown command journal"
+    );
+    HELD_CLOCK.with(|clock| clock.set(now_ms() + 5_000));
+    engine
+        .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+        .unwrap();
+    assert_eq!(
+        *delivered.borrow(),
+        2,
+        "settled first step does not block the next authorized step"
+    );
+}
+
+#[derive(Clone)]
+struct CutHeldMedia {
+    bytes: Rc<RefCell<Vec<u8>>>,
+    remaining: Rc<std::cell::Cell<Option<usize>>>,
+}
+impl eneros_durable_state::PersistIo for CutHeldMedia {
+    fn read(
+        &mut self,
+        offset: u64,
+        out: &mut [u8],
+    ) -> Result<(), eneros_durable_state::StoreError> {
+        let bytes = self.bytes.borrow();
+        let start = offset as usize;
+        let part = bytes
+            .get(start..start + out.len())
+            .ok_or(eneros_durable_state::StoreError::OutOfSpace)?;
+        out.copy_from_slice(part);
+        Ok(())
+    }
+    fn write(&mut self, offset: u64, data: &[u8]) -> Result<(), eneros_durable_state::StoreError> {
+        let take = self
+            .remaining
+            .get()
+            .map(|left| left.min(data.len()))
+            .unwrap_or(data.len());
+        self.bytes.borrow_mut()[offset as usize..offset as usize + take]
+            .copy_from_slice(&data[..take]);
+        if let Some(left) = self.remaining.get() {
+            self.remaining.set(Some(left - take));
+            if take < data.len() {
+                return Err(eneros_durable_state::StoreError::WriteFailed);
+            }
+        }
+        Ok(())
+    }
+    fn flush(&mut self) -> Result<(), eneros_durable_state::StoreError> {
+        Ok(())
+    }
+    fn capacity(&self) -> u64 {
+        self.bytes.borrow().len() as u64
+    }
+}
+#[derive(Clone)]
+struct SharedHeldIntents(Rc<RefCell<InMemoryIntentStore>>);
+impl IntentStore for SharedHeldIntents {
+    fn append(&mut self, record: &IntentRecord) -> Result<(), IntentStoreError> {
+        self.0.borrow_mut().append(record)
+    }
+    fn update_state(
+        &mut self,
+        id: &[u8; 16],
+        state: eneros_control_dispatch::DispatchState,
+    ) -> Result<(), IntentStoreError> {
+        self.0.borrow_mut().update_state(id, state)
+    }
+    fn find(&self, id: &[u8; 16]) -> Option<IntentRecord> {
+        self.0.borrow().find(id)
+    }
+    fn pending(&self) -> Vec<IntentRecord> {
+        self.0.borrow().pending()
+    }
+}
+
+#[test]
+fn held_plan_100_torn_write_points_never_resend_or_lose_confirmed_prefix() {
+    use eneros_control_dispatch::saga::CmdState;
+    let mut before_send = 0;
+    let mut after_send = 0;
+    let mut failed_after_send = 0;
+    for cut in 0..100 {
+        HELD_CLOCK.with(|clock| clock.set(now_ms()));
+        let media = CutHeldMedia {
+            bytes: Rc::new(RefCell::new(vec![0; 131_072])),
+            remaining: Rc::new(std::cell::Cell::new(None)),
+        };
+        let delivered = Rc::new(RefCell::new(0));
+        let actual = Rc::new(std::cell::Cell::new(0.0));
+        let intents = SharedHeldIntents(Rc::new(RefCell::new(InMemoryIntentStore::new(64))));
+        let mut engine = held_fixture_channels(
+            media.clone(),
+            delivered.clone(),
+            false,
+            actual.clone(),
+            Box::new(intents.clone()),
+        );
+        let (plan, input) = held_candidate();
+        engine
+            .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+            .unwrap();
+        assert_eq!(*delivered.borrow(), 1);
+        assert_eq!(actual.get(), 1.0);
+        media.remaining.set(Some(cut * 97));
+        HELD_CLOCK.with(|clock| clock.set(now_ms() + 5_000));
+        let result = engine.drive_held_plans(Some(&input), Some(&trusted_telemetry()));
+        let sent = *delivered.borrow();
+        if sent == 1 {
+            before_send += 1;
+        } else {
+            after_send += 1;
+            if result.is_err() {
+                failed_after_send += 1;
+            }
+        }
+        assert!(sent <= 2);
+        drop(engine);
+        media.remaining.set(None);
+        HELD_CLOCK.with(|clock| clock.set(10));
+        let mut recovered = held_fixture_channels(
+            media,
+            delivered.clone(),
+            false,
+            actual.clone(),
+            Box::new(intents),
+        );
+        recovered.drive_held_plans(None, None).unwrap();
+        assert_eq!(
+            *delivered.borrow(),
+            sent,
+            "cut={cut}: cold recovery must never send"
+        );
+        let report = recovered.held_plan_reports().unwrap().remove(0);
+        assert_eq!(
+            report.commands[0].state,
+            CmdState::Applied,
+            "cut={cut}: confirmed prefix preserved"
+        );
+        assert!(report.commands[2..]
+            .iter()
+            .all(|command| command.state == CmdState::Blocked && command.attempts == 0));
+        if sent == 2 {
+            assert_eq!(
+                report.commands[1].state,
+                CmdState::Applied,
+                "cut={cut}: sent effect independently recovered"
+            );
+            assert_eq!(actual.get(), 2.0);
+        } else {
+            assert_eq!(report.commands[1].state, CmdState::Blocked);
+            assert_eq!(actual.get(), 1.0);
+        }
+        assert!(
+            recovered.pending_intents().is_empty(),
+            "cut={cut}: no unreconciled journal after proven readback"
+        );
+    }
+    assert!(
+        before_send > 0 && after_send > 0 && failed_after_send > 0,
+        "campaign must cut both sides of real device writes"
+    );
+}

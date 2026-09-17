@@ -6,7 +6,8 @@
 //!
 //! - [`coverage_config`]：安全覆盖（替代手写 SAFETY_COVERAGE_POINTS 装配）；
 //! - [`feedback_mapping`]：反馈槽位（替代手写 PROD_FEEDBACK_MAPPING 装配）；
-//! - [`control_contract_point`]：显式控制绑定点（替代「首个 Control 点」）。
+//! - [`control_contract_bindings`]：显式控制绑定注册表（替代「首个 Control
+//!   点」；蓝图 70 R10 多资产起**每可控资产一个**绑定点）。
 //!
 //! 目录不可得 → 敷生 fail-closed（None）：装配方不得自造语义。判定行
 //! 词形（E4 grep 锚点）：`CATALOG-ACTIVE gen=<n> assets=<k> digest=<..>` /
@@ -118,11 +119,16 @@ pub fn feedback_mapping(repo: &CatalogRepository) -> Option<FeedbackPointMapping
     })
 }
 
-/// 显式控制绑定点：目录中 role=control 且带控制合同的点**恰好一个**时
-/// 返回该点（多于一个 = 装配歧义 → None fail-closed；零 → None）。
-/// 设备短 ID 属协议映射（points.toml），由装配方从点表解析。
-pub fn control_contract_point(repo: &CatalogRepository) -> Option<u32> {
-    let mut found: Option<u32> = None;
+/// 显式控制绑定注册表：目录中 role=control 且带控制合同的点**按资产恰一**
+/// （蓝图 70 R10 多资产：每个可控资产一个绑定点，返回 `(asset_id,
+/// point_id)` 升序表）。fail-closed → None：
+/// - 某 control 角色点不属于任何资产（`asset_of_point` 解析失败）；
+/// - 同一资产出现第二个带合同控制点（装配歧义——明确拒绝而非挑首个）；
+/// - 零绑定（无控制面，与单点版语义一致）。
+///
+/// 设备短 ID 属协议映射（points.toml），由装配方从点表逐点解析。
+pub fn control_contract_bindings(repo: &CatalogRepository) -> Option<alloc::vec::Vec<(u64, u32)>> {
+    let mut found: alloc::vec::Vec<(u64, u32)> = alloc::vec::Vec::new();
     let vs = repo.version_set();
     for (point_id, sem) in repo.points_with_role(ROLE_CONTROL) {
         let asset_id = repo.asset_of_point(point_id)?;
@@ -133,13 +139,17 @@ pub fn control_contract_point(repo: &CatalogRepository) -> Option<u32> {
             continue;
         }
         let _ = sem;
-        if found.is_some() {
-            // 多控制点 = 装配歧义（本版本单资产生产；明确拒绝而非挑首个）。
+        if found.iter().any(|&(a, _)| a == asset_id) {
+            // 同资产第二控制点 = 装配歧义（拒绝而非挑首个；单资产版同律）。
             return None;
         }
-        found = Some(point_id);
+        found.push((asset_id, point_id));
     }
-    found
+    if found.is_empty() {
+        return None;
+    }
+    found.sort_unstable_by_key(|&(a, _)| a);
+    Some(found)
 }
 
 /// 生产回退：目录未装载时的手写映射（仅测试/旧 bundle 轨；生产路径
@@ -207,10 +217,155 @@ mod tests {
     }
 
     #[test]
-    fn control_binding_point_explicit() {
+    fn control_binding_registry_multi_asset() {
         let repo = prod_repo();
-        // 目录显式控制绑定 = 点 10（唯一 role=control + 合同）。
-        assert_eq!(control_contract_point(&repo), Some(10));
+        // 蓝图 70 R10：目录显式控制绑定注册表 = 每可控资产一点
+        // （asset 1 → 点 10；asset 2 → 点 1009），按资产升序。
+        assert_eq!(
+            control_contract_bindings(&repo),
+            Some(vec![(1, 10), (2, 1009)])
+        );
+    }
+
+    /// 同一资产出现第二个带合同控制点 = 装配歧义 → None（fail-closed，
+    /// 单资产版守卫的多资产形态）。极小目录构造（生产目录已近载荷上界
+    /// REG-70.8.3-CATALOG-CAPACITY，变体从零构造避墙）。
+    #[test]
+    fn control_binding_registry_rejects_per_asset_ambiguity() {
+        let base = "\
+generation = 1
+valid_from_ns = 0
+valid_until_ns = 0
+mapping_version = 1
+topology_version = 1
+asset_version = 1
+contract_version = 1
+safety_version = 1
+
+[[schema]]
+id = 1
+version = 1
+
+[[topology_node]]
+id = 1
+kind = \"grid\"
+
+[[asset]]
+asset_id = 1
+site_id = 1
+tenant_id = 1
+kind = \"battery\"
+
+[[point_semantics]]
+point_id = 1
+asset_id = 1
+schema_id = 1
+unit = \"V\"
+role = \"measurement\"
+
+[[point_semantics]]
+point_id = 4
+asset_id = 1
+schema_id = 1
+unit = \"ratio\"
+role = \"measurement\"
+
+[[point_semantics]]
+point_id = 5
+asset_id = 1
+schema_id = 1
+unit = \"ratio\"
+role = \"switch-state\"
+
+[[point_semantics]]
+point_id = 6
+asset_id = 1
+schema_id = 1
+unit = \"ratio\"
+role = \"measurement\"
+
+[[point_semantics]]
+point_id = 7
+asset_id = 1
+schema_id = 1
+unit = \"ratio\"
+role = \"measurement\"
+
+[[feedback_slot]]
+slot = \"grid_up\"
+point_id = 5
+
+[[feedback_slot]]
+slot = \"soc\"
+point_id = 4
+
+[[feedback_slot]]
+slot = \"dc_bus_v\"
+point_id = 1
+
+[[feedback_slot]]
+slot = \"overcurrent\"
+point_id = 6
+
+[[feedback_slot]]
+slot = \"overtemp\"
+point_id = 7
+
+[[point_semantics]]
+point_id = 10
+asset_id = 1
+schema_id = 1
+unit = \"kW\"
+role = \"control\"
+readback_point_id = 1001
+
+[[point_semantics]]
+point_id = 1001
+asset_id = 1
+schema_id = 1
+unit = \"kW\"
+role = \"measurement\"
+
+[[control_contract]]
+contract_id = 1
+asset_id = 1
+point_id = 10
+unit = \"kW\"
+class = \"setpoint\"
+min = -500.0
+max = 500.0
+readback_point_id = 1001
+priority = \"remote\"
+safe_state = \"hold\"
+lost_link = \"hold\"
+";
+        let compiled = eneros_config_bundle::toml_compile::compile_catalog(base).expect("compile");
+        let bundle = eneros_semantic_catalog::decode::decode_catalog(&compiled.payload).unwrap();
+        let repo = CatalogRepository::build(bundle).unwrap();
+        assert_eq!(
+            control_contract_bindings(&repo),
+            Some(vec![(1, 10)]),
+            "单资产单控制点 = 正常注册表"
+        );
+        // 同资产第二个带合同控制点（回读复用 1001）→ **激活层拒绝**
+        // （`asset-multi-contract`——仓库不变式：每资产至多一份控制合同，
+        // 比绑定注册表的歧义守卫更深一层；守卫保持为纵深防御）。
+        let extra = format!(
+            "{base}\n[[point_semantics]]\npoint_id = 11\nasset_id = 1\nschema_id = 1\n\
+             unit = \"kW\"\nrole = \"control\"\nreadback_point_id = 1001\n\
+             \n[[control_contract]]\ncontract_id = 2\nasset_id = 1\npoint_id = 11\n\
+             unit = \"kW\"\nclass = \"setpoint\"\nmin = -500.0\nmax = 500.0\n\
+             readback_point_id = 1001\npriority = \"remote\"\nsafe_state = \"hold\"\n\
+             lost_link = \"hold\"\n"
+        );
+        let compiled =
+            eneros_config_bundle::toml_compile::compile_catalog(&extra).expect("compile");
+        let bundle = eneros_semantic_catalog::decode::decode_catalog(&compiled.payload).unwrap();
+        let err = CatalogRepository::build(bundle).unwrap_err();
+        assert!(
+            matches!(err, eneros_semantic_catalog::CatalogError { .. }),
+            "同资产双合同必须激活拒绝（asset-multi-contract）: {err:?}"
+        );
     }
 
     #[test]
@@ -304,14 +459,18 @@ mod tests {
                 );
             }
         }
-        // 控制点唯一：points.toml 中 data_type=control 的点数 == 目录
-        // 控制合同点数 == 1（Phase 0 单 PCS 契约）。
+        // 控制点注册表：points.toml 中 data_type=control 的点数 == 目录
+        // 控制绑定注册表条数 == 2（蓝图 70 R10 双 PCS 契约：asset 1→10、
+        // asset 2→1009）。
         let control_pts = table
             .points
             .iter()
             .filter(|p| p.data_type == eneros_upa_model::PointType::Control)
             .count();
-        assert_eq!(control_pts, 1);
-        assert_eq!(control_contract_point(&repo), Some(10));
+        assert_eq!(control_pts, 2);
+        assert_eq!(
+            control_contract_bindings(&repo),
+            Some(vec![(1, 10), (2, 1009)])
+        );
     }
 }

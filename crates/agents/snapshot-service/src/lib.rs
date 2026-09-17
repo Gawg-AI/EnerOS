@@ -164,6 +164,49 @@ impl fmt::Display for RejectReason {
     }
 }
 
+impl TrustedSnapshot {
+    /// Read a battery's SOC through its catalog binding, never through a shared slot.
+    /// Snapshot construction supplies freshness; rejected/ambiguous inputs stay rejected.
+    pub fn asset_soc(
+        &self,
+        catalog: &dyn eneros_semantic_catalog::SemanticCatalog,
+        asset_id: u64,
+    ) -> Option<f64> {
+        use eneros_telemetry_model::{
+            event::{quality_bits, ObservationValue},
+            unit_catalog, PhysicalUnit,
+        };
+        if self.version_set != catalog.version_set() {
+            return None;
+        }
+        let point = catalog.asset_soc_point(asset_id)?;
+        let c = &self.completeness;
+        if [&c.missing, &c.stale, &c.bad, &c.conflict, &c.substituted]
+            .iter()
+            .any(|v| v.contains(&point))
+        {
+            return None;
+        }
+        let mut rows = self
+            .observations
+            .iter()
+            .filter(|o| o.event.point_id == point);
+        let ev = &rows.next()?.event;
+        if rows.next().is_some()
+            || ev.asset_id != asset_id
+            || ev.mapping_version != self.version_set.mapping_version
+            || ev.unit_code != unit_catalog::code_of(PhysicalUnit::Dimensionless)
+            || ev.quality_bits != quality_bits::VALID
+        {
+            return None;
+        }
+        match ev.value {
+            ObservationValue::F64(v) if v.is_finite() && (0.0..=1.0).contains(&v) => Some(v),
+            _ => None,
+        }
+    }
+}
+
 /// 快照模块装配体（深模块门面；外部只调 [`build`] 与 [`apply_events`]）。
 pub struct SnapshotModule {
     catalog: Box<dyn eneros_semantic_catalog::SemanticCatalog + 'static>,
@@ -444,6 +487,86 @@ mod tests {
             )
             .unwrap();
         assert_eq!(snap.provenance_root, snap2.provenance_root);
+    }
+
+    /// 蓝图 70 R10：optional 点语义兑现（builder 5.5 段）——可选点合格
+    /// 时入快照（认证器 readback_ok presence 判据的数据面），缺席时不影响
+    /// 完整性（快照照常构建）；required 集行为不变。
+    #[test]
+    fn optional_point_included_when_present_and_skipped_when_absent() {
+        use eneros_semantic_catalog::SemanticCatalog;
+        let catalog = prod_catalog();
+        let vs = catalog.version_set();
+        let mk_policies = |optional: &[u32]| {
+            let mut policies = SnapshotPolicyRegistry::new();
+            let mut policy = test_policy(vs.contract_version);
+            policy.optional = optional.to_vec();
+            policies.register(policy);
+            policies
+        };
+        let now = 1_000_000_000u64;
+        // ① 可选点在流：入快照。
+        let mut m = module_from_catalog(
+            catalog.clone(),
+            ProjectorCapacity::default(),
+            mk_policies(&[1001]),
+            ConflictResolver::new(conflict::ConflictRule::PrimaryBackup),
+            10_000,
+        );
+        m.apply_events(&obs7(now, 100, 2, &[400.0, 50.0, 50.0, 0.6, 1.0, 0.0, 0.0]));
+        let mut kw = obs7(now, 200, 2, &[0.0; 7]);
+        kw.truncate(0);
+        // 构造点 1001 事件（kW；asset 2 回读点形态）。
+        let mut ev1001 = obs7(now, 300, 2, &[0.0; 7]).pop().unwrap();
+        ev1001.point_id = 1001;
+        m.apply_events(&alloc::vec![ev1001]);
+        let snap = m
+            .build(
+                SnapshotRequest {
+                    tenant_id: 1,
+                    site_id: 1,
+                    purpose_id: 1,
+                    as_of_ns: now,
+                    max_wait_ns: 0,
+                    policy_version: vs.contract_version,
+                },
+                now,
+            )
+            .expect("可选点在场不影响完整性");
+        let pts: alloc::collections::BTreeSet<u32> =
+            snap.observations.iter().map(|o| o.event.point_id).collect();
+        assert!(
+            pts.contains(&1001),
+            "可选回读点必须入快照（readback_ok 面）"
+        );
+        assert_eq!(snap.observations.len(), 8);
+        assert!(snap.completeness.is_complete());
+        // ② 可选点缺席：快照照常构建（缺 1001 不入 missing）。
+        let mut m2 = module_from_catalog(
+            catalog,
+            ProjectorCapacity::default(),
+            mk_policies(&[]),
+            ConflictResolver::new(conflict::ConflictRule::PrimaryBackup),
+            10_000,
+        );
+        m2.apply_events(&obs7(now, 100, 2, &[400.0, 50.0, 50.0, 0.6, 1.0, 0.0, 0.0]));
+        let snap2 = m2
+            .build(
+                SnapshotRequest {
+                    tenant_id: 1,
+                    site_id: 1,
+                    purpose_id: 1,
+                    as_of_ns: now,
+                    max_wait_ns: 0,
+                    policy_version: vs.contract_version,
+                },
+                now,
+            )
+            .expect("可选点缺席不得拒绝快照");
+        assert_eq!(snap2.observations.len(), 7);
+        assert!(snap2.completeness.is_complete());
+        assert!(!snap2.completeness.missing.contains(&1001));
+        let _ = kw;
     }
 
     pub(crate) fn test_policy(contract_version: u64) -> SnapshotPolicy {

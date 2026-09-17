@@ -138,6 +138,8 @@ fn transition_allowed(from: ExecutionStatus, to: ExecutionStatus) -> bool {
             | (TransportAcked, Indeterminate)
             | (TransportAcked, Reconciling)
             | (Indeterminate, Reconciling)
+            | (Reconciling, AppliedConfirmed)
+            | (Reconciling, Failed)
     )
 }
 

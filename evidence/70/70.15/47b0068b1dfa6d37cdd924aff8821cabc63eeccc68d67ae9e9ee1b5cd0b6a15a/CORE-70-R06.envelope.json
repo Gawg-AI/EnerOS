@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-7f2f78711fb1",
+  "run_id": "run-18d6308f4324fd8e",
+  "nonce": "18d6308f432502e0",
+  "test_id": "CORE-70-R06",
+  "scope": "L3",
+  "started_at": "2026-09-17T18:54:53Z",
+  "ended_at": "2026-09-17T18:54:53Z",
+  "source_commit": "b9b88cb7bfa9441734973c80e31353c4b9e0fbd8",
+  "dirty_tree_digest": "57bf802f09d73558f3eb836be9c51355ec9a6f52e9c97059979f06984fc0b12e",
+  "product_manifest_digest": "238e8cce80692ea08dd46a39eaa54361fff66264b7b837798b548aa96b262dd0",
+  "profile_digest": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2",
+  "artifact_sha256": "c227599f6a22ba8a55bcd890a09686b87581325b0789916fa4f518a996da3040",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol5-gate.sh（DL=560 窗A + 窗B）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "238e8cce80692ea08dd46a39eaa54361fff66264b7b837798b548aa96b262dd0"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "生产身份面 16 项 + R6 注入交叉核验"
+  },
+  "positive_results": [
+    {
+      "id": "identity",
+      "status": "PASS",
+      "detail": "16/16 全 ✓"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "skip-trial",
+      "status": "FAIL",
+      "detail": "R5b 探针不在 release 装配 = 隔离负例判据"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/47b0068b1dfa6d37cdd924aff8821cabc63eeccc68d67ae9e9ee1b5cd0b6a15a/CORE-70-R06.run-record.json",
+      "sha256": "e5b574071e7986e382e213878f8c50a82d9b4f9aab29ba169c9ca1f588acfefd"
+    }
+  ],
+  "signer": "dev",
+  "signature": "fdeacf1ec1dc6bbb54a68ba3ec32ba70e5e08e372d17f4b865a9f4c7f9efbc104b1e14c04e0ba2e323d88e8de23792c4901ede068b42d29c44f107614e54c408"
+}

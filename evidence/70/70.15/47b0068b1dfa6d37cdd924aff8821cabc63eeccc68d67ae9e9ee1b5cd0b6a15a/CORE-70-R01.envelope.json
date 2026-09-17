@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-7f2f78711fb1",
+  "run_id": "run-18d6308e5d33ffec",
+  "nonce": "18d6308e5d34043a",
+  "test_id": "CORE-70-R01",
+  "scope": "L2",
+  "started_at": "2026-09-17T18:54:49Z",
+  "ended_at": "2026-09-17T18:54:49Z",
+  "source_commit": "b9b88cb7bfa9441734973c80e31353c4b9e0fbd8",
+  "dirty_tree_digest": "57bf802f09d73558f3eb836be9c51355ec9a6f52e9c97059979f06984fc0b12e",
+  "product_manifest_digest": "238e8cce80692ea08dd46a39eaa54361fff66264b7b837798b548aa96b262dd0",
+  "profile_digest": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2",
+  "artifact_sha256": "c227599f6a22ba8a55bcd890a09686b87581325b0789916fa4f518a996da3040",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol1-gate.sh（DL=1300）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-prod/product-manifest.normalized.json",
+      "sha256": "238e8cce80692ea08dd46a39eaa54361fff66264b7b837798b548aa96b262dd0"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-prod.json",
+      "sha256": "e613f352cec083cff3e81ffdd548303a4c5e2c5f1f5b4028b47fdf1c76ea3ee2"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "judge G1-G7 + 生产预算审计 10000 次 host 满载测试"
+  },
+  "positive_results": [
+    {
+      "id": "survival",
+      "status": "PASS",
+      "detail": "G1-G7 全 ✓；审计满载仅 host scope"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "skip-trial",
+      "status": "FAIL",
+      "detail": "注入 PANIC/不足提交/尾部无产出由 judge 自检判负"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/47b0068b1dfa6d37cdd924aff8821cabc63eeccc68d67ae9e9ee1b5cd0b6a15a/CORE-70-R01.run-record.json",
+      "sha256": "42b8c52f0be128864ff07426aed49f409b99e5e39af16f71c5174d40bedd9db1"
+    }
+  ],
+  "signer": "dev",
+  "signature": "29268a12d789cd58145363d99fb129befe2c57fab7a813d36bdcbc9f3ddf414c34b59d4a7156e51b355fc5076924a980a9cdcf85b755bc06815565287e8d2b0b"
+}

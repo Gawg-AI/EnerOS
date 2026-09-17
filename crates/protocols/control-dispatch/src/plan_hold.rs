@@ -179,6 +179,9 @@ impl PlanHolder {
     /// 返回本 tick 实际投递的步数（观测）。
     pub fn tick(&mut self, tick: PlanTick<'_>, sink: &mut dyn BatchSink) -> usize {
         let mut delivered = 0usize;
+        if self.plans.is_empty() {
+            return delivered;
+        }
         // 切换单点（tick 起手一次判定）：活跃计划（`plans[0]`）已无未发步
         // ⇒ 最早的待切换计划接手。**不覆盖在途**：切换只在活跃计划排空后
         // 发生（绝不抢占已投递/在途命令），故任一时点只有一个投递面。
@@ -449,6 +452,22 @@ mod tests {
     use super::*;
 
     const SIDE: u64 = 3_600_000_000_000; // 1h
+
+    #[test]
+    fn empty_holder_tick_is_idle() {
+        let mut holder = PlanHolder::default();
+        let mut sink = RecordingSink::all_committed();
+        assert_eq!(
+            holder.tick(
+                PlanTick {
+                    now_ms: 0,
+                    facts: None
+                },
+                &mut sink
+            ),
+            0
+        );
+    }
 
     fn facts(snapshot_id: [u8; 16]) -> eneros_agent_sdk::snap_input_wire::SnapshotFacts {
         eneros_agent_sdk::snap_input_wire::SnapshotFacts {

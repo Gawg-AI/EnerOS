@@ -110,6 +110,27 @@ impl eneros_drv_svc::runtime::DriverService for ModbusTcpIoService {
         match req.opcode {
             OP_EXECUTE => {
                 self.transactions += 1;
+                if let Some((device, point)) =
+                    eneros_protocol_abstract::write::decode_master_read_payload(
+                        &req.payload[..req.payload_len as usize],
+                    )
+                {
+                    match eneros_protocol_services::master_write::master_read(
+                        &self.registry,
+                        &self.plugin,
+                        device,
+                        point,
+                    ) {
+                        Some(value) => {
+                            resp.status = ST_OK;
+                            resp.payload[..8].copy_from_slice(&value.to_le_bytes());
+                            resp.payload_len = 8;
+                        }
+                        None => resp.status = ST_UNAVAILABLE,
+                    }
+                    return;
+                }
+
                 // 出站写：EXECUTE + 载荷子码 17B（codec 单源 =
                 // protocol_abstract::write::decode_master_write_payload）。
                 if let Some((device, point, value, digest)) =

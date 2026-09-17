@@ -72,18 +72,6 @@ pub struct CertifiedContextInputs {
     pub grid_asset_id: u64,
 }
 
-/// 快照 SOC（feedback slot）读取（缺失/非有限 → None）。
-fn soc_of(snapshot: &TrustedSnapshot, soc_point: u32) -> Option<f64> {
-    snapshot
-        .observations
-        .iter()
-        .find(|o| o.event.point_id == soc_point)
-        .and_then(|o| match o.event.value {
-            eneros_telemetry_model::event::ObservationValue::F64(v) if v.is_finite() => Some(v),
-            _ => None,
-        })
-}
-
 /// 由目录 + 冻结快照 + 计划装配认证上下文输入（纯函数）。
 ///
 /// `registry` 应由 [`registry_from_catalog`] 在**同代目录**上装配（调用方
@@ -117,9 +105,6 @@ pub fn context_inputs(
     if assets.is_empty() {
         return Err(ContextReject::NoControllableAssets);
     }
-    let slots = catalog
-        .feedback_slots()
-        .ok_or(ContextReject::MissingSoc(0))?;
     let at_ns = snapshot.produced_at_ns;
     let resilience = eneros_resource_registry::ResilienceInputs::default();
     let mut envelopes: Vec<(u64, CapabilityEnvelope)> = Vec::new();
@@ -137,13 +122,17 @@ pub fn context_inputs(
             .evaluate(asset_id, at_ns, catalog, snapshot, &resilience)
             .map_err(|e| ContextReject::Envelope(asset_id, alloc::format!("{e}")))?;
         // 电池参数：容量/效率来自铭牌；初始能量 = 容量 × 快照 SOC。
-        let soc = soc_of(snapshot, slots.soc).ok_or(ContextReject::MissingSoc(slots.soc))?;
+        let soc = snapshot
+            .asset_soc(catalog, asset_id)
+            .ok_or(ContextReject::MissingSoc(
+                catalog.asset_soc_point(asset_id).unwrap_or(0),
+            ))?;
         batteries.push(EvalBattery {
             asset_id,
             capacity_kwh: np.capacity_kwh,
             eta_c: np.eta_c,
             eta_d: np.eta_d,
-            initial_kwh: np.capacity_kwh * soc.clamp(0.0, 1.0),
+            initial_kwh: np.capacity_kwh * soc,
         });
         envelopes.push((asset_id, env));
         // —— 硬约束：储能可用 SOC 窗（**铭牌**单源）——

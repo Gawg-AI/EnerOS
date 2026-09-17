@@ -83,6 +83,16 @@ impl Encode for IntentRecord {
             }
             None => out.push(0),
         }
+        // V3 must be emitted as well as decoded: otherwise a restart silently
+        // loses the CandidatePlan binding even though the in-memory record had it.
+        out.extend_from_slice(&V3_MAGIC);
+        match self.plan_sha256 {
+            Some(digest) => {
+                out.push(1);
+                out.extend_from_slice(&digest);
+            }
+            None => out.push(0),
+        }
         Ok(out)
     }
 }
@@ -151,6 +161,9 @@ impl Decode for IntentRecord {
             off += 2;
             let flag = *bytes.get(off).ok_or(StoreError::Corrupt)?;
             off += 1;
+            if flag > 1 {
+                return Err(StoreError::Corrupt);
+            }
             if flag == 1 {
                 if off + 32 > bytes.len() {
                     return Err(StoreError::Corrupt);
@@ -167,6 +180,9 @@ impl Decode for IntentRecord {
             off += 4;
             let rflag = *bytes.get(off).ok_or(StoreError::Corrupt)?;
             off += 1;
+            if rflag > 1 {
+                return Err(StoreError::Corrupt);
+            }
             if rflag == 1 {
                 if off + 32 > bytes.len() {
                     return Err(StoreError::Corrupt);
@@ -184,6 +200,9 @@ impl Decode for IntentRecord {
                 off += 2;
                 let pflag = *bytes.get(off).ok_or(StoreError::Corrupt)?;
                 off += 1;
+                if pflag > 1 {
+                    return Err(StoreError::Corrupt);
+                }
                 if pflag == 1 {
                     if off + 32 > bytes.len() {
                         return Err(StoreError::Corrupt);
@@ -700,8 +719,9 @@ mod tests {
     fn corrupt_v2_trailer_rejected() {
         let r = rec(9, DispatchState::Persisted);
         let mut bytes = r.encode().unwrap();
-        let n = bytes.len();
-        bytes[n - 40] ^= 0xFF; // 破坏 v2 魔数首字节（追加段起点）
+        let v2_start = 16 + 16 + 8 + 8 + 1 + r.target_device.len() + 8 + 1 + 1;
+        assert_eq!(&bytes[v2_start..v2_start + 2], &V2_MAGIC);
+        bytes[v2_start] ^= 0xFF; // 破坏 v2 魔数首字节（追加段起点）
         assert!(matches!(
             IntentRecord::decode(&bytes),
             Err(StoreError::Corrupt)
@@ -721,5 +741,22 @@ mod tests {
             store.update_state(&[9; 16], DispatchState::Committed),
             Err(IntentStoreError::Unknown)
         );
+    }
+    #[test]
+    fn typed_plan_digest_survives_durable_record_roundtrip() {
+        let mut original = rec(1, DispatchState::Persisted);
+        original.plan_sha256 = Some([0xa7; 32]);
+        let bytes = original.encode().unwrap();
+        let (_, restored) = IntentRecord::decode(&bytes).unwrap();
+        assert_eq!(restored.plan_sha256, original.plan_sha256);
+        let media = std::rc::Rc::new(core::cell::RefCell::new(Vec::new()));
+        let mut store =
+            DurableIntentStore::new(SharedMemIo::new(media.clone(), 1 << 20), 0, 512, 16);
+        store.open().unwrap();
+        store.append(&original).unwrap();
+        drop(store);
+        let mut reopened = DurableIntentStore::new(SharedMemIo::new(media, 1 << 20), 0, 512, 16);
+        reopened.open().unwrap();
+        assert_eq!(reopened.pending()[0].plan_sha256, original.plan_sha256);
     }
 }

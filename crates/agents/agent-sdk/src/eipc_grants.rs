@@ -95,6 +95,8 @@ pub const EIPC_GRANTS: &[(&str, &str)] = &[
     // （LEARN_STATE 区段，ota-ab LEARN_STATE_* 常量；存储不可得 ⇒ 学习
     // fail-closed 不可用，行为出厂值）。
     ("svc-ai-worker", "svc-storage"),
+    // R10: per-asset planning inputs come from the frozen snapshot, not shared SOC.
+    ("svc-ai-worker", "svc-telemetry"),
     // 47（WP-47.2 点表绑定）：控制写目标经 svc-config 点表解析——两端同源。
     ("svc-control-dispatch", "svc-config"),
     ("svc-device-agent", "svc-config"),

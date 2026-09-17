@@ -113,18 +113,17 @@ impl EnergyAgentService {
     /// 响应码词汇与原实现不变。
     pub fn tick(&mut self, now_ms: u64) -> Vec<u8> {
         use eneros_dual_brain::TickOutcome;
-        if self.policy.in_error() && now_ms < self.cooldown_until_ms {
-            return self.noaction("error-budget-exhausted");
-        }
         // 1. 可信快照输入（缺失/不可得 → 零推理零新写）。
         let tel_wire = match self.telemetry.0.fetch_telemetry() {
             Ok(w) => w,
             Err(e) => {
+                let _ = self.drive_held(None);
                 let resp = self.noaction(&e);
                 return self.settle(TickOutcome::NoTrustedInput, resp, now_ms);
             }
         };
         if tel_wire.first() != Some(&SNAPSHOT_OK) {
+            let _ = self.drive_held(None);
             // 蓝图 70.8：服务端结构化拒绝码（无冻结快照/不完整/过期/背压）
             // ——如实入降级统计，绝不回退旧评估器伪身份。
             let code = tel_wire.get(1).copied().unwrap_or(0);
@@ -137,8 +136,22 @@ impl EnergyAgentService {
         }
         let input = &tel_wire[1..];
         if eneros_agent_sdk::snap_input_wire::TrustedInput::decode(input).is_none() {
+            let _ = self.drive_held(None);
             let resp = self.noaction("trusted-input:malformed");
             return self.settle(TickOutcome::NoTrustedInput, resp, now_ms);
+        }
+        // Existing plans progress before cooldown/worker/no-action branches.
+        // A failed owner tick cannot be bypassed by submitting another plan.
+        if let Err(error) = self.drive_held(Some(input)) {
+            let resp = self.noaction(&error);
+            return self.settle(
+                TickOutcome::PreDispatchError { detail: error },
+                resp,
+                now_ms,
+            );
+        }
+        if self.policy.in_error() && now_ms < self.cooldown_until_ms {
+            return self.noaction("error-budget-exhausted");
         }
         // 2. 决策（worker 不可用 → 结构化降级）。
         // 身份随输入一体传给 worker 与 dispatch（同一次冻结产物）。
@@ -225,6 +238,18 @@ impl EnergyAgentService {
         out.extend_from_slice(reason.as_bytes());
         self.last_result = Some(out.clone());
         out
+    }
+
+    fn drive_held(&mut self, input: Option<&[u8]>) -> Result<(), String> {
+        let mut request = vec![crate::dispatch_service::DISP_HELD_TICK];
+        if let Some(input) = input {
+            request.extend_from_slice(input);
+        }
+        let response = self.dispatch.0.submit(&request)?;
+        if response.first() != Some(&crate::dispatch_service::DISP_OK) {
+            return Err(String::from("held-plan-tick-failed"));
+        }
+        Ok(())
     }
 
     fn unavailable(&mut self) -> Vec<u8> {
@@ -340,9 +365,17 @@ mod tests {
         committed: bool,
     }
     impl DispatchClient for StubDispatch {
-        fn submit(&mut self, _req: &[u8]) -> Result<Vec<u8>, String> {
+        fn submit(&mut self, req: &[u8]) -> Result<Vec<u8>, String> {
+            if req.first() == Some(&crate::dispatch_service::DISP_HELD_TICK) {
+                assert!(
+                    req.len() == 1
+                        || eneros_agent_sdk::snap_input_wire::TrustedInput::decode(&req[1..])
+                            .is_some()
+                );
+                return Ok(vec![crate::dispatch_service::DISP_OK]);
+            }
             assert_eq!(
-                _req.first(),
+                req.first(),
                 Some(&DISP_SUBMIT_TRUSTED),
                 "EA 必须以可信输入入口提交（蓝图 70.8 WP-70.8.4）"
             );

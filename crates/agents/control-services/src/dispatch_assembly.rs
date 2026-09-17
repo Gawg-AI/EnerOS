@@ -414,6 +414,41 @@ impl EipcMasterChannel {
 
 #[cfg(all(target_os = "none", feature = "sel4"))]
 impl eneros_control_dispatch::DeliveryChannel for EipcMasterChannel {
+    fn readback(
+        &mut self,
+        device: u32,
+        point: u32,
+        timeout_ms: u64,
+    ) -> Result<f64, eneros_control_dispatch::ChannelError> {
+        use eneros_control_dispatch::ChannelError;
+        use eneros_drv_svc::runtime::{wire, DriverRequest, OP_EXECUTE, ST_OK};
+        self.correlation = self.correlation.wrapping_add(1);
+        let mut req = DriverRequest::new(self.correlation, OP_EXECUTE);
+        let payload = eneros_protocol_abstract::write::encode_master_read_payload(device, point);
+        req.payload[..payload.len()].copy_from_slice(&payload);
+        req.payload_len = payload.len() as u16;
+        let bytes = self
+            .client
+            .drv_call(
+                &wire::encode_request(&req),
+                timeout_ms.max(1).saturating_mul(1_000_000),
+            )
+            .map_err(|e| ChannelError::Protocol(alloc::format!("readback:{e:?}")))?;
+        let resp = wire::decode_response_padded(&bytes).ok_or(ChannelError::BadResponse)?;
+        if resp.status != ST_OK || resp.payload_len != 8 {
+            return Err(ChannelError::BadResponse);
+        }
+        let value = f64::from_le_bytes(
+            resp.payload[..8]
+                .try_into()
+                .map_err(|_| ChannelError::BadResponse)?,
+        );
+        if !value.is_finite() {
+            return Err(ChannelError::BadResponse);
+        }
+        Ok(value)
+    }
+
     fn deliver(
         &mut self,
         _target: &str,
@@ -506,15 +541,16 @@ struct CatalogViews {
 
 /// 视图装配核（target `build_engine` 与测试共走此单点）：一次目录 →
 /// 三视图同代派生。资源视图持有仓库本体（PlannerView::new 收 repo 值）
-/// ——最后构建。
+/// ——最后构建。蓝图 70 R10：绑定注册表 `(asset,device,point)` 直通
+/// 资源视图（设备短 ID 由绑定面解析，注册表不再收单一 device）。
 #[cfg(any(test, feature = "sel4"))]
 fn catalog_views_from(
     catalog: Option<crate::catalog_gateway::LoadedCatalog>,
-    device_id: u32,
+    bindings: &[(u64, u32, u32)],
 ) -> CatalogViews {
     let contract = build_contract_view(catalog.as_ref());
     let feedback = dispatch_feedback_mapping(catalog.as_ref());
-    let resource = build_resource_view(catalog, device_id);
+    let resource = build_resource_view(catalog, bindings);
     CatalogViews {
         resource,
         contract,
@@ -527,12 +563,12 @@ fn catalog_views_from(
 #[cfg(test)]
 fn assemble_catalog_views<T: eneros_agent_sdk::config_gateway::ConfigEntrySource>(
     config_client: Option<&mut T>,
-    device_id: u32,
+    bindings: &[(u64, u32, u32)],
 ) -> CatalogViews {
     // 唯一拉取点。旧实现 = 资源/合同/反馈各拉一次 + 绑定一次，共 4 次
     // ConfigGet("catalog") 往返 + 4 次全量解码（S7 漂移面）。
     let catalog = config_client.and_then(crate::catalog_gateway::fetch_catalog);
-    catalog_views_from(catalog, device_id)
+    catalog_views_from(catalog, bindings)
 }
 
 /// 蓝图 61 v0.314.35：资源注册表视图装载（PlannerView；失败 →
@@ -541,7 +577,7 @@ fn assemble_catalog_views<T: eneros_agent_sdk::config_gateway::ConfigEntrySource
 #[cfg(any(test, feature = "sel4"))]
 fn build_resource_view(
     catalog: Option<crate::catalog_gateway::LoadedCatalog>,
-    device_id: u32,
+    bindings: &[(u64, u32, u32)],
 ) -> alloc::boxed::Box<dyn eneros_decision_contract::ResourceRegistry + 'static> {
     use eneros_decision_contract::EmptyResourceRegistry;
     let Some(cat) = catalog else {
@@ -550,19 +586,26 @@ fn build_resource_view(
         );
         return alloc::boxed::Box::new(EmptyResourceRegistry);
     };
-    let device = u16::try_from(device_id).unwrap_or(0);
-    match eneros_resource_registry::registry::PlannerView::new(cat.repo, device) {
+    // 蓝图 70 R10：绑定注册表直通（(asset,device,point)；u32 → u16 设备
+    // 截断与点表域一致）。词形锚（61/62 门）：首绑定行保持
+    // `REGISTRY-ACTIVE binding=(<device>,<point>)` 前缀逐字节。
+    let reg_bindings: alloc::vec::Vec<(u64, u16, u32)> = bindings
+        .iter()
+        .map(|&(a, d, p)| (a, u16::try_from(d).unwrap_or(0), p))
+        .collect();
+    match eneros_resource_registry::registry::PlannerView::new(cat.repo, &reg_bindings) {
         Ok(view) => {
             let d = view.repo_digest();
-            eneros_runtime::println!(
-                "[svc-control-dispatch] REGISTRY-ACTIVE binding=({device},{}) unit={} digest={:02x}{:02x}{:02x}{:02x}",
-                view.point_id,
-                view.unit_code,
-                d[0],
-                d[1],
-                d[2],
-                d[3]
-            );
+            for (i, (&asset, &(device, point, unit))) in view.bindings().iter().enumerate() {
+                eneros_runtime::println!(
+                    "[svc-control-dispatch] REGISTRY-ACTIVE binding=({device},{point}) unit={unit} asset={asset} n={} digest={:02x}{:02x}{:02x}{:02x}",
+                    i + 1,
+                    d[0],
+                    d[1],
+                    d[2],
+                    d[3]
+                );
+            }
             alloc::boxed::Box::new(view)
         }
         Err(e) => {
@@ -672,17 +715,22 @@ impl DispatchHandler {
         let catalog = config_client
             .as_mut()
             .and_then(crate::catalog_gateway::fetch_catalog);
-        let binding = match (&mut config_client, catalog.as_ref()) {
-            (None, _) => {
-                eneros_runtime::println!(
+        // 蓝图 70 R10：绑定注册表（每可控资产一条 (asset,device,point)）；
+        // 首绑定 = 默认资产路由（与旧单绑定形态一致），其余进扩展路由。
+        let bindings: alloc::vec::Vec<(u64, u32, u32)> =
+            match (&mut config_client, catalog.as_ref()) {
+                (None, _) => {
+                    eneros_runtime::println!(
                     "[svc-control-dispatch] config EP NOT granted —— 控制绑定缺失（fail-closed）"
                 );
-                None
-            }
-            (Some(_), None) => None,
-            (Some(c), Some(cat)) => crate::cfg_bindings::fetch_control_binding(cat, c),
-        };
-        let (device_id, point_id) = binding.unwrap_or((0, 0));
+                    alloc::vec::Vec::new()
+                }
+                (Some(_), None) => alloc::vec::Vec::new(),
+                (Some(c), Some(cat)) => {
+                    crate::cfg_bindings::fetch_control_binding(cat, c).unwrap_or_default()
+                }
+            };
+        let (device_id, point_id) = bindings.first().map(|&(_, d, p)| (d, p)).unwrap_or((0, 0));
         // SPEC WP-A.1：信封密钥经 svc-config `security` 节注入取得；
         // 全零/短键/缺节 ⇒ CHAIN-KEY-MISSING 拒载（None 态回执拒绝）。
         let chain_key: Option<[u8; 32]> = match &mut config_client {
@@ -692,8 +740,7 @@ impl DispatchHandler {
         let engine = match chain_key {
             Some(key) => Some(Self::build_engine(
                 &key,
-                device_id,
-                point_id,
+                &bindings,
                 now,
                 eipc_mask,
                 config_client,
@@ -728,8 +775,7 @@ impl DispatchHandler {
     /// intent store 随引擎生命周期，拒载态不产生任何投递面）。
     fn build_engine(
         key: &[u8; 32],
-        device_id: u32,
-        point_id: u32,
+        bindings: &[(u64, u32, u32)],
         now: u64,
         eipc_mask: u64,
         mut config_client: Option<
@@ -739,13 +785,29 @@ impl DispatchHandler {
     ) -> eneros_control_dispatch::DispatchEngine {
         use alloc::string::String;
 
-        use eneros_control_dispatch::{DispatchConfig, PROD_FEEDBACK_MAPPING};
+        use eneros_control_dispatch::{AssetRoute, DispatchConfig, PROD_FEEDBACK_MAPPING};
 
         use crate::dispatch_service::{prod_chain, prod_profile};
-        // 47（WP-47.2）：写目标（设备/点）由 45 卷点表 Control 点绑定；
-        // 绑定缺失 → 0/0 fail-closed（上游已裁决，此处只消费）。
+        // 47（WP-47.2）+ 蓝图 70 R10：写目标由 45 卷点表 Control 点绑定
+        // 注册表承载——首绑定 = 默认资产路由，其余绑定 = 扩展路由（每
+        // 资产同源档案 + 独立链实例）；绑定缺失 → 0/0 fail-closed（上游
+        // 已裁决，此处只消费）。
+        let (device_id, point_id) = bindings.first().map(|&(_, d, p)| (d, p)).unwrap_or((0, 0));
         let profile = prod_profile(device_id, point_id);
         let chain = prod_chain(key, device_id, point_id, now);
+        let extra_routes: alloc::vec::Vec<AssetRoute> = bindings
+            .iter()
+            .skip(1)
+            .map(|&(asset, d, p)| {
+                let prof = prod_profile(d, p);
+                let ch = prod_chain(key, d, p, now);
+                AssetRoute {
+                    asset_id: asset,
+                    profile: prof,
+                    chain: ch,
+                }
+            })
+            .collect();
         // 47（WP-47.1 速率可调）：rate gate 每小时配额 = control-write
         // 配置注入（bundle；缺省 = 产品默认 60/h——qemu-test 演示放宽值
         // 经 configs/control-write.toml 编译进 bundle）。配置不可得 →
@@ -811,7 +873,7 @@ impl DispatchHandler {
         // 歧义 → EmptyResourceRegistry fail-closed（批编译拒绝）。
         // 62 v0.315.0 WP-62.1.4：三视图收装配入口的同一 LoadedCatalog
         //（catalog_views_from 单点装配；资源视图消耗 repo 克隆，最后构建）。
-        let views = catalog_views_from(catalog.cloned(), device_id);
+        let views = catalog_views_from(catalog.cloned(), bindings);
         let resources: alloc::boxed::Box<dyn eneros_decision_contract::ResourceRegistry + 'static> =
             views.resource;
         // 蓝图 61 v0.314.41（WP-5.1）：控制合同编译视图（PlanCompiler
@@ -838,6 +900,8 @@ impl DispatchHandler {
             delivery,
             resources,
             contracts,
+            // 蓝图 70 R10：多资产扩展路由（单绑定装配 = 空，行为不变）。
+            extra_routes,
         }
         .assemble();
         #[cfg(all(target_os = "none", feature = "sel4"))]
@@ -882,7 +946,33 @@ impl DispatchHandler {
             certifier_ring,
             ..base
         };
-        eneros_control_dispatch::DispatchEngine::new(config)
+        let mut engine = eneros_control_dispatch::DispatchEngine::new(config);
+        let held = granted_slot(eipc_mask, "svc-storage")
+            .and_then(|slot| eneros_agent_sdk::block_io::eipc_block_io(slot, 0, 5_000))
+            .ok_or_else(|| alloc::string::String::from("storage endpoint unavailable"))
+            .and_then(|io| {
+                let region = eneros_ota_ab::ab_partition::DataRegion::HeldPlans;
+                eneros_control_dispatch::held_plan::DurablePlans::open(
+                    io,
+                    region.base_byte(),
+                    region.len_bytes(),
+                )
+            });
+        match held {
+            Ok(plans) => {
+                engine.install_held_plans(plans);
+                eneros_runtime::println!("[svc-control-dispatch] HELD-STORE-OPEN status=OK");
+            }
+            Err(error) => {
+                eneros_runtime::println!(
+                    "[svc-control-dispatch] HELD-STORE-OPEN status=ERR reason={error}"
+                );
+                // Unknown durable plans can own any device, including single
+                // command targets. Refuse every write until recovery succeeds.
+                engine.block_unavailable_held_store();
+            }
+        }
+        engine
     }
 
     /// 独立认证来源构造（catalog 缺失 → 无来源：计划路径 fail-closed）。
@@ -1464,7 +1554,7 @@ mod tests {
     #[test]
     fn catalog_assembly_fetches_catalog_exactly_once() {
         let mut src = CountingConfigSource::with("catalog", framed(b"not-a-catalog"));
-        let views = assemble_catalog_views(Some(&mut src), 1);
+        let views = assemble_catalog_views(Some(&mut src), &[(1, 1, 10)]);
         assert_eq!(
             src.count_of("catalog"),
             1,
@@ -1497,7 +1587,7 @@ mod tests {
         // 装配入口同序）。
         let contract = build_contract_view(Some(&cat));
         let feedback = dispatch_feedback_mapping(Some(&cat));
-        let resource = build_resource_view(Some(cat), 1);
+        let resource = build_resource_view(Some(cat), &[(1, 1, 10)]);
 
         // 注册表视图与目录同代（catalog_version = contract_version）。
         assert_eq!(resource.catalog_version(), contract_version);
@@ -1526,7 +1616,7 @@ mod tests {
         let repo = eneros_semantic_catalog::open(&payload).unwrap();
         let contract_version = repo.version_set().contract_version;
         let mut src = CountingConfigSource::with("catalog", framed(&payload));
-        let views = assemble_catalog_views(Some(&mut src), 1);
+        let views = assemble_catalog_views(Some(&mut src), &[(1, 1, 10)]);
         assert_eq!(
             src.count_of("catalog"),
             1,

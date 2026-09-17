@@ -252,7 +252,7 @@ impl CommandArbiter {
     }
 
     /// 在途命令来源（登记面真实查询；无登记 = 无在途）。
-    fn in_flight_source(&self, device_id: u32) -> Option<CommandSource> {
+    pub(crate) fn in_flight_source(&self, device_id: u32) -> Option<CommandSource> {
         self.in_flight.get(&device_id).copied()
     }
 

@@ -1364,6 +1364,7 @@ pub fn compile_catalog(toml: &str) -> Result<CompiledConfig, ConfigError> {
             "measurement" => catalog::ROLE_MEASUREMENT,
             "control" => catalog::ROLE_CONTROL,
             "switch-state" => catalog::ROLE_SWITCH_STATE,
+            "soc" => catalog::ROLE_SOC,
             other => {
                 return Err(ConfigError::InvalidValue {
                     config: config.clone(),

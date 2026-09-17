@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-824cbac6c5a2",
+  "run_id": "run-18d6308fff90cbd0",
+  "nonce": "18d6308fff90d0a0",
+  "test_id": "CORE-70-R10",
+  "scope": "L3",
+  "started_at": "2026-09-17T18:54:56Z",
+  "ended_at": "2026-09-17T18:54:56Z",
+  "source_commit": "b9b88cb7bfa9441734973c80e31353c4b9e0fbd8",
+  "dirty_tree_digest": "57bf802f09d73558f3eb836be9c51355ec9a6f52e9c97059979f06984fc0b12e",
+  "product_manifest_digest": "bf829e64401f8a1f101a5b059b4740fbb2d1317823c94eff08d4e1f4733bb731",
+  "profile_digest": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6",
+  "artifact_sha256": "784706cbe7c0268de1a54bb0218d0612699d6f370ffe298d738f2c81c6c75f2b",
+  "toolchain_digest": "c967a6c07a5ee0564eaab87d4c23fbb97c4f30cdaedf77fb3ed4f4eeab54ac8a",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-r10-held.sh（段A 健康多时段 480s + 段B 脏断电重启续接 480s×2 + 段C 0x201 拒写部分失败 480s）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "6837f7083664e55dc46b3f067896cc7c8b12cd87f07e3cc266fa5bbf042d6fb9"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-test/product-manifest.normalized.json",
+      "sha256": "bf829e64401f8a1f101a5b059b4740fbb2d1317823c94eff08d4e1f4733bb731"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-test.json",
+      "sha256": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "ADR-0054 持有链：PLAN-HELD→分步 HELD-COMMAND（valid_from 逐步生效）→Completed；重启保留已确认前缀/未发步取消/零补发（对账只读）；部分失败混合终态"
+  },
+  "positive_results": [
+    {
+      "id": "held",
+      "status": "PASS",
+      "detail": "A1-A6/B0-B5/C1-C4 全 ✓"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "partial-failure",
+      "status": "FAIL",
+      "detail": "段C 0x201 拒写下 0x200 健康写入与 Applied 判据必须仍在（部分失败不吞健康资产）"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/47b0068b1dfa6d37cdd924aff8821cabc63eeccc68d67ae9e9ee1b5cd0b6a15a/CORE-70-R10.run-record.json",
+      "sha256": "a97d1d243b7d177b02258ea32e46c6321bfcaf58025f83a071e4bf6ec368f810"
+    }
+  ],
+  "signer": "dev",
+  "signature": "28866817bf2df21c5f5f4870fa33fff0b91ebefbf3e0abb4b0b3f63f1e8ac2783f5a92eb719270e3e40101fcf106a4810d05703d51ea30bcf0fd9e5a72752b08"
+}

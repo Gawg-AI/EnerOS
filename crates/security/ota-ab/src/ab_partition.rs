@@ -146,6 +146,8 @@ pub enum DataRegion {
     FactFace,
     /// 快照面区段（[`DATA_SNAP_BASE_BLOCK`]/[`DATA_SNAP_BLOCKS`]）。
     SnapshotFace,
+    /// ADR-0054: durable held plans, dual 64 KiB slots; prior regions unchanged.
+    HeldPlans,
 }
 
 /// 低位业务区带基址（块 264 = 字节 135168，4 KiB 对齐；意图日志区末
@@ -182,6 +184,7 @@ impl DataRegion {
             DataRegion::EventFace => DATA_EVENT_BASE_BLOCK,
             DataRegion::FactFace => DATA_FACT_BASE_BLOCK,
             DataRegion::SnapshotFace => DATA_SNAP_BASE_BLOCK,
+            DataRegion::HeldPlans => DATA_SNAP_BASE_BLOCK + DATA_SNAP_BLOCKS,
         }
     }
     /// 区段长度（512B 块数）。
@@ -206,6 +209,7 @@ impl DataRegion {
             DataRegion::EventFace => DATA_EVENT_BLOCKS,
             DataRegion::FactFace => DATA_FACT_BLOCKS,
             DataRegion::SnapshotFace => DATA_SNAP_BLOCKS,
+            DataRegion::HeldPlans => 256,
         }
     }
     /// 区段字节基址（`×512` 唯一换算点）。
@@ -221,7 +225,7 @@ impl DataRegion {
         self.base_byte() + self.len_bytes()
     }
     /// 全部区段（媒体字节图遍历序——按基址升序；机器不重叠守卫的消费点）。
-    pub const ALL: [DataRegion; 19] = [
+    pub const ALL: [DataRegion; 20] = [
         DataRegion::Meta,
         DataRegion::IntentLog,
         DataRegion::TrialState,
@@ -241,6 +245,7 @@ impl DataRegion {
         DataRegion::EventFace,
         DataRegion::FactFace,
         DataRegion::SnapshotFace,
+        DataRegion::HeldPlans,
     ];
 }
 
@@ -1054,7 +1059,7 @@ mod spec_c_region_tests {
         use super::DataRegion;
         const DATA_DISK_BYTES: u64 = 32768 * 512; // 16 MiB
         let rs = DataRegion::ALL;
-        assert_eq!(rs.len(), 19, "新增区段必须入图并同步本测试");
+        assert_eq!(rs.len(), 20, "新增区段必须入图并同步本测试");
         for (i, a) in rs.iter().enumerate() {
             assert!(
                 a.end_byte() <= DATA_DISK_BYTES,
@@ -1080,7 +1085,7 @@ mod spec_c_region_tests {
     #[test]
     fn media_region_map_coordinates_locked() {
         use super::{DataRegion, DATA_DISK_BLOCKS, PARTITION_BLOCKS};
-        let expect: [(DataRegion, u64, u64); 19] = [
+        let expect: [(DataRegion, u64, u64); 20] = [
             (DataRegion::Meta, 4704 * 512, 512),
             (DataRegion::IntentLog, 0, 131_584),
             (DataRegion::TrialState, 135_168, 4_096),
@@ -1100,6 +1105,7 @@ mod spec_c_region_tests {
             (DataRegion::EventFace, 24712 * 512, 256 * 512),
             (DataRegion::FactFace, 24968 * 512, 256 * 512),
             (DataRegion::SnapshotFace, 25224 * 512, 512 * 512),
+            (DataRegion::HeldPlans, 25736 * 512, 256 * 512),
         ];
         for (r, base, len) in expect {
             assert_eq!(r.base_byte(), base, "{r:?} 基址漂移");
@@ -1110,7 +1116,7 @@ mod spec_c_region_tests {
         assert_eq!(DataRegion::IntentLog.base_byte(), 0);
         assert_eq!(DataRegion::Tsdb.base_byte(), 4_194_304);
         // 盘内余量：快照面末之后 ≥2 MiB 未分配。
-        let last_end = DataRegion::SnapshotFace.end_byte();
+        let last_end = DataRegion::HeldPlans.end_byte();
         assert!(DATA_DISK_BLOCKS * 512 - last_end >= 2 * 1024 * 1024);
     }
 

@@ -207,6 +207,11 @@ pub trait SemanticCatalog {
         None
     }
 
+    /// Explicit asset SOC binding. No binding means the resource cannot be evaluated.
+    fn asset_soc_point(&self, _asset_id: u64) -> Option<u32> {
+        None
+    }
+
     /// 全部资产 ID（确定性升序；装配侧登记遍历用）。默认空。
     fn asset_ids(&self) -> alloc::vec::Vec<u64> {
         alloc::vec::Vec::new()

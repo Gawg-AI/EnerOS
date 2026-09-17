@@ -482,6 +482,14 @@ fn candidate_plan() -> eneros_decision_contract::CandidatePlan {
 fn saga_intent(
     plan_id: eneros_decision_contract::PlanId,
 ) -> eneros_decision_contract::CommandIntent {
+    saga_intent_for(plan_id, 1, 10)
+}
+
+fn saga_intent_for(
+    plan_id: eneros_decision_contract::PlanId,
+    device_id: u16,
+    point_id: u32,
+) -> eneros_decision_contract::CommandIntent {
     use eneros_decision_contract::{
         CommandIntent, CommandIntentParts, CompensationHint, IntentId, Precondition,
     };
@@ -490,8 +498,8 @@ fn saga_intent(
         plan_id,
         plan_sha256: [0xAB; 32],
         asset_id: 1,
-        device_id: 1,
-        point_id: 10,
+        device_id,
+        point_id,
         power_kw: 5.0,
         unit_code: 6,
         valid_from_ms: now_ms(),
@@ -500,6 +508,31 @@ fn saga_intent(
         compensation: CompensationHint::None,
     })
     .expect("合法命令意图")
+}
+
+#[test]
+fn saga_unknown_route_rejected_without_panic_or_intent_write() {
+    use eneros_control_dispatch::engine::EngineSagaExecutor;
+    use eneros_control_dispatch::saga::{CmdOutcome, SagaExecutor};
+    let plan = candidate_plan();
+    let mut h = engine_unreachable();
+    let tel = trusted_telemetry();
+    let act = actor();
+    let mut exec = EngineSagaExecutor::new(
+        &mut h.engine,
+        &tel,
+        &act,
+        *plan.id(),
+        *plan.input_digest(),
+        eneros_decision_contract::CandidatePlan::plan_wire_sha256(&plan),
+        60_000,
+        false,
+        "pcs",
+        5_000,
+    );
+    let outcome = exec.execute(&saga_intent_for(*plan.id(), 8, 1009), 1);
+    assert!(matches!(outcome, CmdOutcome::Rejected { .. }));
+    assert!(h.appends.borrow().is_empty(), "未知路由不得持久化或投递");
 }
 
 /// WP-62.1.2（D-3）红→绿：`EngineSagaExecutor` 落进 CoreCommand 的
@@ -630,5 +663,33 @@ fn applied_write_order_durable_ack_failure_never_confirms_journal() {
         r2.final_state,
         DispatchState::Indeterminate,
         "重放命中 journal Indeterminate（无 AppliedConfirmed 污染）：{r2:?}"
+    );
+}
+
+#[test]
+fn saga_reconcile_missing_journal_never_sends() {
+    use eneros_control_dispatch::engine::EngineSagaExecutor;
+    use eneros_control_dispatch::saga::{ReconcileOutcome, SagaExecutor};
+    let plan = candidate_plan();
+    let mut h = engine_unreachable();
+    let tel = trusted_telemetry();
+    let act = actor();
+    let mut exec = EngineSagaExecutor::new(
+        &mut h.engine,
+        &tel,
+        &act,
+        *plan.id(),
+        *plan.input_digest(),
+        eneros_decision_contract::CandidatePlan::plan_wire_sha256(&plan),
+        60_000,
+        false,
+        "pcs",
+        5_000,
+    );
+    let outcome = exec.reconcile(&saga_intent(*plan.id()));
+    assert!(matches!(outcome, ReconcileOutcome::ResolvedManual { .. }));
+    assert!(
+        h.appends.borrow().is_empty(),
+        "readback-first must never enter the write core"
     );
 }

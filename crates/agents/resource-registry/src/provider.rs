@@ -146,11 +146,12 @@ impl CapabilityProvider for BatteryProvider {
             return Ok(env);
         }
         // SOC/能量边界（[08] §4.7 SOC 边界）：soc 缺 → fail-closed。
-        let soc = slice.point_value(slots.soc).ok_or_else(|| RegistryError {
-            kind: RegistryErrorKind::MissingSnapshotInput,
-            detail: alloc::format!("soc-point:{}", slots.soc),
-        })?;
-        let soc = soc.clamp(0.0, 1.0);
+        let soc = snapshot
+            .asset_soc(catalog, resource.asset_id)
+            .ok_or_else(|| RegistryError {
+                kind: RegistryErrorKind::MissingSnapshotInput,
+                detail: alloc::format!("asset-soc:{}", resource.asset_id),
+            })?;
         // 能量上限随 SOC 收紧（剩余可放能量 = 总量 × SOC；可充能量 =
         // 总量 × (1-SOC)）。
         env.energy_max_kwh = base.energy_max_kwh * soc;
@@ -249,6 +250,9 @@ impl CapabilityProvider for GenericProvider {
 }
 
 /// 基座 → 初始包络（有效性 = 快照生命期；0 值成员按铭牌计算）。
+/// 有效期单源 = `CONTROL_HORIZON_MS`（DEC-70-13 ①：包络生命周期 ≥
+/// 计划时域 4×15s=60s——此前本地 +30s 双胞胎常量使多时段计划第 3 步
+/// 起被认证器 `Envelope` 拒，2026-09-17 R10 门实弹捕获）。
 fn base_env(
     base: &NameplateBase,
     resource: &ResourceDescriptor,
@@ -258,7 +262,9 @@ fn base_env(
     let mut env = CapabilityEnvelope {
         asset_id: resource.asset_id,
         valid_from_ns: snapshot.produced_at_ns,
-        valid_until_ns: snapshot.produced_at_ns.saturating_add(30_000_000_000),
+        valid_until_ns: snapshot
+            .produced_at_ns
+            .saturating_add(eneros_decision_contract::CONTROL_HORIZON_MS * 1_000_000),
         p_min_kw: base.p_min_kw,
         p_max_kw: base.p_max_kw,
         q_min_kvar: base.q_min_kvar,
@@ -277,4 +283,86 @@ fn base_env(
     };
     env = env.sanitize();
     env
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snap_at(produced_ns: u64) -> TrustedSnapshot {
+        TrustedSnapshot {
+            snapshot_id: [7u8; 16],
+            tenant_id: 1,
+            site_id: 1,
+            cut_time_ns: produced_ns,
+            produced_at_ns: produced_ns,
+            policy_version: 1,
+            version_set: eneros_semantic_catalog::VersionSet {
+                generation: 1,
+                mapping_version: 1,
+                topology_version: 1,
+                asset_version: 1,
+                contract_version: 1,
+                safety_version: 1,
+            },
+            observations: alloc::vec::Vec::new(),
+            source_watermarks: alloc::vec::Vec::new(),
+            completeness: eneros_snapshot_service::CompletenessReport {
+                required: alloc::vec![],
+                accepted: alloc::vec![],
+                missing: alloc::vec![],
+                stale: alloc::vec![],
+                bad: alloc::vec![],
+                conflict: alloc::vec![],
+                substituted: alloc::vec![],
+            },
+            conflicts: alloc::vec::Vec::new(),
+            derived: alloc::vec::Vec::new(),
+            provenance_root: [0u8; 32],
+        }
+    }
+
+    fn base() -> NameplateBase {
+        NameplateBase {
+            p_min_kw: -5.0,
+            p_max_kw: 5.0,
+            q_min_kvar: -1.0,
+            q_max_kvar: 1.0,
+            energy_max_kwh: 10.0,
+            ramp_up_kw_s: 3.33,
+            ramp_down_kw_s: 3.33,
+        }
+    }
+
+    fn descriptor() -> ResourceDescriptor {
+        ResourceDescriptor {
+            asset_id: 1,
+            site_id: 1,
+            resource_kind: crate::kinds::BATTERY,
+            control_contract_id: 1,
+            topology_node_id: 0,
+            capability_model_id: 0,
+            owner_tenant_id: 1,
+        }
+    }
+
+    /// DEC-70-13 ① 红线：基座包络有效期必须覆盖控制窗（= 计划时域
+    /// 4×15s=60s）。红 = 旧本地 +30s 双胞胎常量：第 3 步（+45s）起超窗，
+    /// 认证器 `Envelope { asset_id }` 拒——R10 多时段结构性不可达
+    /// （2026-09-17 R10 门实弹捕获，`TRUSTED-ERR … Envelope { asset_id: 1 }`）。
+    #[test]
+    fn base_env_validity_covers_control_horizon() {
+        let produced = 1_700_000_000_000_000_000u64;
+        let env = base_env(&base(), &descriptor(), &snap_at(produced), produced);
+        let horizon_ns = eneros_decision_contract::CONTROL_HORIZON_MS * 1_000_000;
+        assert!(
+            env.valid_until_ns >= produced + horizon_ns,
+            "包络有效期 {:?}ns < 产刻+控制窗 {}ns（DEC-70-13 ① 违约）",
+            env.valid_until_ns.saturating_sub(produced),
+            horizon_ns
+        );
+        // 末步起始（+45s）必须在窗内——认证器按步起始判覆盖。
+        let last_step_start = produced + 45 * 1_000_000_000;
+        assert!(last_step_start >= env.valid_from_ns && last_step_start <= env.valid_until_ns);
+    }
 }

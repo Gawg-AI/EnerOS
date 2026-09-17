@@ -10,7 +10,7 @@
 //!
 //! 崩溃建模（诚实边界）：崩溃 = 事件日志在任意 append 边界截断 + 进程
 //! 重启（物理效果按事件重放——已确认命令落盘，未知命令无效果变体由
-//! executor 幂等键兜底重执行）；campaign 断言：无假 Applied（Applied ⇒
+//! 恢复先只读对账，未确认效果不得重执行）；campaign 断言：无假 Applied（Applied ⇒
 //! 物理值 = 授权值）、单命令物理写 ≤ 2（原执行 + 幂等重放）。
 
 #![allow(clippy::disallowed_macros)]
@@ -709,30 +709,30 @@ fn crash_campaign_100_truncation_points_no_fake_committed() {
             report.final_state.is_terminal(),
             "点 {k}：非终态 {report:?}"
         );
-        // 不变量 2：无假 Committed——每设备物理值 = 报告中该设备最后一次
-        // Applied/Compensated 命令的授权值（Applied ⇒ 写真实落地）。
+        // Compare physical state with chronological applied/compensation events.
+        // A lower-index compensation can supersede a later-index command on the
+        // same device; iterating final reports by index loses that ordering.
         let mut expected: BTreeMap<u16, f64> = BTreeMap::new();
-        for (idx, c) in report.commands.iter().enumerate() {
-            let intent = &intents[idx];
-            match c.state {
-                CmdState::Applied => {
-                    expected.insert(intent.device_id(), intent.power_kw());
+        for event in restored.events() {
+            if let EventKind::Command { intent_id, to, .. } = event.kind {
+                let command = intents
+                    .iter()
+                    .find(|c| c.intent_id().0 == intent_id)
+                    .unwrap();
+                if to == CmdState::Applied {
+                    expected.insert(command.device_id(), command.power_kw());
+                } else if to == CmdState::Compensated {
+                    if let CompensationHint::RestorePowerKw(value) = command.compensation() {
+                        expected.insert(command.device_id(), *value);
+                    }
                 }
-                CmdState::Compensated => {
-                    let restore = match intent.compensation() {
-                        CompensationHint::RestorePowerKw(v) => *v,
-                        CompensationHint::None => intent.power_kw(),
-                    };
-                    expected.insert(intent.device_id(), restore);
-                }
-                _ => {}
             }
         }
         for (device, value) in &expected {
             assert_eq!(
                 plant2.physical.get(device),
                 Some(value),
-                "点 {k}：假 Applied（物理不符）device={device}"
+                "点 {k}：假 Applied（物理不符）device={device} report={report:?}"
             );
         }
         // 不变量 3：无重复已确认副作用——单 (device,intent) 物理写 ≤ 2
@@ -740,10 +740,152 @@ fn crash_campaign_100_truncation_points_no_fake_committed() {
         for (key, n) in &plant2.writes {
             assert!(*n <= 2, "点 {k}：重复副作用 {key:?}×{n}");
         }
-        // 不变量 4：与基线同脚本、同故障面 → 同批终态。
-        assert_eq!(
-            report.final_state, base_report.final_state,
-            "点 {k}：终态漂移"
+        // A send without a durable outcome may have no physical effect. Recovery
+        // must expose failure/manual instead of resending to force baseline success.
+        assert!(
+            BatchSaga::restore(
+                restored.events(),
+                &intents,
+                &edges,
+                u64::MAX,
+                policy.clone()
+            )
+            .is_some(),
+            "点 {k}: 恢复事件必须可再次重放"
         );
+    }
+}
+
+#[test]
+fn crash_after_send_recovers_by_readback_without_reexecution() {
+    let intents = vec![intent(1, 1, 10, 42.0, None)];
+    let mut plant = Plant::default();
+    let mut original = saga_of(&intents, &[], BatchPolicy::KeepSucceeded);
+    original
+        .drive(&mut MockExecutor::new(&mut plant), 5_000)
+        .unwrap();
+    let events = original.events();
+    let cut = events
+        .iter()
+        .position(|e| {
+            matches!(
+                e.kind,
+                EventKind::Command {
+                    to: CmdState::Executing,
+                    ..
+                }
+            )
+        })
+        .unwrap()
+        + 1;
+    let mut restored = BatchSaga::restore(
+        &events[..cut],
+        &intents,
+        &[],
+        u64::MAX,
+        SagaPolicy::default(),
+    )
+    .unwrap();
+    let report = restored
+        .drive(&mut MockExecutor::new(&mut plant), 6_000)
+        .unwrap();
+    assert_eq!(report.final_state, BatchState::Completed);
+    assert_eq!(
+        plant.writes[&(1, [1; 16])],
+        1,
+        "in-flight recovery must never resend"
+    );
+    assert!(
+        BatchSaga::restore(
+            restored.events(),
+            &intents,
+            &[],
+            u64::MAX,
+            SagaPolicy::default()
+        )
+        .is_some(),
+        "recovery transitions must replay"
+    );
+}
+
+#[test]
+fn expired_command_with_live_batch_deadline_never_executes() {
+    let intents = vec![intent_windowed(1, 1, 10, 42.0, 1_000, 5_000, None)];
+    let mut plant = Plant::default();
+    let mut saga = saga_of(&intents, &[], BatchPolicy::KeepSucceeded);
+    let report = saga
+        .drive(&mut MockExecutor::new(&mut plant), 5_000)
+        .unwrap();
+    assert_ne!(report.final_state, BatchState::Completed);
+    assert!(
+        plant.writes.is_empty(),
+        "command validity is half-open, independent of batch deadline"
+    );
+}
+
+/// A failed durable event acknowledgement cannot advance the RAM state or allow
+/// another write. Both pre-send and post-send cut points use the real driver.
+#[test]
+fn durable_event_failure_stops_before_next_physical_write() {
+    use std::{cell::RefCell, rc::Rc};
+
+    use eneros_control_dispatch::saga::SagaEventStore;
+    struct Store {
+        saved: Rc<RefCell<Vec<SagaEvent>>>,
+        fail_at: u64,
+        landed: bool,
+    }
+    impl SagaEventStore for Store {
+        fn append(&mut self, event: &SagaEvent) -> Result<(), String> {
+            if event.seq == self.fail_at {
+                if self.landed {
+                    self.saved.borrow_mut().push(event.clone());
+                }
+                return Err("durable acknowledgement lost".into());
+            }
+            self.saved.borrow_mut().push(event.clone());
+            Ok(())
+        }
+    }
+    let intents = [intent(1, 1, 10, 1.0, None), intent(2, 2, 20, 2.0, None)];
+    for fail_at in 1..=7 {
+        for landed in [false, true] {
+            let saved = Rc::new(RefCell::new(Vec::new()));
+            let mut saga = BatchSaga::new([5; 16], &intents, &[], 10_000, SagaPolicy::default())
+                .with_event_store(Box::new(Store {
+                    saved: saved.clone(),
+                    fail_at,
+                    landed,
+                }));
+            let mut plant = Plant::default();
+            let mut executor = MockExecutor::new(&mut plant);
+            assert!(saga.drive(&mut executor, 1_000).is_err(), "cut={fail_at}");
+            let before = executor.plant.writes.clone();
+            assert!(saga.drive(&mut executor, 1_001).is_err());
+            assert_eq!(
+                executor.plant.writes, before,
+                "retry after uncertain append"
+            );
+            if fail_at <= 3 {
+                assert!(before.is_empty(), "Executing was not acknowledged");
+            }
+            assert_eq!(saga.events().len() as u64, fail_at - 1);
+            // Restore whatever actually reached storage; read back in-flight
+            // effects instead of re-sending them, even after an ACK was lost.
+            if !saved.borrow().is_empty() {
+                let mut recovered = BatchSaga::restore(
+                    &saved.borrow(),
+                    &intents,
+                    &[],
+                    10_000,
+                    SagaPolicy::default(),
+                )
+                .unwrap();
+                if !recovered.state().is_terminal() {
+                    recovered.drive(&mut executor, 1_002).unwrap();
+                }
+                assert!(executor.plant.writes.values().all(|&count| count == 1));
+            }
+        }
     }
 }

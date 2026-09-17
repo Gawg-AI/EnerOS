@@ -209,8 +209,14 @@ impl SnapshotBlobSource for EipcBlobSource {
 /// 与 `DispatchHandler::new` 的快照端点装配同源（`bind_cap` + 授予槽）。
 #[cfg(all(target_os = "none", feature = "sel4"))]
 pub fn eipc_blob_source(mask: u64) -> Option<EipcBlobSource> {
-    let slot = crate::dispatch_assembly::granted_slot(mask, "svc-telemetry")?;
-    let endpoint = eneros_agent_sdk::endpoint::ChunkedEndpoint::bind_cap("control-dispatch", slot)?;
+    eipc_blob_source_for("svc-control-dispatch", mask)
+}
+
+/// Bind a named service to the same frozen snapshot protocol.
+#[cfg(all(target_os = "none", feature = "sel4"))]
+pub fn eipc_blob_source_for(client: &str, mask: u64) -> Option<EipcBlobSource> {
+    let slot = eneros_agent_sdk::eipc_granted_slot(client, mask, "svc-telemetry")?;
+    let endpoint = eneros_agent_sdk::endpoint::ChunkedEndpoint::bind_cap(client, slot)?;
     Some(EipcBlobSource {
         endpoint: alloc::boxed::Box::new(endpoint),
     })

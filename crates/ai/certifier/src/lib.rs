@@ -322,12 +322,12 @@ pub struct FixtureReply {
     pub mac: [u8; 32],
 }
 
-/// 单资产夹具认证器（**真实** `CertifierModule::certify`——证据/约束记录
+/// 资产同参数夹具认证器（**真实** `CertifierModule::certify`——证据/约束记录
 /// /MAC 全真；输入是夹具值）。生产代码不得使用：由 `test-util` feature
 /// 门控（未启用时本模块不存在）。
 ///
 /// 身份输入**全部取自被认证的计划**（快照 ID / 目录版本 / 时域三元组），
-/// 因此一个夹具实例可服务任意计划；夹具固定：单资产（asset 1）、容量
+/// 因此一个夹具实例可服务多资产计划；每个资产使用相同夹具容量
 /// `capacity_kwh`、功率窗 `[p_min, p_max]`、初始 SOC `soc`。
 #[cfg(any(test, feature = "test-util"))]
 pub struct FixtureCertifier {
@@ -452,8 +452,29 @@ impl FixtureCertifier {
             )
             .build()
             .map_err(|_| CertifierError::InvalidInput("fixture-spec"))?;
-        let envelopes = [(1u64, envelope)];
-        let batteries = [battery];
+        // 接线测试覆盖计划中每个资产，仍逐资产走真实独立评估器；
+        // 单资产夹具只给 asset=1 包络会在多路由测试到达引擎前误拒。
+        let assets: alloc::collections::BTreeSet<_> =
+            plan.assignments().iter().map(|a| a.asset_id).collect();
+        let envelopes: alloc::vec::Vec<_> = assets
+            .iter()
+            .map(|&asset_id| {
+                (
+                    asset_id,
+                    CapabilityEnvelope {
+                        asset_id,
+                        ..envelope.clone()
+                    },
+                )
+            })
+            .collect();
+        let batteries: alloc::vec::Vec<_> = assets
+            .iter()
+            .map(|&asset_id| EvalBattery {
+                asset_id,
+                ..battery
+            })
+            .collect();
         // 步骤域对齐：`EvalContext::bind` 逐字段比对计划的 step_ns/count。
         // 计划 step_ns = 0（迁移单时段）时以等效步长评估，但 bind 会因
         // 步长不等拒绝——故夹具对该形态直接以计划值构造 ctx（评估器对

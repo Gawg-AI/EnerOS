@@ -96,6 +96,12 @@ pub extern "C" fn _start(
             );
             0
         });
+    let control_bindings = fetched_catalog
+        .as_ref()
+        .zip(config_client.as_mut())
+        .and_then(|(catalog, config)| {
+            eneros_control_services::cfg_bindings::fetch_control_binding(catalog, config)
+        });
     let cfg = config_client.and_then(|mut c| match fetch_ai_peer_config(&mut c) {
         Ok(c) => Some(c),
         Err(reason) => {
@@ -141,8 +147,14 @@ pub extern "C" fn _start(
             let learn = build_learner(eipc_mask, c.learn_enabled);
             // 结构化计划输入源：目录 + 站点侧计划参数（plan 参数缺省 ⇒
             // None ⇒ v1 迁移轨，行为与 70.10 前一致）。
-            let plan_source = match (catalog_repo, c.plan.clone()) {
-                (Some(repo), Some(params)) => Some((repo, params)),
+            let blobs = eneros_control_services::certifier_service::eipc_blob_source_for(
+                "svc-ai-worker",
+                eipc_mask,
+            );
+            let plan_source = match (catalog_repo, c.plan.clone(), blobs, control_bindings) {
+                (Some(repo), Some(params), Some(blobs), Some(bindings)) => {
+                    Some((repo, params, blobs, bindings))
+                }
                 _ => None,
             };
             run_remote(

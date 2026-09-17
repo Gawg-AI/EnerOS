@@ -1,8 +1,8 @@
 {"id": "G1", "verdict": "PASS", "reason": "PANIC 总数=0（无豁免·全文件）"}
 {"id": "G2", "verdict": "PASS", "reason": "分配失败总数=0（全文件）"}
 {"id": "G3", "verdict": "PASS", "reason": "PRODUCT-READY: true x1"}
-{"id": "G4", "verdict": "PASS", "reason": "相位样本(rounds)=[3397, 3397, 2787, 1145] 地板=100 相位产出(commits)=[59, 49, 601, 1145] 尾产出/中段峰值=1145/601（2026-09-15 重标：产出=commits；轮次仅活性地板）"}
-{"id": "G5", "verdict": "PASS", "reason": "rounds=10726(门限=400) Committed=1854(下限=26=窗1200s/45s)"}
+{"id": "G4", "verdict": "PASS", "reason": "相位样本(rounds)=[1170, 1018, 930, 918] 地板=100 相位产出(commits)=[920, 1018, 930, 918] 尾产出/中段峰值=918/1018（2026-09-15 重标：产出=commits；轮次仅活性地板）"}
+{"id": "G5", "verdict": "PASS", "reason": "rounds=4036(门限=400) Committed=3786(下限=26=窗1200s/45s)"}
 {"id": "G6", "verdict": "PASS", "reason": "CHAIN-KEY-MISSING x0"}
 {"id": "G7", "verdict": "PASS", "reason": "transcript x2 非空"}
 === VOL70 JUDGE: PASS ===
