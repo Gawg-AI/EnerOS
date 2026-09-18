@@ -1098,3 +1098,82 @@ vol89（DL=1440；UEFI 间歇冻结重跑一次后过）、R10 门。全量 host
 
 R10 的 12 case 统一录制与本登记段为同树最终态；peer wire 仍限 8
 assignments（2 资产×4 步恰好满载），三资源扩展维持未验收登记。
+
+#### 2026-09-19 R10 复查六缺口修复收官（30s 窗回退 + 三资源贯通 + 输入保留 + 实际回读 + 门判据重订 + 候选身份闭环）
+
+前置：2026-09-18 手动复查（manual-review-handoff-20260918.md）判定"尚不能确认 R10 完整收官"，六缺口：
+Standards 3 项（60s 控制窗违约 / 冻结输入保留缺失 / 实际回读不可查询）+ Spec 5 项（含三资源未验收、
+读回判据误放行）+ 候选身份未闭环。本轮全部修复并实弹验证；提交 216a7e5（代码/配置/门）+ 后续文档提交。
+
+1. **控制有效期合同（Standards-1/Spec-1）**：`CONTROL_HORIZON_MS` 60s→30s 回退——ADR-0054:34-35 的
+   30s 是安全事实，上一轮为容纳 4×15s 配置放宽到 60s 属违约（DEC-70-13 ①"包络生命周期 ≥ 计划时域"
+   按"时域收敛进窗"满足，非反向放宽窗）。演示时域 4×7s=28s≤30s（step_ns 15s→7s、ttl_secs 60→30、
+   synth %16→%8：建距 38–64s > 28s 时域 + 首步窗错过时 ~40s 一代重试）；输入新鲜度策略窗 60→30s
+   对齐载荷有效期。红绿测：`held_plan_horizon_beyond_control_window_rejected`（4×15s 提交即拒 /
+   4×7.5s==valid_until 边界受理 / 过期 tick 未发步取消零新写）。**未放宽任何窗，未改 ADR。**
+
+2. **冻结输入保留（Standards-2/Spec-3，ADR-0054:29-30）**：新增 `HeldInputRetainer` seam
+   （`TEL_REQ_SNAP_HOLD/RELEASE`=7/8）——准入前钉住证书引用的冻结快照（钉面不可用/容量满 ⇒ 拒绝新
+   计划准入，fail-closed）；计划终态且无未决后释放（幂等可重试）；重启按非终态计划重派生钉集（钉 =
+   RAM 派生态，唯一持久事实 = 持有计划）。event_face 剪枝跳过 pinned（`MAX_SNAP_PINS=4`）。
+   红绿测：`t8_pinned_snapshot_survives_prune_and_release_recycles`（30 窗压力钉存活 + 释放回收；
+   变异"剪枝跳过删除"实证咬合）+ 引擎侧准入即钉/完成即释/拒收 fail-closed/断电重钉四测。
+
+3. **实际回读持久化（Standards-3/Spec-4，ADR-0054:15-16）**：`post_apply_readback`——saga Applied 后
+   经独立只读通道读**命令点**（设备真实持有值）写入 `CmdOutcome.readback` → Saga 事件持久化 →
+   `DISP_HELD_QUERY`（HQR1）可查；串口 `HELD-COMMAND ... readback=Some(v)`。传输 ACK（设备结果码）/
+   实际回读（命令点独立读）/ 物理反馈点（合同 readback_point_id，对账路径）三语义分离。红测
+   `applied_commands_carry_independent_readback_not_setpoint`：设备读值漂 +0.05（容差内 ≠ 设定值），
+   断言 Saga 记录 = power+0.05 非设定值回显。R10 门 A4c 判据 `readback=Some` ≥1（实弹 ×12 行）。
+
+4. **三资源×四时段完整计划（Spec-2）**：计划级 inline 上限 8→64（蓝图 08 §9 容量表原文；65 拒绝测试
+   `v2_plan_cap_boundary_64_accepted_65_rejected`）与单批上限 8 分离（`MAX_INTENTS_PER_BATCH` 单源，
+   compiler_version 1→2；12 分配默认拆 2 批红锁 `default_policy_enforces_dec7013_batch_cap_of_eight`）。
+   第三资产手术：catalog asset3/合同3/铭牌3 + points 1010/1011/1014（device 9）+ slave61
+   0x0118/0x0119/0x0202 + synth 馈电 14 点（超 12 帧单请求上限 → 拆双 OBS 请求，sequence 单调守恒测）。
+   **容量链六处连锁**（实测逐层咬合）：目录 PAYLOAD_MAX 1664→4096（1857B）；配置区 16→24 块
+   （Stage 基址 +8 块落业务带声明的节距余量，Active 基址不动保旧盘 envelope 自描述可读）；
+   MGT1 分片 16→24；svc-config 12KiB 区段栈缓冲出栈（12KiB 栈帧 + 块读深路径超 32KiB 栈 = 静默溢出
+   冻结实弹根因）；device-agent 1MiB bin 专属堆（3×276,040B MetricsCollectorImpl ingress，768KiB
+   共享堆实弹 OOM）；`AI_REQUEST_MAX` 1024→4096 + `APP_MSG_MAX_LEN` 1024→4096（3 资产请求 JSON 实测
+   1079B 超 1024 双墙 = 实弹零请求/每 tick link_err 根因；尺寸回归锁
+   `v2_three_asset_request_size_fits_relay_budget`）。
+   实弹（run14）：`PEER-REQ-V2 assets=3 steps=4` ×3、`used=true assignments=12 assets=3`、
+   `PLAN-COMPILED intents=6 skipped=6`（12 分配守恒：分辨率合并计入 skipped 不丢账）、
+   `HELD-PLAN-DONE applied=6 state=Committed`、三地址 0x200/0x201/0x202 全写。
+
+5. **R10 门判据重订（Spec-5）**：`tools/r10_readback_oracle.py`——序列敏感写后读（文件序 = 时间序；
+   每读至多消费一次；`--selftest` 7 例负例集：写前读（旧门误放行形，保留红例 readback-before-write
+   .jsonl：旧 oracle=2 / 新 oracle=0）/旧读值/错误顺序/错误设备/重复消费）。旧判据（地址+值集合匹配）
+   误放行实证归档 `target/r10-review/readback-oracle-negatives-20260918.log`。
+   `tools/r10_plan_accounting.py`：按 plan id 关联 PLAN-COMPILED(intents+skipped) ↔ HELD-PLAN-DONE
+   (applied+blocked+failed)，通过线 = I+S==12 ∧ 全 Applied ∧ Committed——从原始工件重算守恒，不搜
+   词形凑数。门重订：A1 assets=3 / A2 守恒 / A3 等待 HELD-PLAN-DONE state=Committed（非首个批
+   Completed）/ A4a 唯一 intent id 计数（周期重复打印不计数）/ A4b 新 oracle ≥ UNIQ / A4c
+   readback=Some / A5 三资产写 + 跨度 / A7 终态守恒；B 窗改**飞行中杀**（首个 Applied 后 +3s，计划先
+   完成则等下一个——run12 实弹：合并计划可 +12s 前整体完成 ⇒ 重启窗无未发步）；数据盘 rm+truncate
+   真新鲜（truncate 不清零旧内容 ⇒ 跨运行残计划泄漏实弹修复）。vol89 门 assets=2→3 同步。
+   **R10 门 PASS：21/21 判据全绿**（run14；A1-A7/B0-B5/C1-C4）。
+
+6. **候选证据身份闭环**：提交 216a7e5（代码/配置/门，预检 sign-keys/mock-leak/gng-version 过）后
+   在干净树上重跑全门马拉松（vol1-vol6/vol7/vol89/r03-powercut/R10），录制 12 case 统一候选链
+   （record_r10_chain.sh 在最终提交树上执行——source_commit=HEAD ∧ dirty=∅），
+   `candidate-check` 0 violation、仅 CORE-70-R11 BLOCKED（EXT-70-HW 实板未到货）。
+
+**验证总账**：全仓 9118 测试 0 失败（两轮：9097→马拉松咬出两缺陷修复后 9118）；clippy
+--workspace --all-targets -D warnings 零告警；fmt 干净。**全门马拉松（提交 216a7e5/091a487）**：
+vol1(vol1 3967 轮/3549 提交 >512 压力线保持)/vol2/vol3/vol4/vol5/vol6/vol7/vol89/r03-powercut/R10
+全部 rc=0——其中 vol89 与 R10 首跑失败（1664B 应答悬崖/爬坡限拒级联，即上文次生缺陷①②），
+修复提交 091a487 后在最终树重跑全 PASS；批日志与退出码 `evidence/70/70.15/batch/*.exit`。
+
+**登记（Open/观察）**：
+- run11/run13/马拉松首跑的资产 3 写失败**已根因关闭**（HELD-COMMAND reason= 实弹定位 =
+  SafetyRejected ramp-limit |0-5|kW/0.9s=5.5kW/s 超合同 3.333kW/s——System1 与计划步交错写），
+  修复 = 计划在途 System1 抑制（091a487）。
+- MQTT-HS ReadFailed 自检计数全程递增（n=126+）为既有背景噪音（旧证据同样形态），不阻塞连接与
+  发布；归因未做，登记不改。
+- REG-70.11-HOLD-UNWIRED（hold_input_offset 零调用方）状态更新：生产保留面已由本轮钉/释放面
+  （TEL_REQ_SNAP_HOLD/RELEASE）承担；offset 收紧面仍无调用方（维持登记）。
+- 三资源下快照 pts=12（8 必收 + 4 可选含 1010/1011）；asset_soc(3) 依赖可选点在快照内（synth 馈电
+  覆盖）。若未来站点停喂 1011，asset 3 自动退出规格（fail-closed 不发请求）——语义如设计。
+
