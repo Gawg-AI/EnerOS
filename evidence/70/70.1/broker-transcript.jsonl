@@ -1,2 +1,1 @@
-{"ts": 1789653335.7825077, "event": "BROKER-LISTEN", "port": 1883, "telemetry_topic": "eneros/eneros-agent/telemetry"}
-{"ts": 1789653348.4295673, "event": "CONNACK", "conn": "54928"}
+{"ts": 1789745009.8736632, "event": "BROKER-LISTEN", "port": 1883, "telemetry_topic": "eneros/eneros-agent/telemetry"}

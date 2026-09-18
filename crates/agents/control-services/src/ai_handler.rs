@@ -204,6 +204,10 @@ impl TickAudit<HeuristicBackend> for HeuristicAudit<'_> {
 pub struct RemoteAudit<'a> {
     /// 决策审计链（ADR-0042 门面）。
     pub audit: &'a mut DecisionAudit,
+    /// 2026-09-19 R10 三资源：peer 应答**分片重组缓冲**（超 chunk 请求
+    /// 预算 1664B 的大应答经 `AI_RESP_BEGIN/CONT/END` 多帧推送——本字段
+    /// 持有跨请求的重组态；错序/超声明长度 = 丢弃重来（fail-closed）。
+    pub resp_reassembly: Option<(Vec<u8>, usize)>,
 }
 
 impl<P: PeerLink> TickAudit<RemoteBrain<HeuristicBackend, P>> for RemoteAudit<'_> {
@@ -298,32 +302,90 @@ impl<P: PeerLink> TickAudit<RemoteBrain<HeuristicBackend, P>> for RemoteAudit<'_
         resp: &mut Vec<u8>,
         now_ms: u64,
     ) -> bool {
-        if req.first() != Some(&AI_PEER_MSG) {
-            return false;
+        use eneros_agent_sdk::ai_relay::{AI_RESP_BEGIN, AI_RESP_CONT, AI_RESP_END};
+        match req.first() {
+            Some(&AI_PEER_MSG) => {
+                // peer 应答推送（不受信 JSON）→ 全量校验 + 配对。
+                let detail;
+                let verdict = match core::str::from_utf8(&req[1..]) {
+                    Ok(j) => {
+                        let v = backend.on_peer_message(j, now_ms);
+                        detail = backend.last_reject_detail.clone().unwrap_or_default();
+                        v
+                    }
+                    Err(e) => {
+                        backend.bad_responses_total = backend.bad_responses_total.saturating_add(1);
+                        detail = format!("utf8:{e}");
+                        PeerMsgVerdict::Bad
+                    }
+                };
+                eneros_runtime::println!(
+                    "[svc-ai-worker] PEER-MSG verdict={verdict:?} bad={} late={} healthy={} detail={}",
+                    backend.bad_responses_total,
+                    backend.late_total,
+                    backend.is_healthy(),
+                    detail
+                );
+                *resp = alloc::vec![AI_PEER_MSG, 0];
+                true
+            }
+            // 大应答分片（2026-09-19 三资源）：BEGIN(total)/CONT..../END 重组
+            // 后走同一 on_peer_message 面；错序/超长 = 丢弃重来（fail-closed）。
+            Some(&AI_RESP_BEGIN) => {
+                if req.len() != 5 {
+                    return true; // 残帧：忽略（下一 BEGIN 重开）
+                }
+                let total = u32::from_le_bytes([req[1], req[2], req[3], req[4]]) as usize;
+                self.resp_reassembly = Some((Vec::new(), total));
+                *resp = alloc::vec![*req.first().unwrap(), 0];
+                true
+            }
+            Some(&AI_RESP_CONT) => {
+                let Some((buf, total)) = self.resp_reassembly.as_mut() else {
+                    return true; // 无在途重组（迟到帧）——丢弃
+                };
+                if buf.len() + req.len() - 1 > *total {
+                    self.resp_reassembly = None; // 超声明长度——丢弃重来
+                    return true;
+                }
+                buf.extend_from_slice(&req[1..]);
+                *resp = alloc::vec![*req.first().unwrap(), 0];
+                true
+            }
+            Some(&AI_RESP_END) => {
+                let Some((buf, total)) = self.resp_reassembly.take() else {
+                    return true;
+                };
+                if buf.len() != total {
+                    // 不完整——丢弃（fail-closed，不喂半截 JSON）。
+                    *resp = alloc::vec![*req.first().unwrap(), 0];
+                    return true;
+                }
+                let detail;
+                let verdict = match core::str::from_utf8(&buf) {
+                    Ok(j) => {
+                        let v = backend.on_peer_message(j, now_ms);
+                        detail = backend.last_reject_detail.clone().unwrap_or_default();
+                        v
+                    }
+                    Err(e) => {
+                        backend.bad_responses_total = backend.bad_responses_total.saturating_add(1);
+                        detail = format!("utf8:{e}");
+                        PeerMsgVerdict::Bad
+                    }
+                };
+                eneros_runtime::println!(
+                    "[svc-ai-worker] PEER-MSG verdict={verdict:?} bad={} late={} healthy={} detail={}",
+                    backend.bad_responses_total,
+                    backend.late_total,
+                    backend.is_healthy(),
+                    detail
+                );
+                *resp = alloc::vec![AI_PEER_MSG, 0];
+                true
+            }
+            _ => false,
         }
-        // peer 应答推送（不受信 JSON）→ 全量校验 + 配对。
-        let detail;
-        let verdict = match core::str::from_utf8(&req[1..]) {
-            Ok(j) => {
-                let v = backend.on_peer_message(j, now_ms);
-                detail = backend.last_reject_detail.clone().unwrap_or_default();
-                v
-            }
-            Err(e) => {
-                backend.bad_responses_total = backend.bad_responses_total.saturating_add(1);
-                detail = format!("utf8:{e}");
-                PeerMsgVerdict::Bad
-            }
-        };
-        eneros_runtime::println!(
-            "[svc-ai-worker] PEER-MSG verdict={verdict:?} bad={} late={} healthy={} detail={}",
-            backend.bad_responses_total,
-            backend.late_total,
-            backend.is_healthy(),
-            detail
-        );
-        *resp = alloc::vec![AI_PEER_MSG, 0];
-        true
     }
 }
 
@@ -750,7 +812,14 @@ pub mod target {
             );
         }
         let mut worker = AiWorkerService::new(brain, [0x41; 16]);
-        let mut handler = AiTickHandler::new(&mut worker, RemoteAudit { audit: &mut audit }, learn);
+        let mut handler = AiTickHandler::new(
+            &mut worker,
+            RemoteAudit {
+                audit: &mut audit,
+                resp_reassembly: None,
+            },
+            learn,
+        );
         crate::control_service_main(
             ep,
             "ai-worker",
@@ -1137,6 +1206,82 @@ mod tests {
         );
     }
 
+    /// 2026-09-19 R10 三资源：大应答分片重组（AI_RESP_BEGIN/CONT/END）——
+    /// 重组后走同一 on_peer_message 面，恰一次消费；不完整/超长 = 丢弃
+    /// 不喂半截。锁住"1664B 悬崖应答不再丢失"的修复面。
+    #[test]
+    fn remote_peer_msg_multipart_reassembly() {
+        use eneros_agent_sdk::ai_relay::{AI_RESP_BEGIN, AI_RESP_CONT, AI_RESP_END};
+        struct NullLink;
+        impl PeerLink for NullLink {
+            fn send_request(&mut self, _req_json: &str) -> Result<(), LinkError> {
+                Ok(())
+            }
+        }
+        let cfg = RemoteBrainConfig {
+            timeout_ms: 2_000,
+            unhealthy_after: 3,
+            probe_every: 1,
+            max_power_kw: 10.0,
+            ttl_secs: 60,
+            lease_key: [0u8; 32],
+            lease_ttl_secs: 0,
+        };
+        let brain = RemoteBrain::new(HeuristicBackend::new(), NullLink, cfg);
+        let mut worker = AiWorkerService::new(brain, [0x41; 16]);
+        let mut audit = DecisionAudit::new(eneros_audit::genesis(b"ai-handler-test"));
+        let mut handler = AiTickHandler::new(
+            &mut worker,
+            RemoteAudit {
+                audit: &mut audit,
+                resp_reassembly: None,
+            },
+            None::<DeadbandLearner<MemIo>>,
+        );
+        // 载荷 = 合法文本（无在途请求 → Late；证明整帧到达 on_peer_message）。
+        let payload: Vec<u8> = b"{\"k\":\"v\",\"pad\":\"0123456789\"}".to_vec();
+        let mut resp = Vec::new();
+        let begin = {
+            let mut f = vec![AI_RESP_BEGIN];
+            f.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            f
+        };
+        assert!(handler.handle(&begin, &mut resp, 1_000));
+        for part in payload.chunks(7) {
+            let mut f = vec![AI_RESP_CONT];
+            f.extend_from_slice(part);
+            resp.clear();
+            assert!(handler.handle(&f, &mut resp, 1_000));
+        }
+        resp.clear();
+        assert!(handler.handle(&[AI_RESP_END], &mut resp, 1_000));
+        assert_eq!(resp, alloc::vec![AI_PEER_MSG, 0]);
+        assert_eq!(
+            handler.worker.backend_mut().late_total,
+            1,
+            "重组后恰一次消费"
+        );
+        // 不完整分片（END 先至且缓冲为空）→ 丢弃不喂。
+        resp.clear();
+        assert!(handler.handle(&[AI_RESP_END], &mut resp, 1_001));
+        assert_eq!(
+            handler.worker.backend_mut().late_total,
+            1,
+            "残帧不得进入 on_peer_message"
+        );
+        // 超声明长度 → 丢弃重来。
+        let begin2 = {
+            let mut f = vec![AI_RESP_BEGIN];
+            f.extend_from_slice(&4u32.to_le_bytes());
+            f
+        };
+        assert!(handler.handle(&begin2, &mut resp, 1_002));
+        let mut fat = vec![AI_RESP_CONT];
+        fat.extend_from_slice(&[0u8; 16]);
+        assert!(handler.handle(&fat, &mut resp, 1_002));
+        assert!(handler.audit.resp_reassembly.is_none(), "超长重组态已清");
+    }
+
     /// remote 扩展码钩子：AI_PEER_MSG 经 RemoteAudit 消费（Bad/Late 判定 +
     /// 计数 + wire 回执）；未识别码仍 0xFF 兜底。
     #[test]
@@ -1161,7 +1306,10 @@ mod tests {
         let mut audit = DecisionAudit::new(eneros_audit::genesis(b"ai-handler-test"));
         let mut handler = AiTickHandler::new(
             &mut worker,
-            RemoteAudit { audit: &mut audit },
+            RemoteAudit {
+                audit: &mut audit,
+                resp_reassembly: None,
+            },
             None::<DeadbandLearner<MemIo>>,
         );
         let mut resp = Vec::new();
@@ -1208,7 +1356,10 @@ mod tests {
         let learner = DeadbandLearner::open(true, MemIo::new()).expect("learner open");
         let mut handler = AiTickHandler::new(
             &mut worker,
-            RemoteAudit { audit: &mut audit },
+            RemoteAudit {
+                audit: &mut audit,
+                resp_reassembly: None,
+            },
             Some(learner),
         );
         let mut resp = Vec::new();
@@ -1271,7 +1422,10 @@ mod tests {
         let learner = DeadbandLearner::open(true, MemIo::new()).expect("learner open");
         let mut handler = AiTickHandler::new(
             &mut worker,
-            RemoteAudit { audit: &mut audit },
+            RemoteAudit {
+                audit: &mut audit,
+                resp_reassembly: None,
+            },
             Some(learner),
         );
         let mut resp = Vec::new();
@@ -1364,7 +1518,10 @@ mod tests {
         let learner = DeadbandLearner::open(true, MemIo::new()).expect("learner open");
         let mut handler = AiTickHandler::new(
             &mut worker,
-            RemoteAudit { audit: &mut audit },
+            RemoteAudit {
+                audit: &mut audit,
+                resp_reassembly: None,
+            },
             Some(learner),
         );
         let mut resp = Vec::new();
@@ -1475,7 +1632,10 @@ mod tests {
         let learner = DeadbandLearner::open(true, MemIo::new()).expect("learner open");
         let mut handler = AiTickHandler::new(
             &mut worker,
-            RemoteAudit { audit: &mut audit },
+            RemoteAudit {
+                audit: &mut audit,
+                resp_reassembly: None,
+            },
             Some(learner),
         );
         let mut resp = Vec::new();
@@ -1546,7 +1706,10 @@ mod tests {
         let learner = DeadbandLearner::open(true, MemIo::new()).expect("learner open");
         let mut handler = AiTickHandler::new(
             &mut worker,
-            RemoteAudit { audit: &mut audit },
+            RemoteAudit {
+                audit: &mut audit,
+                resp_reassembly: None,
+            },
             Some(learner),
         );
         let mut resp = Vec::new();
@@ -1595,7 +1758,10 @@ mod tests {
         let mut worker = AiWorkerService::new(brain, [0x41; 16]);
         let mut handler = AiTickHandler::new(
             &mut worker,
-            RemoteAudit { audit: &mut audit },
+            RemoteAudit {
+                audit: &mut audit,
+                resp_reassembly: None,
+            },
             None::<DeadbandLearner<MemIo>>,
         );
         let mut resp = Vec::new();

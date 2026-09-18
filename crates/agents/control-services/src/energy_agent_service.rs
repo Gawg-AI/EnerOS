@@ -142,13 +142,25 @@ impl EnergyAgentService {
         }
         // Existing plans progress before cooldown/worker/no-action branches.
         // A failed owner tick cannot be bypassed by submitting another plan.
-        if let Err(error) = self.drive_held(Some(input)) {
-            let resp = self.noaction(&error);
-            return self.settle(
-                TickOutcome::PreDispatchError { detail: error },
-                resp,
-                now_ms,
-            );
+        let held_active = match self.drive_held(Some(input)) {
+            Ok(active) => active,
+            Err(error) => {
+                let resp = self.noaction(&error);
+                return self.settle(
+                    TickOutcome::PreDispatchError { detail: error },
+                    resp,
+                    now_ms,
+                );
+            }
+        };
+        // ADR-0054（2026-09-19 R10 实弹根因修复）：**计划在途不发新控制
+        // 命令**——在途持有计划拥有全部可控设备期间，本地 System1 兜底
+        // 单命令与计划步的交错写（实弹 |0-5|kW/0.9s = 5.5 kW/s）触发合同
+        // 爬坡限拒（3.333 kW/s）⇒ 计划步终态失败级联。计划终态/取消后的
+        // 下个 tick 自动恢复兜底（active 归零）。
+        if held_active > 0 {
+            let resp = self.noaction("held-plan-active: System1 suppressed");
+            return self.settle(TickOutcome::NoAction, resp, now_ms);
         }
         if self.policy.in_error() && now_ms < self.cooldown_until_ms {
             return self.noaction("error-budget-exhausted");
@@ -240,7 +252,9 @@ impl EnergyAgentService {
         out
     }
 
-    fn drive_held(&mut self, input: Option<&[u8]>) -> Result<(), String> {
+    /// 驱动持有计划；成功时返回**在途计划数**（tick 应答第 2 字节，
+    /// 2026-09-19 三资源实弹接线）。
+    fn drive_held(&mut self, input: Option<&[u8]>) -> Result<usize, String> {
         let mut request = vec![crate::dispatch_service::DISP_HELD_TICK];
         if let Some(input) = input {
             request.extend_from_slice(input);
@@ -249,7 +263,7 @@ impl EnergyAgentService {
         if response.first() != Some(&crate::dispatch_service::DISP_OK) {
             return Err(String::from("held-plan-tick-failed"));
         }
-        Ok(())
+        Ok(response.get(1).copied().unwrap_or(0) as usize)
     }
 
     fn unavailable(&mut self) -> Vec<u8> {
@@ -363,6 +377,8 @@ mod tests {
 
     struct StubDispatch {
         committed: bool,
+        /// 在途计划数（DISP_HELD_TICK 应答第 2 字节注入面；默认 0）。
+        held_active: u8,
     }
     impl DispatchClient for StubDispatch {
         fn submit(&mut self, req: &[u8]) -> Result<Vec<u8>, String> {
@@ -372,7 +388,10 @@ mod tests {
                         || eneros_agent_sdk::snap_input_wire::TrustedInput::decode(&req[1..])
                             .is_some()
                 );
-                return Ok(vec![crate::dispatch_service::DISP_OK]);
+                return Ok(alloc::vec![
+                    crate::dispatch_service::DISP_OK,
+                    self.held_active,
+                ]);
             }
             assert_eq!(
                 req.first(),
@@ -401,12 +420,42 @@ mod tests {
         }
     }
 
+    /// ADR-0054（2026-09-19 R10 实弹根因）：在途持有计划期间，System1 兜底
+    /// 单命令必须被抑制（计划与兜底交错写触发合同爬坡限拒——实弹
+    /// |0-5|kW/0.9s=5.5kW/s > 3.333kW/s 计划步终态失败级联）。
+    /// 变异靶：去掉抑制 → 本测红（兜底提交到达 dispatch）。
+    #[test]
+    fn tick_suppresses_system1_while_held_plan_active() {
+        let mut svc = EnergyAgentService::new(
+            alloc::boxed::Box::new(StubTelemetry { ok: true }),
+            alloc::boxed::Box::new(StubWorker { fail: false }),
+            alloc::boxed::Box::new(StubDispatch {
+                committed: true,
+                held_active: 1,
+            }),
+        );
+        let resp = svc.tick(0);
+        assert_eq!(
+            resp.first(),
+            Some(&EA_NOACTION),
+            "在途计划 tick 必须 NOACTION（抑制 System1）"
+        );
+        assert!(
+            String::from_utf8_lossy(&resp).contains("held-plan-active"),
+            "抑制理由可观测：{:?}",
+            String::from_utf8_lossy(&resp)
+        );
+    }
+
     #[test]
     fn tick_full_chain_commits() {
         let mut svc = EnergyAgentService::new(
             alloc::boxed::Box::new(StubTelemetry { ok: true }),
             alloc::boxed::Box::new(StubWorker { fail: false }),
-            alloc::boxed::Box::new(StubDispatch { committed: true }),
+            alloc::boxed::Box::new(StubDispatch {
+                committed: true,
+                held_active: 0,
+            }),
         );
         let resp = svc.tick(0);
         assert_eq!(resp[0], EA_OK);
@@ -421,7 +470,10 @@ mod tests {
         let mut svc = EnergyAgentService::new(
             alloc::boxed::Box::new(StubTelemetry { ok: false }),
             alloc::boxed::Box::new(StubWorker { fail: false }),
-            alloc::boxed::Box::new(StubDispatch { committed: true }),
+            alloc::boxed::Box::new(StubDispatch {
+                committed: true,
+                held_active: 0,
+            }),
         );
         let resp = svc.tick(0);
         assert_eq!(resp[0], EA_NOACTION);
@@ -433,7 +485,10 @@ mod tests {
         let mut svc = EnergyAgentService::new(
             alloc::boxed::Box::new(StubTelemetry { ok: true }),
             alloc::boxed::Box::new(StubWorker { fail: true }),
-            alloc::boxed::Box::new(StubDispatch { committed: true }),
+            alloc::boxed::Box::new(StubDispatch {
+                committed: true,
+                held_active: 0,
+            }),
         );
         let resp = svc.tick(0);
         assert_eq!(resp[0], EA_UNAVAILABLE);
@@ -445,7 +500,10 @@ mod tests {
         let mut svc = EnergyAgentService::new(
             alloc::boxed::Box::new(StubTelemetry { ok: true }),
             alloc::boxed::Box::new(StubWorker { fail: false }),
-            alloc::boxed::Box::new(StubDispatch { committed: false }),
+            alloc::boxed::Box::new(StubDispatch {
+                committed: false,
+                held_active: 0,
+            }),
         );
         let resp = svc.tick(0);
         assert_eq!(resp[0], EA_OK, "投递回执透传（Failed 由回执表达）");
@@ -459,7 +517,10 @@ mod tests {
         let mut svc = EnergyAgentService::with_cooldown(
             alloc::boxed::Box::new(StubTelemetry { ok: true }),
             alloc::boxed::Box::new(StubWorker { fail: true }),
-            alloc::boxed::Box::new(StubDispatch { committed: true }),
+            alloc::boxed::Box::new(StubDispatch {
+                committed: true,
+                held_active: 0,
+            }),
             1_000,
         );
         // 连续 3 次 Unavailable → Escalated + 冷却设定。
@@ -481,7 +542,10 @@ mod tests {
         let mut svc = EnergyAgentService::with_cooldown(
             alloc::boxed::Box::new(StubTelemetry { ok: true }),
             alloc::boxed::Box::new(StubWorker { fail: false }),
-            alloc::boxed::Box::new(StubDispatch { committed: false }),
+            alloc::boxed::Box::new(StubDispatch {
+                committed: false,
+                held_active: 0,
+            }),
             1_000,
         );
         // Failed 回执连续 3 次 → 熔断（EA_OK 透传回执但预算记账）。
@@ -499,7 +563,10 @@ mod tests {
         assert_eq!(svc.policy.consecutive_errors(), 4);
         // 再冷却内跳过；换 Committed dispatch 后到期探针成功 → 复位。
         assert_eq!(svc.tick(2_000)[0], EA_NOACTION);
-        svc.dispatch.0 = alloc::boxed::Box::new(StubDispatch { committed: true });
+        svc.dispatch.0 = alloc::boxed::Box::new(StubDispatch {
+            committed: true,
+            held_active: 0,
+        });
         let resp = svc.tick(2_600);
         assert_eq!(resp[0], EA_OK);
         assert!(!svc.policy.in_error(), "Committed 复位错误态");

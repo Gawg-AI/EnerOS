@@ -110,7 +110,7 @@ pub fn handle_submit(engine: &mut dyn ControlDispatch, req: &[u8]) -> Vec<u8> {
             return err_receipt("bad held tick telemetry");
         }
         return match engine.tick_held(input.as_ref(), telemetry.as_ref()) {
-            Ok(()) => alloc::vec![DISP_OK],
+            Ok(active) => alloc::vec![DISP_OK, active.min(u8::MAX as usize) as u8],
             Err(error) => err_receipt(&format!("{error:?}")),
         };
     }

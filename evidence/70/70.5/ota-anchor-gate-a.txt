@@ -1,1 +1,1 @@
-OTA-ANCHOR-GATE: PASS profile=qemu-prod forbidden=yes anchor_fp=40af22d7（≠ 测试锚）
+OTA-ANCHOR-GATE: PASS profile=qemu-prod forbidden=yes anchor_fp=4cf2b714（≠ 测试锚）

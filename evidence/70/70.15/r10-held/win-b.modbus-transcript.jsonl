@@ -15,39 +15,39 @@
 {"event": "RESPONSE", "conn": 1, "tid": 0}
 {"event": "READ-GROUP", "conn": 1, "tid": 0, "func": "fc03", "addr": "0x100", "count": 10, "values": [4000, 500, 5000, 600, 1000, 0, 0, 120, 5000, 400]}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
-{"event": "WRITE", "conn": 1, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x200", "ts": 1789743789.9779887, "value": 5}
+{"event": "WRITE", "conn": 1, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x200", "ts": 1789753950.1107824, "value": 5}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
 {"event": "READ", "conn": 1, "tid": 0, "unit": 1, "func": "fc03", "addr": "0x200", "value": 5}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
-{"event": "WRITE", "conn": 1, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x200", "ts": 1789743790.4948645, "value": 5}
+{"event": "WRITE", "conn": 1, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x200", "ts": 1789753950.6331065, "value": 5}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
 {"event": "READ", "conn": 1, "tid": 0, "unit": 1, "func": "fc03", "addr": "0x200", "value": 5}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
 {"event": "READ-GROUP", "conn": 1, "tid": 0, "func": "fc03", "addr": "0x100", "count": 7, "values": [4000, 500, 5000, 600, 1000, 0, 0]}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
-{"event": "WRITE", "conn": 1, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x200", "ts": 1789743794.0741637, "value": 0}
+{"event": "WRITE", "conn": 1, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x200", "ts": 1789753952.192255, "value": 0}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
 {"event": "READ", "conn": 1, "tid": 0, "unit": 1, "func": "fc03", "addr": "0x200", "value": 0}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
 {"event": "READ", "conn": 1, "tid": 0, "unit": 1, "func": "fc03", "addr": "0x200", "value": 0}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
-{"event": "WRITE", "conn": 1, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x201", "ts": 1789743794.110866, "value": 0}
+{"event": "WRITE", "conn": 1, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x201", "ts": 1789753952.2388904, "value": 0}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
 {"event": "READ", "conn": 1, "tid": 0, "unit": 1, "func": "fc03", "addr": "0x201", "value": 0}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
 {"event": "READ", "conn": 1, "tid": 0, "unit": 1, "func": "fc03", "addr": "0x201", "value": 0}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
-{"event": "WRITE", "conn": 1, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x202", "ts": 1789743794.1481798, "value": 0}
+{"event": "WRITE", "conn": 1, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x200", "ts": 1789753954.3048332, "value": 0}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
-{"event": "READ", "conn": 1, "tid": 0, "unit": 1, "func": "fc03", "addr": "0x202", "value": 0}
+{"event": "READ", "conn": 1, "tid": 0, "unit": 1, "func": "fc03", "addr": "0x200", "value": 0}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
-{"event": "READ", "conn": 1, "tid": 0, "unit": 1, "func": "fc03", "addr": "0x202", "value": 0}
+{"event": "READ", "conn": 1, "tid": 0, "unit": 1, "func": "fc03", "addr": "0x200", "value": 0}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
-{"event": "READ-GROUP", "conn": 1, "tid": 0, "func": "fc03", "addr": "0x100", "count": 10, "values": [4000, 500, 5000, 600, 1000, 0, 0, 120, 5000, 400]}
+{"event": "WRITE", "conn": 1, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x201", "ts": 1789753954.359427, "value": 0}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
-{"event": "READ-GROUP", "conn": 1, "tid": 0, "func": "fc03", "addr": "0x110", "count": 3, "values": [90, 3000, 250]}
+{"event": "READ", "conn": 1, "tid": 0, "unit": 1, "func": "fc03", "addr": "0x201", "value": 0}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
-{"event": "READ", "conn": 1, "tid": 0, "unit": 1, "func": "fc03", "addr": "0x118", "value": 70}
+{"event": "READ", "conn": 1, "tid": 0, "unit": 1, "func": "fc03", "addr": "0x201", "value": 0}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
 {"event": "CLOSE", "conn": 1}
 {"event": "CONNECT", "conn": 2}
@@ -73,11 +73,11 @@
 {"event": "RESPONSE", "conn": 2, "tid": 0}
 {"event": "READ", "conn": 2, "tid": 0, "unit": 1, "func": "fc03", "addr": "0x118", "value": 70}
 {"event": "RESPONSE", "conn": 2, "tid": 0}
-{"event": "WRITE", "conn": 2, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x200", "ts": 1789743899.910299, "value": 5}
+{"event": "WRITE", "conn": 2, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x200", "ts": 1789754057.4227269, "value": 5}
 {"event": "RESPONSE", "conn": 2, "tid": 0}
 {"event": "READ", "conn": 2, "tid": 0, "unit": 1, "func": "fc03", "addr": "0x200", "value": 5}
 {"event": "RESPONSE", "conn": 2, "tid": 0}
-{"event": "WRITE", "conn": 2, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x200", "ts": 1789743900.5875273, "value": 5}
+{"event": "WRITE", "conn": 2, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x200", "ts": 1789754058.0982895, "value": 5}
 {"event": "RESPONSE", "conn": 2, "tid": 0}
 {"event": "READ", "conn": 2, "tid": 0, "unit": 1, "func": "fc03", "addr": "0x200", "value": 5}
 {"event": "RESPONSE", "conn": 2, "tid": 0}
@@ -85,11 +85,11 @@
 {"event": "RESPONSE", "conn": 2, "tid": 0}
 {"event": "READ", "conn": 2, "tid": 0, "unit": 1, "func": "fc03", "addr": "0x119", "value": 3000}
 {"event": "RESPONSE", "conn": 2, "tid": 0}
-{"event": "WRITE", "conn": 2, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x200", "ts": 1789743902.4019005, "value": 5}
+{"event": "WRITE", "conn": 2, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x200", "ts": 1789754059.8372889, "value": 5}
 {"event": "RESPONSE", "conn": 2, "tid": 0}
 {"event": "READ", "conn": 2, "tid": 0, "unit": 1, "func": "fc03", "addr": "0x200", "value": 5}
 {"event": "RESPONSE", "conn": 2, "tid": 0}
-{"event": "WRITE", "conn": 2, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x200", "ts": 1789743904.4574265, "value": 5}
+{"event": "WRITE", "conn": 2, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x200", "ts": 1789754061.88714, "value": 5}
 {"event": "RESPONSE", "conn": 2, "tid": 0}
 {"event": "READ", "conn": 2, "tid": 0, "unit": 1, "func": "fc03", "addr": "0x200", "value": 5}
 {"event": "RESPONSE", "conn": 2, "tid": 0}
@@ -103,7 +103,7 @@
 {"event": "RESPONSE", "conn": 2, "tid": 0}
 {"event": "READ-GROUP", "conn": 2, "tid": 0, "func": "fc03", "addr": "0x100", "count": 10, "values": [4000, 500, 5000, 600, 1000, 0, 0, 120, 5000, 400]}
 {"event": "RESPONSE", "conn": 2, "tid": 0}
-{"event": "WRITE", "conn": 2, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x200", "ts": 1789743938.3167284, "value": 5}
+{"event": "WRITE", "conn": 2, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x200", "ts": 1789754096.0383437, "value": 5}
 {"event": "RESPONSE", "conn": 2, "tid": 0}
 {"event": "READ", "conn": 2, "tid": 0, "unit": 1, "func": "fc03", "addr": "0x200", "value": 5}
 {"event": "RESPONSE", "conn": 2, "tid": 0}

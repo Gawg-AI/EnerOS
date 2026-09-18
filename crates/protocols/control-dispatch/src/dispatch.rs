@@ -94,12 +94,15 @@ pub enum DispatchError {
 /// 唯一控制写出口 trait（WP-40.6 深接口）。
 pub trait ControlDispatch {
     /// Periodic owner tick, including when the planner has no new proposal.
+    /// 驱动持有计划；返回**在途（非终态）计划数**——调用方（EA）据此
+    /// 抑制本地兜底单命令（ADR-0054：计划在途不发新控制命令——System1
+    /// 与计划步交错写会触发合同爬坡限拒，2026-09-19 R10 实弹根因）。
     fn tick_held(
         &mut self,
         _input: Option<&eneros_agent_sdk::snap_input_wire::TrustedInput>,
         _telemetry: Option<&TrustedTelemetry>,
-    ) -> Result<(), DispatchError> {
-        Ok(())
+    ) -> Result<usize, DispatchError> {
+        Ok(0)
     }
 
     fn query_held(&self) -> Result<Vec<crate::saga::DriveReport>, DispatchError> {

@@ -23,6 +23,20 @@ pub const AI_REQ_END: u8 = 0x2C;
 pub const AI_PEER_MSG: u8 = 0x10;
 
 /// 蓝图 69 卷 69.5（WP-69.5.1）：降级/学习可调面**只读**观测查询码
+/// EXECUTE 载荷子码：peer 应答**分片**首帧（2026-09-19 R10 三资源：12
+/// 分配应答 JSON 实测 1664B，+AI_PEER_MSG 头 1B 超 chunk 请求预算 1664 ⇒
+/// 单帧投递在悬崖上逐字节漂移丢应答——实弹 vol89 恢复段唯一应答 1664B
+/// 被丢、零 used=true）。载荷 = `[AI_RESP_BEGIN][total u32 LE]`。
+pub const AI_RESP_BEGIN: u8 = 0x2D;
+/// EXECUTE 载荷子码：应答分片中继帧。载荷 = `[AI_RESP_CONT][data]`
+/// （data ≤ [`AI_RESP_PART_MAX`]）。
+pub const AI_RESP_CONT: u8 = 0x2E;
+/// EXECUTE 载荷子码：应答分片终帧。载荷 = `[AI_RESP_END]`（payload_len==1）。
+pub const AI_RESP_END: u8 = 0x2F;
+/// 分片数据上限（chunk 请求预算 1664 − 子码 1B；[`crate::chunked`]
+/// 单源）。≤ 本宽度的应答仍走单帧 [`AI_PEER_MSG`]（旧路径字节不变）。
+pub const AI_RESP_PART_MAX: usize = crate::chunked::CHUNK_LOGICAL_CAP - 1;
+
 /// （root 编排探针 → svc-ai-worker；定义在本层与 AI_PEER_MSG 同纪律——
 /// root-task 不依赖 control-services，线码须落在两侧共同的依赖叶上）。
 /// 语义契约在 control-services::ai_handler（响应 = `DEGRADE_OBS_WIRE_LEN`
@@ -71,7 +85,14 @@ mod tests {
     /// 49：线码互斥性（防手滑撞既有子码）。
     #[test]
     fn wire_codes_disjoint_from_existing_subcodes() {
-        let ai = [AI_REQ_BEGIN, AI_REQ_CONT, AI_REQ_END];
+        let ai = [
+            AI_REQ_BEGIN,
+            AI_REQ_CONT,
+            AI_REQ_END,
+            AI_RESP_BEGIN,
+            AI_RESP_CONT,
+            AI_RESP_END,
+        ];
         // drv EXECUTE 已占用子码面：0x11 = OP_MASTER_WRITE
         // （protocol-abstract::write 同值锚定——漂移即本测试失效提示）。
         const OP_MASTER_WRITE: u8 = 0x11;

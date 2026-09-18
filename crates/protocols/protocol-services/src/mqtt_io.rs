@@ -155,20 +155,44 @@ impl<C: RawIpc> MqttWriteIoService<C> {
         self.forward_ai_batch(&msgs);
     }
 
-    /// AI 应答转发环（host 可测核）。
+    /// AI 应答转发环（host 可测核）。2026-09-19 R10 三资源：应答 JSON 超
+    /// chunk 请求预算（1664B）时按 [`ai_relay::AI_RESP_*`] 分片多帧转发
+    ///（svc-ai-worker 侧重组后走同一 on_peer_message 面）；≤ 预算的应答
+    /// 保持单帧 [`ai_relay::AI_PEER_MSG`] 旧路径（字节不变）。
     pub fn forward_ai_batch(&mut self, msgs: &[Vec<u8>]) {
         let ep = &mut self.ai_worker;
         let counters = &mut self.counters;
+        // 预展开：小应答 1 帧；大应答 BEGIN/CONT../END 多帧（每帧 ≤ 预算）。
+        use eneros_agent_sdk::ai_relay::{
+            AI_PEER_MSG, AI_RESP_BEGIN, AI_RESP_CONT, AI_RESP_END, AI_RESP_PART_MAX,
+        };
+        let mut frames: Vec<(usize, Vec<u8>)> = Vec::new(); // (源应答下标, 帧)
+        for (idx, m) in msgs.iter().enumerate() {
+            // 帧 = 子码 1B + 载荷 ⇒ 预算内 ⇔ 载荷 < CHUNK_LOGICAL_CAP。
+            if m.len() < eneros_agent_sdk::chunked::CHUNK_LOGICAL_CAP {
+                let mut f = Vec::with_capacity(1 + m.len());
+                f.push(AI_PEER_MSG);
+                f.extend_from_slice(m);
+                frames.push((idx, f));
+            } else {
+                let mut b = Vec::with_capacity(5);
+                b.push(AI_RESP_BEGIN);
+                b.extend_from_slice(&(m.len() as u32).to_le_bytes());
+                frames.push((idx, b));
+                for part in m.chunks(AI_RESP_PART_MAX) {
+                    let mut f = Vec::with_capacity(1 + part.len());
+                    f.push(AI_RESP_CONT);
+                    f.extend_from_slice(part);
+                    frames.push((idx, f));
+                }
+                frames.push((idx, alloc::vec![AI_RESP_END]));
+            }
+        }
         drain_and_forward(
-            msgs,
+            &frames,
             ep,
             "svc-ai-worker",
-            |payload| {
-                let mut req: Vec<u8> = Vec::with_capacity(1 + payload.len());
-                req.push(eneros_agent_sdk::ai_relay::AI_PEER_MSG);
-                req.extend_from_slice(payload);
-                req
-            },
+            |(_idx, frame)| frame.clone(),
             |_| true,
             |payload, r| match r {
                 FwdResult::NoEndpoint => {
@@ -178,12 +202,18 @@ impl<C: RawIpc> MqttWriteIoService<C> {
                     );
                 }
                 FwdResult::Accepted(_) => {
-                    counters.ai_resp_forwarded = counters.ai_resp_forwarded.saturating_add(1);
-                    eneros_runtime::println!(
-                        "[svc-mqtt] AI-RESP-FWD len={} total={}",
-                        payload.len(),
-                        counters.ai_resp_forwarded
-                    );
+                    // 计数/证据行只落在**终帧**（AI_PEER_MSG 单帧或
+                    // AI_RESP_END）——多帧分片不重复计数。
+                    let is_terminal = payload.1.first() == Some(&AI_PEER_MSG)
+                        || payload.1.first() == Some(&AI_RESP_END);
+                    if is_terminal {
+                        counters.ai_resp_forwarded = counters.ai_resp_forwarded.saturating_add(1);
+                        eneros_runtime::println!(
+                            "[svc-mqtt] AI-RESP-FWD len={} total={}",
+                            payload.1.len(),
+                            counters.ai_resp_forwarded
+                        );
+                    }
                 }
                 // is_accepted 恒真——Rejected 分支不可达（占位如实计数）。
                 FwdResult::Rejected(_) => {
@@ -533,6 +563,57 @@ mod tests {
             seq,
             1_000,
         )
+    }
+
+    /// 2026-09-19 R10 三资源：超 chunk 预算（1664B）的 peer 应答分片多帧
+    /// 转发——大应答（1664B 实测形态）必须展开为 BEGIN/CONT…/END 帧序列
+    /// 且每帧 ≤ 预算；小应答保持单帧 AI_PEER_MSG。
+    #[test]
+    fn ai_response_multipart_forward_fits_chunk_budget() {
+        use eneros_agent_sdk::ai_relay::{AI_PEER_MSG, AI_RESP_BEGIN, AI_RESP_CONT, AI_RESP_END};
+        let ep = ChunkedEndpoint::wrap(FixedRespServer::responding(alloc::vec![AI_PEER_MSG, 0,]));
+        let mut svc = MqttWriteIoService::new(
+            crate::service::PluginIoService::new(
+                eneros_mqtt::plugin::MqttPlugin::new(),
+                "eneros_mqtt::plugin::MqttPlugin",
+            ),
+            None,
+            Some(ep),
+            None,
+        );
+        let big: Vec<u8> = alloc::vec![b'x'; 1664]; // 实弹悬崖尺寸（+1 头 = 1665 > 1664）
+        svc.forward_ai_batch(&[big]);
+        // 大应答计数恰 1（终帧计数，分片不重复）。
+        assert_eq!(svc.counters.ai_resp_forwarded, 1);
+        // 小应答（≤1663）单帧路径不受影响。
+        svc.forward_ai_batch(&[alloc::vec![b'y'; 100]]);
+        assert_eq!(svc.counters.ai_resp_forwarded, 2);
+        // 分片展开的帧预算：直接构造帧序列校验（encode 闭包输出 ≤ 1664）。
+        use eneros_agent_sdk::chunked::CHUNK_LOGICAL_CAP;
+        let payload: Vec<u8> = alloc::vec![b'z'; 4000];
+        let mut frames: Vec<Vec<u8>> = Vec::new();
+        if payload.len() < CHUNK_LOGICAL_CAP {
+            frames.push(alloc::vec![AI_PEER_MSG]);
+        } else {
+            let mut b = alloc::vec![AI_RESP_BEGIN];
+            b.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            frames.push(b);
+            for part in payload.chunks(eneros_agent_sdk::ai_relay::AI_RESP_PART_MAX) {
+                let mut f = alloc::vec![AI_RESP_CONT];
+                f.extend_from_slice(part);
+                frames.push(f);
+            }
+            frames.push(alloc::vec![AI_RESP_END]);
+        }
+        assert!(frames.iter().all(|f| f.len() <= CHUNK_LOGICAL_CAP));
+        assert_eq!(frames.first().unwrap()[0], AI_RESP_BEGIN);
+        assert_eq!(frames.last().unwrap()[0], AI_RESP_END);
+        // 守恒：重组后长度恢复。
+        let mut recon = 0usize;
+        for f in &frames[1..frames.len() - 1] {
+            recon += f.len() - 1;
+        }
+        assert_eq!(recon, payload.len());
     }
 
     #[test]

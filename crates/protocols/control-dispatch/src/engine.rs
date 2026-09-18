@@ -2740,8 +2740,19 @@ impl ControlDispatch for DispatchEngine {
         &mut self,
         input: Option<&eneros_agent_sdk::snap_input_wire::TrustedInput>,
         telemetry: Option<&TrustedTelemetry>,
-    ) -> Result<(), DispatchError> {
-        self.drive_held_plans(input, telemetry).map(|_| ())
+    ) -> Result<usize, DispatchError> {
+        self.drive_held_plans(input, telemetry)?;
+        let active = self
+            .held_plans
+            .as_ref()
+            .map(|store| {
+                store
+                    .plans()
+                    .map(|plans| plans.iter().filter(|p| !p.terminal()).count())
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0);
+        Ok(active)
     }
 
     fn query_held(&self) -> Result<Vec<crate::saga::DriveReport>, DispatchError> {
