@@ -299,9 +299,9 @@ mod tests {
             1_000.0,
             blobs(),
         )
-        .with_control_bindings(vec![(1, 1, 10), (2, 8, 1009)]);
+        .with_control_bindings(vec![(1, 1, 10), (2, 8, 1009), (3, 9, 1014)]);
         let specs = src.specs(&facts(1), 0.6).expect("规格");
-        assert_eq!(specs.assets.len(), 2, "双电池资产均有铭牌+合同");
+        assert_eq!(specs.assets.len(), 3, "三电池资产均有铭牌+合同");
         // asset 1（PCS-1，100 kWh）。
         let a = &specs.assets[0];
         assert_eq!(a.asset_id, 1);
@@ -332,6 +332,15 @@ mod tests {
         assert_eq!(b.device_id, 8, "设备绑定来自控制点表");
         assert_eq!(b.point_id, 1009, "点绑定来自控制合同");
         assert_eq!(specs.grid_asset_id, 10, "并网点识别");
+        // asset 3（PCS-3，30 kWh；三资源手术 2026-09-18）。
+        let c = &specs.assets[2];
+        assert_eq!(c.asset_id, 3);
+        assert_eq!(c.capacity_kwh, 30.0);
+        assert!((c.initial_kwh - 9.0).abs() < 1e-9, "初始能量 = 30 × 0.30");
+        assert_eq!(c.p_min_kw, -500.0);
+        assert_eq!(c.p_max_kw, 500.0);
+        assert_eq!(c.device_id, 9, "设备绑定来自控制点表");
+        assert_eq!(c.point_id, 1014, "点绑定来自控制合同");
     }
 
     /// 代次不符 / 无价格 / SOC 非法 → 不发请求（None）。
@@ -347,7 +356,7 @@ mod tests {
             1_000.0,
             blobs(),
         )
-        .with_control_bindings(vec![(1, 1, 10), (2, 8, 1009)]);
+        .with_control_bindings(vec![(1, 1, 10), (2, 8, 1009), (3, 9, 1014)]);
         assert!(src.specs(&facts(2), 0.6).is_none(), "跨代目录必须拒");
         assert!(
             src.specs(&facts(1), f64::NAN).is_none(),
@@ -362,7 +371,7 @@ mod tests {
             1_000.0,
             blobs(),
         )
-        .with_control_bindings(vec![(1, 1, 10), (2, 8, 1009)]);
+        .with_control_bindings(vec![(1, 1, 10), (2, 8, 1009), (3, 9, 1014)]);
         assert!(
             bad_prices.specs(&facts(1), 0.6).is_none(),
             "价格长度不符必须拒"
@@ -387,7 +396,7 @@ mod tests {
             5.0,
             blobs(),
         )
-        .with_control_bindings(vec![(1, 1, 10), (2, 8, 1009)]);
+        .with_control_bindings(vec![(1, 1, 10), (2, 8, 1009), (3, 9, 1014)]);
         let specs = src.specs(&facts(1), 0.6).expect("规格");
         assert_eq!(specs.assets[0].p_min_kw, -5.0, "请求窗收进预算");
         assert_eq!(specs.assets[0].p_max_kw, 5.0);
@@ -401,7 +410,7 @@ mod tests {
             0.0,
             blobs(),
         )
-        .with_control_bindings(vec![(1, 1, 10), (2, 8, 1009)]);
+        .with_control_bindings(vec![(1, 1, 10), (2, 8, 1009), (3, 9, 1014)]);
         assert!(bad.specs(&facts(1), 0.6).is_none(), "预算 ≤0 必须拒");
     }
     #[test]

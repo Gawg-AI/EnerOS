@@ -31,6 +31,10 @@ VALUES = {
     0x0111: 3000,  # P1006（scale 0.01 → 30.00）
     0x0112: 250,   # P1007（scale 0.1 → 25.0）
     0x0201: 0,     # P1009 PCS-2 控制点（有功功率 setpoint，kW raw=值 ×1.0）
+    # 蓝图 70 R10 三资源：PCS-3 遥测（scale 镜像 PCS-1/2，点表 device 9）。
+    0x0118: 70,    # P1010 PCS-3 有功功率 kW（scale 0.1 → 7.0）
+    0x0119: 3000,  # P1011 PCS-3 SOC（scale 0.0001 → 0.30）
+    0x0202: 0,     # P1014 PCS-3 控制点（有功功率 setpoint，kW raw=值 ×1.0）
 }
 
 # 线圈（FC1）——P1004/P1008 数字量（slave 2 / 0x010A、0x0113）。
@@ -39,7 +43,7 @@ COILS = {
     0x0113: 0,
 }
 
-WRITEABLE = {0x0200, 0x0201}
+WRITEABLE = {0x0200, 0x0201, 0x0202}
 
 
 def log(transcript, entry):

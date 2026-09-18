@@ -822,15 +822,18 @@ mod tests {
         let bundle = decode_catalog(&compiled.payload).unwrap();
         let hdr = bundle.header.unwrap();
         assert_eq!(hdr.versions.generation, 1);
-        // 2026-09-16（蓝图 70 R10）：+asset 2（PCS-2，多资产）。
-        assert_eq!(bundle.assets.len(), 3);
+        // 2026-09-16（蓝图 70 R10）：+asset 2（PCS-2，多资产）；
+        // 2026-09-18（R10 三资源）：+asset 3（PCS-3）。
+        assert_eq!(bundle.assets.len(), 4);
         // 2026-09-14：PCS-1 的功率回读/遥测点进目录（+3 语义）；覆盖点数
         // +1（合同回读点 1001 必须进冻结快照的必收点集）。
         // 2026-09-16：+PCS-2 点语义 1005..1009（+5，多资产回读/控制面）。
-        assert_eq!(bundle.points.len(), 17);
+        // 2026-09-18：+PCS-3 点语义 1010/1011/1014（+3，三资源）。
+        assert_eq!(bundle.points.len(), 20);
         assert_eq!(bundle.feedback.len(), 5);
         assert_eq!(bundle.coverage.len(), 8);
-        // 蓝图 70 R10：合同 2（asset 2 / 点 1009）。
-        assert_eq!(bundle.contracts.len(), 2);
+        // 蓝图 70 R10：合同 2（asset 2 / 点 1009）；三资源：合同 3
+        // （asset 3 / 点 1014）。
+        assert_eq!(bundle.contracts.len(), 3);
     }
 }

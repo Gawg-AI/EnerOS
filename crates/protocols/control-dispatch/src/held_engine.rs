@@ -7,11 +7,79 @@ use super::*;
 use crate::held_plan::{DurablePlans, HeldPlan};
 use crate::saga::{BatchState, DriveReport};
 
+/// ADR-0054:29–30：**持有期间保留证书引用的冻结输入与事件**的装配面。
+///
+/// hold = 新计划准入前登记（fail-closed：false ⇒ 调用方必须拒绝准入——
+/// 必要输入可能被回收时不得继续依赖该输入签发）；release = 计划终态且
+/// 无未决后解除（幂等；失败可重试——释放是回收面不是安全面）。钉集是
+/// RAM 派生态，唯一持久事实 = 持有计划本身：重启后由
+/// [`DispatchEngine::set_input_retainer`] / `install_held_plans` 按
+/// 非终态计划重派生。
+pub trait HeldInputRetainer {
+    /// 登记快照钉（幂等）。false = 面不可用/容量满。
+    fn hold(&mut self, snapshot_id: [u8; 16]) -> bool;
+    /// 解除快照钉（幂等）。false = 未钉/面不可用（可重试）。
+    fn release(&mut self, snapshot_id: [u8; 16]) -> bool;
+}
+
+/// fail-closed 保留面：一切 hold 拒绝（装配缺失时**不得**静默放行准入——
+/// ADR-0054:29–30 的反面 enforcement）。
+pub struct NoRetention;
+impl HeldInputRetainer for NoRetention {
+    fn hold(&mut self, _snapshot_id: [u8; 16]) -> bool {
+        false
+    }
+    fn release(&mut self, _snapshot_id: [u8; 16]) -> bool {
+        false
+    }
+}
+
 impl DispatchEngine {
     /// Assembly supplies an already opened registered region. No RAM fallback
     /// is permitted for production multi-step plans.
     pub fn install_held_plans(&mut self, plans: DurablePlans) {
+        self.repin_held_inputs();
         self.held_plans = Some(plans);
+        self.repin_held_inputs();
+    }
+
+    /// 装配保留面（ADR-0054:29–30）。装配后立即按当前非终态计划重派生
+    /// 钉集（断电恢复：钉是 RAM 态，重启后从这里重建）。
+    pub fn set_input_retainer(&mut self, retainer: alloc::boxed::Box<dyn HeldInputRetainer>) {
+        self.input_retainer = Some(retainer);
+        self.repin_held_inputs();
+    }
+
+    /// 供装配查询：保留面是否已装配（未装配 ⇒ 生产应装 NoRetention 而非
+    /// 留空——留空仅限 host 测试）。
+    pub fn input_retainer_installed(&self) -> bool {
+        self.input_retainer.is_some()
+    }
+
+    /// 按当前**非终态**计划重派生钉集（安装/装配两处调用；失败计数不
+    /// 静默——已有计划的钉失败不回滚计划本身，只登记可观测事实：后续
+    /// drive 的 fail-closed 面仍是输入有效性判据）。
+    fn repin_held_inputs(&mut self) {
+        let Some(store) = &self.held_plans else {
+            return;
+        };
+        let ids: Vec<[u8; 16]> = store
+            .plans()
+            .unwrap_or_default()
+            .iter()
+            .filter(|p| !p.terminal())
+            .filter_map(|p| {
+                eneros_agent_sdk::snap_input_wire::TrustedInput::decode(&p.input)
+                    .map(|i| i.facts().snapshot_id)
+            })
+            .collect();
+        for id in ids {
+            if let Some(retainer) = self.input_retainer.as_mut() {
+                if !retainer.hold(id) {
+                    self.held_pin_failures = self.held_pin_failures.saturating_add(1);
+                }
+            }
+        }
     }
 
     pub fn block_unavailable_held_store(&mut self) {
@@ -118,11 +186,30 @@ impl DispatchEngine {
                 "held admission needs reconciliation",
             )));
         }
-        self.held_plans
+        // ADR-0054:29–30：准入前先钉住证书引用的冻结输入（fail-closed——
+        // 钉面不可用/容量满 ⇒ 拒绝准入：必要输入可能被回收时不得继续
+        // 依赖该输入签发）。
+        let snapshot_id = input.facts().snapshot_id;
+        if let Some(retainer) = self.input_retainer.as_mut() {
+            if !retainer.hold(snapshot_id) {
+                self.held_pin_failures = self.held_pin_failures.saturating_add(1);
+                return Err(DispatchError::NotAuthorized(String::from(
+                    "input retention unavailable: held plan needs pinned frozen snapshot",
+                )));
+            }
+        }
+        if let Err(e) = self
+            .held_plans
             .as_mut()
             .ok_or_else(|| DispatchError::IntentPersistFailed(String::from("held store absent")))?
             .accept(plan, certificate, input.encode(), *actor, batches)
-            .map_err(DispatchError::IntentPersistFailed)?;
+        {
+            // 持久化失败回滚钉（不留永久钉——释放面与准入面对称）。
+            if let Some(retainer) = self.input_retainer.as_mut() {
+                let _ = retainer.release(snapshot_id);
+            }
+            return Err(DispatchError::IntentPersistFailed(e));
+        }
         eneros_runtime::println!(
             "[svc-control-dispatch] PLAN-HELD plan={:02x?} batches={} intents={}",
             &plan.id().0[..4],
@@ -233,7 +320,7 @@ impl DispatchEngine {
                 report.events
             );
             for command in &report.commands {
-                eneros_runtime::println!("[svc-control-dispatch] HELD-COMMAND intent={:02x?} state={:?} attempts={} readback={:?}", &command.intent_id[..4], command.state, command.attempts, command.readback);
+                eneros_runtime::println!("[svc-control-dispatch] HELD-COMMAND intent={:02x?} state={:?} attempts={} readback={:?} reason={}", &command.intent_id[..4], command.state, command.attempts, command.readback, command.reason.as_deref().unwrap_or("-"));
             }
             // One compiled batch per valid tick bounds work. Invalid/recovery
             // ticks may cancel at most the admitted bounded plan's commands.
@@ -242,7 +329,121 @@ impl DispatchEngine {
                 break;
             }
         }
+        self.finalize_held_plans();
         Ok(reports)
+    }
+
+    /// 终局收尾（ADR-0054:29–30 + 15–16）：计划全部批终态后
+    /// ① 打印一次性 `HELD-PLAN-DONE` 证据行（含逐命令终态计数——验收
+    ///    从原始工件重算守恒，不搜词形凑数）；
+    /// ② 解除该计划证书引用的冻结输入钉（终态且无未决；未决计划保留
+    ///    钉至对账收敛）。释放失败保留在册，下个 tick 重试（幂等）。
+    fn finalize_held_plans(&mut self) {
+        let Some(store) = &self.held_plans else {
+            return;
+        };
+        let plans = match store.plans() {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        struct PlanFinality {
+            plan_id: eneros_decision_contract::PlanId,
+            snapshot_id: [u8; 16],
+            terminal: bool,
+            unresolved: bool,
+            reports: alloc::vec::Vec<DriveReport>,
+        }
+        let mut actions: Vec<PlanFinality> = Vec::new();
+        for plan in &plans {
+            let reports: alloc::vec::Vec<DriveReport> = plan
+                .batches
+                .iter()
+                .map(|b| b.saga().map(|s| s.report()))
+                .collect::<Result<_, _>>()
+                .unwrap_or_default();
+            let all_terminal = reports
+                .iter()
+                .all(|r| r.final_state != BatchState::Executing);
+            if !all_terminal {
+                continue;
+            }
+            let snapshot_id = eneros_agent_sdk::snap_input_wire::TrustedInput::decode(&plan.input)
+                .map(|i| i.facts().snapshot_id);
+            if let Some(snapshot_id) = snapshot_id {
+                actions.push(PlanFinality {
+                    plan_id: *plan.plan.id(),
+                    snapshot_id,
+                    terminal: plan.terminal(),
+                    unresolved: plan.unresolved(),
+                    reports,
+                });
+            }
+        }
+        for PlanFinality {
+            plan_id,
+            snapshot_id,
+            terminal,
+            unresolved,
+            reports,
+        } in actions
+        {
+            let committed = reports
+                .iter()
+                .all(|r| r.final_state == BatchState::Completed);
+            // 逐命令全态计数（Applied / Blocked+Pending / 其余非完成——
+            // 守恒口径 = 三桶之和恒等于命令总数）。
+            let (applied, blocked, failed) =
+                reports
+                    .iter()
+                    .fold((0usize, 0usize, 0usize), |(a, b, f), r| {
+                        let total = r.commands.len();
+                        let ap = r
+                            .commands
+                            .iter()
+                            .filter(|c| c.state == crate::saga::CmdState::Applied)
+                            .count();
+                        let bl = r
+                            .commands
+                            .iter()
+                            .filter(|c| {
+                                matches!(
+                                    c.state,
+                                    crate::saga::CmdState::Blocked | crate::saga::CmdState::Pending
+                                )
+                            })
+                            .count();
+                        (a + ap, b + bl, f + total - ap - bl)
+                    });
+            if !self.held_done_logged.contains(&plan_id) {
+                self.held_done_logged.push(plan_id);
+                if self.held_done_logged.len() > 16 {
+                    self.held_done_logged.remove(0);
+                }
+                eneros_runtime::println!(
+                    "[svc-control-dispatch] HELD-PLAN-DONE plan={:02x?} batches={} applied={} blocked={} failed={} state={}",
+                    &plan_id.0[..4],
+                    reports.len(),
+                    applied,
+                    blocked,
+                    failed,
+                    if committed { "Committed" } else { "Terminal" }
+                );
+            }
+            // 释放面：终态且无未决（未决 = 对账中——钉保留至收敛）。
+            if terminal && !unresolved && !self.released_holds.contains(&snapshot_id) {
+                let released = self
+                    .input_retainer
+                    .as_mut()
+                    .map(|r| r.release(snapshot_id))
+                    .unwrap_or(false);
+                if released {
+                    self.released_holds.push(snapshot_id);
+                    if self.released_holds.len() > 16 {
+                        self.released_holds.remove(0);
+                    }
+                }
+            }
+        }
     }
 
     /// Read-only per-command query from the durable source of truth.

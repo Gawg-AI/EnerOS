@@ -445,7 +445,8 @@ mod tests {
         let descriptors = descriptors_from_config(&table.sources, &table.points);
         let eval = crate::telemetry::evaluator_config(1, alloc::vec::Vec::new());
         let mut shadow = ObsShadow::new(descriptors, eval);
-        // 100 批 × 12 事件 = 1200 > cap 1024：全程必须零拒绝。
+        // 100 批 × 14 事件 = 1400 > cap 1024：全程必须零拒绝
+        // （三资源手术后馈电 12 → 14 点）。
         let mut total_accepted = 0usize;
         let mut total_rejected = 0usize;
         for batch in 0..100u64 {
@@ -464,7 +465,7 @@ mod tests {
         }
         assert_eq!(
             (total_accepted, total_rejected),
-            (1200, 0),
+            (1400, 0),
             "影子收件箱不得在容量处楔死（Overflow = 消费后排空缺失）"
         );
     }
@@ -476,8 +477,8 @@ mod tests {
         let table = live_points_table();
         assert_eq!(
             SYNTH_FEED.len(),
-            12,
-            "馈电声明点全集 = 网关 1..7 + PCS-1 1001..1004 + PCS-2 1005"
+            14,
+            "馈电声明点全集 = 网关 1..7 + PCS-1 1001..1004 + PCS-2 1005..1006 + PCS-3 1010..1011"
         );
         for sp in SYNTH_FEED.iter() {
             let rec = table

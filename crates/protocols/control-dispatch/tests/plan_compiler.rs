@@ -995,3 +995,88 @@ fn unbound_assignment_resolved_via_default_asset() {
         Some(CompileReject::UnknownContract { asset_id: 0 })
     );
 }
+
+// ------------------------------------------------ DEC-70-13 ② 单批上限默认值
+
+/// 三资产注册表：asset 1/2/3 → 设备 1/2/3、点 10/20/30（单位 kW）。
+struct ThreeAssetRegistry {
+    catalog_version: u64,
+}
+impl ResourceRegistry for ThreeAssetRegistry {
+    fn asset_exists(&self, asset_id: u64) -> bool {
+        matches!(asset_id, 1..=3)
+    }
+    fn asset_control_binding(&self, asset_id: u64) -> Option<(u16, u32, u16)> {
+        match asset_id {
+            1 => Some((1, 10, 6)),
+            2 => Some((2, 20, 6)),
+            3 => Some((3, 30, 6)),
+            _ => None,
+        }
+    }
+    fn catalog_version(&self) -> u64 {
+        self.catalog_version
+    }
+}
+fn three_contracts() -> MapContractView {
+    let mut v = MapContractView::new();
+    for asset in [1u64, 2, 3] {
+        v.insert(asset, contract(2, 1, -500.0, 500.0, false));
+    }
+    v
+}
+
+/// DEC-70-13 ② 红锁：生产默认策略的单批上限必须是 8（传输容量墙 ≈11
+/// 留 3 余量）。计划级 inline 上限 = 64（peer wire）；混同两者（把单批
+/// 上限抬到 64 或把计划级压到 8）→ 本测红。变异靶：
+/// `CompilerPolicy::default().max_commands_per_batch` 改回
+/// `MAX_BATCH_SIZE` → ② 中 12 条单批放行 → 本测红。
+#[test]
+fn default_policy_enforces_dec7013_batch_cap_of_eight() {
+    let pol = CompilerPolicy::default();
+    assert_eq!(pol.max_commands_per_batch, 8);
+    assert_eq!(
+        pol.max_commands_per_batch,
+        eneros_control_dispatch::compiler::MAX_INTENTS_PER_BATCH
+    );
+    // 3 资产 × 4 时段 = 12 分配（R10 最低功能演示形，默认策略）：
+    // 编译成功、总意图 12 守恒、每批 ≤ 8、批数 ≥ 2。
+    let assignments: Vec<Assignment> = [1u64, 2, 3]
+        .iter()
+        .flat_map(|asset| {
+            (1..=4u32).map(move |s| Assignment {
+                asset_id: *asset,
+                device_id: *asset as u16,
+                point_id: 10 * *asset as u32,
+                power_kw: f64::from(s) * 10.0,
+                unit_code: 6,
+                step_index: s,
+            })
+        })
+        .collect();
+    assert_eq!(assignments.len(), 12);
+    let plan = plan_with(1, 1_000, 3_600_000, 7_000_000_000, 4, assignments);
+    let cert = cert_of(&plan, plan_sha(&plan), 1_000);
+    let reg = ThreeAssetRegistry { catalog_version: 1 };
+    let out = compile(
+        &cert,
+        &plan,
+        &reg,
+        &three_contracts(),
+        &NoAppliedState,
+        &CompilerPolicy::default(),
+        1_000,
+        0,
+    )
+    .expect("12 分配在计划级上限 64 内必须编译成功");
+    let total: usize = out.batches.iter().map(|b| b.intents().len()).sum();
+    assert_eq!(total, 12, "意图守恒（无静默丢弃）");
+    assert!(out.batches.len() >= 2, "12 > 单批 8 ⇒ 至少两批");
+    for (i, b) in out.batches.iter().enumerate() {
+        assert!(
+            b.intents().len() <= 8,
+            "批 {i} 越过 DEC-70-13 ② 单批上限：{}",
+            b.intents().len()
+        );
+    }
+}

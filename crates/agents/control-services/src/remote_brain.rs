@@ -806,8 +806,19 @@ impl<L: DecisionBackend + DegradeArmSeam, P: PeerLink> RemoteBrain<L, P> {
             self.link_errors = self.link_errors.saturating_add(1);
             return false;
         };
-        if self.link.send_request(&json).is_err() {
+        // 诊断行（2026-09-18 三资源定位）：发送前置——成功/失败都可观测。
+        eneros_runtime::println!(
+            "[svc-ai-worker] PLAN-REQ assets={} steps={} bytes={}",
+            specs.assets.len(),
+            specs.step_count,
+            json.len()
+        );
+        if let Err(e) = self.link.send_request(&json) {
             self.link_errors = self.link_errors.saturating_add(1);
+            eneros_runtime::println!(
+                "[svc-ai-worker] PLAN-REQ-SEND-FAIL err={}",
+                truncate_for_audit(&e.0, 96)
+            );
             return false;
         }
         self.triggers_sent = self.triggers_sent.saturating_add(1);

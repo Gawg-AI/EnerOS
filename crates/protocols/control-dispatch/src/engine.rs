@@ -348,6 +348,15 @@ pub struct DispatchEngine {
     last_confirmed: BTreeMap<(u32, u32), (f64, u64)>,
     held_plans: Option<crate::held_plan::DurablePlans>,
     held_store_unavailable: bool,
+    /// ADR-0054:29–30：持有输入保留面（None = 未装配——host 测试或
+    /// fail-closed 装配由调用方以 NoRetention 显式承担）。
+    input_retainer: Option<alloc::boxed::Box<dyn held_engine::HeldInputRetainer>>,
+    /// 已解除钉的快照 ID（防重复 release；有界环形回收）。
+    released_holds: alloc::vec::Vec<[u8; 16]>,
+    /// 已打印终态行的计划 ID（HELD-PLAN-DONE 一次性证据行）。
+    held_done_logged: alloc::vec::Vec<eneros_decision_contract::PlanId>,
+    /// 钉面失败计数（hold 拒绝/装配缺失面——可观测不静默）。
+    pub held_pin_failures: u64,
 }
 
 // ==========================================================================
@@ -1205,6 +1214,10 @@ impl DispatchEngine {
             last_confirmed: BTreeMap::new(),
             held_plans: None,
             held_store_unavailable: false,
+            input_retainer: None,
+            released_holds: alloc::vec::Vec::new(),
+            held_done_logged: alloc::vec::Vec::new(),
+            held_pin_failures: 0,
         };
         // 启动恢复播种：durable 未决记录（v1 遗留 Applied/Persisted 或
         // 崩溃窗口遗留）→ Reconciling。投递与否不可证明——重放零投递、
@@ -3081,7 +3094,13 @@ impl SagaExecutor for EngineSagaExecutor<'_> {
             self.legacy_single,
         );
         match self.execute_intent(intent, correlation, None) {
-            Ok(r) => Self::map_receipt(r),
+            Ok(r) => {
+                let mut outcome = Self::map_receipt(r);
+                if let CmdOutcome::Applied { readback, .. } = &mut outcome {
+                    *readback = self.engine.post_apply_readback(intent, self.deadline_ms);
+                }
+                outcome
+            }
             Err(DispatchError::DeliveryTimeout) => CmdOutcome::Unknown {
                 request_digest: request_digest_of(correlation),
                 reason: String::from("delivery timeout"),
@@ -3788,6 +3807,35 @@ mod unit_tests {
 }
 
 impl DispatchEngine {
+    /// ADR-0054:15–16：新鲜应用的**实际回读**证据（写入 Saga 事件持久化，
+    /// `DISP_HELD_QUERY`（HQR1）可查）。经独立只读通道读**命令点**——设备
+    /// 真实持有的设定值，非请求回显（传输 ACK = 设备结果码；物理反馈点
+    /// （合同 `readback_point_id`）= 对账/恢复路径的验证源——三语义分离）。
+    /// 前置 = 资产有控制合同（与对账路径同门）；读失败/非有限值 = None
+    /// （诚实缺证，不用设定值代填，不改变已判定的 Applied 终态）。
+    fn post_apply_readback(
+        &mut self,
+        intent: &eneros_decision_contract::CommandIntent,
+        deadline_ms: u64,
+    ) -> Option<f64> {
+        if self
+            .contracts
+            .plan_contract(intent.asset_id())
+            .map(|c| c.readback_point_id == 0)
+            .unwrap_or(true)
+        {
+            return None;
+        }
+        match self.delivery.readback(
+            u32::from(intent.device_id()),
+            intent.point_id(),
+            deadline_ms,
+        ) {
+            Ok(actual) if actual.is_finite() => Some(actual),
+            _ => None,
+        }
+    }
+
     fn reconcile_saga_intent(
         &mut self,
         intent: &eneros_decision_contract::CommandIntent,
@@ -3839,4 +3887,4 @@ impl DispatchEngine {
 }
 
 #[path = "held_engine.rs"]
-mod held_engine;
+pub mod held_engine;

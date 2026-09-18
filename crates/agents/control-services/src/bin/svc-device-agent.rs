@@ -18,10 +18,83 @@ use core::panic::PanicInfo;
 #[cfg(target_os = "none")]
 extern crate eneros_control_services;
 
+/// bin 专属堆（2026-09-18 R10 三资源手术）：蓝图 70 R10 起 device-agent
+/// 按**绑定注册表**每可控资产构造一条 `EnvelopeIngress`（各含
+/// `Box<MetricsCollectorImpl>` = 276,040B）——三资源目录（asset 1/2/3）
+/// 下 3 × 276 KiB ≈ 828 KiB + 设备注册表/服务环 ≈ 900 KiB，超 crate 级
+/// `heap-large` 768 KiB（QEMU 实弹 `OOM: size=276040` 于第 3 条构造）。
+/// 本 bin 用 1 MiB 专属堆（镜像 +256 KiB、root cnode +64 槽/16384——
+/// 静态审计通过）；其余共享 768 KiB 堆的服务零变化。
+/// 实现同源 `eneros_drv_svc::allocator`（linked_list_allocator + CAS
+/// 单次 init）——仅堆区本 bin 私有。
+#[cfg(target_os = "none")]
+mod device_agent_heap {
+    use core::alloc::{GlobalAlloc, Layout};
+    use core::cell::UnsafeCell;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use linked_list_allocator::LockedHeap;
+
+    const HEAP_SIZE: usize = 1024 * 1024;
+    struct HeapSpace(UnsafeCell<[u8; HEAP_SIZE]>);
+    // SAFETY: `_start` 单线程首调 init；此后 LockedHeap 自旋锁串行化。
+    unsafe impl Sync for HeapSpace {}
+    static HEAP_SPACE: HeapSpace = HeapSpace(UnsafeCell::new([0u8; HEAP_SIZE]));
+
+    pub struct Allocator {
+        heap: UnsafeCell<LockedHeap>,
+        init: AtomicUsize,
+    }
+    #[allow(clippy::new_without_default)]
+    impl Allocator {
+        pub const fn new() -> Self {
+            Self {
+                heap: UnsafeCell::new(LockedHeap::empty()),
+                init: AtomicUsize::new(0),
+            }
+        }
+        /// # Safety
+        /// 单线程启动阶段调用一次（首次分配前）。
+        pub unsafe fn init(&self) {
+            if self
+                .init
+                .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                // SAFETY: 静态 BSS；单线程首调；LockedHeap 经内部锁访问。
+                unsafe {
+                    (*self.heap.get())
+                        .lock()
+                        .init(HEAP_SPACE.0.get() as *mut u8, HEAP_SIZE);
+                }
+            }
+        }
+    }
+    // SAFETY: LockedHeap 内部自旋锁 + 单初始化（CAS 防重入）。
+    unsafe impl Sync for Allocator {}
+
+    unsafe impl GlobalAlloc for Allocator {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            if self.init.load(Ordering::Acquire) != 1 {
+                return core::ptr::null_mut();
+            }
+            // SAFETY: init 已完成；LockedHeap 实现 GlobalAlloc（内部自旋锁）
+            // ——与 drv-svc 分配器同款转发。
+            unsafe { core::alloc::GlobalAlloc::alloc(&*self.heap.get(), layout) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            if self.init.load(Ordering::Acquire) != 1 {
+                return;
+            }
+            // SAFETY: 同 alloc。
+            unsafe { core::alloc::GlobalAlloc::dealloc(&*self.heap.get(), ptr, layout) }
+        }
+    }
+}
+
 #[cfg(target_os = "none")]
 #[global_allocator]
-static ALLOC: eneros_drv_svc::allocator::HeapAllocator =
-    eneros_drv_svc::allocator::HeapAllocator::new();
+static ALLOC: device_agent_heap::Allocator = device_agent_heap::Allocator::new();
 
 #[cfg(target_os = "none")]
 #[no_mangle]

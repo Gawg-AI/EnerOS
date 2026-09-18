@@ -1205,7 +1205,9 @@ impl DeliveryChannel for HeldChannel {
         _point: u32,
         _timeout_ms: u64,
     ) -> Result<f64, eneros_control_dispatch::ChannelError> {
-        Ok(self.actual.get())
+        // 设备读回漂移 +0.05 kW（容差 0.1 内、数值 ≠ 请求设定值）——
+        // 让「Saga 记录的是独立读回值还是设定值回显」可判别。
+        Ok(self.actual.get() + 0.05)
     }
 }
 
@@ -1261,6 +1263,17 @@ fn held_candidate() -> (
     eneros_decision_contract::CandidatePlan,
     eneros_agent_sdk::snap_input_wire::TrustedInput,
 ) {
+    held_candidate_tuned(5_000_000_000, 20_000)
+}
+
+/// 参数化持有候选（步长 ns / ttl ms）——时域合同红绿测共用夹具。
+fn held_candidate_tuned(
+    step_ns: u64,
+    ttl_ms: u64,
+) -> (
+    eneros_decision_contract::CandidatePlan,
+    eneros_agent_sdk::snap_input_wire::TrustedInput,
+) {
     use eneros_agent_sdk::snap_input_wire::{SnapshotFacts, TrustedInput, COMPLETE};
     use eneros_decision_contract::{
         Assignment, CandidatePlan, CandidatePlanParts, PlanId, SnapshotId, SolveStatusKind,
@@ -1283,12 +1296,12 @@ fn held_candidate() -> (
             &facts.snapshot_id,
             1,
             now_ms(),
-            5_000_000_000,
+            step_ns,
             4,
         ),
         resource_catalog_version: 1,
         horizon_start_ms: now_ms(),
-        step_ns: 5_000_000_000,
+        step_ns,
         step_count: 4,
         solver_status: SolveStatusKind::Optimal,
         objective_value: 1.0,
@@ -1308,7 +1321,7 @@ fn held_candidate() -> (
             })
             .collect(),
         issued_at_ms: now_ms(),
-        ttl_ms: 20_000,
+        ttl_ms,
     })
     .unwrap();
     (plan, TrustedInput::new(facts, [0; 144]))
@@ -1381,6 +1394,91 @@ fn durable_plan_submitted_once_runs_four_steps_and_restart_cancels_unsent() {
     }
 }
 
+/// ADR-0054:34–35 时域合同红绿测：多步计划时域不得越过可信输入/证书
+/// 有效期（30s 控制窗是安全事实——不为 4×15s 配置放宽）。
+/// ① 红：4×15s=60s 时域 > 30s 窗 → 提交即拒（fail-closed，不静默截断）；
+/// ② 绿（边界）：时域末恰等于有效期（4×7.5s=30s == valid_until）→ 受理；
+/// ③ 过期输入：有效期后 tick → 未发步取消、零新写（输入过期 ≠ 决策被拒
+///    之外的任何形态）。
+/// 变异靶：放宽 CONTROL_HORIZON_MS/夹具窗到 60s → ① 变绿（60≤60）→ 本测红。
+#[test]
+fn held_plan_horizon_beyond_control_window_rejected() {
+    // 夹具遥测 valid_until = now + 30_000（control_horizon_ms 30s）。
+    let valid_until = trusted_telemetry().valid_until_ms;
+    let now = now_ms();
+    assert_eq!(valid_until, now + 30_000);
+
+    // ① 4×15s=60s > 30s：提交即拒。
+    let (over, input_over) = held_candidate_tuned(15_000_000_000, 60_000);
+    let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let delivered = Rc::new(RefCell::new(0));
+    let mut engine = held_fixture(media, delivered.clone());
+    let err = engine
+        .submit_trusted(
+            &over,
+            &input_over,
+            "pcs",
+            &trusted_telemetry(),
+            &actor(),
+            5_000,
+        )
+        .expect_err("时域越过控制窗必须拒绝");
+    assert!(
+        format!("{err:?}").contains("held horizon exceeds trusted telemetry"),
+        "具体拒绝面：{err:?}"
+    );
+    assert_eq!(*delivered.borrow(), 0);
+    assert!(
+        engine.held_plan_reports().unwrap().is_empty(),
+        "被拒计划不得入持有存储"
+    );
+
+    // ② 边界：4×7.5s=30s == valid_until（≤ 语义）→ 受理。
+    let (edge, input_edge) = held_candidate_tuned(7_500_000_000, 30_000);
+    let media2 = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let delivered2 = Rc::new(RefCell::new(0));
+    let mut engine2 = held_fixture(media2, delivered2.clone());
+    let receipt = engine2
+        .submit_trusted(
+            &edge,
+            &input_edge,
+            "pcs",
+            &trusted_telemetry(),
+            &actor(),
+            5_000,
+        )
+        .expect("时域末 == 有效期必须受理（≤）");
+    assert_eq!(
+        receipt.final_state,
+        eneros_control_dispatch::DispatchState::Persisted
+    );
+
+    // ③ 过期输入：tick 时钟越过 valid_until → 未发步取消、零新写。
+    HELD_CLOCK.with(|clock| clock.set(valid_until + 1_000));
+    engine2
+        .drive_held_plans(Some(&input_edge), Some(&trusted_telemetry()))
+        .unwrap();
+    let report = engine2.held_plan_reports().unwrap().remove(0);
+    use eneros_control_dispatch::saga::{BatchState, CmdState};
+    assert_eq!(report.final_state, BatchState::Failed);
+    assert!(
+        report.commands[1..]
+            .iter()
+            .all(|c| c.state == CmdState::Blocked
+                && c.reason
+                    .as_deref()
+                    .is_some_and(|r| r.contains("no longer valid"))),
+        "过期输入的未发步必须以可信理由取消：{:?}",
+        report.commands
+    );
+    // 首步在受理时已发（1 次）；过期 tick 零新写。
+    assert_eq!(*delivered2.borrow(), 1);
+}
+
 #[test]
 fn durable_plan_readback_settles_unknown_journal_before_next_step() {
     HELD_CLOCK.with(|clock| clock.set(now_ms()));
@@ -1406,6 +1504,164 @@ fn durable_plan_readback_settles_unknown_journal_before_next_step() {
         *delivered.borrow(),
         2,
         "settled first step does not block the next authorized step"
+    );
+}
+
+/// ADR-0054:15–16：新鲜 Applied 必须携带**实际回读**证据（Saga 事件持久
+/// 化、HQR1 可查），且读回值 = 独立读回（设备漂移 +0.05），不是请求
+/// 设定值回显。变异靶：post_apply_readback 改为回填 intent.power_kw()
+/// → 断言 Some(power + 0.05) 红；删读回调用 → 断言 Some(...) 红。
+#[test]
+fn applied_commands_carry_independent_readback_not_setpoint() {
+    use eneros_control_dispatch::saga::{BatchState, CmdState};
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let delivered = Rc::new(RefCell::new(0));
+    let mut engine = held_fixture(media, delivered.clone());
+    let (plan, input) = held_candidate();
+    engine
+        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .unwrap();
+    for step in 1..=3u32 {
+        HELD_CLOCK.with(|clock| clock.set(now_ms() + u64::from(step) * 5_000));
+        engine
+            .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+            .unwrap();
+    }
+    let report = engine.held_plan_reports().unwrap().remove(0);
+    assert_eq!(report.final_state, BatchState::Completed);
+    for (i, c) in report.commands.iter().enumerate() {
+        assert_eq!(c.state, CmdState::Applied, "全部四步 Applied");
+        let power = f64::from(i as u32 + 1);
+        assert_eq!(
+            c.readback,
+            Some(power + 0.05),
+            "第 {} 步回读必须是独立读值（power+0.05），不是设定值 {} 回显",
+            i + 1,
+            power
+        );
+    }
+}
+
+#[derive(Default)]
+struct RetainerLog {
+    held: Vec<[u8; 16]>,
+    released: Vec<[u8; 16]>,
+    refuse_hold: bool,
+}
+struct RecordingRetainer(Rc<RefCell<RetainerLog>>);
+impl eneros_control_dispatch::HeldInputRetainer for RecordingRetainer {
+    fn hold(&mut self, snapshot_id: [u8; 16]) -> bool {
+        let mut log = self.0.borrow_mut();
+        if log.refuse_hold {
+            return false;
+        }
+        if !log.held.contains(&snapshot_id) {
+            log.held.push(snapshot_id);
+        }
+        true
+    }
+    fn release(&mut self, snapshot_id: [u8; 16]) -> bool {
+        let mut log = self.0.borrow_mut();
+        log.released.push(snapshot_id);
+        log.held.retain(|h| *h != snapshot_id);
+        true
+    }
+}
+
+/// ADR-0054:29–30 红绿测（引擎侧保留面）：
+/// ① 准入即钉：submit 成功 ⇒ hold(快照 ID) 已登记；
+/// ② 完成即释：全部步 Applied 后 ⇒ release 被调、钉集清空；
+/// ③ fail-closed：钉面拒收 ⇒ 准入被拒、零投递、零持有；
+/// ④ 断电重钉：重启重开（同介质）+ 装配保留面 ⇒ 非终态计划的快照
+///    被重新钉住（钉是 RAM 派生态——唯一持久事实 = 持有计划本身）。
+#[test]
+fn held_plan_pins_input_and_releases_on_completion() {
+    let log = Rc::new(RefCell::new(RetainerLog::default()));
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let delivered = Rc::new(RefCell::new(0));
+    let mut engine = held_fixture(media, delivered.clone());
+    engine.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
+    let (plan, input) = held_candidate();
+    let expected_id = input.facts().snapshot_id;
+    engine
+        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .expect("钉面在位 ⇒ 准入");
+    assert_eq!(log.borrow().held, vec![expected_id], "准入即钉");
+    for step in 1..=3u64 {
+        HELD_CLOCK.with(|clock| clock.set(now_ms() + step * 5_000));
+        engine
+            .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+            .unwrap();
+    }
+    // 最后一次 drive 触发 finalize：终态且无未决 ⇒ release。
+    assert!(
+        log.borrow().released.contains(&expected_id),
+        "完成即释：{:?}",
+        log.borrow().released
+    );
+    assert!(log.borrow().held.is_empty(), "钉集清空");
+}
+
+#[test]
+fn held_admission_fails_closed_when_retention_refuses() {
+    let log = Rc::new(RefCell::new(RetainerLog {
+        refuse_hold: true,
+        ..RetainerLog::default()
+    }));
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let delivered = Rc::new(RefCell::new(0));
+    let mut engine = held_fixture(media, delivered.clone());
+    engine.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
+    let (plan, input) = held_candidate();
+    let err = engine
+        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .expect_err("钉面拒收 ⇒ 准入必须 fail-closed");
+    assert!(
+        format!("{err:?}").contains("input retention unavailable"),
+        "具体拒绝面：{err:?}"
+    );
+    assert_eq!(*delivered.borrow(), 0);
+    assert!(
+        engine.held_plan_reports().unwrap().is_empty(),
+        "被拒计划不得入持有存储"
+    );
+}
+
+#[test]
+fn held_input_repin_after_restart() {
+    let log = Rc::new(RefCell::new(RetainerLog::default()));
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let delivered = Rc::new(RefCell::new(0));
+    let (plan, input) = held_candidate();
+    let expected_id = input.facts().snapshot_id;
+    {
+        let mut engine = held_fixture(media.clone(), delivered.clone());
+        // 装配顺序变体：install 先于 set_input_retainer（生产装配序）。
+        engine
+            .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+            .unwrap();
+    }
+    log.borrow_mut().held.clear(); // 模拟掉电：RAM 钉集丢失
+    let reopened = held_fixture(media, delivered.clone());
+    assert!(reopened.held_plan_reports().is_ok(), "非终态计划在介质上");
+    let mut reopened = reopened;
+    reopened.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
+    assert_eq!(
+        log.borrow().held,
+        vec![expected_id],
+        "重启 + 装配保留面 ⇒ 非终态计划引用的快照被重新钉住"
     );
 }
 

@@ -30,9 +30,11 @@ pub const AI_PEER_MSG: u8 = 0x10;
 /// 本线码不是写命令（Z3/Z5：新增写命令码须独立裁决，本卷明令不做）。
 pub const AI_DEGRADE_OBSERVE: u8 = 0x22;
 
-/// 组装总长上限（= intent-contract PEER_REQUEST_MAX_LEN 同量级；传输面
-/// 只认字节数——超限即中止组装并计数）。
-pub const AI_REQUEST_MAX: usize = 1024;
+/// 组装总长上限（= intent-contract `PEER_REQUEST_MAX_LEN_V2` 单源同值；
+/// 传输面只认字节数——超限即中止组装并计数）。2026-09-18 R10 三资源
+/// 手术：1024 → 4096——3 资产 v2 请求 JSON ≈1.1 KiB 超 1024，链路
+/// 侧 fragment_request 恒败（实弹 link_err 每 tick +1、零请求发出）。
+pub const AI_REQUEST_MAX: usize = 4096;
 
 /// 分片数据容量（本层分片常量 64B − 子码 1B；BEGIN 再减 total u16 2B——
 /// 68.3 起 drv 信封 PAYLOAD_CAP=461，本层刻意不随动）。
@@ -94,7 +96,7 @@ mod tests {
         const PAYLOAD_CAP: usize = 64;
         const _: () = assert!(1 + 2 + AI_REQ_DATA_BEGIN_MAX <= PAYLOAD_CAP);
         const _: () = assert!(AI_REQ_DATA_MAX < PAYLOAD_CAP);
-        assert_eq!(AI_REQUEST_MAX, 1024);
+        assert_eq!(AI_REQUEST_MAX, 4096);
     }
 
     /// 49：分片往返——frames 重组还原原 JSON（与 ai_relay 组装器同语义）。

@@ -843,6 +843,7 @@ dependencies = [
  "eneros-tsdb",
  "eneros-upa-model",
  "heapless 0.8.0",
+ "linked_list_allocator",
  "serde",
  "serde_json",
 ]

@@ -437,10 +437,14 @@ pub mod catalog {
     pub const MAX_NAMEPLATES: u32 = 1024;
 
     /// 目录 payload 硬上界（字节；编码面与解码面单一事实——agent-sdk
-    /// chunk 逻辑预算 1664B = 16 × 104，目录必须可单次分页下发）。
-    /// `compile_catalog` 超限拒绝产出；semantic-catalog 解码面以
-    /// `CATALOG_PAYLOAD_MAX` 同源引用本常量并同限拒载。
-    pub const PAYLOAD_MAX: usize = 1664;
+    /// chunk 页域 255 页 × 104B = 26520B（69.1 I3 域界订正；16 页/1664B
+    /// 旧值是被证伪的请求向预算误绑，生产已有 7099B 配置束 68 页先例），
+    /// 目录必须可单次分页下发。2026-09-18 R10 三资源手术：1664 → 4096
+    /// （生产目录 1556B + asset 3 铭牌/合同/点语义 ≈ +180B 超 1664；4096
+    /// 留多资产增长余量，仍远低于域界）。`compile_catalog` 超限拒绝产出；
+    /// semantic-catalog 解码面以 `CATALOG_PAYLOAD_MAX` 同源引用本常量并
+    /// 同限拒载。
+    pub const PAYLOAD_MAX: usize = 4096;
 
     /// 资产 flags：位 0 = tombstone（已删除，ID 不复用）。
     pub const ASSET_FLAG_TOMBSTONE: u16 = 1 << 0;

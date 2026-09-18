@@ -132,11 +132,14 @@ pub const PEER_CONTRACT_VERSION_V2: u64 = 2;
 pub const PEER_REQUEST_MAX_LEN_V2: usize = 4096;
 /// v2 应答 JSON 尺寸上限（64 项分配 × ~90B + 头部）。
 pub const PEER_RESPONSE_MAX_LEN_V2: usize = 8192;
-/// 分配条数上限（= decision-contract inline assignment 上限；同源约束）。
-/// DEC-70-13 裁决（2026-09-15）：分配=intent 1:1，传输容量墙 ≈11 条 ⇒
-/// 单批上限收紧为 **8**（留 3 余量给控制写/回读通道；更长计划拆批、
-/// 每批独立认证——无跨批免认证）。
-pub const PEER_PLAN_MAX_ASSIGNMENTS: usize = 8;
+/// 计划级分配条数上限（= decision-contract inline assignment 上限 64；
+/// 蓝图 08 §9 容量表：完整候选 inline 最多 64 assignments，64 上限与 65
+/// 拒绝分别测试；3 资源 × 4 时段 = 12 为最低功能演示）。
+/// 与单批上限分离：**每批** intent 上限 = 8（DEC-70-13 ②，传输容量墙
+/// ≈11 留 3 余量——落点 = control-dispatch 编译器
+/// `MAX_INTENTS_PER_BATCH` 单源）；计划超 8 分配由目标侧编译拆批、
+/// 每批独立认证（无跨批免认证）。
+pub const PEER_PLAN_MAX_ASSIGNMENTS: usize = 64;
 
 /// 逐资产规格（目标侧事实 → host 模型输入；**不是** host 自持 fixture）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1229,6 +1232,101 @@ mod tests {
         ));
     }
 
+    /// 计划级 inline 上限 = 64 的**边界**（蓝图 08 §9：64 上限与 65 拒绝
+    /// 分别测试）。2026-09-18 R10 复查：上一轮把计划级上限误降到 8
+    /// （与 DEC-70-13 ② 的**单批** 8 混同——单批上限落点在编译器
+    /// `MAX_INTENTS_PER_BATCH`），本测红锁回归。
+    #[test]
+    fn v2_plan_cap_boundary_64_accepted_65_rejected() {
+        // 16 资产 × 4 步 = 64（轨迹完整：每资产恰 4 步）→ 受理。
+        let mut full = plan_v2_full();
+        full.assignments.clear();
+        for asset in 1..=16u64 {
+            for step in 1..=4u32 {
+                full.assignments
+                    .push(assignment(asset, step, -20.0 + step as f64));
+            }
+        }
+        assert_eq!(full.assignments.len(), 64);
+        let json = json_v2(full.clone());
+        let r = parse_and_validate_v2(&json, &checks_v2(None), &binds()).expect("64 必须受理");
+        assert_eq!(r.plan.assignments.len(), 64);
+        // 1 资产 × 65 步 = 65（轨迹完整：恰 65 步）→ 拒（超计划级上限）。
+        let mut over = plan_v2_full();
+        over.step_count = 65;
+        over.assignments = (1..=65u32).map(|s| assignment(1, s, 1.0)).collect();
+        assert!(
+            parse_and_validate_v2(&json_v2(over), &checks_v2(None), &binds()).is_err(),
+            "65 分配必须拒"
+        );
+    }
+
+    /// 3 资源 × 4 时段 = 12 分配（蓝图 08 §208/§234 最低功能演示形）：
+    /// 请求与应答两侧都必须放行——单批 8 由目标侧编译拆批承担
+    /// （12 → 2 批），不是 peer wire 拒绝的理由。
+    #[test]
+    fn v2_demo_shape_three_assets_four_steps_passes_wire() {
+        let spec = PeerAssetSpec {
+            asset_id: 9,
+            capacity_kwh: 50.0,
+            eta_c: 0.95,
+            eta_d: 0.95,
+            initial_kwh: 15.0,
+            soc_min: 0.05,
+            soc_max: 0.95,
+            p_min_kw: -500.0,
+            p_max_kw: 500.0,
+            ramp_up_kw_s: 3.0,
+            ramp_down_kw_s: 3.0,
+            device_id: 9,
+            point_id: 1014,
+            unit_code: 6,
+        };
+        let mut req = PeerRequestV2 {
+            v: PEER_CONTRACT_VERSION_V2,
+            req_id: 7,
+            ts_ms: 1_700_000_000_000,
+            snapshot_id_hex: hex16(&[0x5A; 16]),
+            provenance_hex: hex32(&[0x3D; 32]),
+            catalog_version: 3,
+            horizon_start_ms: 1_700_000_000_000,
+            step_ns: 7_000_000_000,
+            step_count: 4,
+            assets: vec![spec.clone()],
+            grid_asset_id: 0,
+            objective_kind: String::from("min_cost"),
+            prices_per_kwh: vec![0.5, 0.6, 0.4, 0.45],
+            budget: budget_v2(),
+        };
+        // 请求侧：3 资产 × 4 步 = 12 ≤ 64 → encode 通过。
+        req.assets = vec![
+            PeerAssetSpec {
+                asset_id: 1,
+                ..spec.clone()
+            },
+            PeerAssetSpec {
+                asset_id: 2,
+                ..spec.clone()
+            },
+            spec,
+        ];
+        assert!(req.encode().is_ok(), "3×4=12 分配请求必须放行");
+        // 应答侧：3 资产 × 4 步全轨迹通过（binds 与 fixture 同步 60s 步长
+        // ——本测锁**条数**边界，时域窗由 engine 侧测试承载）。
+        let mut demo = plan_v2_full();
+        demo.assignments.clear();
+        for asset in [1u64, 2, 9] {
+            for step in 1..=4u32 {
+                demo.assignments
+                    .push(assignment(asset, step, -20.0 + step as f64));
+            }
+        }
+        assert_eq!(demo.assignments.len(), 12);
+        let r =
+            parse_and_validate_v2(&json_v2(demo), &checks_v2(None), &binds()).expect("12 必须受理");
+        assert_eq!(r.plan.assignments.len(), 12);
+    }
+
     /// 请求 v2 闭合校验：自持 fixture 缺失（无资产/价格长度不符/越上限）
     /// → 拒（host 不得凭 host 自持配置补值）。
     #[test]
@@ -1277,6 +1375,70 @@ mod tests {
         too_many.prices_per_kwh = vec![0.5; 32];
         too_many.assets = vec![spec.clone(), spec.clone(), spec];
         assert!(too_many.encode().is_err(), "3×32 > 64 必须拒");
+    }
+
+    /// 2026-09-18 R10 三资源：3 资产 v2 请求 JSON 实测尺寸——必须
+    /// ≤ PEER_REQUEST_MAX_LEN_V2 且 > 1024（旧 AI_REQUEST_MAX=1024 时代的
+    /// 实弹失败面：超限即 fragment 恒败零请求）。尺寸漂移（新增字段）
+    /// 越界时本测红。
+    #[test]
+    fn v2_three_asset_request_size_fits_relay_budget() {
+        let spec = PeerAssetSpec {
+            asset_id: 1,
+            capacity_kwh: 100.0,
+            eta_c: 0.95,
+            eta_d: 0.95,
+            initial_kwh: 60.0,
+            soc_min: 0.05,
+            soc_max: 0.95,
+            p_min_kw: -5.0,
+            p_max_kw: 5.0,
+            ramp_up_kw_s: 3.0,
+            ramp_down_kw_s: 3.0,
+            device_id: 1,
+            point_id: 10,
+            unit_code: 6,
+        };
+        let req = PeerRequestV2 {
+            v: PEER_CONTRACT_VERSION_V2,
+            req_id: 7,
+            ts_ms: 1_700_000_000_000,
+            snapshot_id_hex: hex16(&[0x5A; 16]),
+            provenance_hex: hex32(&[0x3D; 32]),
+            catalog_version: 3,
+            horizon_start_ms: 1_700_000_000_000,
+            step_ns: 7_000_000_000,
+            step_count: 4,
+            assets: vec![
+                PeerAssetSpec {
+                    asset_id: 1,
+                    ..spec.clone()
+                },
+                PeerAssetSpec {
+                    asset_id: 2,
+                    ..spec.clone()
+                },
+                PeerAssetSpec {
+                    asset_id: 3,
+                    ..spec
+                },
+            ],
+            grid_asset_id: 10,
+            objective_kind: String::from("min_cost"),
+            prices_per_kwh: vec![0.5, 0.6, 0.4, 0.45],
+            budget: budget_v2(),
+        };
+        let json = req.encode().expect("encode");
+        assert!(
+            json.len() <= PEER_REQUEST_MAX_LEN_V2,
+            "3 资产请求 {}B 超 wire 上限",
+            json.len()
+        );
+        assert!(
+            json.len() > 1024,
+            "尺寸前提失效（{}B ≤1024——本测需重校准）",
+            json.len()
+        );
     }
 
     #[test]

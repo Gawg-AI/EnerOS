@@ -2013,17 +2013,17 @@ fn control_chain_synth_ingest(
 /// 观测 → 冻结快照 → 独立认证 → dispatch 全链在合成装配可证（R09/R10 前置）。
 /// 旧 TelemetrySample 兼容轨（上行）保持不变，两轨并存。
 ///
-/// 节奏：每第 16 个 round 一批（qemu-test TCG 实测 round ≈0.6–1s ⇒ 批
-/// ≈10–16s；快照每 SNAP_EVERY_BATCHES=8 批一建 ⇒ 建距 ≈80–128s）。
-/// R10 时域覆盖（2026-09-17 调整，%3 → %16）：DEC-70-13 ① 要求冻结输入
-/// 与包络生命周期 ≥ 计划时域（4×15s=60s）——旧 %3 节奏（建距 ≈14–26s，
-/// 随 TCG 波动）在换代即取消未发步的多步语义下，单计划最多执行步 0，
-/// 多时段完成结构性不可达。放缓到建距 ≥ 时域后，单计划四步全程在同一
-/// 代内执行；建距 > 输入新鲜度窗（60s）的尾段仍是诚实的
-/// `SNAP_REJECT_STALE`（零推理零新写）。仅影响 qemu-test-synth 测试装配
-/// （feature 门控），生产装配零变化。
+/// 节奏：每第 8 个 round 一批（qemu-test TCG 实测 round ≈0.6–1s ⇒ 批
+/// ≈5–8s；快照每 SNAP_EVERY_BATCHES=8 批一建 ⇒ 建距 ≈38–64s）。
+/// R10 时域覆盖（2026-09-18 复查调整，%16 → %8）：控制窗恢复 30s
+/// （ADR-0054:34–35），演示时域 4×7s=28s。约束两则：① 建距 > 时域
+/// （38–64s > 28s）——单代包络内四步全程执行，换代前完成；② 建距
+/// 足够密（≈40s 一代）——首步窗 [T, T+7s) 若因提案/应答链延迟错过，
+/// 下一快照代重试，480s 窗内 ≥7 次尝试。错过是诚实的
+/// WindowExpired/SKIP（零推理零新写），不放宽任何窗。仅影响
+/// qemu-test-synth 测试装配（feature 门控），生产装配零变化。
 #[cfg(all(target_os = "none", feature = "sel4-eipc", feature = "qemu-test-synth"))]
-const SYNTH_OBS_EVERY_ROUNDS: u64 = 16;
+const SYNTH_OBS_EVERY_ROUNDS: u64 = 8;
 
 #[cfg(all(target_os = "none", feature = "sel4-eipc", feature = "qemu-test-synth"))]
 fn synth_obs_ingest(telemetry_ep: u64, seq: u64, epoch: &mut u64, now: u64) {
@@ -2031,36 +2031,50 @@ fn synth_obs_ingest(telemetry_ep: u64, seq: u64, epoch: &mut u64, now: u64) {
         return;
     }
     let now_ns = now.saturating_mul(1_000_000);
-    let req = match eneros_agent_sdk::synth_feed::synth_obs_request(seq, now_ns) {
+    // 三资源 14 帧拆多请求（FRAMES_PER_TRANSFER=12）：逐请求发送，
+    // accepted/rejected 聚合成单行证据（词形不变，新增 reqs 计数）。
+    let reqs = match eneros_agent_sdk::synth_feed::synth_obs_requests(seq, now_ns) {
         Ok(r) => r,
         Err(e) => {
             eneros_runtime::println!("[eneros-root-task] SYNTH-OBS: encode FAIL {e:?}（不静默）");
             return;
         }
     };
+    if reqs.is_empty() {
+        return;
+    }
     let mut endpoint = eneros_agent_sdk::endpoint::ChunkedSession::bind_shared_const(
         "root-synth-obs",
         telemetry_ep,
         epoch,
     );
-    let resp = match endpoint.call("svc-telemetry", &req) {
-        Ok(r) => r,
-        Err(e) => {
-            eneros_runtime::println!("[eneros-root-task] SYNTH-OBS: transport FAIL {e:?}");
-            return;
-        }
-    };
-    match eneros_agent_sdk::obs_batch_wire::decode_obs_response(&resp) {
-        Some((acc, rej)) => {
-            eneros_runtime::println!("[eneros-root-task] SYNTH-OBS: accepted={acc} rejected={rej}");
-        }
-        None => {
-            eneros_runtime::println!(
-                "[eneros-root-task] SYNTH-OBS: REJECTED {:02x?}",
-                &resp[..resp.len().min(8)]
-            );
+    let (mut accepted, mut rejected) = (0u32, 0u32);
+    for req in &reqs {
+        let resp = match endpoint.call("svc-telemetry", req) {
+            Ok(r) => r,
+            Err(e) => {
+                eneros_runtime::println!("[eneros-root-task] SYNTH-OBS: transport FAIL {e:?}");
+                return;
+            }
+        };
+        match eneros_agent_sdk::obs_batch_wire::decode_obs_response(&resp) {
+            Some((acc, rej)) => {
+                accepted = accepted.saturating_add(u32::from(acc));
+                rejected = rejected.saturating_add(u32::from(rej));
+            }
+            None => {
+                eneros_runtime::println!(
+                    "[eneros-root-task] SYNTH-OBS: REJECTED {:02x?}",
+                    &resp[..resp.len().min(8)]
+                );
+                return;
+            }
         }
     }
+    eneros_runtime::println!(
+        "[eneros-root-task] SYNTH-OBS: accepted={accepted} rejected={rejected} reqs={}",
+        reqs.len()
+    );
 }
 
 /// 45.5 合成源降级：release/qemu-prod 装配**零合成遥测路径**——closure gate

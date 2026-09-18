@@ -87,7 +87,10 @@ pub extern "C" fn _start(
             // 若本行出现而后续四个分支词形全缺，即"读路径挂起"形态（此前
             // 整块无词形 = 不可诊断）。
             eneros_runtime::println!("[svc-config] CONFIG-DISK: probing active region");
-            let mut region = [0u8; CONFIG_REGION_BYTES];
+            // 2026-09-18 R10 三资源手术：区段 8→12 KiB 后 12 KiB 栈帧 + 块读
+            // 深路径超 svc-config 32 KiB 栈（静默溢出冻结——70.14 大缓冲出
+            // 栈纪律同族）——改堆缓冲。
+            let mut region = alloc::vec![0u8; CONFIG_REGION_BYTES as usize];
             let read = io.read(CONFIG_ACTIVE_OFFSET, &mut region);
             match read {
                 Ok(()) => {
@@ -313,7 +316,7 @@ impl eneros_control_services::ControlServiceHandler for ConfigHandler {
                 resp.extend_from_slice(&disk_gen.to_le_bytes());
                 resp.extend_from_slice(&embedded_gen.to_le_bytes());
                 resp.extend_from_slice(&active_gen.to_le_bytes());
-                let mut region = [0u8; CONFIG_REGION_BYTES];
+                let mut region = alloc::vec![0u8; CONFIG_REGION_BYTES as usize];
                 if self.read_active(&mut region).is_ok() {
                     if let Ok(Some(b)) = envelope_decode(&region) {
                         let d = eneros_crypto::sm3_hash(&b);

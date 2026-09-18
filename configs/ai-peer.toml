@@ -13,7 +13,7 @@ timeout_ms = 30000
 unhealthy_after = 3
 probe_every = 5
 max_power_kw = 5.0
-ttl_secs = 60
+ttl_secs = 30
 # SPEC-E WP-E.3：有界学习闸（EAQ-2：dev/qemu 装配 = true；release 产物
 # 的装配配置归 owner 拍板——false ⇒ 零学习零持久，System1 阈值恒出厂，
 # 行为 byte-equal 旧链路）。
@@ -23,13 +23,17 @@ learn_enabled = true
 # **不落 TOML**（compile_security 同款注入链，configs/kms-dev/degrade-lease.key
 # 开发档模板）。
 degrade_lease_ttl_secs = 86400
-# 蓝图 70.10 WP-70.10.2 + DEC-70-13 裁决（2026-09-15）：结构化计划参数
-# 四键全给（部分给 = 配置错）——激活 v2 结构化请求轨：AI worker 以可信
-# 快照派生规格（逐资产 nameplate×合同×预算钳制）向 peer 发 v2 请求，
-# 应答按 binds 逐字段验收后进认证/投递（used=true 面）。
-# DEC-70-13：包络有效期 ≥ 计划时域 ⇒ 时域 4×15s=60s = ttl_secs；单批
-# 分配 ≤ PEER_PLAN_MAX_ASSIGNMENTS=8（1 资产×4 步 ✓）。
-plan_step_ns = 15_000_000_000
+# 蓝图 70.10 WP-70.10.2 + ADR-0054:34–35（2026-09-18 R10 复查订正）：
+# 结构化计划参数四键全给（部分给 = 配置错）——激活 v2 结构化请求轨：
+# AI worker 以可信快照派生规格（逐资产 nameplate×合同×预算钳制）向
+# peer 发 v2 请求，应答按 binds 逐字段验收后进认证/投递（used=true 面）。
+# ADR-0054：快照产出后 30s 控制窗是安全事实——时域收敛为 4×7s=28s ≤
+# 30s（上一轮 4×15s=60s 放宽窗已回退；ttl_secs 与控制窗对齐 30s，证书
+# valid_until = horizon_start + ttl ≤ 包络末）。单批分配 ≤ 8（DEC-70-13 ②，
+# 编译器 max_commands_per_batch 单源）；计划级 inline 上限 = 64（蓝图 08
+# §9；PEER_PLAN_MAX_ASSIGNMENTS 单源）。3 资产 × 4 步 = 12 分配 ⇒
+# 编译拆 2 批，逐步窗 [horizon+(k-1)·7s, horizon+k·7s) 内 tick 推进。
+plan_step_ns = 7_000_000_000
 plan_steps = 4
 plan_objective = "min_cost"
 plan_prices_per_kwh = [0.5, 0.6, 0.4, 0.45]

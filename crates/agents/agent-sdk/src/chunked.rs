@@ -1077,6 +1077,29 @@ mod tests {
         assert_eq!(outcome, vec![0, 0]);
     }
 
+    /// 2026-09-18 R10 三资源手术实弹回归：目录 GET 响应 1861B（4B 长度
+    /// 前缀 + 1857B 目录载荷 = 18 页 > 16 块请求预算）必须完整分页组装
+    /// （实弹：dispatch 首个 ConfigGet(catalog) 在 18 页响应上挂起——本测
+    /// host 复现该尺寸的传输层行为）。
+    #[test]
+    fn client_transfer_paged_catalog_sized_response() {
+        let mut resp = alloc::vec![0x31u8; 1861];
+        resp[0] = 0;
+        resp[1860] = 0xCD;
+        let mut client = ChunkedClient::new(mem_peer(resp.clone()), 0, 1000);
+        let outcome = client
+            .transfer("svc-config", &alloc::vec![9u8; 3])
+            .expect("transfer");
+        assert_eq!(outcome.len(), 1861, "18 页响应必须完整组装");
+        assert_eq!(outcome, resp);
+        // 2300B（点表 GET：4 + 2296 = 23 页）同律。
+        let mut points = alloc::vec![0x32u8; 2300];
+        points[2299] = 0xEF;
+        let mut client2 = ChunkedClient::new(mem_peer(points.clone()), 0, 1000);
+        let outcome2 = client2.transfer("svc-config", &[1]).expect("transfer");
+        assert_eq!(outcome2, points, "23 页响应必须完整组装");
+    }
+
     #[test]
     fn client_transfer_paged_large_response() {
         // 145B 响应（SNAPSHOT 场景：1B 状态 + 144B trusted wire）——超单页

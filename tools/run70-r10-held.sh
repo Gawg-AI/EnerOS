@@ -9,16 +9,24 @@
 # 装配：qemu-test + qemu-test-synth（明文 1883 peer v2 轨 + synth OBS，
 # vol89 同款）+ slave61.py（5502，双资产遥测/控制寄存器在位）。
 #
-#   段A 健康多时段窗（fresh 盘）：
-#     A1 peer 收到 v2 请求 assets=2 steps=4；
-#     A2 目标 PLAN-HELD ≥1（多命令计划入持有存储）；
-#     A3 HELD-BATCH state=Completed ≥1（整批完成）；
-#     A4a HELD-COMMAND state=Applied ≥2；
-#     A4b 传输级读回验证 ≥2（写后同址 FC03 读回同值——map_receipt
-#        对新鲜应用不上浮 readback（对账专属），读回以传输面取证）；
-#     A5 modbus transcript：0x200 与 0x201 双资产均有 FC06 WRITE，
+#   段A 健康多时段窗（fresh 盘；2026-09-18 三资源 + 守恒重订）：
+#     A1 peer 收到 v2 请求 assets=3 steps=4（三资源最低演示形）；
+#     A2 PLAN-HELD ≥1 且某计划 PLAN-COMPILED intents+skipped == 12
+#        （3 资源 × 4 时段全分配守恒——分辨率合并计入 skipped，不丢账）；
+#     A3 该计划 HELD-PLAN-DONE state=Committed（全部批终态收敛——
+#        等待条件即此行，非首个批 Completed）；
+#     A4a HELD-COMMAND **唯一 intent** state=Applied == 该计划 intents
+#        （按 intent id 去重——周期重复打印不计数）；
+#     A4b 传输级写后读回验证 ≥ A4a 数（tools/r10_readback_oracle.py
+#        序列敏感版：写**后**同址同值 FC03、每读至多消费一次；负例集
+#        --selftest 门内自检）；
+#     A4c HELD-COMMAND readback=Some ≥1（dispatch 独立读回上浮进 Saga
+#        ——ADR-0054:15-16 实际回读可查询；None 缺证如实判负）；
+#     A5 modbus transcript：0x200/0x201/0x202 三资产均有 FC06 WRITE，
 #        且写时刻跨 ≥10s（多时段分步发放，非一次倾泻）；
-#     A6 零 PANIC / 零分配失败。
+#     A6 零 PANIC / 零分配失败；
+#     A7 守恒：HELD-PLAN-DONE applied+blocked+failed == intents
+#        （每命令终态可对账——执行/跳过/失败/取消全记账）。
 #   段B 重启续接窗（同数据盘脏断电）：
 #     B0 kill 前提：PLAN-HELD ≥1 且 ≥1 HELD-COMMAND state=Applied；
 #     B1 重启窗 HELD-STORE-OPEN status=OK（双槽区打开）；
@@ -149,14 +157,16 @@ kill_window() {
 # ============ 段A：健康多时段窗 =============================================
 echo "=== 段A：健康多时段窗（${A_DL}s）==="
 DA="$RUN/win-a"; mkdir -p "$DA"
+rm -f "$DA/eneros-data.raw"
 truncate -s 64M "$DA/eneros-data.raw"
 start_broker_slave "$DA" "$DA"
 start_peer "$DA"
 start_qemu "$DA" "$A_DL"
 wait_ready "$DA" 240 || { echo "段A PRODUCT-READY 未达"; kill_window; exit 6; }
-# 等整批完成（Completed）或窗尾
+# 等完整计划收敛（HELD-PLAN-DONE state=Committed——全部批终态）或窗尾。
+# 首批 Completed ≠ 计划完成（12 分配拆 ≥2 批；旧等待条件会提前杀窗）。
 for _ in $(seq 1 $((A_DL / 10))); do
-  grep -q "HELD-BATCH .*state=Completed" "$DA/qemu-serial.log" 2>/dev/null && break
+  grep -q "HELD-PLAN-DONE .*state=Committed" "$DA/qemu-serial.log" 2>/dev/null && break
   sleep 10
 done
 kill_window
@@ -166,69 +176,43 @@ SA="$DA/qemu-serial.log"
 TA="$DA/modbus.transcript.jsonl"
 PA="$DA/peer.log"
 
-n=$(grep -ac "PEER-REQ-V2 .* assets=2 steps=4" "$PA" 2>/dev/null || true); n=${n:-0}
-[ "$n" -ge 1 ] && echo "[✓][A1] v2 请求 assets=2 steps=4（×$n）" || { echo "[✗][A1] v2 多资产请求缺失"; FAIL=1; }
-n=$(grep -ac "PLAN-HELD" "$SA" || true); n=${n:-0}
-[ "$n" -ge 1 ] && echo "[✓][A2] PLAN-HELD（×$n）" || { echo "[✗][A2] 零计划持有"; FAIL=1; }
-n=$(grep -ac "HELD-BATCH .*state=Completed" "$SA" || true); n=${n:-0}
-[ "$n" -ge 1 ] && echo "[✓][A3] HELD-BATCH Completed（×$n）" || { echo "[✗][A3] 整批未完成"; FAIL=1; }
-n=$(grep -ac "HELD-COMMAND .*state=Applied" "$SA" || true); n=${n:-0}
-[ "$n" -ge 2 ] && echo "[✓][A4a] 命令 Applied（×$n）" || { echo "[✗][A4a] Applied 仅 ×$n（需 ≥2）"; FAIL=1; }
-# A4b：传输级读回验证——写后同址读回同值（map_receipt 对新鲜应用
-# 不上浮 readback（对账路径专属），读回事实以传输面取证更硬）。
-RBV=$(python3 - "$TA" <<'PY' 2>/dev/null || echo "ERR"
-import json, sys
-def events(path):
-    try:
-        fh = open(path)
-    except FileNotFoundError:
-        return []
-    for l in fh:
-        try:
-            yield json.loads(l)
-        except Exception:
-            continue
-writes, reads = {}, {}
-for e in events(sys.argv[1]):
-    if e.get("func") != "fc03" or "addr" not in e:
-        if e.get("event") == "WRITE":
-            writes.setdefault(e["addr"], []).append(e.get("value"))
-    elif e.get("event") == "READ":
-        reads.setdefault(e["addr"], []).append(e.get("value"))
-verified = 0
-for addr, wvs in writes.items():
-    rv = reads.get(addr, [])
-    for w in wvs:
-        if w in rv:
-            verified += 1
-            rv.remove(w)
-print(verified)
-PY
-)
-[ "${RBV:-0}" -ge 2 ] && echo "[✓][A4b] 写后同址读回验证（×$RBV）" || { echo "[✗][A4b] 读回验证仅 ×${RBV:-0}（需 ≥2）"; FAIL=1; }
-
-# A5：双资产写入 + 多时段时刻分布（跨度取整秒——bash 算术无浮点）。
-W200=$(python3 - "$TA" <<'PY' 2>/dev/null || echo "0 0"
-import json, sys
-ts = [json.loads(l)["ts"] for l in open(sys.argv[1])
-      if json.loads(l).get("event") == "WRITE" and json.loads(l).get("addr") == "0x200"]
-print(len(ts), int(max(ts) - min(ts)) if ts else 0)
-PY
-)
-W201=$(python3 - "$TA" <<'PY' 2>/dev/null || echo "0 0"
-import json, sys
-ts = [json.loads(l)["ts"] for l in open(sys.argv[1])
-      if json.loads(l).get("event") == "WRITE" and json.loads(l).get("addr") == "0x201"]
-print(len(ts), int(max(ts) - min(ts)) if ts else 0)
-PY
-)
-N200=$(echo "$W200" | awk '{print $1}'); T200=$(echo "$W200" | awk '{print $2}')
-N201=$(echo "$W201" | awk '{print $1}'); T201=$(echo "$W201" | awk '{print $2}')
-SPREAD=$(( T200 > T201 ? T200 : T201 ))
-if [ "${N200:-0}" -ge 1 ] && [ "${N201:-0}" -ge 1 ]; then
-  echo "[✓][A5a] 双资产写入（0x200×$N200 / 0x201×$N201）"
+# —— 段A 判据（A2/A3/A4a/A4c/A7 由守恒对账脚本一次算出）——
+# 守恒模型（按 plan id 关联）：PLAN-COMPILED（紧邻 PLAN-HELD 前的编译行）
+# intents I + skipped S；HELD-PLAN-DONE applied A + blocked Bk + failed F。
+# 通过线：存在计划使 I+S==12 ∧ A+Bk+F==I ∧ state=Committed ∧ A==I。
+ACCT=$(python3 "$ROOT/tools/r10_plan_accounting.py" "$SA" 2>/dev/null || echo "ERR")
+n=$(grep -ac "PEER-REQ-V2 .* assets=3 steps=4" "$PA" 2>/dev/null || true); n=${n:-0}
+[ "$n" -ge 1 ] && echo "[✓][A1] v2 请求 assets=3 steps=4（×$n）" || { echo "[✗][A1] 三资源 v2 请求缺失"; FAIL=1; }
+if [ "$ACCT" != "ERR" ] && [ "$ACCT" != "NONE" ]; then
+  I=$(echo "$ACCT" | awk '{print $1}'); SK=$(echo "$ACCT" | awk '{print $2}')
+  A=$(echo "$ACCT" | awk '{print $3}'); BK=$(echo "$ACCT" | awk '{print $4}'); F=$(echo "$ACCT" | awk '{print $5}')
+  UNIQ=$(echo "$ACCT" | awk '{print $6}'); RBS=$(echo "$ACCT" | awk '{print $7}')
+  [ "$((I + SK))" -eq 12 ] && echo "[✓][A2] 计划守恒 intents=$I skipped=$SK（I+S=12）"     || { echo "[✗][A2] I+S=$((I + SK))≠12"; FAIL=1; }
+  echo "[✓][A3] HELD-PLAN-DONE Committed（applied=$A blocked=$BK failed=$F）"
+  [ "$UNIQ" -ge "$I" ] && [ "$I" -ge 1 ] && echo "[✓][A4a] 唯一 intent Applied ×$UNIQ ≥ intents=$I"     || { echo "[✗][A4a] 唯一 Applied ×$UNIQ < intents=$I"; FAIL=1; }
+  [ "$RBS" -ge 1 ] && echo "[✓][A4c] Applied 带独立 readback=Some（×$RBS 行）"     || { echo "[✗][A4c] 零 readback=Some（实际回读未上浮 Saga）"; FAIL=1; }
+  [ "$((A + BK + F))" -eq "$I" ] && echo "[✓][A7] 终态守恒 A+Bk+F == intents"     || { echo "[✗][A7] A+Bk+F ≠ intents"; FAIL=1; }
 else
-  echo "[✗][A5a] 双资产写入缺失（0x200×${N200:-0} / 0x201×${N201:-0}）"; FAIL=1
+  echo "[✗][A2/A3/A7] 无满足守恒的完整计划（需 intents+skipped=12 ∧ 全 Applied ∧ Committed）：$ACCT"
+  FAIL=1; UNIQ=0
+fi
+# A4b：序列敏感写后读回（tools/r10_readback_oracle.py；负例集自检先行）。
+python3 "$ROOT/tools/r10_readback_oracle.py" --selftest >/dev/null || { echo "[✗][A4b] oracle 自检 FAIL"; FAIL=1; }
+RBV=$(python3 "$ROOT/tools/r10_readback_oracle.py" "$TA" 2>/dev/null || echo 0)
+[ "${RBV:-0}" -ge "${UNIQ:-0}" ] && [ "${UNIQ:-0}" -ge 1 ] \
+  && echo "[✓][A4b] 写后读回验证 ×$RBV ≥ 唯一 Applied ×$UNIQ" \
+  || { echo "[✗][A4b] 写后读回 ×${RBV:-0} < 唯一 Applied ×${UNIQ:-0}"; FAIL=1; }
+
+# A5：三资产写入 + 多时段时刻分布（跨度取整秒——bash 算术无浮点）。
+WTS=$(python3 "$ROOT/tools/r10_write_spread.py" "$TA" 2>/dev/null || echo "0 0 0 0 0 0")
+N200=$(echo "$WTS" | awk '{print $1}'); T200=$(echo "$WTS" | awk '{print $2}')
+N201=$(echo "$WTS" | awk '{print $3}'); T201=$(echo "$WTS" | awk '{print $4}')
+N202=$(echo "$WTS" | awk '{print $5}'); T202=$(echo "$WTS" | awk '{print $6}')
+SPREAD=$(( T200 > T201 ? (T200 > T202 ? T200 : T202) : (T201 > T202 ? T201 : T202) ))
+if [ "${N200:-0}" -ge 1 ] && [ "${N201:-0}" -ge 1 ] && [ "${N202:-0}" -ge 1 ]; then
+  echo "[✓][A5a] 三资产写入（0x200×$N200 / 0x201×$N201 / 0x202×$N202）"
+else
+  echo "[✗][A5a] 三资产写入缺失（0x200×${N200:-0} / 0x201×${N201:-0} / 0x202×${N202:-0}）"; FAIL=1
 fi
 if [ "${SPREAD:-0}" -ge 10 ]; then
   echo "[✓][A5b] 多时段发放（写时刻跨度 ${SPREAD}s ≥10s）"
@@ -241,21 +225,28 @@ PANICS=$(grep -ac "PANIC\|alloc.*failed\|ALLOC-FAIL" "$SA" || true); PANICS=${PA
 # ============ 段B：重启续接窗（脏断电）======================================
 echo "=== 段B：重启续接窗 ==="
 DB="$RUN/win-b"; mkdir -p "$DB"
+rm -f "$DB/eneros-data.raw"
 truncate -s 64M "$DB/eneros-data.raw"
 start_broker_slave "$DB" "$DB"
 start_peer "$DB"
 start_qemu "$DB" "$B_DL"
 wait_ready "$DB" 240 || { echo "段B 首启 PRODUCT-READY 未达"; kill_window; exit 6; }
-# 等 kill 前提：PLAN-HELD 出现即入定时（accept 内联首驱：步 0 当即
-# Applied；步 1+ 按步长 15s 递次生效——+12s 切保证 ≥2 步未发）。
+# 等 kill 前提：**飞行中**计划（≥1 Applied ∧ 尚未 HELD-PLAN-DONE——
+# 2026-09-18 run12 实弹：合并后 3 intent 计划可在 +12s 前整体完成 ⇒
+# 重启窗无未发步可保留（B3 全 absent）。改为：首个 Applied 出现后 +3s
+# 即切；若计划先完成（DONE 行）则等待**下一个**计划重试（窗预算内）。
 BOK=0
-for _ in $(seq 1 $((B_DL / 3))); do
-  if grep -q "PLAN-HELD" "$DB/qemu-serial.log" 2>/dev/null; then
+for _ in $(seq 1 $((B_DL / 2))); do
+  if grep -aq "HELD-PLAN-DONE .*state=Committed" "$DB/qemu-serial.log" 2>/dev/null; then
+    sleep 5   # 计划已完成——留间隔后继续等下一个计划
+    continue
+  fi
+  if grep -aq "HELD-COMMAND .*state=Applied" "$DB/qemu-serial.log" 2>/dev/null; then
     BOK=1; break
   fi
-  sleep 3
+  sleep 2
 done
-[ "$BOK" -eq 1 ] && sleep 12
+[ "$BOK" -eq 1 ] && sleep 3
 echo "[段B] kill -9 QEMU（脏断电）"
 kill -9 $(pgrep -f "qemu-system") 2>/dev/null || true
 sleep 3
@@ -352,6 +343,7 @@ PANICS=$(grep -ac "PANIC\|alloc.*failed\|ALLOC-FAIL" "$S2" || true); PANICS=${PA
 # ============ 段C：部分失败窗 ===============================================
 echo "=== 段C：部分失败窗（0x201 拒写）==="
 DC="$RUN/win-c"; mkdir -p "$DC"
+rm -f "$DC/eneros-data.raw"
 truncate -s 64M "$DC/eneros-data.raw"
 start_broker_slave "$DC" "$DC" --reject-write-addr 0x201
 start_peer "$DC"

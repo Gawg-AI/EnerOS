@@ -185,12 +185,12 @@ TAIL_USED=$(tail -n "$((N_TOT / 4))" "$S" | grep -ac "REMOTE-BRAIN used=true" ||
 [ "$TAIL_USED" -ge 1 ] && echo "[✓][R6] 恢复段 used=true ×$TAIL_USED（链未楔死）" \
   || { echo "[✗][R6] 恢复段零 used=true"; FAIL=1; }
 
-# R10 多资产：结构化请求必须覆盖 ≥2 资产（目录手术 asset 2 生效面）。
-# 2026-09-16（R10 工程落地）：探针转**硬判据**——assets=2 缺失 = 门 FAIL
+# R10 多资产：结构化请求必须覆盖 ≥3 资产（目录手术 asset 2/3 生效面；
+# 2026-09-18 三资源手术）。探针转**硬判据**——assets=3 缺失 = 门 FAIL
 #（多资产计划证据是 CORE-70-R10 的出口条件，不再 informational）。
-N2=$(grep -ac "PEER-REQ-V2 .* assets=2 " "$D"/peer-s1-healthy.log 2>/dev/null || true); N2=${N2:-0}
-[ "$N2" -ge 1 ] && echo "[✓][R10] 多资产请求（assets=2 ×$N2）" \
-  || { echo "[✗][R10] assets=2 ×$N2——多资产计划证据缺失（目录手术未生效）"; FAIL=1; }
+N2=$(grep -ac "PEER-REQ-V2 .* assets=3 " "$D"/peer-s1-healthy.log 2>/dev/null || true); N2=${N2:-0}
+[ "$N2" -ge 1 ] && echo "[✓][R10] 三资源请求（assets=3 ×$N2）" \
+  || { echo "[✗][R10] assets=3 ×$N2——三资源计划证据缺失（目录手术未生效）"; FAIL=1; }
 # R7 全窗零 PANIC（判据器 G1 同口径）
 PANICS=$(grep -aci "PANIC\|memory allocation of" "$S" || true)
 [ "$PANICS" -eq 0 ] && echo "[✓][R7] 全窗零 PANIC" \

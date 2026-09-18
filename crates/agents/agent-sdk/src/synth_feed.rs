@@ -58,7 +58,7 @@ const fn code(unit: eneros_telemetry_model::PhysicalUnit) -> u16 {
 /// 45/61 从站应答值经 scale×raw 的工程量，全部落各点声明值域内）。
 // Keep the 12-frame transport bound: PCS-1 SOC is already supplied by point 4;
 // omit its unused percentage display point 1002.
-pub const SYNTH_FEED: [SynthPoint; 12] = [
+pub const SYNTH_FEED: [SynthPoint; 14] = [
     SynthPoint {
         point_id: 1,
         asset_id: 1,
@@ -151,6 +151,23 @@ pub const SYNTH_FEED: [SynthPoint; 12] = [
         unit_code: code(eneros_telemetry_model::PhysicalUnit::Dimensionless),
         value: 0.30,
     },
+    // 蓝图 70 R10 三资源：PCS-3 功率回读 + SOC（合同 3 的 readback 点 1010
+    // presence 判定与 asset 3 的 asset_soc 解析；从站镜像 0x0118=70×0.1、
+    // 0x0119=3000×0.0001）。
+    SynthPoint {
+        point_id: 1010,
+        asset_id: 3,
+        device_id: 9,
+        unit_code: code(eneros_telemetry_model::PhysicalUnit::Kilowatts),
+        value: 7.0,
+    },
+    SynthPoint {
+        point_id: 1011,
+        asset_id: 3,
+        device_id: 9,
+        unit_code: code(eneros_telemetry_model::PhysicalUnit::Dimensionless),
+        value: 0.30,
+    },
 ];
 
 /// 构造单条合成观测事件（`validate()` 门对齐：epoch=0 必须 flags 含 TEST、
@@ -207,11 +224,25 @@ pub fn synth_frames(batch: u64, now_ns: u64) -> Vec<[u8; FRAME_WIRE_LEN]> {
         .collect()
 }
 
-/// TEL_INGEST_OBS 请求（一次 chunk 传输上限由
+/// TEL_INGEST_OBS 请求（单批单请求；一次 chunk 传输上限由
 /// [`encode_obs_request_stream`] 结构性保证——超限即 Err，不静默截断）。
 pub fn synth_obs_request(batch: u64, now_ns: u64) -> Result<Vec<u8>, ObsBatchError> {
     let flat: Vec<u8> = synth_frames(batch, now_ns).concat();
     encode_obs_request_stream(SYNTH_SOURCE_ID, &flat)
+}
+
+/// TEL_INGEST_OBS 请求序列（2026-09-18 R10 三资源：`SYNTH_FEED` 12 → 14
+/// 点越过单请求 12 帧上限——按 [`FRAMES_PER_TRANSFER`] 拆多请求，帧序/
+/// sequence 单调性由批内顺序保持；调用方逐请求发送并聚合 accepted）。
+/// 空批 = 空 Vec（调用方如实跳过）。
+pub fn synth_obs_requests(batch: u64, now_ns: u64) -> Result<Vec<Vec<u8>>, ObsBatchError> {
+    let frames = synth_frames(batch, now_ns);
+    let mut out = Vec::new();
+    for chunk in frames.chunks(crate::obs_batch_wire::FRAMES_PER_TRANSFER) {
+        let flat: Vec<u8> = chunk.concat();
+        out.push(encode_obs_request_stream(SYNTH_SOURCE_ID, &flat)?);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -253,12 +284,28 @@ mod tests {
         }
     }
 
-    /// 请求可被服务端 decode_obs_request 还原（布局闭环）。
+    /// 请求可被服务端 decode_obs_request 还原（布局闭环）——三资源 14 帧
+    /// 拆 12+2 两请求：单请求 ≤ 12 帧上限、帧总长守恒、sequence 批内单调。
     #[test]
     fn request_roundtrips_through_service_decoder() {
-        let req = synth_obs_request(7, 1).expect("encode");
-        let (source_id, frames) = crate::obs_batch_wire::decode_obs_request(&req).expect("decode");
-        assert_eq!(source_id, SYNTH_SOURCE_ID);
-        assert_eq!(frames.len(), SYNTH_FEED.len() * FRAME_WIRE_LEN);
+        let reqs = synth_obs_requests(7, 1).expect("encode");
+        assert!(reqs.len() >= 2, "14 帧必须拆批（FRAMES_PER_TRANSFER=12）");
+        let mut total = 0usize;
+        let mut last_seq = 0u64;
+        for req in &reqs {
+            let (source_id, frames) =
+                crate::obs_batch_wire::decode_obs_request(req).expect("decode");
+            assert_eq!(source_id, SYNTH_SOURCE_ID);
+            assert!(frames.len() <= crate::obs_batch_wire::FRAMES_PER_TRANSFER * FRAME_WIRE_LEN);
+            for w in frames.chunks_exact(FRAME_WIRE_LEN) {
+                let mut f = [0u8; FRAME_WIRE_LEN];
+                f.copy_from_slice(w);
+                let ev = ObservationEvent::decode_v1(&f).expect("frame decode");
+                assert!(ev.sequence > last_seq, "拆批不得破坏 sequence 单调");
+                last_seq = ev.sequence;
+            }
+            total += frames.len();
+        }
+        assert_eq!(total, SYNTH_FEED.len() * FRAME_WIRE_LEN, "帧数守恒");
     }
 }

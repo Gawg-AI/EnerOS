@@ -158,8 +158,14 @@ pub const BUSINESS_BAND_BASE_BLOCK: u64 = 264;
 /// 70.6：svc-mgmt 操作账本区段长度（字节；[`DataRegion::MgmtOps`]）。
 pub const MGMT_OPS_REGION_BYTES: u64 = 8 * 512;
 /// 70.6：svc-config 配置载体区段长度（字节；active/stage 同长）。
-/// 现行编译签名束 ~7 KiB，上限 8 KiB；超限 = 编译产物超几何（阻断）。
-pub const CONFIG_REGION_BYTES: u64 = 16 * 512;
+/// 2026-09-18 R10 三资源手术：16→24 块（8→12 KiB）——编译签名束 8641B
+/// （catalog 1857 + points 2296 + 余项 + 签名/摘要）超旧 8 KiB 几何。
+/// 扩容落位 = 业务带声明节距余量（带注释"节距即未来的扩容余量"）：
+/// ConfigActive 基址**不动**（块 376——旧盘 envelope 自描述 [magic/len/
+/// CRC]，len ≤ 8180 的旧束在新区内仍可读，升级路径不破坏）；ConfigStage
+/// 基址 +8 块（392→400；stage 为瞬态面，旧内容按 fail-safe 丢弃）。
+/// 超限 = 编译产物超几何（阻断）。
+pub const CONFIG_REGION_BYTES: u64 = 24 * 512;
 
 impl DataRegion {
     /// 区段基址（512B 块号，ota-ab 常量口径）。
@@ -175,7 +181,7 @@ impl DataRegion {
             DataRegion::ObsOutbox => BUSINESS_BAND_BASE_BLOCK + 64,
             DataRegion::MgmtOps => BUSINESS_BAND_BASE_BLOCK + 104,
             DataRegion::ConfigActive => BUSINESS_BAND_BASE_BLOCK + 112,
-            DataRegion::ConfigStage => BUSINESS_BAND_BASE_BLOCK + 128,
+            DataRegion::ConfigStage => BUSINESS_BAND_BASE_BLOCK + 136,
             DataRegion::OtaSlotA => SLOT_A_BASE_BLOCK,
             DataRegion::OtaSlotB => SLOT_B_BASE_BLOCK,
             DataRegion::Tsdb => DATA_TSDB_BASE_BLOCK,
@@ -1095,8 +1101,8 @@ mod spec_c_region_tests {
             (DataRegion::AgentBusState, 159_744, 4_096),
             (DataRegion::ObsOutbox, 328 * 512, 20_480),
             (DataRegion::MgmtOps, 368 * 512, 8 * 512),
-            (DataRegion::ConfigActive, 376 * 512, 16 * 512),
-            (DataRegion::ConfigStage, 392 * 512, 16 * 512),
+            (DataRegion::ConfigActive, 376 * 512, 24 * 512),
+            (DataRegion::ConfigStage, 400 * 512, 24 * 512),
             (DataRegion::OtaSlotA, 512 * 512, PARTITION_BLOCKS * 512),
             (DataRegion::OtaSlotB, 2560 * 512, PARTITION_BLOCKS * 512),
             (DataRegion::Tsdb, 8192 * 512, 16384 * 512),

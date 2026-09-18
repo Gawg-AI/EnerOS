@@ -763,6 +763,26 @@ impl DispatchHandler {
                 "[svc-control-dispatch] telemetry EP NOT granted —— 意图路径 fail-closed"
             );
         }
+        // ADR-0054:29–30：持有输入保留面装配（目标侧）。telemetry 端点在位
+        // → 真钉面（独立端点实例，与 EipcBlobSource 同款 bind_cap 先例）；
+        // 端点缺失 → NoRetention（fail-closed：一切持有计划准入被拒，不
+        // 静默放行）。host（非 sel4）装配无 EIPC telemetry 面，保持无钉面
+        // （engine 的 host 测试显式选择保留面形态）。
+        #[cfg(all(target_os = "none", feature = "sel4"))]
+        let engine = engine.map(|mut e| {
+            let retainer: alloc::boxed::Box<dyn eneros_control_dispatch::HeldInputRetainer> =
+                match telemetry_endpoint_for_retainer(eipc_mask) {
+                    Some(ep) => alloc::boxed::Box::new(TelemetrySnapRetainer { endpoint: ep }),
+                    None => {
+                        eneros_runtime::println!(
+                            "[svc-control-dispatch] SNAP-RETAINER reason=telemetry-endpoint-missing（持有计划准入 fail-closed）"
+                        );
+                        alloc::boxed::Box::new(eneros_control_dispatch::NoRetention)
+                    }
+                };
+            e.set_input_retainer(retainer);
+            e
+        });
         Self {
             engine,
             telemetry,
@@ -1625,5 +1645,58 @@ mod tests {
         assert!(views.resource.asset_exists(1));
         assert_eq!(views.resource.catalog_version(), contract_version);
         assert!(views.contract.plan_contract(1).is_some());
+    }
+}
+
+/// svc-telemetry 端点（钉面专用独立实例——`ChunkedEndpoint` 单一持有者，
+/// 与 certifier `EipcBlobSource` 同款 bind_cap 先例）。
+#[cfg(all(target_os = "none", feature = "sel4"))]
+fn telemetry_endpoint_for_retainer(
+    eipc_mask: u64,
+) -> Option<eneros_agent_sdk::endpoint::ChunkedEndpoint<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>>
+{
+    granted_slot(eipc_mask, "svc-telemetry").and_then(|slot| {
+        eneros_agent_sdk::endpoint::ChunkedEndpoint::bind_cap("control-dispatch", slot)
+    })
+}
+
+/// ADR-0054:29–30：快照钉面（svc-telemetry `TEL_REQ_SNAP_HOLD` / `_RELEASE`）。
+/// hold 失败 = 传输/容量面 → false（engine fail-closed 拒绝新准入）；
+/// release 失败 = 可重试（下个 tick 幂等重发）。
+#[cfg(all(target_os = "none", feature = "sel4"))]
+struct TelemetrySnapRetainer {
+    endpoint:
+        eneros_agent_sdk::endpoint::ChunkedEndpoint<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
+}
+
+#[cfg(all(target_os = "none", feature = "sel4"))]
+impl eneros_control_dispatch::HeldInputRetainer for TelemetrySnapRetainer {
+    fn hold(&mut self, snapshot_id: [u8; 16]) -> bool {
+        let mut req = alloc::vec::Vec::with_capacity(17);
+        req.push(eneros_agent_sdk::tel_wire::TEL_REQ_SNAP_HOLD);
+        req.extend_from_slice(&snapshot_id);
+        match self.endpoint.call("svc-telemetry", &req) {
+            Ok(resp) if resp.first() == Some(&eneros_agent_sdk::tel_wire::TEL_RESP_OK) => true,
+            Ok(resp) => {
+                eneros_runtime::println!(
+                    "[svc-control-dispatch] SNAP-HOLD-REJECT resp={:02x?}",
+                    &resp[..resp.len().min(4)]
+                );
+                false
+            }
+            Err(e) => {
+                eneros_runtime::println!("[svc-control-dispatch] SNAP-HOLD-FAIL transport={e:?}");
+                false
+            }
+        }
+    }
+    fn release(&mut self, snapshot_id: [u8; 16]) -> bool {
+        let mut req = alloc::vec::Vec::with_capacity(17);
+        req.push(eneros_agent_sdk::tel_wire::TEL_REQ_SNAP_RELEASE);
+        req.extend_from_slice(&snapshot_id);
+        self.endpoint
+            .call("svc-telemetry", &req)
+            .map(|resp| resp.first() == Some(&eneros_agent_sdk::tel_wire::TEL_RESP_OK))
+            .unwrap_or(false)
     }
 }

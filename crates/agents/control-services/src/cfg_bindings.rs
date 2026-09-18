@@ -346,9 +346,10 @@ mod tests {
         }
     }
 
-    /// R10 红测：双合同目录 → 双 (asset,device,point) 绑定均产出
+    /// R10 红测：三合同目录 → 三 (asset,device,point) 绑定均产出
     /// （点表**一次**往返解析全部设备短 ID；asset 1→device 1/点 10、
-    /// asset 2→device 8/点 1009）。
+    /// asset 2→device 8/点 1009、asset 3→device 9/点 1014——三资源手术
+    /// 2026-09-18）。
     #[test]
     fn binding_registry_resolves_both_assets_from_points_table() {
         let cat = prod_catalog();
@@ -357,7 +358,7 @@ mod tests {
         };
         assert_eq!(
             fetch_control_binding(&cat, &mut src),
-            Some(vec![(1, 1, 10), (2, 8, 1009)])
+            Some(vec![(1, 1, 10), (2, 8, 1009), (3, 9, 1014)])
         );
     }
 

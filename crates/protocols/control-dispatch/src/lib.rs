@@ -40,6 +40,7 @@ pub mod durable_intent;
 pub mod engine;
 pub mod feedback;
 pub mod held_plan;
+pub use engine::held_engine::{HeldInputRetainer, NoRetention};
 pub mod intent;
 pub mod journal;
 pub mod plan_hold;

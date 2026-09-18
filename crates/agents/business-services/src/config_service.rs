@@ -772,10 +772,12 @@ impl ConfigStaging {
     }
 
     /// 追加分片（`seq` 1 基；单片 ≤ 512B——mqtt 插件 APP_MSG_MAX_LEN=1024
-    /// 扣 MGT1 会话帧开销后的安全分段；16×512B = 8192B 恰合载体区段）。
+    /// 扣 MGT1 会话帧开销后的安全分段）。分片上限 = 配置载体区段
+    /// [`CONFIG_REGION_BYTES`]（2026-09-18 三资源手术 16→24 片 = 12 KiB
+    /// ——与区段几何同源锁）。
     /// 返回已到齐分片数。重复分片幂等接受；total/越界不一致 → Err。
     pub fn push_part(&mut self, seq: u8, total: u8, bytes: &[u8]) -> Result<u32, &'static str> {
-        if seq == 0 || total == 0 || seq > total || total > 16 {
+        if seq == 0 || total == 0 || seq > total || total > 24 {
             return Err("part-index");
         }
         let total_len = total as usize;
@@ -1318,6 +1320,21 @@ mod config_lifecycle_tests {
         svc.load_bundle(bundle, Some(&CbDigest([0x41; 32])))
             .unwrap();
         svc
+    }
+
+    /// 容量回归锁（2026-09-18 三资源手术）：真实配置全集编译签名束必须
+    /// 落进配置载体区段（`CONFIG_BUNDLE_MAX`）。红 = 下次配置手术把束推
+    /// 过几何——必须先扩区段（同源链：CONFIG_REGION_BYTES ↔ 分片上限）。
+    #[test]
+    fn full_bundle_fits_config_region() {
+        let bundle = signed_bundle(control_write_payload(4), 3);
+        let enc = encode(&bundle);
+        assert!(
+            enc.len() <= eneros_ota_ab::ab_partition::CONFIG_REGION_BYTES as usize - 12,
+            "编译签名束 {}B 超配置区段（需扩 CONFIG_REGION_BYTES）",
+            enc.len()
+        );
+        envelope_encode(&enc).expect("envelope 编码在区内");
     }
 
     #[test]

@@ -97,6 +97,13 @@ pub trait ObsEventFace {
     /// 登记保留持有（蓝图 70.8.2：被证书/执行证据引用的计划输入不得先
     /// 删）。`offset` = 该分区仍需保留的最小 offset（含）。
     fn hold_offset(&mut self, partition: u32, offset: u64);
+    /// 快照保留钉（ADR-0054:29–30）：被持有计划证书引用的冻结快照
+    /// （完整观测 blob）在持有期内不得被剪枝回收。幂等；false = 容量
+    /// 满/面不可用（调用方 fail-closed：拒绝新计划准入）。
+    fn pin_snapshot(&mut self, id: &[u8; 16]) -> bool;
+    /// 解除快照保留钉（计划终态且无未决后）。幂等；false = 未钉/面不可
+    /// 用（释放是回收面不是安全面，可重试）。
+    fn release_snapshot(&mut self, id: &[u8; 16]) -> bool;
     /// 保留背压：容量水位越线且受保护记录阻塞删除（消费落后）→ 调用方
     /// 必须停发新决策（不得继续发新证书）。
     fn retention_blocked(&self) -> bool;
@@ -176,7 +183,14 @@ pub struct EventFace<C: EipcSend + Clone + 'static> {
     retention_blocked: bool,
     /// 计划输入保留持有（分区 → 需保留的最小 offset；`hold_offset` 登记）。
     holds: Vec<(u32, u64)>,
+    /// 快照保留钉（ADR-0054:29–30：持有计划证书引用的冻结快照 ID 集合
+    /// ——剪枝跳过；重启后由 dispatch 按非终态计划重派生）。
+    snap_pins: Vec<[u8; 16]>,
 }
+
+/// 快照钉容量（= 持有计划容量 MAX_PLANS(2) + 换代余量 2；超出 = 调用方
+/// fail-closed 拒绝新准入——不留无限增长面）。
+pub const MAX_SNAP_PINS: usize = 4;
 
 enum FaceState<C: EipcSend + Clone + 'static> {
     /// 未打开（构造期/lazy）。
@@ -215,6 +229,7 @@ impl<C: EipcSend + Clone + 'static> EventFace<C> {
             retention_hold_limited: 0,
             retention_blocked: false,
             holds: Vec::new(),
+            snap_pins: Vec::new(),
         }
     }
 
@@ -356,6 +371,7 @@ impl<C: EipcSend + Clone + 'static> ObsEventFace for EventFace<C> {
                 &mut self.retention_hold_limited,
                 &mut self.retention_blocked,
                 &self.holds,
+                &self.snap_pins,
                 now_ms,
             );
         }
@@ -419,6 +435,43 @@ impl<C: EipcSend + Clone + 'static> ObsEventFace for EventFace<C> {
         }
     }
 
+    fn pin_snapshot(&mut self, id: &[u8; 16]) -> bool {
+        if self.snap_pins.contains(id) {
+            return true;
+        }
+        if self.snap_pins.len() >= MAX_SNAP_PINS {
+            eneros_runtime::println!(
+                "[svc-telemetry] SNAP-PIN-REJECT reason=pin-capacity pins={}",
+                self.snap_pins.len()
+            );
+            return false;
+        }
+        self.snap_pins.push(*id);
+        eneros_runtime::println!(
+            "[svc-telemetry] SNAP-PIN-HELD id={:02x}{:02x} pins={}",
+            id[0],
+            id[1],
+            self.snap_pins.len()
+        );
+        true
+    }
+
+    fn release_snapshot(&mut self, id: &[u8; 16]) -> bool {
+        match self.snap_pins.iter().position(|p| p == id) {
+            Some(idx) => {
+                self.snap_pins.swap_remove(idx);
+                eneros_runtime::println!(
+                    "[svc-telemetry] SNAP-PIN-RELEASED id={:02x}{:02x} pins={}",
+                    id[0],
+                    id[1],
+                    self.snap_pins.len()
+                );
+                true
+            }
+            None => false,
+        }
+    }
+
     fn retention_blocked(&self) -> bool {
         self.retention_blocked
     }
@@ -445,6 +498,7 @@ impl<C: EipcSend + Clone + 'static> EventFace<C> {
         retention_hold_limited: &mut u64,
         retention_blocked: &mut bool,
         holds: &[(u32, u64)],
+        snap_pins: &[[u8; 16]],
         now_ms: u64,
     ) {
         // 1. 快照构建（owned 产出后立刻释放 module 借用）。
@@ -495,7 +549,7 @@ impl<C: EipcSend + Clone + 'static> EventFace<C> {
                     bytes.len()
                 );
                 match face.snap_fs.as_mut() {
-                    Some(fs) => match store_snap_blob(fs, snap, &bytes) {
+                    Some(fs) => match store_snap_blob(fs, snap, &bytes, snap_pins) {
                         Ok(kept) => {
                             *snap_stored += 1;
                             eneros_runtime::println!("[svc-telemetry] SNAP-STORED kept={}", kept);
@@ -689,6 +743,7 @@ fn store_snap_blob(
     fs: &mut Lfs,
     snap: &eneros_snapshot_service::TrustedSnapshot,
     bytes: &[u8],
+    pins: &[[u8; 16]],
 ) -> Result<usize, ()> {
     let _ = fs.mkdir(SNAP_DIR);
     let name = snapshot_file_stem(&snap.snapshot_id);
@@ -722,7 +777,7 @@ fn store_snap_blob(
     };
     let mut keep = SNAP_KEEP_BLOBS.saturating_sub(1);
     loop {
-        let _ = prune_snap_blobs_keep(fs, keep);
+        let _ = prune_snap_blobs_keep(fs, keep, pins);
         if attempt(fs).is_ok() {
             break;
         }
@@ -733,12 +788,12 @@ fn store_snap_blob(
         }
         keep /= 2;
     }
-    prune_snap_blobs_keep(fs, SNAP_KEEP_BLOBS)
+    prune_snap_blobs_keep(fs, SNAP_KEEP_BLOBS, pins)
 }
 
 /// 保留上限参数化版本：写前腾位需要"比最终保留数少一份"的目标，
 /// 重试路径需要"砍到一半"。语义与 [`SNAP_KEEP_BLOBS`] 版逐字相同。
-fn prune_snap_blobs_keep(fs: &mut Lfs, keep: usize) -> Result<usize, ()> {
+fn prune_snap_blobs_keep(fs: &mut Lfs, keep: usize, pins: &[[u8; 16]]) -> Result<usize, ()> {
     let entries = fs.readdir(SNAP_DIR).map_err(|_| ())?;
     let mut metas: Vec<(String, u64)> = Vec::new();
     for e in entries.iter().filter(|e| !e.is_dir) {
@@ -762,11 +817,20 @@ fn prune_snap_blobs_keep(fs: &mut Lfs, keep: usize) -> Result<usize, ()> {
             }
         }
     }
+    // ADR-0054:29–30：持有计划证书引用的冻结快照（钉集）不参与剪枝
+    // ——钉住者越过 keep 线也保留（回收面的最终裁决在 release）。
+    let pinned_paths: Vec<String> = pins
+        .iter()
+        .map(|id| format!("{}/{}.snap", SNAP_DIR, snapshot_file_stem(id)))
+        .collect();
     if metas.len() <= keep {
         return Ok(metas.len());
     }
     metas.sort_by_key(|(_, produced)| core::cmp::Reverse(*produced));
     for (path, _) in metas[keep..].iter() {
+        if pinned_paths.contains(path) {
+            continue;
+        }
         let _ = fs.remove(path);
     }
     Ok(keep)
@@ -1260,6 +1324,54 @@ mod tests {
         assert!(
             face.current_input().is_some(),
             "最后一窗之后仍必须有可用的冻结输入（否则控制链饿死）"
+        );
+    }
+
+    /// ADR-0054:29–30（2026-09-18 R10 复查补全）：被持有计划证书引用的
+    /// 冻结快照（钉）在存储压力剪枝下**必须保留**（按 ID 仍可取回完整
+    /// 观测）；解除后回收面真实（后续压力剪枝可回收）。
+    /// 变异靶：prune 跳过钉集的条件删除 → `snapshot_blob(&id1)` 变 None
+    /// → 本测红；release 后不回收 → 尾断言红。
+    #[test]
+    fn t8_pinned_snapshot_survives_prune_and_release_recycles() {
+        let disk_len = (DISK_END * 512) as usize;
+        let storage = FakeStorage::new(disk_len);
+        let mut face = make_face(&storage);
+        face.set_snapshot_catalog(prod_module_catalog(), 1_000);
+        let mut seq = 0u64;
+        let run_windows = |face: &mut EventFace<FakeStorage>, from: u64, n: u64, seq: &mut u64| {
+            for batch in from..(from + n * SNAP_EVERY_BATCHES) {
+                let now = 2_000 + batch * 46_000;
+                let events: Vec<ObservationEvent> = coverage_fixture_points()
+                    .map(|p| {
+                        *seq += 1;
+                        obs(p, *seq, now, fixture_value(p, batch as usize))
+                    })
+                    .collect();
+                face.on_obs_batch(&events, now);
+            }
+        };
+        // 窗 1：产出快照 id1 并钉住（模拟 dispatch 持有计划准入）。
+        run_windows(&mut face, 0, 1, &mut seq);
+        let id1 = face
+            .current_input()
+            .expect("窗 1 后必有冻结输入")
+            .facts()
+            .snapshot_id;
+        assert!(face.pin_snapshot(&id1), "钉面容量内必须成功");
+        // 30 窗存储压力（区段实际容量 ≈6 份 > 配置保留 16——压力剪枝必发生）。
+        run_windows(&mut face, 8, 30, &mut seq);
+        assert_eq!(face.snap_skipped, 0, "钉住单份不得造成落盘停摆");
+        assert!(
+            face.snapshot_blob(&id1).is_some(),
+            "被钉住的冻结输入必须可在持有期内按 ID 取回（ADR-0054:29–30）"
+        );
+        // 解除（计划终态）→ 后续压力剪枝可回收。
+        assert!(face.release_snapshot(&id1));
+        run_windows(&mut face, 8 + 30 * 8, 12, &mut seq);
+        assert!(
+            face.snapshot_blob(&id1).is_none(),
+            "解除后的旧快照必须可被回收（释放面真实——只收紧不释放即违约）"
         );
     }
 

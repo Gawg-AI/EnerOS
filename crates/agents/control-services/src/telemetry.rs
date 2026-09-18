@@ -48,9 +48,10 @@ use eneros_telemetry_model::event::ObservationEvent;
 /// 样本缓冲上限（有界）。
 pub const MAX_BUFFERED_SAMPLES: usize = 256;
 /// 评估器配置（服务装配期注入；覆盖点由部署配置决定）。
-/// 单源 = `eneros_decision_contract::CONTROL_HORIZON_MS`（DEC-70-13 ①：
-/// 包络生命周期 ≥ 计划时域 4×15s=60s；2026-09-17 前本地 30s 双胞胎常量
-/// 使多时段计划第 3 步起被拒）。重导出仅为既有调用点兼容。
+/// 单源 = `eneros_decision_contract::CONTROL_HORIZON_MS`（ADR-0054:34–35：
+/// 快照产出后 30s 是安全事实，不为 4×15s 配置放宽——演示时域收敛为
+/// 4×7s=28s ≤ 30s。2026-09-18 R10 复查订正：上一轮 60s 违约已回退）。
+/// 重导出仅为既有调用点兼容。
 pub const DEFAULT_CONTROL_HORIZON_MS: u64 = eneros_decision_contract::CONTROL_HORIZON_MS;
 
 /// 快照响应（TrustedTelemetry wire）。
@@ -69,20 +70,13 @@ pub const STATE_BINDINGS: eneros_safety_validator::StateBindings =
 
 /// 输入新鲜度**策略窗**（蓝图 [08] §9：**待实测冻结**的设计输入，不是
 /// 性能承诺）。**不是**输入可否用于控制的唯一判据——载荷自身的控制
-/// 有效期（`TrustedTelemetry::valid_until_ms` = 产刻 + 控制窗 60s
-/// ＝DEC-70-13 计划时域，下游 dispatch 以同一字段裁决）是第一上界；
+/// 有效期（`TrustedTelemetry::valid_until_ms` = 产刻 + 控制窗 30s
+/// ＝ADR-0054 安全事实，下游 dispatch 以同一字段裁决）是第一上界；
 /// 本窗只能更紧，不得更松（放宽到超过载荷有效期只会把"输入过期"变成
 /// dispatch 的 `TelemetryExpired`，EA 按 `DispatchRejected` 记账并烧错误
-/// 预算——复查修复前的 60s 即此形态）。
-///
-/// 派生依据（单一来源 = 生产冻结节奏）：决策输入是 svc-telemetry 每
-/// `SNAP_EVERY_BATCHES`(=8) 个 OBS 批构建一次的**冻结快照**。实测刷新
-/// 周期 ≈18–45s（70.5 窗：859 EA tick / 4 次 SNAP-BUILT）。控制窗
-/// 30s→60s（DEC-70-13 ①：≥ 计划时域）后，多数冻结周期全程可用；跨过
-/// 60s 的尾段仍为 `SNAP_REJECT_STALE` 诚实拒绝（零推理零新写、不计
-/// 失败）。站点侧如需进一步收紧（缩短冻结节奏或调整控制窗），见执行卡
-/// "输入新鲜度与冻结节奏的紧耦合"登记。
-pub const DEFAULT_INPUT_FRESHNESS_MS: u64 = 60_000;
+/// 预算）。2026-09-18 R10 复查订正：控制窗恢复 30s 后，本窗从 60s 对齐
+/// 收敛到 30s（不得宽于载荷有效期）。
+pub const DEFAULT_INPUT_FRESHNESS_MS: u64 = 30_000;
 
 /// 快照输入拒绝（结构化；调用方必须零决策、零新写）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -719,6 +713,23 @@ impl TelemetryService {
             f.hold_offset(partition, offset);
         }
     }
+
+    /// ADR-0054:29–30：快照保留钉（被持有计划证书引用的冻结快照在持有
+    /// 期内不得被剪枝回收；事件面缺失/容量满 → false = fail-closed 面）。
+    pub fn pin_snapshot(&mut self, id: &[u8; 16]) -> bool {
+        self.event_face
+            .as_mut()
+            .map(|f| f.pin_snapshot(id))
+            .unwrap_or(false)
+    }
+
+    /// ADR-0054:29–30：解除快照保留钉（计划终态且无未决后；幂等）。
+    pub fn release_snapshot(&mut self, id: &[u8; 16]) -> bool {
+        self.event_face
+            .as_mut()
+            .map(|f| f.release_snapshot(id))
+            .unwrap_or(false)
+    }
 }
 
 // ============================================================================
@@ -1061,6 +1072,29 @@ pub fn handle_request(svc: &mut TelemetryService, req: &[u8], now_ms: u64) -> Ve
                 None => vec![SNAPSHOT_REJECTED],
             }
         }
+        // ADR-0054:29–30：快照保留钉（dispatch 持有面）。请求 [码, id16]；
+        // hold 失败 = [TEL_RESP_ERR]（调用方 fail-closed 拒绝新计划准入）。
+        eneros_agent_sdk::tel_wire::TEL_REQ_SNAP_HOLD => {
+            if req.len() != 17 {
+                return vec![eneros_agent_sdk::tel_wire::TEL_RESP_ERR];
+            }
+            let mut id = [0u8; 16];
+            id.copy_from_slice(&req[1..17]);
+            if svc.pin_snapshot(&id) {
+                vec![eneros_agent_sdk::tel_wire::TEL_RESP_OK]
+            } else {
+                vec![eneros_agent_sdk::tel_wire::TEL_RESP_ERR]
+            }
+        }
+        eneros_agent_sdk::tel_wire::TEL_REQ_SNAP_RELEASE => {
+            if req.len() != 17 {
+                return vec![eneros_agent_sdk::tel_wire::TEL_RESP_ERR];
+            }
+            let mut id = [0u8; 16];
+            id.copy_from_slice(&req[1..17]);
+            let _ = svc.release_snapshot(&id);
+            vec![eneros_agent_sdk::tel_wire::TEL_RESP_OK]
+        }
         TEL_INGEST_OBS => {
             // 蓝图 61 v0.314.27；蓝图 62 卷 62.2（WP-62.2.2）：请求解析
             // 单源 agent-sdk obs_batch_wire（布局校验失败 → 0xFF 拒绝语义不变）。
@@ -1109,6 +1143,12 @@ mod tests {
             None
         }
         fn hold_offset(&mut self, _partition: u32, _offset: u64) {}
+        fn pin_snapshot(&mut self, _id: &[u8; 16]) -> bool {
+            false
+        }
+        fn release_snapshot(&mut self, _id: &[u8; 16]) -> bool {
+            false
+        }
         fn retention_blocked(&self) -> bool {
             self.blocked
         }
@@ -1157,12 +1197,15 @@ mod tests {
     /// 复查修复：**输入新鲜度必须以载荷自身的控制有效期为准**（单源 =
     /// `TrustedTelemetry::valid_until_ms`，dispatch 端以同一字段裁决）。
     ///
-    /// 修复前：策略窗（60s）宽于载荷有效期（控制窗 30s）→ 40s 龄的输入
-    /// 在此被受理，而后由 dispatch 以 `TelemetryExpired` 拒绝，EA 按
-    /// `DispatchRejected` 记账（连续 3 次 → EscalateToHuman + 30s 冷却，
-    /// 见 `TickPolicy::record`）——把"输入已过期"伪装成"决策被拒"并烧掉
+    /// 修复前：策略窗宽于载荷有效期 → 超龄输入在此被受理，而后由
+    /// dispatch 以 `TelemetryExpired` 拒绝，EA 按 `DispatchRejected`
+    /// 记账（连续 3 次 → EscalateToHuman + 30s 冷却，见
+    /// `TickPolicy::record`）——把"输入已过期"伪装成"决策被拒"并烧掉
     /// 错误预算。修复后：同一形态在输入面即以 `Stale` 诚实拒绝（
     /// `NoTrustedInput` 路径：零推理、零新写、不计失败）。
+    ///
+    /// 2026-09-18 R10 复查：控制窗恢复 30s（ADR-0054:34–35），策略窗
+    /// 对齐 30s——超 30s 龄的输入必须在此拒绝。
     ///
     /// 变异靶：新鲜度判定只看策略窗（忽略载荷有效期）→ ② 变绿 → 本测红。
     #[test]
@@ -1172,20 +1215,19 @@ mod tests {
         let valid_until = produced + DEFAULT_CONTROL_HORIZON_MS; // 控制窗内有效
         let mut svc = service_with_input(frozen_input(produced, valid_until));
 
-        // ① 载荷仍有效（龄 40s < 60s 控制窗 = DEC-70-13 计划时域）→ 受理。
-        assert!(svc.snapshot_input(produced + 40_000).is_ok());
+        // ① 载荷仍有效（龄 25s < 30s 控制窗 = ADR-0054 安全事实）→ 受理。
+        assert!(svc.snapshot_input(produced + 25_000).is_ok());
 
         // ② 载荷有效期比策略窗更紧时必须先拒（两侧上界都生效：
-        // min(策略窗 60s, 载荷 30s)——多时段计划时域 60s（DEC-70-13 ①）
-        // 后，"载荷更紧"由显式短有效期载荷承载）。
-        let mut tighter = service_with_input(frozen_input(produced, produced + 30_000));
-        match tighter.snapshot_input(produced + 40_000) {
-            Err(SnapshotInputReject::Stale { age_ms }) => assert_eq!(age_ms, 40_000),
+        // min(策略窗 30s, 载荷 20s)——"载荷更紧"由显式短有效期载荷承载）。
+        let mut tighter = service_with_input(frozen_input(produced, produced + 20_000));
+        match tighter.snapshot_input(produced + 25_000) {
+            Err(SnapshotInputReject::Stale { age_ms }) => assert_eq!(age_ms, 25_000),
             other => panic!("超出载荷有效期必须 Stale（不得受理给 dispatch 拒）: {other:?}"),
         }
-        // ②b 载荷 60s 窗自身到期（龄 70s > 60s ≥ 策略窗）→ 同样 Stale。
-        match svc.snapshot_input(produced + 70_000) {
-            Err(SnapshotInputReject::Stale { age_ms }) => assert_eq!(age_ms, 70_000),
+        // ②b 载荷 30s 窗自身到期（龄 40s > 30s ≥ 策略窗）→ 同样 Stale。
+        match svc.snapshot_input(produced + 40_000) {
+            Err(SnapshotInputReject::Stale { age_ms }) => assert_eq!(age_ms, 40_000),
             other => panic!("超出载荷有效期必须 Stale: {other:?}"),
         }
 
@@ -1757,7 +1799,7 @@ mod tests {
             assert_eq!((b.voltage, b.current, b.frequency, b.soc), (1u32, 2, 3, 4));
             assert_eq!(cfg.max_skew_ms, 1000);
             assert!(cfg.require_integrity);
-            // 控制窗单源 = DEC-70-13 ①（≥ 计划时域 4×15s=60s）。
+            // 控制窗单源 = ADR-0054:34–35（30s 安全事实；时域收敛非窗放宽）。
             assert_eq!(cfg.control_horizon_ms, DEFAULT_CONTROL_HORIZON_MS);
             assert_eq!(
                 cfg.control_horizon_ms,

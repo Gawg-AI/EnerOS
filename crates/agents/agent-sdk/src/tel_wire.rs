@@ -32,6 +32,13 @@ pub const TEL_REQ_SNAPSHOT_INPUT: u8 = 5;
 /// 请求：**已冻结快照 blob**（蓝图 70.8.2/70.9.1）——按当前冻结快照 ID
 /// 取回 `encode_snapshot_v1` 字节（certifier 独立读取可信输入用）。
 pub const TEL_REQ_SNAPSHOT_BLOB: u8 = 6;
+/// 请求：**快照保留钉**（ADR-0054:29–30）——`[码, id16]`：被持有计划
+/// 证书引用的冻结快照在持有期内不得被剪枝回收。容量满/面不可用 →
+/// `[TEL_RESP_ERR]`（调用方 fail-closed：拒绝新计划准入）。
+pub const TEL_REQ_SNAP_HOLD: u8 = 7;
+/// 请求：**解除快照保留钉**（ADR-0054:29–30）——`[码, id16]`：计划终态
+/// 且无未决后解除（幂等；失败由后续 tick 重试——释放是回收面不是安全面）。
+pub const TEL_REQ_SNAP_RELEASE: u8 = 8;
 
 /// 应答：受理（INGEST 路径下第二字节 = accepted 样本数）。
 pub const TEL_RESP_OK: u8 = 0;

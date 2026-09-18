@@ -79,9 +79,12 @@ pub const APP_OUTBOX_CAP: usize = 4;
 /// 窗），显式丢弃 + `outbox_expired` 计数。条数/字节上限由
 /// [`APP_OUTBOX_CAP`]×[`APP_MSG_MAX_LEN`] 承载（字节/条数/年龄三限）。
 pub const APP_OUTBOX_TTL_MS: u64 = 300_000;
-/// 49：单条 app 消息负载上限（契约层 PEER_REQUEST_MAX_LEN 同量级；
-/// 插件不依赖契约 crate——传输面只认字节）。
-pub const APP_MSG_MAX_LEN: usize = 1024;
+/// 49：单条 app 消息负载上限（契约层 `PEER_REQUEST_MAX_LEN_V2` 同量级；
+/// 插件不依赖契约 crate——传输面只认字节）。2026-09-18 R10 三资源手术：
+/// 1024 → 4096——3 资产 v2 请求 JSON 实测 1079B，组装完成后作为单条
+/// app 发布超 1024 被 enqueue 拒（实弹 `mqtt-reject status=0` 零请求；
+/// RX/TX 缓冲 4096 已兼容，outbox 最坏 4×4 KiB 堆）。
+pub const APP_MSG_MAX_LEN: usize = 4096;
 
 /// MQTT 插件。
 pub struct MqttPlugin {

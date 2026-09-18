@@ -1003,14 +1003,16 @@ budget_ms = 5000
     /// 每资产 4 步齐、过目标侧 v2 全量校验链（含逐字段绑定）。
     /// 变异靶：回到 `net_kw.first()` 投影（只出 1 条）→ 本测红。
     #[test]
-    /// DEC-70-13 批上限（2026-09-15 收紧 64→8）后的 t3 重构：
-    /// ① 超批（3 资产×4 步=12>8）→ 求解侧契约拒绝（上限单源 =
-    ///    PEER_PLAN_MAX_ASSIGNMENTS）；
-    /// ② 合规多资产（2 资产×4 步=8=上限值）→ 全量分配 + 目标侧同链校验。
+    /// 计划级/批级上限分离后的 t3 重构（2026-09-18 R10 复查订正）：
+    /// ① 计划级 inline 上限 = 64（蓝图 08 §9 / PEER_PLAN_MAX_ASSIGNMENTS）
+    ///    ——3 资产×4 步=12（最低功能演示形）必须**求解成功**并产出全量
+    ///    12 条分配（单批 8 由目标侧编译拆批承担，不是求解侧拒绝理由）；
+    /// ② 超计划级上限（17 资产×4 步=68>64）→ 求解侧契约拒绝。
     fn t3_v2_plan_cap_enforced_over_batch_limit() {
         let mut planner = Planner::new(ToleranceProfile::l2(), 100);
         let mut hb = eneros_solver_core::highs::HighsSolver::new().expect("HiGHS");
-        let req = req_v2(
+        // ① 演示形 3×4=12：求解成功，全轨迹 12 条。
+        let demo = req_v2(
             vec![
                 spec_v2(1, 10.0, 5.0, 5.0),
                 spec_v2(2, 8.0, 4.0, 4.0),
@@ -1019,8 +1021,26 @@ budget_ms = 5000
             4,
             vec![1.0, 1.0, 10.0, 10.0],
         );
-        let err = solve_request_v2(&mut planner, &mut hb, &req, 1_700_000_000_000)
-            .expect_err("3 资产×4 步=12>8 必须被批上限拒绝（DEC-70-13）");
+        let (plan, _meta) = solve_request_v2(&mut planner, &mut hb, &demo, 1_700_000_000_000)
+            .expect("3 资产×4 步=12 必须求解成功（计划级上限 64）");
+        assert_eq!(plan.assignments.len(), 12, "全轨迹 12 条分配");
+        for asset in [1u64, 2, 3] {
+            let steps: Vec<u32> = plan
+                .assignments
+                .iter()
+                .filter(|a| a.asset_id == asset)
+                .map(|a| a.step_index)
+                .collect();
+            assert_eq!(steps, vec![1, 2, 3, 4], "资产 {asset} 四步齐");
+        }
+        // ② 17×4=68 > 64：计划级上限拒绝。
+        let over = req_v2(
+            (1..=17u64).map(|a| spec_v2(a, 6.0, 3.0, 3.0)).collect(),
+            4,
+            vec![1.0, 1.0, 10.0, 10.0],
+        );
+        let err = solve_request_v2(&mut planner, &mut hb, &over, 1_700_000_000_000)
+            .expect_err("17 资产×4 步=68>64 必须被计划级上限拒绝");
         assert!(
             format!("{err:?}").contains("exceeds plan cap") || format!("{err:?}").contains("Range")
         );

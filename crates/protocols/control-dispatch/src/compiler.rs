@@ -115,13 +115,19 @@ impl AppliedStateView for NoAppliedState {
     }
 }
 
+/// 单批 intent 上限（DEC-70-13 ②，2026-09-15 裁决：分配 = intent 1:1，
+/// 传输容量墙 ≈11 留 3 余量给控制写/回读通道）。计划级 inline 上限 =
+/// 64（蓝图 08 §9 / `PEER_PLAN_MAX_ASSIGNMENTS`）；超 8 分配的计划在
+/// 编译期按资产链边界拆批，每批独立时域窗内推进（无跨批免认证）。
+pub const MAX_INTENTS_PER_BATCH: usize = 8;
+
 /// 编译器策略（[10] §2.2 输入「compiler policy」；全部参与
 /// compiler_digest——策略漂移 = 摘要漂移 = mutation 可检）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompilerPolicy {
     /// 编译器版本（行为变更必须递增）。
     pub compiler_version: u32,
-    /// 单批命令上限（≤ `MAX_BATCH_SIZE`）。
+    /// 单批命令上限（≤ `MAX_BATCH_SIZE`；生产默认 = [`MAX_INTENTS_PER_BATCH`]）。
     pub max_commands_per_batch: usize,
     /// 跨设备最大并行度（≥1；迁移期单设备 = 1 串行）。
     pub max_parallel: u16,
@@ -134,8 +140,8 @@ pub struct CompilerPolicy {
 impl Default for CompilerPolicy {
     fn default() -> Self {
         Self {
-            compiler_version: 1,
-            max_commands_per_batch: eneros_decision_contract::MAX_BATCH_SIZE,
+            compiler_version: 2,
+            max_commands_per_batch: MAX_INTENTS_PER_BATCH,
             max_parallel: 1,
             merge_below_kw: 0.0,
             min_window_ms: 1_000,

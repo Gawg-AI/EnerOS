@@ -1028,17 +1028,18 @@ soc_max = 0.95
         let catalog = cat();
         let (reg, report) = registry_from_catalog(&catalog, 16);
         assert_eq!(
-            report.assets_seen, 3,
-            "目录资产 = battery(1) + battery(2) + grid(10)"
+            report.assets_seen, 4,
+            "目录资产 = battery(1) + battery(2) + battery(3) + grid(10)"
         );
         assert_eq!(
-            report.registered, 2,
-            "双电池有控制合同 + 铭牌（R10 多资产）"
+            report.registered, 3,
+            "三电池有控制合同 + 铭牌（R10 三资源）"
         );
         assert_eq!(report.skipped_no_contract, 1, "grid 无控制合同");
-        assert_eq!(reg.len(), 2);
+        assert_eq!(reg.len(), 3);
         assert!(reg.asset_ids().any(|a| a == 1));
         assert!(reg.asset_ids().any(|a| a == 2));
+        assert!(reg.asset_ids().any(|a| a == 3));
 
         // 铭牌 → 包络（同代快照）：电池可用，能量窗随 SOC 收紧。
         let snap = snapshot(&catalog, 0.6, 0.0, 0.0, 1.0, 1_000_000);
@@ -1092,8 +1093,11 @@ soc_max = 0.95
         let catalog = cat();
         let (reg, report) = registry_from_catalog(&catalog, 16);
         assert_report_reconciles(&report);
-        assert_eq!(report.assets_seen, 3, "battery(1) + battery(2) + grid(10)");
-        assert_eq!(report.registered, 2);
+        assert_eq!(
+            report.assets_seen, 4,
+            "battery(1) + battery(2) + battery(3) + grid(10)"
+        );
+        assert_eq!(report.registered, 3);
         assert_eq!(report.skipped_no_contract, 1, "grid 无控制合同");
         assert_eq!(report.skipped_no_nameplate, 0, "grid 无合同先命中");
         assert_eq!(report.skipped_unknown_kind, 0);
@@ -1102,7 +1106,7 @@ soc_max = 0.95
         // grid 无铭牌（跳过理由可核）；tombstone 99 不可见（枚举面语义）。
         assert_eq!(catalog.nameplate(10), None);
         assert!(!catalog.asset_ids().contains(&99));
-        assert_eq!(reg.len(), 2, "双电池登记（R10 多资产）");
+        assert_eq!(reg.len(), 3, "三电池登记（R10 三资源）");
     }
 
     /// 恒等式 + 分桶负例（变体目录）：grid(10) 有合同无铭牌 →

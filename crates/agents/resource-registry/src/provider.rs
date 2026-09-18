@@ -250,9 +250,9 @@ impl CapabilityProvider for GenericProvider {
 }
 
 /// 基座 → 初始包络（有效性 = 快照生命期；0 值成员按铭牌计算）。
-/// 有效期单源 = `CONTROL_HORIZON_MS`（DEC-70-13 ①：包络生命周期 ≥
-/// 计划时域 4×15s=60s——此前本地 +30s 双胞胎常量使多时段计划第 3 步
-/// 起被认证器 `Envelope` 拒，2026-09-17 R10 门实弹捕获）。
+/// 有效期单源 = `CONTROL_HORIZON_MS`（ADR-0054:34–35：快照产出后 30s
+/// 是安全事实——2026-09-18 R10 复查订正：上一轮为 4×15s=60s 放宽到
+/// 60s 违约已回退；演示时域收敛为 4×7s=28s ≤ 30s）。
 fn base_env(
     base: &NameplateBase,
     resource: &ResourceDescriptor,
@@ -346,10 +346,9 @@ mod tests {
         }
     }
 
-    /// DEC-70-13 ① 红线：基座包络有效期必须覆盖控制窗（= 计划时域
-    /// 4×15s=60s）。红 = 旧本地 +30s 双胞胎常量：第 3 步（+45s）起超窗，
-    /// 认证器 `Envelope { asset_id }` 拒——R10 多时段结构性不可达
-    /// （2026-09-17 R10 门实弹捕获，`TRUSTED-ERR … Envelope { asset_id: 1 }`）。
+    /// ADR-0054:34–35 红线：基座包络有效期必须覆盖控制窗（30s 安全
+    /// 事实；演示时域 4×7s=28s 收敛窗内）。红 = 本地常量与
+    /// `CONTROL_HORIZON_MS` 分叉（双胞胎复发）或被放宽超 30s。
     #[test]
     fn base_env_validity_covers_control_horizon() {
         let produced = 1_700_000_000_000_000_000u64;
@@ -357,12 +356,13 @@ mod tests {
         let horizon_ns = eneros_decision_contract::CONTROL_HORIZON_MS * 1_000_000;
         assert!(
             env.valid_until_ns >= produced + horizon_ns,
-            "包络有效期 {:?}ns < 产刻+控制窗 {}ns（DEC-70-13 ① 违约）",
+            "包络有效期 {:?}ns < 产刻+控制窗 {}ns（ADR-0054 覆盖违约）",
             env.valid_until_ns.saturating_sub(produced),
             horizon_ns
         );
-        // 末步起始（+45s）必须在窗内——认证器按步起始判覆盖。
-        let last_step_start = produced + 45 * 1_000_000_000;
+        // 末步起始（4×7s 时域的第 4 步 = +21s）必须在窗内——认证器按步
+        // 起始判覆盖。
+        let last_step_start = produced + 21 * 1_000_000_000;
         assert!(last_step_start >= env.valid_from_ns && last_step_start <= env.valid_until_ns);
     }
 }

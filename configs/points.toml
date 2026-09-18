@@ -408,6 +408,54 @@ period_ms = 3000
 min = -500.0
 max = 500.0
 
+# --- PCS-3 遥测/回读 + 有功功率控制点（蓝图 70 R10 三资源；scale 镜像
+# PCS-1/2；写执行路径 = modbus-tcp 主站（OP_MASTER_WRITE），从站保持
+# 寄存器 0x0202。data_type=control ⇒ 不进入遥测采集） ---
+[[point]]
+point_id = 1010
+device_id = 9
+protocol = "modbus-tcp"
+addr.modbus = { slave_addr = 2, reg_addr = 0x0118, func_code = 3 }
+unit = "kW"
+asset_id = 3
+schema_id = 1
+data_type = "analog"
+scale = 0.1
+offset = 0.0
+period_ms = 60000
+deadband = 0.05
+min = -50.0
+max = 50.0
+
+[[point]]
+point_id = 1011
+device_id = 9
+protocol = "modbus-tcp"
+addr.modbus = { slave_addr = 2, reg_addr = 0x0119, func_code = 3 }
+unit = "ratio"
+asset_id = 3
+schema_id = 1
+data_type = "analog"
+scale = 0.0001 # SOC fraction: raw 3000 -> 0.30
+offset = 0.0
+period_ms = 60000
+deadband = 0.01
+
+[[point]]
+point_id = 1014
+device_id = 9
+protocol = "modbus-tcp"
+addr.modbus = { slave_addr = 2, reg_addr = 0x0202, func_code = 3 }
+unit = "kW"
+asset_id = 3
+schema_id = 1
+data_type = "control"
+scale = 1.0
+offset = 0.0
+period_ms = 3000
+min = -500.0
+max = 500.0
+
 # --- 来源注册表（蓝图 61 v0.314.27：身份由签名配置分配，binary 零硬编码） ---
 # source 1 = root 合成源（REG-70.8-SYNTH-NO-OBS 解封，2026-09-15）：合成馈电
 # 升级为 **OBS 生产轨**测试设施——qemu-test-synth 装配下 root 以 TEL_INGEST_OBS
@@ -427,7 +475,7 @@ require_integrity = true
 # 1005..1009 PCS-2【蓝图 70 R10】，同 source 2 的"声明点 id 跨度"规则；
 # 非"放宽到不设界"）。
 point_min = 1
-point_max = 1009
+point_max = 1014
 max_events_per_s = 100
 
 # source 2 = svc-modbus-tcp 真实采集适配器（45.5 生产先行链；绑定 PCS-1
@@ -441,7 +489,7 @@ site_id = 1
 allow_control = true
 require_integrity = true
 point_min = 1
-point_max = 1009
+point_max = 1014
 max_events_per_s = 100
 
 # 蓝图 62 卷 62.2（D-1 判据前置）：iec104 来源身份登记——61 卷接入时

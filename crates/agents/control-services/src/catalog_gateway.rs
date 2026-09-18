@@ -220,10 +220,11 @@ mod tests {
     fn control_binding_registry_multi_asset() {
         let repo = prod_repo();
         // 蓝图 70 R10：目录显式控制绑定注册表 = 每可控资产一点
-        // （asset 1 → 点 10；asset 2 → 点 1009），按资产升序。
+        // （asset 1 → 点 10；asset 2 → 点 1009；asset 3 → 点 1014
+        // ——三资源手术 2026-09-18），按资产升序。
         assert_eq!(
             control_contract_bindings(&repo),
-            Some(vec![(1, 10), (2, 1009)])
+            Some(vec![(1, 10), (2, 1009), (3, 1014)])
         );
     }
 
@@ -460,17 +461,17 @@ lost_link = \"hold\"
             }
         }
         // 控制点注册表：points.toml 中 data_type=control 的点数 == 目录
-        // 控制绑定注册表条数 == 2（蓝图 70 R10 双 PCS 契约：asset 1→10、
-        // asset 2→1009）。
+        // 控制绑定注册表条数 == 3（蓝图 70 R10 三 PCS 契约：asset 1→10、
+        // asset 2→1009、asset 3→1014——三资源手术 2026-09-18）。
         let control_pts = table
             .points
             .iter()
             .filter(|p| p.data_type == eneros_upa_model::PointType::Control)
             .count();
-        assert_eq!(control_pts, 2);
+        assert_eq!(control_pts, 3);
         assert_eq!(
             control_contract_bindings(&repo),
-            Some(vec![(1, 10), (2, 1009)])
+            Some(vec![(1, 10), (2, 1009), (3, 1014)])
         );
     }
 }

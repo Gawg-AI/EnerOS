@@ -3517,13 +3517,31 @@ kind = 1
         s
     }
 
+    /// 生产目录容量回归锁（2026-09-18 R10 三资源手术）：asset 3（铭牌/
+    /// 合同/点语义）入册后 payload 实测 1857B——本测红 = 目录手术把
+    /// payload 推过 `PAYLOAD_MAX`（下次加资产必须先抬上限并复算页预算）。
+    #[test]
+    fn production_catalog_payload_fits_single_paged_delivery() {
+        let toml = include_str!("../../../../configs/catalog.toml");
+        let compiled = compile_catalog(toml).expect("production catalog compiles");
+        assert!(
+            compiled.payload.len() <= crate::schema::catalog::PAYLOAD_MAX,
+            "生产目录 payload {}B > PAYLOAD_MAX {}B",
+            compiled.payload.len(),
+            crate::schema::catalog::PAYLOAD_MAX
+        );
+        // 26520B 页域内单次分页可下发（255 页 × 104B）。
+        assert!(compiled.payload.len() <= 26_520);
+    }
+
     /// 目标读面 payload 硬上界 = 编译面硬上界（同源 `PAYLOAD_MAX`）：
     /// 超限拒编（具体错误），不产出 target 必拒载的目录。
     #[test]
     fn rejects_catalog_payload_over_limit() {
         // 最小骨架 ~340B + 资产/点位 ~90B/条 + 铭牌 104B/条（含 SOC 窗）；
-        // 取 20 条确定越 1664B（余量足够，不与骨架细节耦合）。
-        let big = catalog_toml_with_nameplates(20);
+        // 取 60 条确定越 4096B（余量足够，不与骨架细节耦合；2026-09-18
+        // 三资源手术抬上限 1664 → 4096 后同步上调）。
+        let big = catalog_toml_with_nameplates(60);
         let err = compile_catalog(&big).unwrap_err();
         match err {
             ConfigError::InvalidValue {
