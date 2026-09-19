@@ -33,7 +33,13 @@ use linked_list_allocator::LockedHeap;
 // 能力槽打满（8191/8192），**不是堆本身**：`KernelRootCNodeSizeBits` 已
 // 13→14（16384 槽，build-rust.sh 同步）后启动正常。intent.rs 另改
 // "构造期定容"（`Vec::with_capacity`）消除倍增尖峰。
-const HEAP_SIZE: usize = 768 * 1024;
+// 2026-09-20（70 收口马拉松 v3）：768 → **1024 KiB**——vol4 长窗（DL=1200s
+// 多段，总时长 >2200s）实弹 `svc-telemetry PANIC: memory allocation of
+// 8192 bytes failed`：REG-TELEMETRY-HEAP-CREEP 慢爬（~0.35 KiB/s）× 更快
+// 事件节奏（plan_step_ns 7s→2s）在窗尾触顶。爬升泄漏本体仍登记 Open；
+// 本次扩容买窗 +256 KiB × 5 控制服务 = +1.25 MiB bss（+320 cnode 槽，
+// 现用 ~2000+320 ≪ 16384）。
+const HEAP_SIZE: usize = 1024 * 1024;
 
 #[cfg(not(feature = "heap-large"))]
 const HEAP_SIZE: usize = match option_env!("ENEROS_HEAP_SIZE_BYTES") {

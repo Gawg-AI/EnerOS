@@ -262,22 +262,21 @@ start_broker_slave "$DB" "$DB"
 start_peer "$DB"
 start_qemu "$DB" "$B_DL"
 wait_ready "$DB" 240 || { echo "段B 首启 PRODUCT-READY 未达"; kill_window; exit 6; }
-# 等 kill 前提：**飞行中**计划（≥1 Applied ∧ 尚未 HELD-PLAN-DONE——
-# 2026-09-18 run12 实弹：合并后 3 intent 计划可在 +12s 前整体完成 ⇒
-# 重启窗无未发步可保留（B3 全 absent）。改为：首个 Applied 出现后 +3s
-# 即切；若计划先完成（DONE 行）则等待**下一个**计划重试（窗预算内）。
+# 等 kill 前提：**飞行中**计划（≥1 Applied ∧ 尚未 HELD-PLAN-DONE）。
+# 2026-09-20 步距 7s→2s 后计划 ~6s 整体完成：首个 Applied 即切（原 +3s
+# 等待会让计划完成 ⇒ kill 前提消失、B3 全 absent——marathon3 实弹）；
+# poll 1s；若计划已先完成（DONE 行）则等**下一个**计划重试（窗预算内）。
 BOK=0
-for _ in $(seq 1 $((B_DL / 2))); do
+for _ in $(seq 1 "$B_DL"); do
   if grep -aq "HELD-PLAN-DONE .*state=Committed" "$DB/qemu-serial.log" 2>/dev/null; then
-    sleep 5   # 计划已完成——留间隔后继续等下一个计划
+    sleep 2   # 计划已完成——留间隔后继续等下一个计划
     continue
   fi
   if grep -aq "HELD-COMMAND .*state=Applied" "$DB/qemu-serial.log" 2>/dev/null; then
     BOK=1; break
   fi
-  sleep 2
+  sleep 1
 done
-[ "$BOK" -eq 1 ] && sleep 3
 echo "[段B] kill -9 QEMU（脏断电）"
 kill -9 $(pgrep -f "qemu-system") 2>/dev/null || true
 sleep 3
@@ -317,7 +316,16 @@ n=$(grep -ac "HELD-COMMAND .*state=Blocked" "$S2" || true); n=${n:-0}
 python3 - "$S1" "$S2" >"$RUN/b3-check.txt" <<'PY'
 import re, sys
 pre, post = open(sys.argv[1]).read(), open(sys.argv[2]).read()
-ids = set(re.findall(r"HELD-COMMAND intent=\[([0-9a-fx, ]+)\] state=Applied", pre))
+# 归属到计划：只有 **割切时仍在途**（pre 里有 Applied、其计划无 DONE 行）
+# 的 intent 才属 B3 前缀保留判据——已完成计划的 intent 不被恢复窗重打
+# （drive 只推进非终态计划），把它们算进来 = 全 absent 误报（步距 2s 后
+# 割前窗内常有多个已完成计划，marathon3 实弹 bad=34 根因）。
+line = re.compile(r"HELD-COMMAND intent=\[([0-9a-fx, ]+)\] state=Applied.*?plan=\[([0-9a-fx, ]+)\]")
+done_plans = set(re.findall(r"HELD-PLAN-DONE plan=\[([0-9a-fx, ]+)\]", pre))
+ids = set()
+for iid, pid in line.findall(pre):
+    if pid not in done_plans:
+        ids.add(iid)
 ok, bad = 0, []
 for i in ids:
     pat = re.compile(r"HELD-COMMAND intent=\[" + re.escape(i) + r"\] state=(\w+)")
