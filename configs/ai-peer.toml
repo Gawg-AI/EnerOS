@@ -33,7 +33,12 @@ degrade_lease_ttl_secs = 86400
 # 编译器 max_commands_per_batch 单源）；计划级 inline 上限 = 64（蓝图 08
 # §9；PEER_PLAN_MAX_ASSIGNMENTS 单源）。3 资产 × 4 步 = 12 分配 ⇒
 # 编译拆 2 批，逐步窗 [horizon+(k-1)·7s, horizon+k·7s) 内 tick 推进。
-plan_step_ns = 7_000_000_000
+# recheck 收口轮（2026-09-20）：7s → 2s——步距 7s 时计划时跨（4×7=28s）
+# 超过冻结快照轮转窗（实测 5.8~20s），非合并计划的后继步在步窗到期前
+# 就被「输入不再有效」取消（vol4-R3 锚后零 Committed / R10 非合并窗全灭
+# 的共同根因）；2s 步 ⇒ 跨度 6s < 轮转窗，且步内爬坡 5kW/2s=2.5kW/s
+# < 合同 3.333kW/s。合并语义/容量/12 分配合同不变。
+plan_step_ns = 2_000_000_000
 plan_steps = 4
 plan_objective = "min_cost"
 plan_prices_per_kwh = [0.5, 0.6, 0.4, 0.45]

@@ -239,14 +239,16 @@ fi
 #   同刻发放），改**反倾泻**判据——绑定写总数 ≤ intents（超出 = 无主写）。
 # 多时段性由 A1（重复 v2 steps=4 请求）+ A2（I+S=12 守恒）承载。
 BW=$(echo "$WTS" | awk '{print $1+$3+$5}')
+STEP_S=$(python3 -c "import tomllib;print(tomllib.load(open('configs/ai-peer.toml','rb'))['plan_step_ns']//1_000_000_000)" 2>/dev/null || echo 2)
+SPREAD_MIN=$(( 3 * STEP_S * 80 / 100 ))  # (步数-1)=3 × step_ns × 80%——步距由 ai-peer 单源
 if [ "${SK:-0}" -gt 0 ]; then
   [ "${BW:-0}" -le "${I:-0}" ] \
     && echo "[✓][A5b] 合并计划反倾泻（绑定写 ×$BW ≤ intents=$I；skipped=$SK 步折叠）" \
     || { echo "[✗][A5b] 绑定写 ×${BW:-0} 超过计划分配 ×${I:-0}（无主写/倾泻）"; FAIL=1; }
 else
-  [ "${SPREAD:-0}" -ge 10 ] \
-    && echo "[✓][A5b] 多时段发放（绑定写时刻跨度 ${SPREAD}s ≥10s）" \
-    || { echo "[✗][A5b] 非合并计划绑定写跨度 ${SPREAD:-0}s <10s（非分步发放）"; FAIL=1; }
+  [ "${SPREAD:-0}" -ge "$SPREAD_MIN" ] \
+    && echo "[✓][A5b] 多时段发放（绑定写时刻跨度 ${SPREAD}s ≥ 公式下界 ${SPREAD_MIN}s = 3×step_${STEP_S}s×80%）" \
+    || { echo "[✗][A5b] 非合并计划绑定写跨度 ${SPREAD:-0}s < ${SPREAD_MIN}s（非分步发放）"; FAIL=1; }
 fi
 PANICS=$(grep -ac "PANIC\|alloc.*failed\|ALLOC-FAIL" "$SA" || true); PANICS=${PANICS:-0}
 [ "$PANICS" -eq 0 ] && echo "[✓][A6] 零 PANIC/零分配失败" || { echo "[✗][A6] PANIC=$PANICS"; FAIL=1; }
