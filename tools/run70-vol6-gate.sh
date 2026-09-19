@@ -197,7 +197,7 @@ check R11 "实例代次变更 + 重启完成" bash -c "grep -aq 'MGMT-RESTART: s
 check R12 "ready 重验完成" bash -c "grep -aq 'MGMT-RESTART: svc-observability ready re-verified' '$EVROOT/t1.qemu-serial.log'"
 check R14 "维护退出（健康门放行）" bash -c "grep -aq 'MGMT-MAINT: exited' '$EVROOT/t1.qemu-serial.log'"
 check R15 "负例：保护服务重启拒绝（root 裁决词形）" bash -c "grep -aq 'MGMT-REJECT: restart-denied:protected' '$EVROOT/t1.qemu-serial.log'"
-check R16 "负例：幂等冲突拒绝（同 rid 异参）" bash -c "grep -aq 'MGT1: rid=200 config-set -> Failed idempotency-conflict' '$EVROOT/t1.qemu-serial.log'"
+check R16 "负例：幂等冲突拒绝（同 rid 异参；rid=216=册内最新记录）" bash -c "grep -aq 'MGT1: rid=216 config-set -> Failed idempotency-conflict' '$EVROOT/t1.qemu-serial.log'"
 check R18 "负例：幂等回放（同操作一次执行）" bash -c "grep -aq 'replay: config-stage-part' '$EVROOT/t1.qemu-serial.log'"
 check R19 "负例：短尾 v2 拒绝（REG-70.5 收口）" bash -c "grep -aq 'MGT-PRINCIPAL rejected (truncated v2 shape' '$EVROOT/t1.qemu-serial.log'"
 check R20 "负例：伪 principal 拒绝（70.5 R6 回归）" bash -c "grep -aq 'MGT-PRINCIPAL rejected' '$EVROOT/t1.qemu-serial.log'"

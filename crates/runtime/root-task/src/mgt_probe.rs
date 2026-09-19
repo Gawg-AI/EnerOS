@@ -455,10 +455,16 @@ pub mod driver {
                 ProbeDirective::DriveMgt2(crate::root_mgmt_wire::encode_restart("svc-storage"))
             }
             ProbeState::NegConflict => {
-                // 幂等冲突：对既有 MGT1 操作（rid=200 stage-part，已入账）
-                // 以同 rid 异参重发——账本 Conflict 拒绝（零 root 回调，
-                // 探针环形安全；maint-enter 为 root 直驱无 MGT1 账目）。
-                let f = build_frame(200, b"config-set", b"ZZZ");
+                // 幂等冲突：对既有 MGT1 操作以同 rid 异参重发——账本
+                // Conflict 拒绝（零 root 回调，探针环形安全；maint-enter
+                // 为 root 直驱无 MGT1 账目）。**目标 rid 必须仍在账本册内**：
+                // 持久账本容量 = 15（MGMT_OPS_MAX，F70-07 槽预算实弹订正），
+                // 17 个 stage part + commit = 18 条 ⇒ 最旧 3 条（rid 200-202）
+                // 已被逐出——本步在全部 part 之后才发，瞄准 rid=200 的旧
+                // 设计必然落空（实弹 op=19 unknown-phase，vol6 R16 咬出）。
+                // 改瞄**最新 part**（rid=216，op=17——册内最年轻记录，
+                // 任何逐出序下都在场）。
+                let f = build_frame(216, b"config-set", b"ZZZ");
                 let ok = call_chunked(svc_mgmt_ep, &f, &mut epoch);
                 eneros_runtime::println!(
                     "[eneros-root-task] MGT-PROBE: neg idempotency-conflict sent ok={ok} (step 11/13)"
