@@ -315,6 +315,7 @@ impl BootSlotBackend<VolatileMmio, SvcDmaPool, eneros_storage::driver::virtio_bl
         boot_mmio_vaddr: u64,
         boot_dma_vaddr: u64,
         boot_dma_phys: u64,
+        running: Option<crate::boot_guard::RunningIdentity>,
     ) -> Result<Self, &'static str> {
         // REG-70.7（run16-33 实弹定性）：bootctrl 读为**布局/时序敏感**
         // 操作——ELF 布局漂移即可使 init 读超时/失败（50 二分实验同款
@@ -322,7 +323,13 @@ impl BootSlotBackend<VolatileMmio, SvcDmaPool, eneros_storage::driver::virtio_bl
         // 起步 = device reset + 重配 + 重读），最多 3 轮。
         let mut last_err = "bootctrl-read";
         for attempt in 1..=3u8 {
-            match Self::try_new_boot_once(boot_mmio_vaddr, boot_dma_vaddr, boot_dma_phys, attempt) {
+            match Self::try_new_boot_once(
+                boot_mmio_vaddr,
+                boot_dma_vaddr,
+                boot_dma_phys,
+                running,
+                attempt,
+            ) {
                 Ok(boot) => return Ok(boot),
                 Err(e) => {
                     last_err = e;
@@ -339,6 +346,7 @@ impl BootSlotBackend<VolatileMmio, SvcDmaPool, eneros_storage::driver::virtio_bl
         boot_mmio_vaddr: u64,
         boot_dma_vaddr: u64,
         boot_dma_phys: u64,
+        running: Option<crate::boot_guard::RunningIdentity>,
         attempt: u8,
     ) -> Result<Self, &'static str> {
         let _ = attempt;
@@ -368,7 +376,11 @@ impl BootSlotBackend<VolatileMmio, SvcDmaPool, eneros_storage::driver::virtio_bl
                 .read((bc_lba + 8) * 512, second)
                 .map_err(|_| "bootctrl-read")?;
         }
-        let guard = crate::boot_guard::BootWriteGuard::resolve(&shadow[..4096], &shadow[4096..])?;
+        let guard = crate::boot_guard::BootWriteGuard::resolve_with_running(
+            &shadow[..4096],
+            &shadow[4096..],
+            running,
+        )?;
         // 影子副本 = 上述双副本本身（运行期 bootctrl 读零驱动 I/O）。
         Ok(BootSlotBackend {
             inner,
@@ -392,6 +404,12 @@ impl<
             eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
         );
         (g.inactive_start_lba, g.inactive_lbas, bc_lba, bc_lbas)
+    }
+
+    /// F70-02：本次运行身份（init 期从只读身份页解析、随守卫冻结）。
+    /// 确认面（BLK_BOOT_CONFIRM）据此核对槽/载荷身份/安全版本。
+    fn running_identity(&self) -> Option<crate::boot_guard::RunningIdentity> {
+        self.guard.running
     }
 }
 
@@ -544,6 +562,15 @@ mod tests {
     use eneros_storage::driver::virtio_blk::VirtioMmio;
 
     use super::*;
+
+    /// F70-02：测试用运行身份（A 槽；factory 记录形态与生产 trial 同族）。
+    fn test_running_identity() -> Option<crate::boot_guard::RunningIdentity> {
+        Some(crate::boot_guard::RunningIdentity {
+            is_a: true,
+            security_version: 1,
+            release_id: [7u8; 16],
+        })
+    }
 
     /// 模拟 MMIO 的 process_queues 需要驱动 pool 指针（QEMU 角色）。
     /// 测试用全局静态（与 storage crate host 测试同模式）。
@@ -805,8 +832,12 @@ mod tests {
         let record = eneros_boot_protocol::BootControl::factory([7u8; 16], 1, [7u8; 16])
             .encode()
             .unwrap();
-        let guard = crate::boot_guard::BootWriteGuard::resolve(&record, &record)
-            .expect("factory 记录可解析");
+        let guard = crate::boot_guard::BootWriteGuard::resolve_with_running(
+            &record,
+            &record,
+            test_running_identity(),
+        )
+        .expect("factory 记录可解析");
         let mut boot = BootSlotBackend {
             inner,
             guard,
@@ -899,8 +930,12 @@ mod tests {
         let record = eneros_boot_protocol::BootControl::factory([7u8; 16], 1, [7u8; 16])
             .encode()
             .unwrap();
-        let guard = crate::boot_guard::BootWriteGuard::resolve(&record, &record)
-            .expect("factory 记录可解析");
+        let guard = crate::boot_guard::BootWriteGuard::resolve_with_running(
+            &record,
+            &record,
+            test_running_identity(),
+        )
+        .expect("factory 记录可解析");
         let mut boot = BootSlotBackend {
             inner,
             guard,
@@ -959,7 +994,12 @@ mod tests {
         inner.write(18432 * 512, &rec_a).expect("写副本 0");
         inner.write(18440 * 512, &rec_a).expect("写副本 1");
 
-        let guard = crate::boot_guard::BootWriteGuard::resolve(&rec_a, &rec_a).expect("resolve");
+        let guard = crate::boot_guard::BootWriteGuard::resolve_with_running(
+            &rec_a,
+            &rec_a,
+            test_running_identity(),
+        )
+        .expect("resolve");
         let mut boot = BootSlotBackend {
             inner,
             guard,

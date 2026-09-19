@@ -290,6 +290,13 @@ pub struct CmdReport {
     pub attempts: u32,
     pub readback: Option<f64>,
     pub reason: Option<String>,
+    /// recheck RR2（F70-05 §8.2.7 投递 trace）：命令的目标设备/点位与
+    /// 工程值——HELD-COMMAND 观测行据此携带「intent → 协议事务」的
+    /// 绑定锚（外部 transcript 按 (addr, 值, 时序) 归属到具体计划，
+    /// 不得整份日志累计补数）。
+    pub device: u32,
+    pub point: u32,
+    pub value_kw: f64,
 }
 
 /// 驱动结果。
@@ -995,6 +1002,10 @@ impl BatchSaga {
                     state: c.state,
                     attempts: c.attempts,
                     readback: c.readback,
+                    // recheck RR2：绑定锚随报告携带（设备/点位/工程值）。
+                    device: u32::from(c.intent.device_id()),
+                    point: c.intent.point_id(),
+                    value_kw: c.intent.power_kw(),
                     reason: self.events.iter().rev().find_map(|e| match e.kind {
                         EventKind::Command { intent_id, .. }
                             if intent_id == c.intent.intent_id().0 =>

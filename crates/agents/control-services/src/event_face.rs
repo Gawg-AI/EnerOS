@@ -468,7 +468,17 @@ impl<C: EipcSend + Clone + 'static> ObsEventFace for EventFace<C> {
                 );
                 true
             }
-            None => false,
+            None => {
+                // F70-04（§7.2.5）幂等确认：钉不在场 = "确认已无本次持有"
+                // ——按成功收敛（远端已释放/回执丢失后的重试不得把 absent
+                // 永远当未知失败）。不触碰任何其他钉（新持有人不受影响）。
+                eneros_runtime::println!(
+                    "[svc-telemetry] SNAP-PIN-RELEASE-CONFIRMED-ABSENT id={:02x}{:02x}",
+                    id[0],
+                    id[1]
+                );
+                true
+            }
         }
     }
 

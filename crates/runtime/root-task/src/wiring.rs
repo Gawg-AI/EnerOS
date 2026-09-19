@@ -286,6 +286,11 @@ pub enum PeriodicTask {
     /// 70.6（WP-70.6.5）：MGT1 管理动作链探针（qemu-test-synth 专属；
     /// Send 语义直驱 svc-mgmt，动作实效经串口词形取证）。
     MgtProbe,
+    /// F70-03 §6.3.4 + recheck RS2：管理账本持久补写 tick——root 周期
+    /// Send `MGT0\0` 帧到 svc-mgmt（生产闭包同跑；服务未 spawn 时自然
+    /// no-op）。终态提交失败后的补写重试由此获得**独立、有界的周期
+    /// 来源**，不依赖用户再发管理请求或有结束点的测试探针。
+    MgmtPersistTick,
 }
 
 /// 到期语义（一次性任务首达即到期；fired 防重由分派侧既有 done 标志
@@ -391,6 +396,14 @@ pub const PERIODIC_SCHEDULE: &[PeriodicEntry] = &[
         kind: ScheduleKind::OnceFrom,
         task: PeriodicTask::IdentityPush,
     },
+    // recheck RS2：管理账本持久补写 25/17——与 DegradeObserve(25/8)、
+    // ObsReport(25/20) 错峰；空闲 tick 在 svc-mgmt 侧为零盘写直答。
+    PeriodicEntry {
+        period: 25,
+        offset: 17,
+        kind: ScheduleKind::Repeat,
+        task: PeriodicTask::MgmtPersistTick,
+    },
 ];
 
 /// 周期任务到期判定（按任务查表；主循环唯一入口）。
@@ -452,7 +465,7 @@ pub const EXPLICIT_UNWIRED: &[(&str, &str)] = &[
     ),
     (
         "svc-mgmt",
-        "运营服务：被动 EIPC 服务端，无周期驱动/心跳装配（62.2 装配现状）",
+        "运营服务：被动 EIPC 服务端 + root 周期持久 tick（PeriodicTask::MgmtPersistTick 25/17，recheck RS2——终态补写不依赖新管理请求；协议 EXECUTE 编排域仍不适用）",
     ),
     (
         "svc-ota",
@@ -542,6 +555,31 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
+
+    /// recheck RS2：MgmtPersistTick 必须以 **Repeat** 形态在周期表在册
+    /// （svc-mgmt 终态补写的生产独立周期来源——不得退化为一次性探针）。
+    #[test]
+    fn mgmt_persist_tick_is_a_repeating_production_periodic() {
+        let e = PERIODIC_SCHEDULE
+            .iter()
+            .find(|e| e.task == PeriodicTask::MgmtPersistTick)
+            .expect("MgmtPersistTick 必须在周期编排表在册");
+        assert_eq!(e.kind, ScheduleKind::Repeat, "持续周期（无结束点）");
+        assert!(e.period > 0);
+        assert!(e.offset < e.period);
+        assert!(!periodic_due(PeriodicTask::MgmtPersistTick, 0));
+        assert!(periodic_due(
+            PeriodicTask::MgmtPersistTick,
+            u64::from(e.offset)
+        ));
+        assert!(
+            periodic_due(
+                PeriodicTask::MgmtPersistTick,
+                u64::from(e.offset) + u64::from(e.period)
+            ),
+            "Repeat：第二个周期同样到期"
+        );
+    }
 
     /// (a) 完备性：凡登记网络槽的服务必须显式决定驱动与否（Some(driven)
     /// 或显式 `driven_none_reason`）。**D-1 红点**：表初落时 svc-iec104
@@ -709,6 +747,9 @@ mod tests {
                 (25, 8, ScheduleKind::Repeat, PeriodicTask::DegradeObserve),
                 // 70.5 新增（WP-70.5.1）：可信身份推送——非平移行，有意扩展。
                 (55, 55, ScheduleKind::OnceFrom, PeriodicTask::IdentityPush),
+                // recheck RS2 新增（F70-03 §6.3.4）：管理账本持久补写
+                // tick——非平移行，有意扩展（生产闭包同跑的持续周期）。
+                (25, 17, ScheduleKind::Repeat, PeriodicTask::MgmtPersistTick),
             ],
             "周期编排表绝对基线漂移（service.rs 平移值必须逐字节保持）"
         );

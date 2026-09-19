@@ -180,7 +180,17 @@ check R3 "BOOT 守卫查询（0x0A）" bash -c "grep -aq 'BOOT-GUARD: inactive_l
 check R4 "BOOT trial 事务提交（bootctrl 双副本+flush）" bash -c "grep -aq 'BOOT-TRIAL: tx committed seq=' '$EVROOT/t1.qemu-serial.log'"
 
 # ============================================================
-say "=== 段3：窗T-2 同盘重启进入新载荷（无 --reset-bootctrl）==="
+# F70-02（B07/S1）：把 B 的试启次数推进到 1——补丁完全复用 boot-manager
+# 的 prepare_attempt 单源（序列+1/tries−1，产物与真实引导逐字节同构，
+# 经运行时事务采纳路径合法过锚）。窗T-2 引导时 1→0 = **最后一次试启**：
+# 本次仍运行 B，而盘上记录的 select() 已指向 A——S1 的精确介质形态
+#（旧实现此处把运行槽 B 开放为安装目标、且 B 的健康确认被拒）。
+say "=== 段2.5：B07 最后一次试启形态构造（prepare-attempt ×2：tries 3→1）==="
+cargo xtask bootctrl-prepare-attempt --image "$COMBINED" --times 2 \
+  || { say "BOOTCTRL prepare-attempt 补丁失败"; echo "VOL70.7-GATE: FAIL"; exit 2; }
+
+# ============================================================
+say "=== 段3：窗T-2 同盘重启进入新载荷（最后一次试启 + 正确确认）==="
 # ============================================================
 DIR2="$RUN/t2"
 rm -rf "$DIR2"; mkdir -p "$DIR2"
@@ -220,8 +230,50 @@ check R5 "零 PANIC / 零分配失败" bash -c "! grep -aqcE 'PANIC|memory alloc
 check R6 "PRODUCT-READY 达成" bash -c "grep -aq 'PRODUCT-READY: true' '$EVROOT/t2.qemu-serial.log'"
 check R7 "boot-evidence slot=B（boot-manager 选择非活动槽）" bash -c "grep -aq '\"schema\":\"eneros.boot-evidence.v1\",\"result\":\"PASS\",\"slot\":\"B\"' '$EVROOT/t2.qemu-serial.log'"
 check R8 "boot_reason=UPDATE_TRIAL（跨重启试启动语义）" bash -c "grep -aq 'UPDATE_TRIAL' '$EVROOT/t2.qemu-serial.log'"
-check R9 "BOOT-CONFIRM 自适应确认（slot=B → successful）" bash -c "grep -aq 'BOOT-CONFIRM: slot=B' '$EVROOT/t2.qemu-serial.log'"
+check R9 "BOOT-CONFIRM 自适应确认（slot=B → successful；最后一次试启的运行槽确认必须成功 = S1 红转绿）" bash -c "grep -aq 'BOOT-CONFIRM: slot=B' '$EVROOT/t2.qemu-serial.log'"
 check R10 "确认持久化（序列推进）" bash -c "grep -aq 'BOOT-CONFIRM: slot=B secver=' '$EVROOT/t2.qemu-serial.log'"
+# F70-02（B07）：身份页贯通 + 守卫按运行槽派生的目标侧证据。
+check R11 "BOOT-IDENTITY slot=B（capsule→root 只读身份页→svc-storage 守卫贯通）" bash -c "grep -aq '\[svc-storage\] BOOT-IDENTITY: slot=B' '$EVROOT/t2.qemu-serial.log'"
+check R12 "安装面非运行槽=BOOT_A（守卫按本次运行槽派生，非 select()）" bash -c "grep -aq 'BOOT-INSTALL attached: inactive_lba=20480' '$EVROOT/t2.qemu-serial.log'"
+
+# ============================================================
+say "=== 段4：窗T-3 确认后同盘再启（不误回退；B07 收口）==="
+# ============================================================
+# 最后一次试启已被正确确认（B successful 落盘）→ 同盘再启必须仍选 B
+#（不回退 A）、运行身份仍贯通、载荷身份不变。
+DIR3="$RUN/t3"
+rm -rf "$DIR3"; mkdir -p "$DIR3"
+VARS_T3="$DIR2/AAVMF_VARS.run.fd"
+[ -f "$VARS_T3" ] || { say "缺 T2 run vars"; exit 2; }
+cargo xtask run qemu-test \
+    --image "$COMBINED" --vars-template "$VARS_T3" \
+    --expect PASS --evidence-dir "$DIR3" \
+    --data-disk "$DATADISK" \
+    --net-mode present --net-user --net-protocols present \
+    --qmp-shutdown --ready-marker probe-complete --qmp-deadline-secs "$DL_T2" &
+HPID3=$!
+S3="$DIR3/qemu-serial.log"
+for i in $(seq 1 300); do
+    if grep -aq "PRODUCT-READY" "$S3" 2>/dev/null; then break; fi
+    if ! kill -0 $HPID3 2>/dev/null; then break; fi
+    sleep 1
+done
+sleep 20
+kill -9 $(pgrep -f qemu-system) 2>/dev/null || true
+sleep 3
+kill $HPID3 2>/dev/null || true
+wait_serial_stable "$S3"
+cp "$S3" "$EVROOT/t3.qemu-serial.log" 2>/dev/null || true
+
+# ---------- 窗T-3 判据（B07）----------
+say "=== 段4 判据（窗T-3）==="
+check R13 "零 PANIC / 零分配失败" bash -c "! grep -aqcE 'PANIC|memory allocation of' '$EVROOT/t3.qemu-serial.log'"
+check R14 "boot-evidence slot=B（确认后不误回退——successful B 仍被选）" bash -c "grep -aq '\"schema\":\"eneros.boot-evidence.v1\",\"result\":\"PASS\",\"slot\":\"B\"' '$EVROOT/t3.qemu-serial.log'"
+check R15 "BOOT-IDENTITY slot=B（再启后身份页仍贯通）" bash -c "grep -aq '\[svc-storage\] BOOT-IDENTITY: slot=B' '$EVROOT/t3.qemu-serial.log'"
+# 实际载荷身份不变：T-2 与 T-3 的 boot-evidence manifest_sha256 相同。
+M2=$(grep -ao 'manifest_sha256.....[0-9a-f]*' "$EVROOT/t2.qemu-serial.log" | head -1)
+M3=$(grep -ao 'manifest_sha256.....[0-9a-f]*' "$EVROOT/t3.qemu-serial.log" | head -1)
+check R16 "同盘再启载荷身份不变（manifest_sha256 一致）" test -n "$M2" -a "$M2" = "$M3"
 
 # ============================================================
 if [ "$FAIL" = 0 ]; then

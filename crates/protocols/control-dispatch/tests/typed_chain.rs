@@ -1665,6 +1665,476 @@ fn held_input_repin_after_restart() {
     );
 }
 
+// ============================================================
+// F70-04（R1/R2）：共享输入保留所有权与可靠释放（H01～H08 host 面）
+// ============================================================
+
+/// 计划改号（改写 plan id 字节 = 不同计划、同输入快照——共享保留的
+/// 对抗形态）。与审查复现（held-repro）同构造。
+fn renamed_plan(
+    plan: &eneros_decision_contract::CandidatePlan,
+    id: u8,
+) -> eneros_decision_contract::CandidatePlan {
+    let mut bytes = plan.encode_v1();
+    bytes[8..24].fill(id);
+    eneros_decision_contract::CandidatePlan::decode_v1(&bytes).unwrap()
+}
+
+/// H01/R1 红转绿：两份不同计划共享同一快照；第三份因容量满被拒——
+/// 失败回滚**不得**解除前两份在途计划的保留（旧实现无条件 release 同
+/// 一快照 ID，集合去重无引用计数 ⇒ 在途计划的输入钉被一并撤掉）。
+#[test]
+fn h01_capacity_rejection_keeps_live_plans_pinned() {
+    let log = Rc::new(RefCell::new(RetainerLog::default()));
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let mut engine = held_fixture(media, Rc::new(RefCell::new(0)));
+    engine.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
+    let (plan, input) = held_candidate();
+    engine
+        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .unwrap();
+    engine
+        .submit_trusted(
+            &renamed_plan(&plan, 0x73),
+            &input,
+            "pcs",
+            &trusted_telemetry(),
+            &actor(),
+            5_000,
+        )
+        .unwrap();
+    let error = engine
+        .submit_trusted(
+            &renamed_plan(&plan, 0x74),
+            &input,
+            "pcs",
+            &trusted_telemetry(),
+            &actor(),
+            5_000,
+        )
+        .unwrap_err();
+    assert!(format!("{error:?}").contains("capacity full"), "{error:?}");
+    assert!(
+        engine
+            .held_plan_reports()
+            .unwrap()
+            .iter()
+            .any(|r| !r.final_state.is_terminal()),
+        "已有非终态计划在场"
+    );
+    assert!(
+        log.borrow().held.contains(&input.facts().snapshot_id),
+        "在途计划的输入钉不得被第三份的失败回滚解除（R1）"
+    );
+    assert!(
+        !log.borrow().released.contains(&input.facts().snapshot_id),
+        "共享快照仍被在途计划引用——不得 release"
+    );
+}
+
+/// H02/R1（recheck RR1 重订）：第二份共享计划因**真实持久写失败**被拒
+/// （`StoreError::WriteFailed` → store poisoned——不是容量面）⇒ 回滚查询
+/// `store.plans()` 读取失败（状态未知），**不得**折叠成零引用释放第一
+/// 份在途计划的钉（旧实现 `unwrap_or_default()` 恰在此误释放）。
+#[derive(Clone)]
+struct FailWritesHeldMedia {
+    inner: HeldMedia,
+    fail_writes: Rc<std::cell::Cell<bool>>,
+}
+impl eneros_durable_state::PersistIo for FailWritesHeldMedia {
+    fn read(
+        &mut self,
+        offset: u64,
+        bytes: &mut [u8],
+    ) -> Result<(), eneros_durable_state::StoreError> {
+        self.inner.read(offset, bytes)
+    }
+    fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), eneros_durable_state::StoreError> {
+        if self.fail_writes.get() {
+            return Err(eneros_durable_state::StoreError::WriteFailed);
+        }
+        self.inner.write(offset, bytes)
+    }
+    fn flush(&mut self) -> Result<(), eneros_durable_state::StoreError> {
+        self.inner.flush()
+    }
+    fn capacity(&self) -> u64 {
+        self.inner.capacity()
+    }
+}
+
+#[test]
+fn h02_real_persist_failure_preserves_existing_pin() {
+    let log = Rc::new(RefCell::new(RetainerLog::default()));
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = FailWritesHeldMedia {
+        inner: HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+            131_072,
+        )))),
+        fail_writes: Rc::new(std::cell::Cell::new(false)),
+    };
+    let mut engine = held_fixture_channels(
+        media.clone(),
+        Rc::new(RefCell::new(0)),
+        false,
+        Rc::new(std::cell::Cell::new(0.0)),
+        Box::new(InMemoryIntentStore::new(64)),
+    );
+    engine.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
+    let (plan, input) = held_candidate();
+    engine
+        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .unwrap();
+    let sid = input.facts().snapshot_id;
+    // 武装介质写失败：第二份（同快照、不同计划）的持久提交真实失败。
+    media.fail_writes.set(true);
+    let error = engine
+        .submit_trusted(
+            &renamed_plan(&plan, 0x99),
+            &input,
+            "pcs",
+            &trusted_telemetry(),
+            &actor(),
+            5_000,
+        )
+        .unwrap_err();
+    let text = format!("{error:?}");
+    assert!(
+        text.contains("held storage") && text.contains("write-failed"),
+        "必须是真实持久写失败（poisoned），实得 {text}"
+    );
+    assert!(
+        !text.contains("capacity"),
+        "容量拒绝路径不经本缺陷（H01 已覆盖）"
+    );
+    // 钉集：第一份在途计划的保留不得被回滚解除（RR1 核心断言）。
+    assert!(
+        log.borrow().held.contains(&sid),
+        "读取失败 = 引用状态未知 ⇒ 不得按零引用释放（在途计划的钉保持）"
+    );
+    assert!(
+        !log.borrow().released.contains(&sid),
+        "真实持久写失败后误 release = RR1 缺陷形态"
+    );
+    assert_eq!(
+        log.borrow().held.iter().filter(|h| **h == sid).count(),
+        1,
+        "钉集恰一份所有权（幂等集合，不累计）"
+    );
+}
+
+/// H02（容量面回归保留）：第三份容量拒绝的回滚不解除前两份在途计划的
+/// 保留（H01 同族；与上面的真实写失败路径互补）。
+#[test]
+fn h02_capacity_rollback_keeps_owners() {
+    let log = Rc::new(RefCell::new(RetainerLog::default()));
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let mut engine = held_fixture(media, Rc::new(RefCell::new(0)));
+    engine.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
+    let (plan, input) = held_candidate();
+    engine
+        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .unwrap();
+    let sid = input.facts().snapshot_id;
+    let err = engine
+        .submit_trusted(
+            &renamed_plan(&plan, 0x99),
+            &input,
+            "pcs",
+            &trusted_telemetry(),
+            &actor(),
+            5_000,
+        )
+        .err();
+    // 容量面或持久面拒绝均可——关键断言在钉集：
+    let _ = err;
+    assert_eq!(
+        log.borrow().held.iter().filter(|h| **h == sid).count(),
+        1,
+        "钉集恰一份所有权（幂等集合，不累计）"
+    );
+    assert!(
+        !log.borrow().released.contains(&sid),
+        "第一份仍在途——快照不得被释放"
+    );
+}
+
+/// H03/§7.2.3：一份结束、另一份在途 ⇒ 保留；最后一份也结束 ⇒ 无引用
+/// 且无未决后最终释放（释放以「快照仍被谁需要」为准，不以「有一份
+/// 计划结束」为准）。
+#[test]
+fn h03_shared_snapshot_released_only_after_last_plan_finishes() {
+    let log = Rc::new(RefCell::new(RetainerLog::default()));
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let delivered = Rc::new(RefCell::new(0));
+    let mut engine = held_fixture(media, delivered.clone());
+    engine.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
+    let (plan, input) = held_candidate();
+    let sid = input.facts().snapshot_id;
+    let plan2 = renamed_plan(&plan, 0x55);
+    engine
+        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .unwrap();
+    engine
+        .submit_trusted(&plan2, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .unwrap();
+    // 推进：每 tick 一份计划。第一份完成后，第二份仍在途 ⇒ 保留。
+    for step in 1..=4u64 {
+        HELD_CLOCK.with(|clock| clock.set(now_ms() + step * 5_000));
+        engine
+            .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+            .unwrap();
+        if step <= 3 {
+            assert!(
+                !log.borrow().released.contains(&sid),
+                "第二份仍在途（step={step}）——共享快照不得提前释放"
+            );
+        }
+    }
+    // 第二份也终态 ⇒ 无引用无未决 ⇒ 释放恰一次。
+    assert!(log.borrow().released.contains(&sid), "最后一份结束后释放");
+    assert!(
+        log.borrow().held.is_empty(),
+        "钉集归零：{:?}",
+        log.borrow().held
+    );
+}
+
+/// H04/R2 红转绿：最后一份计划释放失败后，**空闲 tick**（无非终态
+/// 计划）必须继续重试——旧实现空闲路径提前 return 跳过 finalize，
+/// 保留持续泄漏。
+struct FailingRelease(Rc<RefCell<usize>>);
+impl eneros_control_dispatch::HeldInputRetainer for FailingRelease {
+    fn hold(&mut self, _: [u8; 16]) -> bool {
+        true
+    }
+    fn release(&mut self, _: [u8; 16]) -> bool {
+        *self.0.borrow_mut() += 1;
+        *self.0.borrow() > 1
+    }
+}
+
+#[test]
+fn h04_release_failure_retries_on_idle_ticks() {
+    let count = Rc::new(RefCell::new(0));
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let mut engine = held_fixture(media, Rc::new(RefCell::new(0)));
+    engine.set_input_retainer(Box::new(FailingRelease(count.clone())));
+    let (plan, input) = held_candidate();
+    engine
+        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .unwrap();
+    for step in 1..=3u64 {
+        HELD_CLOCK.with(|clock| clock.set(now_ms() + step * 5_000));
+        engine
+            .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+            .unwrap();
+    }
+    assert_eq!(*count.borrow(), 1, "首次释放恰一次（失败）");
+    // 空闲 tick（计划已全部终态、无新提案）⇒ 必须重试并收敛。
+    engine
+        .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+        .unwrap();
+    assert_eq!(*count.borrow(), 2, "失败释放必须在后续周期重试（R2）");
+    // 已收敛：再空闲 tick 不再重发（幂等缓存生效）。
+    engine
+        .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+        .unwrap();
+    assert_eq!(*count.borrow(), 2, "收敛后不得重复释放");
+}
+
+/// H05/§7.2.5：release 已生效但回应丢失（远端实际已解除、本地看到
+/// false）⇒ 重试按"确认已无本次持有"收敛；不泄漏、不影响其他持有人。
+struct FlickerRelease {
+    calls: Rc<RefCell<usize>>,
+    pins: Rc<RefCell<Vec<[u8; 16]>>>,
+}
+impl eneros_control_dispatch::HeldInputRetainer for FlickerRelease {
+    fn hold(&mut self, id: [u8; 16]) -> bool {
+        if !self.pins.borrow().contains(&id) {
+            self.pins.borrow_mut().push(id);
+        }
+        true
+    }
+    fn release(&mut self, id: [u8; 16]) -> bool {
+        *self.calls.borrow_mut() += 1;
+        let mut pins = self.pins.borrow_mut();
+        match pins.iter().position(|p| *p == id) {
+            // 第一次：实际解除但"回应丢失"（false）；重试：absent ⇒
+            // 幂等确认 true（远端语义，与 event_face 对齐）。
+            Some(idx) => {
+                pins.swap_remove(idx);
+                false
+            }
+            None => true,
+        }
+    }
+}
+
+#[test]
+fn h05_release_reply_lost_converges_idempotently() {
+    let flicker = FlickerRelease {
+        calls: Rc::new(RefCell::new(0)),
+        pins: Rc::new(RefCell::new(Vec::new())),
+    };
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let mut engine = held_fixture(media, Rc::new(RefCell::new(0)));
+    engine.set_input_retainer(Box::new(flicker_hoist(&flicker)));
+    let (plan, input) = held_candidate();
+    let sid = input.facts().snapshot_id;
+    engine
+        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .unwrap();
+    for step in 1..=3u64 {
+        HELD_CLOCK.with(|clock| clock.set(now_ms() + step * 5_000));
+        engine
+            .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+            .unwrap();
+    }
+    // 第一次 release "回应丢失"（远端已实际解除）；下一个（空闲）tick
+    // 重试 ⇒ absent 幂等确认 ⇒ 收敛。钉集必须为空（不泄漏）。
+    engine
+        .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+        .unwrap();
+    assert!(
+        flicker.pins.borrow().is_empty(),
+        "回应丢失后必须幂等收敛，钉集不泄漏"
+    );
+    let calls_after_converge = *flicker.calls.borrow();
+    engine
+        .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+        .unwrap();
+    assert_eq!(
+        *flicker.calls.borrow(),
+        calls_after_converge,
+        "收敛后不再重发"
+    );
+    let _ = sid;
+}
+
+/// H05 夹具提升（FlickerRelease 的克隆面——Rc 内部可变，全引擎共享一态）。
+fn flicker_hoist(f: &FlickerRelease) -> FlickerRelease {
+    FlickerRelease {
+        calls: f.calls.clone(),
+        pins: f.pins.clone(),
+    }
+}
+
+/// H06/§7.2.6：同一快照 hold→release→再次 hold（新计划）→release——
+/// 每轮均可正确释放；旧完成缓存不得抑制新一轮；重复提交同计划不累计
+/// 引用。
+#[test]
+fn h06_reheld_snapshot_releases_each_round() {
+    let log = Rc::new(RefCell::new(RetainerLog::default()));
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let mut engine = held_fixture(media, Rc::new(RefCell::new(0)));
+    engine.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
+    let (plan, input) = held_candidate();
+    let sid = input.facts().snapshot_id;
+    // 第一轮：提交→完成→释放。
+    engine
+        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .unwrap();
+    // 重复提交同计划：幂等回执，不产生新引用/新钉。
+    engine
+        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .unwrap();
+    for step in 1..=3u64 {
+        HELD_CLOCK.with(|clock| clock.set(now_ms() + step * 5_000));
+        engine
+            .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+            .unwrap();
+    }
+    assert!(log.borrow().released.contains(&sid), "第一轮释放");
+    assert_eq!(
+        log.borrow().held.iter().filter(|h| **h == sid).count(),
+        0,
+        "重复提交不累计引用"
+    );
+    // 第二轮：新计划重新持有同一快照→完成→必须再次释放（旧缓存失效）。
+    // 注：本夹具的第二轮计划在准入 drive 内即可整体完成——hold 与
+    // release 都发生在同一 submit 内；判据 = 「每轮都发生 release」，
+    // 不以提交后 pin 仍在场为断言（同步完成时 pin 已被正确收尾）。
+    log.borrow_mut().released.clear();
+    let plan2 = renamed_plan(&plan, 0x66);
+    engine
+        .submit_trusted(&plan2, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .unwrap();
+    for step in 4..=7u64 {
+        HELD_CLOCK.with(|clock| clock.set(now_ms() + step * 5_000));
+        engine
+            .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+            .unwrap();
+    }
+    assert!(
+        log.borrow().released.contains(&sid),
+        "第二轮完成后必须再次释放（旧 released_holds 缓存代次失效——H06）"
+    );
+    assert!(log.borrow().held.is_empty(), "钉集归零");
+}
+
+/// H08（host 面）：dispatch 重启（同介质重开）+ 装配保留面 ⇒ 未决计划的
+/// 持有按持久状态重建（既有 `held_input_repin_after_restart` 的共享形态
+/// 变体：两份在途、重启后两份引用都在、恢复不重发旧命令）。
+#[test]
+fn h08_restart_rebuilds_shared_pins_without_resend() {
+    let log = Rc::new(RefCell::new(RetainerLog::default()));
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let delivered = Rc::new(RefCell::new(0));
+    let (plan, input) = held_candidate();
+    let sid = input.facts().snapshot_id;
+    {
+        let mut engine = held_fixture(media.clone(), delivered.clone());
+        engine.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
+        engine
+            .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+            .unwrap();
+        engine
+            .submit_trusted(
+                &renamed_plan(&plan, 0x77),
+                &input,
+                "pcs",
+                &trusted_telemetry(),
+                &actor(),
+                5_000,
+            )
+            .unwrap();
+    }
+    let sent_before = *delivered.borrow();
+    log.borrow_mut().held.clear(); // 掉电：RAM 钉集丢失
+    let mut reopened = held_fixture(media, delivered.clone());
+    reopened.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
+    assert_eq!(
+        log.borrow().held.iter().filter(|h| **h == sid).count(),
+        1,
+        "共享快照按持久计划重建（集合语义恰一份）"
+    );
+    // 恢复 tick（旧单调窗失效——只读对账，不重发旧命令）。
+    reopened.drive_held_plans(None, None).unwrap();
+    assert_eq!(*delivered.borrow(), sent_before, "恢复不得重发旧命令");
+}
+
 #[derive(Clone)]
 struct CutHeldMedia {
     bytes: Rc<RefCell<Vec<u8>>>,

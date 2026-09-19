@@ -134,9 +134,14 @@ pub extern "C" fn _start(
                 eneros_runtime::println!("[svc-mgmt] MGMT-OPS ledger fresh (empty region)");
             }
             Err(e) => {
-                ops_store_ok = true; // 区段在位但内容损坏 → 全新账本（诚实词形）
+                // F70-03（§6.3.2 / M04）：区段在位但装载失败（坏介质/读
+                // 取异常/无法判明空白与损坏）⇒ **不得按空白覆盖、不得静默
+                // 换新账本**（旧幂等记录丢失 = 已确认操作可被重复执行）——
+                // 副作用写面拒绝（ops_storage_available = false），只读
+                // 诊断继续如实报告。
+                ops_store_ok = false;
                 eneros_runtime::println!(
-                    "[svc-mgmt] MGMT-OPS ledger load failed ({e:?}) — fresh ledger (old records unrecoverable)"
+                    "[svc-mgmt] MGMT-OPS ledger load failed ({e:?}) — side-effect ops REJECTED (ops-store-corrupt; read-only diagnostics continue)"
                 );
             }
         }
@@ -220,22 +225,24 @@ const RESTART_TIMEOUT_MS: u64 = 120_000;
 
 #[cfg(target_os = "none")]
 impl TargetExecutor {
-    /// 账本终态写回持久化（RPC 层账本变更后由 svc-mgmt 侧调用——经
-    /// rpc.ops 克隆落盘；此处不持有账本引用，避免双源）。
-    fn persist_ops(&mut self, ops: &eneros_business_services::mgmt_ops::OperationLedger) {
+    /// 账本状态提交到持久介质（F70-03：返回**是否已确认落盘**——RPC 层
+    /// 据此执行"意图先行/终态先行"合同；经 rpc.ops 克隆落盘，此处不持有
+    /// 账本引用，避免双源）。
+    fn persist_ops(&mut self, ops: &eneros_business_services::mgmt_ops::OperationLedger) -> bool {
         use eneros_durable_state::{DurableStateStore, Encode, PersistIo};
         let Some(io) = self.ops_io.as_mut() else {
-            return;
+            return false;
         };
         let state = eneros_business_services::mgmt_ops::MgmtOpsState {
             ledger: ops.clone(),
         };
         let Ok(bytes) = state.encode() else {
-            return;
+            eneros_runtime::println!("[svc-mgmt] MGMT-OPS persist skipped (encode error)");
+            return false;
         };
         if bytes.len() as u64 > self.ops_region_len {
             eneros_runtime::println!("[svc-mgmt] MGMT-OPS persist skipped (size overflow)");
-            return;
+            return false;
         }
         let mut store = eneros_durable_state::RegionStateStore::<
             eneros_business_services::mgmt_ops::MgmtOpsState,
@@ -252,9 +259,13 @@ impl TargetExecutor {
                     gen.0,
                     state.ledger.records().len()
                 );
+                true
             }
             Err(e) => {
+                // 不吞：调用方（RPC 层）按提交失败处理——意图阶段不执行
+                // 副作用、终态阶段不回 Completed 并保留周期重试。
                 eneros_runtime::println!("[svc-mgmt] MGMT-OPS persist failed ({e:?})");
+                false
             }
         }
     }
@@ -369,6 +380,22 @@ impl TargetExecutor {
 impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
     fn current_config_generation(&mut self) -> u64 {
         self.config_generation()
+    }
+
+    /// F70-03（S2）：副作用执行前置——存储面可用性（区段在位 + 启动期
+    /// 装载成功；坏介质/读取失败 = false ⇒ 需幂等保障的写动作拒绝，
+    /// 只读诊断不受影响）。
+    fn ops_storage_available(&mut self) -> bool {
+        self.ops_io.is_some() && self.ops_store_ok
+    }
+
+    /// F70-03（S2）：账本状态提交（RegionStateStore CAS；返回是否已确认
+    /// 落盘——意图/终态的执行前置合同由 RPC 层执行）。
+    fn persist_ops_state(
+        &mut self,
+        state: &eneros_business_services::mgmt_ops::MgmtOpsState,
+    ) -> bool {
+        self.persist_ops(&state.ledger)
     }
 
     fn observe_operation(
@@ -1029,20 +1056,70 @@ struct MgmtHandler {
 #[cfg(target_os = "none")]
 impl eneros_control_services::ControlServiceHandler for MgmtHandler {
     fn handle(&mut self, req: &[u8], resp: &mut alloc::vec::Vec<u8>, now_ms: u64) -> bool {
-        use eneros_business_services::mgmt_principal::{self, SessionShape};
-        use eneros_business_services::mgmt_rpc::*;
+        // recheck RS2：root 周期持久 tick 帧（`MGT0\0`，wiring
+        // PeriodicTask::MgmtPersistTick 每 25 tick 一发）——svc-mgmt 的
+        // 生产独立周期来源：终态补写重试不依赖用户再发管理请求，也不
+        // 依赖有结束点的测试探针。每 tick 至多一次 CAS 提交（有界）。
+        if req == PERSIST_TICK_FRAME {
+            match self.retry_pending_persist() {
+                None => {
+                    // 空闲：零盘写（读请求路径不产生待写）。
+                    resp.push(2u8);
+                    resp.extend_from_slice(b"idle");
+                    return true;
+                }
+                Some(committed) => {
+                    eneros_runtime::println!(
+                        "[svc-mgmt] MGT-PERSIST-TICK committed={} pending_after={}",
+                        committed,
+                        self.rpc.pending_persist()
+                    );
+                    resp.push(if committed { 1u8 } else { 0u8 });
+                    resp.extend_from_slice(if committed {
+                        b"committed"
+                    } else {
+                        b"terminal-persist-pending"
+                    });
+                    return true;
+                }
+            }
+        }
         let handled = self.handle_frame(req, resp, now_ms);
         // 70.6（WP-70.6.1）：账本变更落盘（dirty 旗单点——读请求零盘写）。
-        if self.rpc.ops.take_dirty() {
-            let ops = self.rpc.ops.clone();
-            self.rpc.executor.persist_ops(&ops);
-        }
+        // F70-03 + recheck RS2：`pending_persist`（终态已观察、持久提交未
+        // 确认）的重试也挂本步；失败保留 dirty/pending（见
+        // retry_pending_persist），周期 tick 面继续兜底。
+        self.retry_pending_persist();
         handled
     }
 }
 
+/// recheck RS2：周期持久 tick 帧魔数（与 MGT1 前缀族区分——请求帧首
+/// 5B 恒为 `MGT1\0`，本帧恒为 `MGT0\0`，形状判别零交集）。
+#[cfg(target_os = "none")]
+const PERSIST_TICK_FRAME: &[u8; 5] = b"MGT0\0";
+
 #[cfg(target_os = "none")]
 impl MgmtHandler {
+    /// F70-03（§6.3.4）+ recheck RS2：终态/账本补写重试——**提交确认之后
+    /// 才清 dirty**（旧实现先 `take_dirty()` 再提交，失败即丢标志；之后
+    /// 无新变更时不再有任何待重试状态）。返回 `Some(committed)` = 本步
+    /// 确有待写并已尝试；`None` = 无事可做（读请求零盘写）。
+    fn retry_pending_persist(&mut self) -> Option<bool> {
+        if !self.rpc.ops.is_dirty() && !self.rpc.pending_persist() {
+            return None;
+        }
+        let ops = self.rpc.ops.clone();
+        let committed = self.rpc.executor.persist_ops(&ops);
+        self.rpc.note_persist(committed);
+        if committed {
+            // 确认提交 ⇒ 此时清 dirty 才不违反「清 dirty 只能发生在相应
+            // 提交被确认之后」。
+            let _ = self.rpc.ops.take_dirty();
+        }
+        Some(committed)
+    }
+
     fn handle_frame(&mut self, req: &[u8], resp: &mut alloc::vec::Vec<u8>, now_ms: u64) -> bool {
         use eneros_business_services::mgmt_principal::{self, SessionShape};
         use eneros_business_services::mgmt_rpc::*;

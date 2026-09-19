@@ -68,6 +68,20 @@ pub const SVC_BOOT_DMA_PAGES: usize = 9;
 /// 移交页已覆盖 slot 0-7，启动盘寄存器**零新增映射**）。
 pub const BOOT_MMIO_SLOT: u64 = 0;
 
+/// svc-storage VSpace 中**本次运行槽身份页**的固定虚拟地址（F70-02/S1）。
+///
+/// 传递契约（只读、boot 权限边界）：root 在 spawn svc-storage 前把
+/// boot-manager 写入的可信身份 capsule（`eneros-boot-protocol
+/// ::IdentityCapsule`，版本+CRC 校验）逐字节拷入一页 root 自有帧，以
+/// 只读权限映射到本地址；capsule 缺失/无效时映射**全零页**（服务侧判
+/// "运行身份缺失" → 安装/确认写面整体关闭，fail-closed）。
+///
+/// 为什么走页而不走 X8：aarch64 C-ABI 第 9 参不经寄存器（实弹恒 0，
+/// 见 [`SVC_BOOT_DMA_PAGES`]）；且服务不可写本页——运行槽身份不得由
+/// OTA 请求自述（F70-02 §5.2）。区段 0x4004_0000..0x4004_1000 与
+/// STORAGE_DMA/NET/UART 区互不重叠（冻结测试）。
+pub const STORAGE_BOOT_IDENTITY_VADDR: u64 = 0x4004_0000;
+
 /// virtio-mmio 槽步长（legacy 传输）。
 pub const VIRTIO_MMIO_SLOT_STRIDE: u64 = 0x200;
 
@@ -99,5 +113,25 @@ mod tests {
         assert_eq!(UART_MMIO_VADDR, 0x4003_0000);
         assert_eq!(VIRTIO_MMIO_REGION_BASE, 0x0a00_0000);
         assert_eq!(VIRTIO_MMIO_SLOT_STRIDE, 0x200);
+        // F70-02：身份页区段冻结 + 与既有移交区两两不交。
+        assert_eq!(STORAGE_BOOT_IDENTITY_VADDR, 0x4004_0000);
+        let page = 0x1000u64;
+        let regions = [
+            (STORAGE_MMIO_VADDR, page),
+            (STORAGE_DMA_VADDR, STORAGE_DMA_PAGES as u64 * page),
+            (NET_MMIO_VADDR, 2 * page),
+            (UART_MMIO_VADDR, page),
+            (STORAGE_BOOT_IDENTITY_VADDR, page),
+        ];
+        for i in 0..regions.len() {
+            for j in (i + 1)..regions.len() {
+                let (si, li) = regions[i];
+                let (sj, lj) = regions[j];
+                assert!(
+                    si + li <= sj || sj + lj <= si,
+                    "移交 VA 区重叠: {si:#x}+{li:#x} 与 {sj:#x}+{lj:#x}"
+                );
+            }
+        }
     }
 }

@@ -17,13 +17,18 @@
 #        等待条件即此行，非首个批 Completed）；
 #     A4a HELD-COMMAND **唯一 intent** state=Applied == 该计划 intents
 #        （按 intent id 去重——周期重复打印不计数）；
-#     A4b 传输级写后读回验证 ≥ A4a 数（tools/r10_readback_oracle.py
-#        序列敏感版：写**后**同址同值 FC03、每读至多消费一次；负例集
-#        --selftest 门内自检）；
+#     A4b 外部读回**逐计划归属**（recheck RR2：tools/r10_intent_bind.py——
+#        HELD-COMMAND 绑定锚 dev/pt/val × 点表 × transcript 序列匹配；
+#        通过 = 全部 Applied intent 均获「自己期望的写 + 写后读回」证明，
+#        他计划事务不得补数；序列敏感 oracle 保留为组件自检）；
 #     A4c HELD-COMMAND readback=Some ≥1（dispatch 独立读回上浮进 Saga
 #        ——ADR-0054:15-16 实际回读可查询；None 缺证如实判负）；
-#     A5 modbus transcript：0x200/0x201/0x202 三资产均有 FC06 WRITE，
-#        且写时刻跨 ≥10s（多时段分步发放，非一次倾泻）；
+#     A5 modbus transcript（**绑定写**口径，recheck RR2）：0x200/0x201/
+#        0x202 三资产均有**本计划绑定** FC06 WRITE；时段性判据分两形——
+#        非合并计划（skipped=0）绑定写时刻跨 ≥10s（真分步发放）；
+#        合并计划（skipped>0，分辨率折叠是编译器合法形态）改**反倾泻**：
+#        绑定写总数 ≤ intents（写数超出计划分配 = 无主写），多时段性由
+#        A1 重复 v2 steps=4 请求 + A2 的 I+S=12 守恒承载；
 #     A6 零 PANIC / 零分配失败；
 #     A7 守恒：HELD-PLAN-DONE applied+blocked+failed == intents
 #        （每命令终态可对账——执行/跳过/失败/取消全记账）。
@@ -34,8 +39,9 @@
 #     B3 已确认前缀保留：kill 前 Applied 的 intent 前缀在重启窗
 #        仍 state=Applied（attempts 不变），不得出现 Executing（重复
 #        发送）；
-#     B4 重启窗写归因：FC06 ≤ 新投递数（dispatch=Committed；peer 已死
-#        ⇒ 无新远程计划——本地 System1 单命令提案合法，无主写=疑补发）；
+#     B4 重启窗写归因（RR2 哲学重订）：FC06 ≤ journal 确认执行数
+#        （EXEC-JOURNAL applied-confirmed——held settle 与 legacy 单命令
+#        两路权威投递 trace；broker QoS1 迟到投递属合法新执行）；
 #     B5 零 PANIC。
 #   段C 部分失败窗（slave --reject-write-addr 0x201）：
 #     C1 PLAN-HELD ≥1；
@@ -180,7 +186,11 @@ PA="$DA/peer.log"
 # 守恒模型（按 plan id 关联）：PLAN-COMPILED（紧邻 PLAN-HELD 前的编译行）
 # intents I + skipped S；HELD-PLAN-DONE applied A + blocked Bk + failed F。
 # 通过线：存在计划使 I+S==12 ∧ A+Bk+F==I ∧ state=Committed ∧ A==I。
-ACCT=$(python3 "$ROOT/tools/r10_plan_accounting.py" "$SA" 2>/dev/null || echo "ERR")
+# F70-05：守恒脚本退出码即判据（0=有满足计划；1/2=无/不可判）——
+# 失败说明输出走 stderr（逐计划缺口），不与 stdout 计数混流。
+ACCT=$(python3 "$ROOT/tools/r10_plan_accounting.py" "$SA" 2>"$DA/acct-reject.log")
+ACCT_RC=$?
+[ $ACCT_RC -ne 0 ] && ACCT="ERR"
 n=$(grep -ac "PEER-REQ-V2 .* assets=3 steps=4" "$PA" 2>/dev/null || true); n=${n:-0}
 [ "$n" -ge 1 ] && echo "[✓][A1] v2 请求 assets=3 steps=4（×$n）" || { echo "[✗][A1] 三资源 v2 请求缺失"; FAIL=1; }
 if [ "$ACCT" != "ERR" ] && [ "$ACCT" != "NONE" ]; then
@@ -196,28 +206,47 @@ else
   echo "[✗][A2/A3/A7] 无满足守恒的完整计划（需 intents+skipped=12 ∧ 全 Applied ∧ Committed）：$ACCT"
   FAIL=1; UNIQ=0
 fi
-# A4b：序列敏感写后读回（tools/r10_readback_oracle.py；负例集自检先行）。
+# A4b（recheck RR2 重订）：外部读回按**选中计划归属**判定——绑定工具把
+# transcript 事务锚到该计划各 intent 期望的 (addr, 值, 时序)，通过 = 全部
+# Applied intent 均获「自己期望的写 + 写后读回」的外部证明。旧谓词对
+# 整份 transcript 计数后与 UNIQ 比较——另一计划 Q 的事务可给 P 补数
+#（Q-only 夹具实测误过门；序列敏感 oracle 保留为组件自检）。
 python3 "$ROOT/tools/r10_readback_oracle.py" --selftest >/dev/null || { echo "[✗][A4b] oracle 自检 FAIL"; FAIL=1; }
-RBV=$(python3 "$ROOT/tools/r10_readback_oracle.py" "$TA" 2>/dev/null || echo 0)
-[ "${RBV:-0}" -ge "${UNIQ:-0}" ] && [ "${UNIQ:-0}" -ge 1 ] \
-  && echo "[✓][A4b] 写后读回验证 ×$RBV ≥ 唯一 Applied ×$UNIQ" \
-  || { echo "[✗][A4b] 写后读回 ×${RBV:-0} < 唯一 Applied ×${UNIQ:-0}"; FAIL=1; }
+BIND=$(python3 "$ROOT/tools/r10_intent_bind.py" "$SA" "$TA" 2>"$DA/bind-reject.log"); BIND_RC=$?
+[ $BIND_RC -ne 0 ] && BIND="0 0 0
+0 0 0 0 0 0"
+BPR=$(echo "$BIND" | awk 'NR==1{print $1}'); BTOT=$(echo "$BIND" | awk 'NR==1{print $2}')
+[ "$BIND_RC" -eq 0 ] && [ "${BPR:-0}" -ge "${UNIQ:-0}" ] && [ "${UNIQ:-0}" -ge 1 ] \
+  && echo "[✓][A4b] 逐计划写后读回 ×$BPR ≥ 唯一 Applied ×$UNIQ（事务绑定到该计划）" \
+  || { echo "[✗][A4b] 外部读回归属不足（rc=$BIND_RC proven=${BPR:-0}/total=${BTOT:-0} uniq=${UNIQ:-0}）"; FAIL=1; }
 
-# A5：三资产写入 + 多时段时刻分布（跨度取整秒——bash 算术无浮点）。
-WTS=$(python3 "$ROOT/tools/r10_write_spread.py" "$TA" 2>/dev/null || echo "0 0 0 0 0 0")
+# A5（recheck RR2 重订）：三资产写入 + 多时段时刻分布——按**选中计划的
+# 绑定写**计算（绑定工具输出行2；他计划事务不构成本计划的时段证据。
+# 跨度取整秒——bash 算术无浮点）。
+WTS=$(echo "$BIND" | sed -n '2p'); [ -z "$WTS" ] && WTS="0 0 0 0 0 0"
 N200=$(echo "$WTS" | awk '{print $1}'); T200=$(echo "$WTS" | awk '{print $2}')
 N201=$(echo "$WTS" | awk '{print $3}'); T201=$(echo "$WTS" | awk '{print $4}')
 N202=$(echo "$WTS" | awk '{print $5}'); T202=$(echo "$WTS" | awk '{print $6}')
 SPREAD=$(( T200 > T201 ? (T200 > T202 ? T200 : T202) : (T201 > T202 ? T201 : T202) ))
 if [ "${N200:-0}" -ge 1 ] && [ "${N201:-0}" -ge 1 ] && [ "${N202:-0}" -ge 1 ]; then
-  echo "[✓][A5a] 三资产写入（0x200×$N200 / 0x201×$N201 / 0x202×$N202）"
+  echo "[✓][A5a] 三资产本计划绑定写入（0x200×$N200 / 0x201×$N201 / 0x202×$N202）"
 else
-  echo "[✗][A5a] 三资产写入缺失（0x200×${N200:-0} / 0x201×${N201:-0} / 0x202×${N202:-0}）"; FAIL=1
+  echo "[✗][A5a] 三资产绑定写入缺失（0x200×${N200:-0} / 0x201×${N201:-0} / 0x202×${N202:-0}）"; FAIL=1
 fi
-if [ "${SPREAD:-0}" -ge 10 ]; then
-  echo "[✓][A5b] 多时段发放（写时刻跨度 ${SPREAD}s ≥10s）"
+# A5b（recheck RR2 重立法）：时段性判据按计划形态分派——
+#   非合并计划（skipped=0）：绑定写时刻跨 ≥10s（真分步发放）；
+#   合并计划（skipped>0）：步折叠是编译器合法形态（同值步合并 ⇒ 结构性
+#   同刻发放），改**反倾泻**判据——绑定写总数 ≤ intents（超出 = 无主写）。
+# 多时段性由 A1（重复 v2 steps=4 请求）+ A2（I+S=12 守恒）承载。
+BW=$(echo "$WTS" | awk '{print $1+$3+$5}')
+if [ "${SK:-0}" -gt 0 ]; then
+  [ "${BW:-0}" -le "${I:-0}" ] \
+    && echo "[✓][A5b] 合并计划反倾泻（绑定写 ×$BW ≤ intents=$I；skipped=$SK 步折叠）" \
+    || { echo "[✗][A5b] 绑定写 ×${BW:-0} 超过计划分配 ×${I:-0}（无主写/倾泻）"; FAIL=1; }
 else
-  echo "[✗][A5b] 写时刻跨度 ${SPREAD:-0}s <10s（非分步发放）"; FAIL=1
+  [ "${SPREAD:-0}" -ge 10 ] \
+    && echo "[✓][A5b] 多时段发放（绑定写时刻跨度 ${SPREAD}s ≥10s）" \
+    || { echo "[✗][A5b] 非合并计划绑定写跨度 ${SPREAD:-0}s <10s（非分步发放）"; FAIL=1; }
 fi
 PANICS=$(grep -ac "PANIC\|alloc.*failed\|ALLOC-FAIL" "$SA" || true); PANICS=${PANICS:-0}
 [ "$PANICS" -eq 0 ] && echo "[✓][A6] 零 PANIC/零分配失败" || { echo "[✗][A6] PANIC=$PANICS"; FAIL=1; }
@@ -308,10 +337,15 @@ B3BAD=$(grep -c "^BAD" "$RUN/b3-check.txt" || true); B3BAD=${B3BAD:-0}
 [ "$B3OK" -ge 1 ] && [ "$B3BAD" -eq 0 ] && echo "[✓][B3] 已确认前缀保留（$B3OK 条，零重复执行）" \
   || { echo "[✗][B3] 前缀保留失败（ok=$B3OK bad=$B3BAD）"; cat "$RUN/b3-check.txt"; FAIL=1; }
 
-# B4：重启窗写归因——每次 FC06 必须可归属到一次**新**投递（本地 System1
-# 单命令提案的 dispatch=Committed；peer 已死 ⇒ 无新远程计划）。超出新
-# 投递数的写 = 无主写（疑补发）。同计划已确认 intent 的重复执行另由
-# B3 的 state=Executing 检查钉死。
+# B4：重启窗写归因（recheck RR2 同哲学——journal 投递 trace 而非词形计数）——
+# 每次新 FC06 必须可归属到一次**journal 确认的执行**（`EXEC-JOURNAL
+# applied-confirmed（独立回读匹配→Committed）`——held settle 与 legacy
+# System1 单命令两路都经 journal；恢复前缀只读对账不重落 journal）。旧谓词
+# 用 `dispatch=Committed` 行数做上界——那是每轮投影态：broker QoS1 队列把
+# 割前 peer 请求投递到重连的 svc-mqtt 时（远程计划迟到仍属合法投递）会
+# 误报"无主写"。同计划已确认 intent 的重复执行另由 B3 的 state=Executing
+# 检查钉死。边界：被从站拒写的尝试（WRITE-FI）不在 B 窗（无故障注入），
+# 属 C 窗判据。
 N6=$(python3 - "$T1" "$T2" <<'PY' 2>/dev/null || echo "ERR"
 import json, sys
 def fc06(path):
@@ -331,11 +365,11 @@ def fc06(path):
 print(fc06(sys.argv[2]) - fc06(sys.argv[1]))
 PY
 )
-NCOMMIT=$(grep -ac "dispatch=Committed" "$S2" || true); NCOMMIT=${NCOMMIT:-0}
-if [ "${N6:-99}" -le "$NCOMMIT" ]; then
-  echo "[✓][B4] 重启窗 FC06 ×$N6 ≤ 新投递 ×$NCOMMIT（无无主写；对账只读）"
+NDELIV=$(grep -ac "EXEC-JOURNAL applied-confirmed" "$S2" || true); NDELIV=${NDELIV:-0}
+if [ "${N6:-99}" -le "${NDELIV:-0}" ]; then
+  echo "[✓][B4] 重启窗 FC06 ×$N6 ≤ journal 确认执行 ×$NDELIV（写可归属；对账只读）"
 else
-  echo "[✗][B4] 重启窗 FC06 ×$N6 > 新投递 ×$NCOMMIT（存在无主写——疑补发）"; FAIL=1
+  echo "[✗][B4] 重启窗 FC06 ×${N6:-?} > journal 确认执行 ×${NDELIV:-0}（存在无归属写——疑补发）"; FAIL=1
 fi
 PANICS=$(grep -ac "PANIC\|alloc.*failed\|ALLOC-FAIL" "$S2" || true); PANICS=${PANICS:-0}
 [ "$PANICS" -eq 0 ] && echo "[✓][B5] 零 PANIC" || { echo "[✗][B5] PANIC=$PANICS"; FAIL=1; }

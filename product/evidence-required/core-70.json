@@ -7,73 +7,107 @@
       "case_id": "CORE-70-R01",
       "owner": "70.1",
       "min_scope": "L2",
-      "title": "高轮数控制及审计满容量"
+      "title": "高轮数控制及审计满容量",
+      "gates": [
+        "VOL70.1"
+      ]
     },
     {
       "case_id": "CORE-70-R02",
       "owner": "70.2",
       "min_scope": "L2",
-      "title": "复用盘、历史快照、broker 与 planner 同时在线冷启动"
+      "title": "复用盘、历史快照、broker 与 planner 同时在线冷启动",
+      "gates": [
+        "VOL70.2"
+      ]
     },
     {
       "case_id": "CORE-70-R03",
       "owner": "70.2",
       "min_scope": "L2",
-      "title": "慢盘、满盘、flush/write 失败、checkpoint 中断电"
+      "title": "慢盘、满盘、flush/write 失败、checkpoint 中断电",
+      "gates": [
+        "VOL70.2-R03"
+      ]
     },
     {
       "case_id": "CORE-70-R04",
       "owner": "70.3",
       "min_scope": "L2",
-      "title": "畸形/超量/截断 IPC、边界页、错误回应、无授权发送者"
+      "title": "畸形/超量/截断 IPC、边界页、错误回应、无授权发送者",
+      "gates": [
+        "VOL70.3"
+      ]
     },
     {
       "case_id": "CORE-70-R05",
       "owner": "70.4",
       "min_scope": "INTEROP",
-      "title": "broker/peer kill、两次建联失败、半开、ACK 丢失、序号恢复"
+      "title": "broker/peer kill、两次建联失败、半开、ACK 丢失、序号恢复",
+      "gates": [
+        "VOL70.4"
+      ]
     },
     {
       "case_id": "CORE-70-R06",
       "owner": "70.5",
       "min_scope": "L3",
-      "title": "错 SKU、改版本、旧安全水位、开发锚、旧/吊销钥"
+      "title": "错 SKU、改版本、旧安全水位、开发锚、旧/吊销钥",
+      "gates": [
+        "VOL70.5"
+      ]
     },
     {
       "case_id": "CORE-70-R07",
       "owner": "70.6",
       "min_scope": "L2",
-      "title": "读取配置/诊断、授权重启、配置应用失败、代次冲突"
+      "title": "读取配置/诊断、授权重启、配置应用失败、代次冲突",
+      "gates": [
+        "VOL70.6"
+      ]
     },
     {
       "case_id": "CORE-70-R08",
       "owner": "70.7",
       "min_scope": "L3",
-      "title": "真正固件包、签名失败、写槽/切槽/首次启动/确认时断电"
+      "title": "真正固件包、签名失败、写槽/切槽/首次启动/确认时断电",
+      "gates": [
+        "VOL70.7"
+      ]
     },
     {
       "case_id": "CORE-70-R09",
       "owner": "70.8-70.9",
       "min_scope": "L3",
-      "title": "快照/包络跨代、过期、约束变异、认证器失联、伪证书"
+      "title": "快照/包络跨代、过期、约束变异、认证器失联、伪证书",
+      "gates": [
+        "VOL70.89"
+      ]
     },
     {
       "case_id": "CORE-70-R10",
       "owner": "70.10-70.11",
       "min_scope": "L3",
-      "title": "多资产多时段、迟到、部分失败、重启续接、重复批"
+      "title": "多资产多时段、迟到、部分失败、重启续接、重复批",
+      "gates": [
+        "R10-HELD"
+      ]
     },
     {
       "case_id": "CORE-70-R11",
       "owner": "70.12-70.14",
       "min_scope": "HARDWARE",
-      "title": "真实板卡全部必需外设/协议、HIL、时间与 72h 压力"
+      "title": "真实板卡全部必需外设/协议、HIL、时间与 72h 压力",
+      "gates": []
     },
     {
       "case_id": "CORE-70-R12",
       "owner": "70.15",
       "min_scope": "GATE",
-      "title": "缺 case/错候选/坏 JSON/假 PASS/过期资格/换机重建"
+      "title": "缺 case/错候选/坏 JSON/假 PASS/过期资格/换机重建",
+      "gates": [
+        "evidence42-candidate-check"
+      ]
     }
   ],
   "blockers": [

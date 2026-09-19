@@ -14,6 +14,7 @@ use crate::product_manifest::ServiceSpec;
 
 mod artifact_inspector;
 mod board;
+mod bootctrl_patch;
 mod catalog;
 mod closure;
 mod config_compile;
@@ -305,6 +306,10 @@ fn real_main() -> DynResult<()> {
         "catalog" => catalog::command_catalog(&root, &rest),
         // 70.12/70.13/70.14（方向 6）：板级事实/bring-up/能力表/技术资格。
         "board" => board::command_board(&root, &rest),
+        // F70-02（B07）：BOOTCTRL prepare_attempt 推进（最后一次试启形态）。
+        "bootctrl-prepare-attempt" => {
+            bootctrl_patch::command_bootctrl_prepare_attempt(&root, &rest)
+        }
         // 70.14：浸泡/HIL 运行记录判据（真实起止/心跳/覆盖/样本序列）。
         "soak" => soak::command_soak(&root, &rest),
         "fault" => fault_factory::command_fault(&root, &rest),

@@ -204,6 +204,25 @@ pub trait ActionExecutor {
     fn current_config_generation(&mut self) -> u64 {
         0
     }
+
+    /// F70-03（S2）：操作账本持久面可用性（无授权/坏介质/读取失败 = false）。
+    ///
+    /// **fail-closed 默认 = false**：需要幂等保障的副作用动作在存储不可
+    /// 用时必须拒绝（不能"存储不可用但 executor 照跑"）。宿主测试替身
+    /// 显式 opt-in true；生产 TargetExecutor 按启动期装载结果如实回答。
+    fn ops_storage_available(&mut self) -> bool {
+        false
+    }
+
+    /// F70-03（S2）：把账本状态提交到持久介质（`Ok(true)` = **已确认落盘**）。
+    ///
+    /// 合同（§6.3）：`Running` 意图必须在 executor 调用**之前**经本接缝
+    /// 确认落盘；终态在回复 Completed 之前落盘。false = 提交失败或结果
+    /// 不确定（调用方按 fail-closed 处理：意图阶段不执行副作用，终态
+    /// 阶段不回 Completed 并保留周期重试）。默认 false（同上）。
+    fn persist_ops_state(&mut self, _state: &crate::mgmt_ops::MgmtOpsState) -> bool {
+        false
+    }
 }
 
 /// 管理 RPC 处理器。
@@ -221,6 +240,16 @@ pub struct ManagementRpc<E: ActionExecutor> {
     /// 70.6（WP-70.6.1）：可信操作账本（副作用幂等事实源；持久化由
     /// svc-mgmt 装配侧承担——本结构只拥有状态与规则）。
     pub ops: crate::mgmt_ops::OperationLedger,
+    /// F70-03（§6.3.4）：终态已观察但持久提交未成功 ⇒ 置位；由周期驱动
+    /// （root MgmtPersistTick Send 面，§RS2）重试，不依赖用户再发新请求
+    /// 触发。装配侧确认提交成功后调 [`Self::note_persist`] 清零。
+    pending_persist: bool,
+    /// recheck RS1：已在内存写成终态、但该终态**尚未确认落盘**的 op 集合
+    /// （有界 ≤ [`MGMT_OPS_MAX`]；持久化以整个账本快照为单位，任一次成功
+    /// 提交都使全集合收敛 ⇒ 清空）。回放/回查对集合内 op 不得返回
+    /// Completed——盘上事实仍是 Running，冒称完成即违反 §6.3 表格
+    /// 「终态持久成功……才可回复 Completed」。
+    undurable_terminals: Vec<u64>,
     /// 因容量到顶被丢弃的审计记录数.
     audit_dropped: u64,
     /// 因容量到顶被挤出的重放缓存条目数.
@@ -240,8 +269,60 @@ impl<E: ActionExecutor> ManagementRpc<E> {
             audit: Vec::new(),
             replay_seen: Vec::new(),
             ops: crate::mgmt_ops::OperationLedger::new(),
+            pending_persist: false,
+            undurable_terminals: Vec::new(),
             audit_dropped: 0,
             replay_dropped: 0,
+        }
+    }
+
+    /// F70-03：是否存在待重试的持久化（终态未确认落盘）。
+    pub fn pending_persist(&self) -> bool {
+        self.pending_persist
+    }
+
+    /// recheck RS1：op 的终态是否已确认落盘（未观察/未终态 = true——
+    /// 该集合只收「已写终态但未确认持久」的 op）。
+    fn terminal_persist_confirmed(&self, op_id: u64) -> bool {
+        !self.undurable_terminals.contains(&op_id)
+    }
+
+    /// recheck RS1：把 op 记入「终态未确认落盘」集合（有界；重复标记
+    /// 幂等）。任一次成功的整账本提交都会清空全集合。
+    fn mark_undurable_terminal(&mut self, op_id: u64) {
+        if !self.undurable_terminals.contains(&op_id)
+            && self.undurable_terminals.len() < crate::mgmt_ops::MGMT_OPS_MAX
+        {
+            self.undurable_terminals.push(op_id);
+        }
+    }
+
+    /// F70-03 + recheck RS1/RS2：装配侧持久化结果回填。true = 已确认 ⇒
+    /// 清除待重试旗与未持久终态集合；**false = 提交失败 ⇒ 必须保留待
+    /// 处理状态**（pending 置位——旧实现只在成功时动旗，异步路径失败后
+    /// 无任何标志可触发重试，违反 §6.3.4「终态提交失败保留待处理状态」）。
+    pub fn note_persist(&mut self, committed: bool) {
+        if committed {
+            self.pending_persist = false;
+            self.undurable_terminals.clear();
+        } else {
+            self.pending_persist = true;
+        }
+    }
+
+    /// F70-03：把当前账本提交到持久介质（装配侧周期兜底与 RPC 内部
+    /// 意图/终态提交共用本口）。返回值 = 是否已确认落盘；**成功 ⇒ 整个
+    /// 账本快照确认落盘**（pending 与未持久终态集合一并收敛清零）。
+    fn persist_now(&mut self) -> bool {
+        let state = crate::mgmt_ops::MgmtOpsState {
+            ledger: self.ops.clone(),
+        };
+        if self.executor.persist_ops_state(&state) {
+            self.pending_persist = false;
+            self.undurable_terminals.clear();
+            true
+        } else {
+            false
         }
     }
 
@@ -360,10 +441,49 @@ impl<E: ActionExecutor> ManagementRpc<E> {
                 now_ms,
             ) {
                 crate::mgmt_ops::OpGate::New(op_id) => {
+                    // F70-03（S2 §6.3）：持久意图**先于副作用**。
+                    // ① 存储不可用（无授权/坏介质/读取失败）⇒ 撤回本次
+                    //    新记录、executor 零调用（不能"存储不可用但
+                    //    executor 照跑"）；只读诊断不受影响。
+                    if !self.executor.ops_storage_available() {
+                        self.ops.abort_new(op_id);
+                        self.push_audit(AuditRecord {
+                            principal: session.principal.clone(),
+                            channel: session.channel_binding.clone(),
+                            action: action_raw.into(),
+                            result: "ops-store-unavailable".into(),
+                            at_ms: now_ms,
+                        });
+                        return ActionResult {
+                            status: RpcStatus::Failed,
+                            detail: "ops-store-unavailable:side-effect-requires-ledger".into(),
+                            payload: None,
+                        };
+                    }
+                    // ② Running 意图确认落盘（提交失败/结果不确定 ⇒ 同样
+                    //    撤回并拒绝——崩溃后既无记录也无执行，重放按新
+                    //    请求受理，不丢幂等账）。
+                    if !self.persist_now() {
+                        self.ops.abort_new(op_id);
+                        self.push_audit(AuditRecord {
+                            principal: session.principal.clone(),
+                            channel: session.channel_binding.clone(),
+                            action: action_raw.into(),
+                            result: "ops-intent-persist-failed".into(),
+                            at_ms: now_ms,
+                        });
+                        return ActionResult {
+                            status: RpcStatus::Failed,
+                            detail: "ops-intent-persist-failed:executor-not-called".into(),
+                            payload: None,
+                        };
+                    }
+                    // ③ 意图已持久 ⇒ 才允许真实副作用。
                     let mut result = self.executor.execute(&action, session, arg, now_ms);
                     match result.status {
                         RpcStatus::Accepted => {
-                            // 在途：账本保持 Running（observe_operation 轮询收口）。
+                            // 在途：已落盘的 Running 即恢复锚点（重启 →
+                            // Unknown 对账，observe_operation 轮询收口）。
                         }
                         RpcStatus::Completed => {
                             let d = result.detail.clone();
@@ -373,14 +493,37 @@ impl<E: ActionExecutor> ManagementRpc<E> {
                                 &d,
                                 now_ms,
                             );
+                            // ④ 终态确认落盘：失败 ⇒ **不回 Completed**
+                            //（§6.3：效果可能已发生但账本未确认——回
+                            // 可查询的 Failed + 保留待重试，由周期面兜底）。
+                            // recheck RS1：该 op 同时记入未持久终态集合——
+                            // 在补写成功之前，重放/回查也不得回 Completed。
+                            if !self.persist_now() {
+                                self.pending_persist = true;
+                                self.mark_undurable_terminal(op_id);
+                                result.status = RpcStatus::Failed;
+                                result.detail = alloc::format!(
+                                    "op={op_id} terminal-persist-pending;requery-op"
+                                );
+                            }
                         }
                         RpcStatus::Failed => {
                             let d = result.detail.clone();
                             self.ops
                                 .finish(op_id, crate::mgmt_ops::OpStatus::Failed, &d, now_ms);
+                            if !self.persist_now() {
+                                self.pending_persist = true;
+                                self.mark_undurable_terminal(op_id);
+                                result.detail = alloc::format!(
+                                    "op={op_id} {};terminal-persist-pending",
+                                    result.detail
+                                );
+                            }
                         }
                     }
-                    result.detail = alloc::format!("op={op_id} {}", result.detail);
+                    if !result.detail.starts_with("op=") {
+                        result.detail = alloc::format!("op={op_id} {}", result.detail);
+                    }
                     self.push_audit(AuditRecord {
                         principal: session.principal.clone(),
                         channel: session.channel_binding.clone(),
@@ -392,16 +535,35 @@ impl<E: ActionExecutor> ManagementRpc<E> {
                 }
                 crate::mgmt_ops::OpGate::Replayed(op_id) => {
                     // 幂等回放：同一操作只执行一次——返回已记录状态。
+                    // recheck RS1：内存终态若尚未确认落盘（未持久终态集合
+                    // 在册），盘上事实仍是 Running——回放不得回 Completed，
+                    // 返回可查询的 pending 词形（补写成功后自动收敛）。
                     let record = self.ops.get(op_id).expect("Replayed 必有记录");
+                    let undurable = !self.terminal_persist_confirmed(op_id);
                     let r = match record.status {
                         crate::mgmt_ops::OpStatus::Running => ActionResult {
                             status: RpcStatus::Accepted,
                             detail: alloc::format!("op={op_id} in-progress (idempotent-replay)"),
                             payload: None,
                         },
+                        crate::mgmt_ops::OpStatus::Completed if undurable => ActionResult {
+                            status: RpcStatus::Failed,
+                            detail: alloc::format!(
+                                "op={op_id} replay: terminal-persist-pending;requery-op"
+                            ),
+                            payload: None,
+                        },
                         crate::mgmt_ops::OpStatus::Completed => ActionResult {
                             status: RpcStatus::Completed,
                             detail: alloc::format!("op={op_id} replay: {}", record.detail),
+                            payload: None,
+                        },
+                        crate::mgmt_ops::OpStatus::Failed if undurable => ActionResult {
+                            status: RpcStatus::Failed,
+                            detail: alloc::format!(
+                                "op={op_id} replay: {};terminal-persist-pending;requery-op",
+                                record.detail
+                            ),
                             payload: None,
                         },
                         crate::mgmt_ops::OpStatus::Failed => ActionResult {
@@ -508,7 +670,7 @@ impl<E: ActionExecutor> ManagementRpc<E> {
                     }
                 };
                 if record.status.is_terminal() {
-                    let line = alloc::format!(
+                    let mut line = alloc::format!(
                         "op={} {} {} gen={} created={} updated={} {}",
                         record.op_id,
                         record.action,
@@ -527,6 +689,17 @@ impl<E: ActionExecutor> ManagementRpc<E> {
                         crate::mgmt_ops::OpStatus::Completed => RpcStatus::Completed,
                         _ => RpcStatus::Failed,
                     };
+                    // recheck RS1：内存 Completed 若未确认落盘（盘上仍是
+                    // Running），查询不得回 Completed——保留可查询状态与
+                    // operation_id，补写成功后自动收敛。
+                    let status = if status == RpcStatus::Completed
+                        && !self.terminal_persist_confirmed(op_id)
+                    {
+                        line.push_str(" terminal-persist-pending;requery-op");
+                        RpcStatus::Failed
+                    } else {
+                        status
+                    };
                     return ActionResult {
                         status,
                         detail: line,
@@ -537,6 +710,22 @@ impl<E: ActionExecutor> ManagementRpc<E> {
                 match self.executor.observe_operation(&record, now_ms) {
                     Some((final_status, detail)) => {
                         self.ops.finish(op_id, final_status, &detail, now_ms);
+                        // recheck RS1：异步收口的终态必须在**本次回复之前**
+                        // 确认落盘（§6.3「终态持久成功……才可回复 Completed」
+                        // ——旧实现先回 Completed 再由外层兜底补写，崩溃后
+                        // 承诺与持久账本不一致）。失败 ⇒ 回可查询的
+                        // pending 词形并保留周期重试。
+                        if !self.persist_now() {
+                            self.pending_persist = true;
+                            self.mark_undurable_terminal(op_id);
+                            return ActionResult {
+                                status: RpcStatus::Failed,
+                                detail: alloc::format!(
+                                    "op={op_id} terminal-persist-pending;requery-op"
+                                ),
+                                payload: None,
+                            };
+                        }
                         None
                     }
                     None => Some(record.clone()),
@@ -615,6 +804,29 @@ mod tests {
     struct TestExecutor {
         fail: bool,
         executed: Vec<String>,
+        /// F70-03：持久面注入（存储可用性/提交成败；计数器供断言）。
+        storage_ok: bool,
+        persist_ok: bool,
+        /// 前 N 次提交的既定结果（崩溃断点注入：意图成功/终态失败等）；
+        /// 耗尽后回落 `persist_ok`。
+        persist_plan: Vec<bool>,
+        persist_calls: u32,
+        /// recheck RS1：异步观测计划——首次 observe_operation 消费并返回
+        /// （None = 仍在途）。模拟 agent-restart 的实例代次收口。
+        observe: Option<(crate::mgmt_ops::OpStatus, String)>,
+    }
+    impl Default for TestExecutor {
+        fn default() -> Self {
+            TestExecutor {
+                fail: false,
+                executed: Vec::new(),
+                storage_ok: true,
+                persist_ok: true,
+                persist_plan: Vec::new(),
+                persist_calls: 0,
+                observe: None,
+            }
+        }
     }
     impl ActionExecutor for TestExecutor {
         fn execute(
@@ -637,6 +849,24 @@ mod tests {
                 detail: "ok".into(),
                 payload: None,
             }
+        }
+
+        fn ops_storage_available(&mut self) -> bool {
+            self.storage_ok
+        }
+
+        fn observe_operation(
+            &mut self,
+            _record: &crate::mgmt_ops::OperationRecord,
+            _now_ms: u64,
+        ) -> Option<(crate::mgmt_ops::OpStatus, String)> {
+            self.observe.take()
+        }
+
+        fn persist_ops_state(&mut self, _state: &crate::mgmt_ops::MgmtOpsState) -> bool {
+            let i = self.persist_calls as usize;
+            self.persist_calls += 1;
+            self.persist_plan.get(i).copied().unwrap_or(self.persist_ok)
         }
     }
 
@@ -664,10 +894,7 @@ mod tests {
 
     #[test]
     fn positive_known_action_executes() {
-        let mut rpc = ManagementRpc::new(TestExecutor {
-            fail: false,
-            executed: vec![],
-        });
+        let mut rpc = ManagementRpc::new(TestExecutor::default());
         let r = rpc.handle(&admin(1000), 1, "status", b"", 1000);
         assert_eq!(r.status, RpcStatus::Completed);
         assert_eq!(rpc.audit.len(), 1);
@@ -676,10 +903,7 @@ mod tests {
 
     #[test]
     fn negative_unknown_action_not_defaulted() {
-        let mut rpc = ManagementRpc::new(TestExecutor {
-            fail: false,
-            executed: vec![],
-        });
+        let mut rpc = ManagementRpc::new(TestExecutor::default());
         let r = rpc.handle(&admin(1000), 1, "totally-unknown", b"", 1000);
         assert_eq!(r.status, RpcStatus::Failed);
         assert!(r.detail.contains("unknown-action"));
@@ -688,10 +912,7 @@ mod tests {
 
     #[test]
     fn negative_insufficient_role_denied() {
-        let mut rpc = ManagementRpc::new(TestExecutor {
-            fail: false,
-            executed: vec![],
-        });
+        let mut rpc = ManagementRpc::new(TestExecutor::default());
         let r = rpc.handle(&viewer(), 1, "factory-reset", b"", 1000);
         assert_eq!(r.status, RpcStatus::Failed);
         assert!(r.detail.contains("insufficient-role"));
@@ -702,7 +923,7 @@ mod tests {
     fn negative_executor_failure_propagates() {
         let mut rpc = ManagementRpc::new(TestExecutor {
             fail: true,
-            executed: vec![],
+            ..TestExecutor::default()
         });
         let r = rpc.handle(&admin(1000), 1, "config-get", b"", 1000);
         assert_eq!(r.status, RpcStatus::Failed);
@@ -711,10 +932,7 @@ mod tests {
 
     #[test]
     fn negative_replay_rejected_and_session_expiry() {
-        let mut rpc = ManagementRpc::new(TestExecutor {
-            fail: false,
-            executed: vec![],
-        });
+        let mut rpc = ManagementRpc::new(TestExecutor::default());
         rpc.handle(&admin(1000), 7, "status", b"", 1000);
         let r = rpc.handle(&admin(1000), 7, "status", b"", 2000);
         assert_eq!(r.status, RpcStatus::Failed);
@@ -765,10 +983,7 @@ mod tests {
     /// 50：正例——viewer 可查询服务状态（只读）。
     #[test]
     fn positive_status_query_viewer_allowed() {
-        let mut rpc = ManagementRpc::new(TestExecutor {
-            fail: false,
-            executed: vec![],
-        });
+        let mut rpc = ManagementRpc::new(TestExecutor::default());
         let r = rpc.handle(&viewer(), 1, "status", b"", 1000);
         assert_eq!(r.status, RpcStatus::Completed);
         assert_eq!(rpc.executor.executed.len(), 1);
@@ -781,10 +996,7 @@ mod tests {
     /// 50：越权负例——viewer 不能 ConfigGet（需 operator）。
     #[test]
     fn negative_config_get_viewer_denied() {
-        let mut rpc = ManagementRpc::new(TestExecutor {
-            fail: false,
-            executed: vec![],
-        });
+        let mut rpc = ManagementRpc::new(TestExecutor::default());
         let r = rpc.handle(&viewer(), 1, "config-get", b"", 1000);
         assert_eq!(r.status, RpcStatus::Failed);
         assert!(r.detail.contains("insufficient-role:operator"));
@@ -797,10 +1009,7 @@ mod tests {
     /// 50：越权负例——viewer 不能 SupportBundleExport（需 operator）。
     #[test]
     fn negative_support_bundle_viewer_denied() {
-        let mut rpc = ManagementRpc::new(TestExecutor {
-            fail: false,
-            executed: vec![],
-        });
+        let mut rpc = ManagementRpc::new(TestExecutor::default());
         let r = rpc.handle(&viewer(), 1, "support-bundle", b"", 1000);
         assert_eq!(r.status, RpcStatus::Failed);
         assert!(r.detail.contains("insufficient-role:operator"));
@@ -810,10 +1019,7 @@ mod tests {
     /// 50：越权负例——operator 不能 AgentRestart（需 admin）。
     #[test]
     fn negative_agent_restart_operator_denied() {
-        let mut rpc = ManagementRpc::new(TestExecutor {
-            fail: false,
-            executed: vec![],
-        });
+        let mut rpc = ManagementRpc::new(TestExecutor::default());
         let r = rpc.handle(&operator(1000), 1, "agent-restart", b"svc-ota", 1000);
         assert_eq!(r.status, RpcStatus::Failed);
         assert!(r.detail.contains("insufficient-role:admin"));
@@ -824,10 +1030,7 @@ mod tests {
     /// 审计词形 `Completed#<op_id>`，操作可回查）。
     #[test]
     fn positive_agent_restart_admin_allowed() {
-        let mut rpc = ManagementRpc::new(TestExecutor {
-            fail: false,
-            executed: vec![],
-        });
+        let mut rpc = ManagementRpc::new(TestExecutor::default());
         let r = rpc.handle(&admin(1000), 1, "agent-restart", b"svc-ota", 1000);
         assert_eq!(r.status, RpcStatus::Completed);
         assert!(r.detail.starts_with("op=1 "), "{}", r.detail);
@@ -854,10 +1057,7 @@ mod tests {
     /// 常驻字节与请求量解耦（N02 无界 Vec 收口），窗口内记录完整。
     #[test]
     fn bounded70_audit_ring_drops_oldest_and_counts() {
-        let mut rpc = ManagementRpc::new(TestExecutor {
-            fail: false,
-            executed: vec![],
-        });
+        let mut rpc = ManagementRpc::new(TestExecutor::default());
         let total = MGMT_AUDIT_MAX_RECORDS + 8;
         for i in 0..total {
             let r = rpc.handle(&admin(1000), 100 + i as u64, "status", b"", 1000);
@@ -882,10 +1082,7 @@ mod tests {
     /// 并计数；逐出后同 id 不再判重（窗口语义如实——非持久操作账）。
     #[test]
     fn bounded70_replay_window_evicts_oldest() {
-        let mut rpc = ManagementRpc::new(TestExecutor {
-            fail: false,
-            executed: vec![],
-        });
+        let mut rpc = ManagementRpc::new(TestExecutor::default());
         // 填满窗口（首个 id = 1）。
         for i in 1..=(MGMT_REPLAY_SEEN_MAX as u64) {
             let r = rpc.handle(&admin(1000), i, "status", b"", 1000);
@@ -909,6 +1106,418 @@ mod tests {
         // 窗口内 id（如 500）仍判重。
         let r = rpc.handle(&admin(1000), 500, "status", b"", 1003);
         assert_eq!(r.detail, "replay-request");
+    }
+
+    // ============================================================
+    // F70-03（S2/S3）：管理意图持久化与完整请求幂等（M01～M08 host 面）
+    // ============================================================
+
+    /// M01/S3 红转绿：同 principal/request_id、空参数，先后
+    /// `maintenance-enter` / `maintenance-exit`——第二个必须 Conflict，
+    /// 只执行 enter，exit 不得拿 enter 的 Completed 充当结果。
+    #[test]
+    fn m01_same_id_different_action_conflicts_not_replay() {
+        let mut rpc = ManagementRpc::new(TestExecutor::default());
+        let enter = rpc.handle(&admin(1000), 123, "maintenance-enter", b"", 1000);
+        assert_eq!(enter.status, RpcStatus::Completed, "{}", enter.detail);
+        let exit = rpc.handle(&admin(1100), 123, "maintenance-exit", b"", 1100);
+        assert_eq!(
+            exit.status,
+            RpcStatus::Failed,
+            "不同动作同 ID 必须 Conflict"
+        );
+        assert!(
+            exit.detail.contains("idempotency-conflict"),
+            "{}",
+            exit.detail
+        );
+        assert_eq!(rpc.executor.executed.len(), 1, "只执行 enter");
+        assert!(
+            rpc.executor.executed[0].contains("MaintenanceEnter"),
+            "{:?}",
+            rpc.executor.executed
+        );
+    }
+
+    /// M02：完全相同请求在 Completed / Running（在途）/ 恢复后重放 ⇒
+    /// 同 operation_id，执行计数不增加，状态如实。
+    #[test]
+    fn m02_identical_replay_same_op_no_double_execution() {
+        let mut rpc = ManagementRpc::new(TestExecutor::default());
+        let r1 = rpc.handle(&admin(1000), 7, "maintenance-enter", b"cfg=1", 1000);
+        assert_eq!(r1.status, RpcStatus::Completed);
+        assert!(r1.detail.contains("op=1"));
+        let r2 = rpc.handle(&admin(1200), 7, "maintenance-enter", b"cfg=1", 1200);
+        assert_eq!(r2.status, RpcStatus::Completed, "{}", r2.detail);
+        assert!(r2.detail.contains("op=1"), "同 operation_id：{}", r2.detail);
+        assert!(r2.detail.contains("replay"), "{}", r2.detail);
+        assert_eq!(rpc.executor.executed.len(), 1, "重放不重复执行");
+
+        // 恢复后重放：从持久态重建（模拟重启——mark_unknown_inflight 只对
+        // 在途；Completed 记录保持终态）。
+        let mut restored = rpc.ops.clone();
+        restored.mark_unknown_inflight(2000);
+        let mut rpc2 = ManagementRpc::new(TestExecutor::default());
+        rpc2.ops = restored;
+        let r3 = rpc2.handle(&admin(2100), 7, "maintenance-enter", b"cfg=1", 2100);
+        assert_eq!(r3.status, RpcStatus::Completed, "已终态记录的重放原样返回");
+        assert!(r3.detail.contains("op=1"));
+        assert_eq!(rpc2.executor.executed.len(), 0, "恢复后重放仍不重复执行");
+    }
+
+    /// M03：同键不同参数 = Conflict；未授权角色 = 拒绝且副作用 0 次。
+    #[test]
+    fn m03_same_key_different_arg_or_bad_identity_rejected() {
+        let mut rpc = ManagementRpc::new(TestExecutor::default());
+        assert_eq!(
+            rpc.handle(&admin(1000), 9, "config-set", b"aaa", 1000)
+                .status,
+            RpcStatus::Completed
+        );
+        let r = rpc.handle(&admin(1100), 9, "config-set", b"bbb", 1100);
+        assert_eq!(r.status, RpcStatus::Failed);
+        assert!(r.detail.contains("idempotency-conflict"));
+        assert_eq!(rpc.executor.executed.len(), 1);
+
+        // 非法身份（角色不足）：副作用 0 次（授权先于账本/执行）。
+        let mut rpc2 = ManagementRpc::new(TestExecutor::default());
+        let r2 = rpc2.handle(&viewer(), 10, "maintenance-enter", b"", 1000);
+        assert_eq!(r2.status, RpcStatus::Failed);
+        assert!(r2.detail.contains("insufficient-role"));
+        assert!(rpc2.executor.executed.is_empty());
+        assert!(rpc2.ops.records().is_empty(), "授权拒绝不入账本");
+    }
+
+    /// M04（host 面）：存储面不可用（无授权/坏介质/装载失败）⇒ 需幂等
+    /// 保障的副作用拒绝、executor 0 次；只读诊断不受影响。
+    #[test]
+    fn m04_storage_unavailable_rejects_side_effects_only() {
+        let mut rpc = ManagementRpc::new(TestExecutor {
+            storage_ok: false,
+            ..TestExecutor::default()
+        });
+        let r = rpc.handle(&admin(1000), 3, "maintenance-enter", b"", 1000);
+        assert_eq!(r.status, RpcStatus::Failed);
+        assert_eq!(
+            r.detail,
+            "ops-store-unavailable:side-effect-requires-ledger"
+        );
+        assert!(rpc.executor.executed.is_empty());
+        assert!(rpc.ops.records().is_empty(), "拒绝不留幻影在途记录");
+        // 只读诊断照常。
+        let q = rpc.handle(&admin(1100), 4, "update-check", b"", 1100);
+        assert_eq!(q.status, RpcStatus::Completed, "只读不受存储面影响");
+    }
+
+    /// M05：意图提交失败（写/flush/CAS 失败或结果不确定）⇒ executor
+    /// 调用 0 次、账本回到受理前形态；之后同请求重试按**新请求**受理
+    ///（盘上从未有过该记录，不丢幂等账）。
+    #[test]
+    fn m05_intent_persist_failure_blocks_executor_and_rolls_back() {
+        let mut rpc = ManagementRpc::new(TestExecutor {
+            persist_ok: false,
+            ..TestExecutor::default()
+        });
+        let r = rpc.handle(&admin(1000), 5, "maintenance-enter", b"", 1000);
+        assert_eq!(r.status, RpcStatus::Failed);
+        assert_eq!(r.detail, "ops-intent-persist-failed:executor-not-called");
+        assert!(rpc.executor.executed.is_empty());
+        assert!(rpc.ops.records().is_empty(), "abort_new 撤回受理记录");
+        assert_eq!(rpc.executor.persist_calls, 1, "意图提交恰一次（失败即停）");
+
+        // 存储恢复后同一请求重试 ⇒ 新请求受理并成功（无残留冲突）。
+        rpc.executor.persist_ok = true;
+        let r2 = rpc.handle(&admin(2000), 5, "maintenance-enter", b"", 2000);
+        assert_eq!(r2.status, RpcStatus::Completed, "{}", r2.detail);
+        assert_eq!(rpc.executor.executed.len(), 1);
+        assert!(
+            r2.detail.contains("op=1"),
+            "撤回后 op 号不跳空：{}",
+            r2.detail
+        );
+    }
+
+    /// M06：真实副作用已发生、终态持久提交失败 ⇒ **不回 Completed**；
+    /// 状态可查询（Failed + terminal-persist-pending）；周期兜底提交成功
+    /// 后收敛（pending 清零、账本 Completed、重放返回 Completed）。
+    #[test]
+    fn m06_terminal_persist_failure_keeps_queryable_state_and_converges() {
+        let mut rpc = ManagementRpc::new(TestExecutor {
+            // 意图（第 1 次）成功，终态（第 2 次）失败——真实副作用已发生。
+            persist_plan: vec![true, false],
+            ..TestExecutor::default()
+        });
+        let r = rpc.handle(&admin(1000), 11, "maintenance-enter", b"", 1000);
+        assert_eq!(rpc.executor.executed.len(), 1, "副作用已真实发生");
+        assert_eq!(
+            r.status,
+            RpcStatus::Failed,
+            "终态未确认落盘不得回 Completed"
+        );
+        assert!(
+            r.detail.contains("terminal-persist-pending"),
+            "{}",
+            r.detail
+        );
+        assert!(r.detail.contains("op=1"));
+        assert!(rpc.pending_persist(), "保留待重试旗");
+        assert_eq!(
+            rpc.ops.get(1).map(|x| x.status),
+            Some(crate::mgmt_ops::OpStatus::Completed),
+            "内存终态如实（可查询）"
+        );
+
+        // 周期兜底（消息驱动）：下一条消息触发重试 ⇒ 收敛。
+        rpc.executor.persist_ok = true;
+        let committed = rpc
+            .executor
+            .persist_ops_state(&crate::mgmt_ops::MgmtOpsState {
+                ledger: rpc.ops.clone(),
+            });
+        rpc.note_persist(committed);
+        assert!(committed);
+        assert!(!rpc.pending_persist());
+        // 重放返回已收敛的 Completed（不再 pending 词形）。
+        let r2 = rpc.handle(&admin(1500), 11, "maintenance-enter", b"", 1500);
+        assert_eq!(r2.status, RpcStatus::Completed, "{}", r2.detail);
+        assert_eq!(rpc.executor.executed.len(), 1, "收敛后重放不重复执行");
+    }
+
+    /// M07：四个崩溃断点分别按**持久事实**恢复；可能已执行的动作不自动
+    /// 重做（host 模拟：以"最后一次成功提交的账本快照"为盘上事实）。
+    #[test]
+    fn m07_crash_breakpoints_recover_from_persisted_facts() {
+        // 断点 1：意图落盘前崩溃（提交失败即未执行）⇒ 盘上无记录。
+        {
+            let mut rpc = ManagementRpc::new(TestExecutor {
+                persist_ok: false,
+                ..TestExecutor::default()
+            });
+            let _ = rpc.handle(&admin(1000), 21, "maintenance-enter", b"", 1000);
+            assert!(rpc.executor.executed.is_empty());
+            // 盘 = 空；恢复后同请求 = 新请求（可受理，非冲突）。
+            let mut rpc2 = ManagementRpc::new(TestExecutor::default());
+            let r = rpc2.handle(&admin(2000), 21, "maintenance-enter", b"", 2000);
+            assert_eq!(r.status, RpcStatus::Completed);
+        }
+        // 断点 2/3：意图已落盘、执行前/执行后终态前崩溃 ⇒ 盘上 Running，
+        // 恢复转 Unknown；重放返回 Unknown（不自动重做——副作用可能已
+        // 发生，物理 exactly-once 不可证，诚实 Unknown 可对账）。
+        {
+            // 盘上事实 = 只有 Running 意图（经 begin 构造 = 提交成功的
+            // 持久形态）。
+            let mut disk = crate::mgmt_ops::OperationLedger::new();
+            let digest = crate::mgmt_ops::arg_digest(b"");
+            assert!(matches!(
+                disk.begin(22, "ops-1", "maintenance-enter", digest, 1, 1000),
+                crate::mgmt_ops::OpGate::New(1)
+            ));
+            let mut rpc2 = ManagementRpc::new(TestExecutor::default());
+            let mut restored = disk;
+            restored.mark_unknown_inflight(3000);
+            rpc2.ops = restored;
+            let r = rpc2.handle(&admin(3100), 22, "maintenance-enter", b"", 3100);
+            assert_eq!(r.status, RpcStatus::Failed, "Unknown 不得冒称成功");
+            assert!(r.detail.contains("op=1"));
+            assert!(
+                rpc2.executor.executed.is_empty(),
+                "可能已执行的动作不自动重做"
+            );
+        }
+        // 断点 4：终态落盘后、回应前崩溃 ⇒ 盘上 Completed；重放返回
+        // Completed 且不再执行。
+        {
+            let mut rpc = ManagementRpc::new(TestExecutor::default());
+            let _ = rpc.handle(&admin(1000), 23, "maintenance-enter", b"", 1000);
+            let disk = rpc.ops.clone();
+            let mut rpc2 = ManagementRpc::new(TestExecutor::default());
+            let mut restored = disk;
+            restored.mark_unknown_inflight(4000);
+            rpc2.ops = restored;
+            let r = rpc2.handle(&admin(4100), 23, "maintenance-enter", b"", 4100);
+            assert_eq!(r.status, RpcStatus::Completed, "{}", r.detail);
+            assert!(rpc2.executor.executed.is_empty(), "终态在盘 ⇒ 零重执行");
+        }
+    }
+
+    /// M08：账本满 + 在途 = 背压拒绝（不驱逐未决；已有既有锁，此处锁
+    /// RPC 层词形与执行计数）。
+    #[test]
+    fn m08_full_ledger_backpressure_at_rpc_layer() {
+        use crate::mgmt_ops::{OpStatus, MGMT_OPS_MAX};
+        let mut rpc = ManagementRpc::new(TestExecutor::default());
+        // 直填账本到满（全 Running = 在途占位）。
+        for i in 0..MGMT_OPS_MAX as u64 {
+            let digest = crate::mgmt_ops::arg_digest(&i.to_le_bytes());
+            assert!(matches!(
+                rpc.ops
+                    .begin(1000 + i, "ops-1", "agent-restart", digest, 1, i),
+                crate::mgmt_ops::OpGate::New(_)
+            ));
+        }
+        assert_eq!(rpc.ops.records().len(), MGMT_OPS_MAX);
+        let r = rpc.handle(&admin(1000), 999, "maintenance-enter", b"", 1000);
+        assert_eq!(r.status, RpcStatus::Failed);
+        assert_eq!(r.detail, "ops-backpressure:ledger-full-with-inflight");
+        assert!(rpc.executor.executed.is_empty());
+        // 未决不被驱逐。
+        assert_eq!(rpc.ops.records().len(), MGMT_OPS_MAX);
+        assert!(rpc
+            .ops
+            .records()
+            .iter()
+            .all(|x| x.status == OpStatus::Running));
+    }
+
+    // ============================================================
+    // recheck RS1/RS2（2026-09-19 复查缺陷）：终态持久确认边界——
+    // 同步/异步/幂等重放/状态查询全部出口共用「终态落盘前不得回
+    // Completed」的确认边界；提交失败保留待重试状态。
+    // ============================================================
+
+    /// RS1 同步面：真实副作用已发生、终态持久失败 ⇒ 首答/重放/查询三
+    /// 出口都不得回 Completed；周期补写成功后收敛（重放回 Completed，
+    /// 执行次数恒 1）。
+    #[test]
+    fn rs1_sync_terminal_undurable_replay_and_query_not_completed() {
+        let mut rpc = ManagementRpc::new(TestExecutor {
+            // 意图（第 1 次）成功，终态（第 2 次）失败。
+            persist_plan: vec![true, false],
+            ..TestExecutor::default()
+        });
+        let first = rpc.handle(&admin(1000), 31, "maintenance-enter", b"", 1000);
+        assert_eq!(rpc.executor.executed.len(), 1, "副作用已真实发生");
+        assert_eq!(first.status, RpcStatus::Failed);
+        assert!(
+            first.detail.contains("terminal-persist-pending"),
+            "{}",
+            first.detail
+        );
+
+        // 幂等重放：盘上事实仍是 Running——不得回 Completed。
+        let replay = rpc.handle(&admin(1100), 31, "maintenance-enter", b"", 1100);
+        assert_eq!(replay.status, RpcStatus::Failed, "{}", replay.detail);
+        assert!(
+            replay.detail.contains("terminal-persist-pending"),
+            "{}",
+            replay.detail
+        );
+        assert_eq!(rpc.executor.executed.len(), 1, "重放零执行");
+
+        // 状态查询 op:1：同样不得回 Completed。
+        let query = rpc.handle(&admin(1200), 32, "status", b"op:1", 1200);
+        assert_eq!(query.status, RpcStatus::Failed, "{}", query.detail);
+        assert!(
+            query.detail.contains("terminal-persist-pending"),
+            "{}",
+            query.detail
+        );
+
+        // 周期补写成功（装配侧 persist_ops + note_persist）⇒ 收敛。
+        rpc.executor.persist_ok = true;
+        let committed = rpc
+            .executor
+            .persist_ops_state(&crate::mgmt_ops::MgmtOpsState {
+                ledger: rpc.ops.clone(),
+            });
+        rpc.note_persist(committed);
+        assert!(committed);
+        assert!(!rpc.pending_persist());
+        let converged = rpc.handle(&admin(1300), 31, "maintenance-enter", b"", 1300);
+        assert_eq!(
+            converged.status,
+            RpcStatus::Completed,
+            "{}",
+            converged.detail
+        );
+        assert_eq!(rpc.executor.executed.len(), 1, "收敛后仍零重复执行");
+    }
+
+    /// RS1 异步面：observe_operation 收口出终态时，终态必须在**本次回复
+    /// 之前**确认落盘——提交失败 ⇒ 回复非 Completed + 保留待重试；补写
+    /// 成功后查询收敛 Completed。
+    #[test]
+    fn rs1_async_observe_persists_terminal_before_reply() {
+        let mut rpc = ManagementRpc::new(TestExecutor {
+            observe: Some((
+                crate::mgmt_ops::OpStatus::Completed,
+                alloc::string::String::from("restart-complete:gen=2"),
+            )),
+            // 异步收口的终态提交失败（意图不经过 persist_now——Running
+            // 由 begin 直建，模拟盘上已有意图）。
+            persist_plan: vec![false],
+            ..TestExecutor::default()
+        });
+        let digest = crate::mgmt_ops::arg_digest(b"svc-observability");
+        assert!(matches!(
+            rpc.ops.begin(40, "ops-1", "agent-restart", digest, 1, 1000),
+            crate::mgmt_ops::OpGate::New(1)
+        ));
+        let poll = rpc.handle(&admin(1100), 41, "status", b"op:1", 1100);
+        assert_eq!(
+            poll.status,
+            RpcStatus::Failed,
+            "终态未落盘不得回 Completed：{}",
+            poll.detail
+        );
+        assert!(
+            poll.detail.contains("terminal-persist-pending"),
+            "{}",
+            poll.detail
+        );
+        assert!(rpc.pending_persist(), "保留待重试旗");
+        assert_eq!(rpc.executor.persist_calls, 1, "收口步恰一次提交尝试");
+        // 内存终态如实（可查询、不丢观测事实）。
+        assert_eq!(
+            rpc.ops.get(1).map(|r| r.status),
+            Some(crate::mgmt_ops::OpStatus::Completed)
+        );
+        // 后续查询（同 op 再轮询）也不得回 Completed。
+        let again = rpc.handle(&admin(1150), 42, "status", b"op:1", 1150);
+        assert_eq!(again.status, RpcStatus::Failed, "{}", again.detail);
+        assert!(again.detail.contains("terminal-persist-pending"));
+        // 补写成功 ⇒ 收敛。
+        rpc.executor.persist_ok = true;
+        let committed = rpc
+            .executor
+            .persist_ops_state(&crate::mgmt_ops::MgmtOpsState {
+                ledger: rpc.ops.clone(),
+            });
+        rpc.note_persist(committed);
+        let done = rpc.handle(&admin(1200), 43, "status", b"op:1", 1200);
+        assert_eq!(done.status, RpcStatus::Completed, "{}", done.detail);
+        // 成功路径：下一次异步收口提交成功 ⇒ 直接回 Completed。
+        let mut rpc2 = ManagementRpc::new(TestExecutor {
+            observe: Some((
+                crate::mgmt_ops::OpStatus::Completed,
+                alloc::string::String::from("restart-complete:gen=5"),
+            )),
+            persist_plan: vec![true],
+            ..TestExecutor::default()
+        });
+        assert!(matches!(
+            rpc2.ops
+                .begin(50, "ops-1", "agent-restart", digest, 1, 1000),
+            crate::mgmt_ops::OpGate::New(1)
+        ));
+        let ok = rpc2.handle(&admin(2100), 51, "status", b"op:1", 2100);
+        assert_eq!(ok.status, RpcStatus::Completed, "{}", ok.detail);
+        assert!(!rpc2.pending_persist());
+    }
+
+    /// RS2：装配侧提交失败必须保留待重试旗（旧 note_persist(false) 无
+    /// 操作——异步路径失败后无任何标志可触发重试）。
+    #[test]
+    fn rs2_note_persist_failure_retains_retry_flag() {
+        let mut rpc = ManagementRpc::new(TestExecutor::default());
+        assert!(!rpc.pending_persist());
+        rpc.note_persist(false);
+        assert!(
+            rpc.pending_persist(),
+            "提交失败 ⇒ pending 置位（§6.3.4 终态提交失败保留待处理状态）"
+        );
+        rpc.note_persist(true);
+        assert!(!rpc.pending_persist(), "确认提交 ⇒ 清旗");
     }
 }
 

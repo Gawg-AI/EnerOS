@@ -87,14 +87,35 @@ pub extern "C" fn _start(
             // 经 X7 直传（0=不可用）；MMIO = 同页 slot 0（数据盘页内偏移
             // +0x400，boot = −0x400 回页基址）。
             if boot_dma_base != 0 && boot_dma_base & 0xfff == 0 {
+                // F70-02（S1）：本次运行槽身份（root 只读身份页注入；缺失/
+                // 无效 ⇒ 安装与确认写面整体关闭，fail-closed 不猜槽）。
+                let running = eneros_drv_svc::boot_guard::running_identity_from_page(
+                    eneros_handover_abi::STORAGE_BOOT_IDENTITY_VADDR,
+                );
+                match running {
+                    Some(r) => {
+                        eneros_runtime::println!(
+                            "[svc-storage] BOOT-IDENTITY: slot={} secver={} release={:02x?}",
+                            if r.is_a { "A" } else { "B" },
+                            r.security_version,
+                            &r.release_id[..4]
+                        );
+                    }
+                    None => {
+                        eneros_runtime::println!(
+                            "[svc-storage] BOOT-IDENTITY: missing/invalid —— 安装与确认写面关闭（fail-closed）"
+                        );
+                    }
+                }
                 match eneros_drv_svc::blk_backend::BootSlotBackend::try_new_boot(
                     mmio_vaddr - 0x400,
                     boot_dma_base,
                     boot_dma_base,
+                    running,
                 ) {
                     Ok(boot) => {
                         use eneros_drv_svc::block_cmd::InstallBackend as _;
-                        let (is, il, bs, bl) = boot.install_ranges();
+                        let (is, il, bs, _bl) = boot.install_ranges();
                         s.attach_install(alloc::boxed::Box::new(boot));
                         eneros_runtime::println!(
                             "[svc-storage] BOOT-INSTALL attached: inactive_lba={is} lbas={il} bootctrl_lba={bs}"

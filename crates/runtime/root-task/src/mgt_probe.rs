@@ -333,29 +333,16 @@ pub mod driver {
                 };
                 let i = next_part;
                 if i >= total {
-                    // 幂等回放步：重发 part1（同 rid 同 arg）→ 账本回放。
-                    // 70.12（本卷 QEMU 实弹暴露的次生缺陷修复）：**无载荷**
-                    // （`PROBE_BUNDLE` 为空 ⇒ `total == 0`）时原实现直接
-                    // `&bundle[..512]` → 越界 panic（实弹：`PANIC #1 at
-                    // mgt_probe.rs:342`，WDT 未映射 → 挂起），整条探针链在
-                    // step 3 断裂。空载荷是**探针前置缺失**，不是"发得出去"：
-                    // 显式拒绝并跳过回放（fail-closed 语义保留），探针链得以
-                    // 继续跑完其余步（配置事务/BOOT 守卫/trial 各步判据不依赖
-                    // 空载荷的回放）。
-                    let replay_arg = replay_arg_for(bundle, total as u64);
-                    match replay_arg {
-                        Some(arg) => {
-                            let rf = build_frame(200, b"config-set", &arg);
-                            let _ = call_chunked(svc_mgmt_ep, &rf, &mut epoch);
-                            eneros_runtime::println!(
-                                "[eneros-root-task] MGT-PROBE: part1 idempotent replay sent (step 3/13)"
-                            );
-                        }
-                        None => {
-                            eneros_runtime::println!(
-                                "[eneros-root-task] MGT-PROBE-REJECT reason=empty-bundle (step 3/13 skipped, need >=512B payload)"
-                            );
-                        }
+                    // 空载荷面（70.12 实弹缺陷修复保留）：`PROBE_BUNDLE` 为空
+                    // ⇒ `total == 0` ⇒ 无 part 可发/无回放对象——显式拒绝并
+                    // 跳过（fail-closed；探针链继续跑其余步）。
+                    // F70-03：幂等回放步已前移至 part1 落账后（下方 `i == 0`
+                    // 分支）——账本持久容量（15）小于 17 部件工作集，全部
+                    // 部件后再重放会落在逐出视野之外（重放=新执行）。
+                    if total == 0 {
+                        eneros_runtime::println!(
+                            "[eneros-root-task] MGT-PROBE-REJECT reason=empty-bundle (step 3/13 skipped, need >=512B payload)"
+                        );
                     }
                     advance!(ProbeState::StageCommit);
                     return ProbeDirective::None;
@@ -373,6 +360,22 @@ pub mod driver {
                     next_part: i + 1,
                     total_parts: total
                 });
+                // F70-03（vol6 实弹订正）：幂等回放步 = **part1 落账后立即
+                // 重发**（同 rid=200 同 arg）——原实现把回放放在全部 17 个
+                // 部件之后，而持久账本容量（15，与区段槽预算一致）在 17
+                // 部件后已把 part1 的记录逐出 ⇒ "重放"变成**新执行**
+                //（op=18 再跑一次 stage-part = 幂等保证被逐出视野击穿，
+                // R18 实弹咬合）。回放语义 = 记录在册期间零重复执行；
+                // 逐出/背压视野由 host 账本容量锁（M08）覆盖。
+                if i == 0 {
+                    if let Some(rarg) = replay_arg_for(bundle, total as u64) {
+                        let rf = build_frame(200, b"config-set", &rarg);
+                        let _ = call_chunked(svc_mgmt_ep, &rf, &mut epoch);
+                        eneros_runtime::println!(
+                            "[eneros-root-task] MGT-PROBE: part1 idempotent replay sent (step 3/13)"
+                        );
+                    }
+                }
                 if ok {
                     ProbeDirective::None
                 } else {

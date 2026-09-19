@@ -351,8 +351,17 @@ pub struct DispatchEngine {
     /// ADR-0054:29–30：持有输入保留面（None = 未装配——host 测试或
     /// fail-closed 装配由调用方以 NoRetention 显式承担）。
     input_retainer: Option<alloc::boxed::Box<dyn held_engine::HeldInputRetainer>>,
-    /// 已解除钉的快照 ID（防重复 release；有界环形回收）。
-    released_holds: alloc::vec::Vec<[u8; 16]>,
+    /// 已解除钉的 (快照 ID, 持有代次)（防重复 release；有界环形回收）。
+    /// F70-04（§7.2.6）：**代次安全**——快照每被一轮新准入持有，代次 +1；
+    /// 缓存条目代次 ≠ 当前代次 ⇒ 旧完成事实失效，不得抑制新一轮释放
+    ///（覆盖"准入后同 pass 内完成"——引用剪除看不见曾经发生的新持有）。
+    released_holds: alloc::vec::Vec<([u8; 16], u32)>,
+    /// 快照持有代次（每次成功准入 +1；有界 ≤16，最旧键淘汰——淘汰只
+    /// 引发至多一次幂等重释放，不损正确性）。
+    hold_epochs: alloc::collections::BTreeMap<[u8; 16], u32>,
+    /// F70-04（R2/§7.2.4）：释放失败的快照（有界 ≤16）——空闲周期也
+    /// 持续重试；快照被新一轮持有时条目撤销（不释放新持有人的钉）。
+    pending_releases: alloc::vec::Vec<[u8; 16]>,
     /// 已打印终态行的计划 ID（HELD-PLAN-DONE 一次性证据行）。
     held_done_logged: alloc::vec::Vec<eneros_decision_contract::PlanId>,
     /// 钉面失败计数（hold 拒绝/装配缺失面——可观测不静默）。
@@ -1216,6 +1225,8 @@ impl DispatchEngine {
             held_store_unavailable: false,
             input_retainer: None,
             released_holds: alloc::vec::Vec::new(),
+            hold_epochs: alloc::collections::BTreeMap::new(),
+            pending_releases: alloc::vec::Vec::new(),
             held_done_logged: alloc::vec::Vec::new(),
             held_pin_failures: 0,
         };
@@ -1749,8 +1760,11 @@ impl DispatchEngine {
             .first()
             .map(|b| *b.batch_digest())
             .unwrap_or([0u8; 32]);
+        // F70-05（R5/§8.2.2）：编译行携带**完整 plan id**——紧邻日志位置
+        // 只能辅助阅读，不得作为唯一关联（完整 id 才是机器身份；摘要
+        // 保留 4B 前缀供阅读）。
         eneros_runtime::println!(
-            "[svc-control-dispatch] PLAN-COMPILED batches={} intents={} skipped={} manual={} compiler={:02x?} batch={:02x?}",
+            "[svc-control-dispatch] PLAN-COMPILED batches={} intents={} skipped={} manual={} compiler={:02x?} batch={:02x?} plan={:02x?}",
             outcome.batches.len(),
             outcome
                 .batches
@@ -1761,6 +1775,7 @@ impl DispatchEngine {
             outcome.manual_approval.len(),
             &outcome.compiler_digest[..4],
             &first_digest[..4],
+            plan.id().0,
         );
 
         // An irreversible command needs an explicit approval capability. The

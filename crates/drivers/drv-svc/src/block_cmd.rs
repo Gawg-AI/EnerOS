@@ -324,6 +324,11 @@ pub trait InstallBackend: BlockBackend {
     /// (非活动槽起始 lba, 非活动槽 lbas, BOOTCTRL 起始 lba, BOOTCTRL lbas)。
     fn install_ranges(&self) -> (u64, u64, u64, u64);
 
+    /// F70-02（S1）：本次**实际运行**槽身份（可信启动交接数据；init 期
+    /// 解析、本 boot 内冻结）。None = 身份缺失/无效 ⇒ 确认面拒绝、安装
+    /// 写面已由空区间整体关闭。
+    fn running_identity(&self) -> Option<crate::boot_guard::RunningIdentity>;
+
     /// 安装写范围守卫（WP-70.7.2 核心不变量：非活动槽 ∪ BOOTCTRL 之外
     /// 零写）。**单位契约**：`lba` = 512B 扇区；`len_bytes` = 写入字节数
     /// ——字节→扇区上取整的换算**只在此处**发生（旧实现在两处调用点各
@@ -634,6 +639,16 @@ mod tests {
             let (b, bl) = lba_range_of(BootPartition::BootB);
             let (bc, bcl) = lba_range_of(BootPartition::BootCtrl);
             (b, bl, bc, bcl)
+        }
+
+        /// F70-02：测试替身 = A 槽运行身份（与 install_ranges 的非活动=B
+        /// 口径一致）。
+        fn running_identity(&self) -> Option<crate::boot_guard::RunningIdentity> {
+            Some(crate::boot_guard::RunningIdentity {
+                is_a: true,
+                security_version: 1,
+                release_id: [0u8; 16],
+            })
         }
     }
 

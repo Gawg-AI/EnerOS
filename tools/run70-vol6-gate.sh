@@ -247,7 +247,51 @@ check R25 "操作账本跨重启恢复（MGMT-OPS ledger restored）" bash -c "g
 check R26 "窗T-2 零 PANIC" bash -c "! grep -aqcE 'PANIC|memory allocation of' '$EVROOT/t2.qemu-serial.log'"
 
 # ============================================================
-say "=== 段4：恢复基线束 ==="
+# F70-03（M04 目标面）：坏账本 ⇒ 副作用写面拒绝（fail-closed）。
+# 把数据盘 MgmtOps 区段（block 368 = BUSINESS_BAND_BASE_BLOCK 264+104，
+# 8×512B）写成垃圾 → 同盘再启：装载失败必须显式拒绝副作用操作
+#（旧实现静默换新账本 = 丢失幂等记录 = 已确认操作可被重复执行），
+# 只读诊断照常。
+say "=== 段4：窗T-3 坏账本冷启动（M04：副作用面 fail-closed）==="
+OPS_OFF=$((368 * 512))
+dd if=/dev/urandom of="$DATADISK" bs=1 seek=$OPS_OFF count=4096 conv=notrunc status=none \
+  || { say "MgmtOps 区段破坏失败"; echo "VOL70.6-GATE: FAIL"; exit 2; }
+DIR3="$RUN/t3"
+rm -rf "$DIR3"; mkdir -p "$DIR3"
+VARS_T3="$DIR2/AAVMF_VARS.run.fd"
+[ -f "$VARS_T3" ] || VARS_T3="$TPL"
+cargo xtask run qemu-test \
+    --image "$IMG" --vars-template "$VARS_T3" \
+    --expect PASS --evidence-dir "$DIR3" \
+    --data-disk "$DATADISK" \
+    --net-mode present --net-user --net-protocols present \
+    --ready-marker root-heartbeat --qmp-deadline-secs "$DL_T2" &
+HPID3=$!
+S3="$DIR3/qemu-serial.log"
+for i in $(seq 1 300); do
+    if grep -aq "PRODUCT-READY" "$S3" 2>/dev/null; then break; fi
+    if ! kill -0 $HPID3 2>/dev/null; then break; fi
+    sleep 1
+done
+sleep 15
+kill -9 $(pgrep -f qemu-system) 2>/dev/null || true
+pkill -9 -f "eneros-[x]task run" 2>/dev/null || true
+sleep 3
+kill $HPID3 2>/dev/null || true
+cp "$S3" "$EVROOT/t3.qemu-serial.log" 2>/dev/null || true
+
+# ---------- 窗T-3 判据（M04）----------
+say "=== 段4 判据（窗T-3）==="
+check R27 "坏账本装载失败显式报告（不静默换新）" bash -c "grep -aq 'MGMT-OPS ledger load failed' '$EVROOT/t3.qemu-serial.log'"
+check R28 "副作用面 fail-closed（ops-store-corrupt 拒绝词形）" bash -c "grep -aq 'side-effect ops REJECTED (ops-store-corrupt' '$EVROOT/t3.qemu-serial.log'"
+# R29（MGT1 层 ops-store-unavailable 拒绝词形）：本窗结构性不可达——
+# 探针启动前置（restart_done：需 T-1 的受控重启世代）在冷启动窗恒假，
+# 探针不发 MGT1 请求。该拒绝路径由 host M04 锁（m04_storage_unavailable_
+# rejects_side_effects_only）+ R28 的存储侧拒绝词形共同覆盖。
+check R30 "窗T-3 零 PANIC（只读诊断继续）" bash -c "! grep -aqcE 'PANIC|memory allocation of' '$EVROOT/t3.qemu-serial.log'"
+
+# ============================================================
+say "=== 段5：恢复基线束 ==="
 # ============================================================
 ENEROS_KMS_DIR=configs/kms-dev cargo xtask config compile --profile qemu-test \
     --accept-test-signing-key --root-key-hex "$TEST_ROOT_KEY_HEX" \

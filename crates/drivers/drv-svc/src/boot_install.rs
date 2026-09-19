@@ -35,18 +35,6 @@ fn is_pending_trial(s: eneros_boot_protocol::SlotState) -> bool {
     !s.successful && s.priority != 0 && s.tries_remaining != 0
 }
 
-/// `BootControl::select()` → 是否 A 槽（Recovery 与不可选 = `Err`）。
-///
-/// 活跃槽判据的**唯一来源**：`BootWriteGuard::resolve`（安装写面）与
-/// `write_bootctrl_trial`（trial 目标）都用它，避免两处各判一次而分叉。
-fn selected_is_a(control: &BootControl) -> Result<bool, &'static str> {
-    match control.select().map_err(|_| "no-bootable-slot")?.slot {
-        eneros_boot_protocol::BootSlot::A => Ok(true),
-        eneros_boot_protocol::BootSlot::B => Ok(false),
-        eneros_boot_protocol::BootSlot::Recovery => Err("recovery-selected"),
-    }
-}
-
 /// 70.7 安装控制器（WP-70.7.3）：bootctrl 双副本事务。`face` =
 /// boot 受限安装面（非活动槽 ∪ BOOTCTRL 写守卫在面内强制）。
 pub struct BootInstall<'a> {
@@ -196,24 +184,38 @@ impl<'a> BootInstall<'a> {
     /// 序列 +1 双副本写 + flush。`slot_is_a` = 当前启动槽（IdentityCapsule
     /// 投影）；`security_version` = 已验证运行版本。
     ///
-    /// 70.14 复查修复：**被确认的槽必须就是 `select()` 选中的槽**。
-    /// 旧实现直接采信调用方的 `slot_is_a`：wire 上给一个与运行槽相反的
-    /// 值即把**非运行槽**置 successful 并把 `security_floor` 推到任意
-    /// `security_version`（`SlotState::successful(priority.max(1),…)` 连
-    /// disabled（priority=0）槽都会被提成 1）——下次引导选择被翻转、
-    /// 不可逆 floor 可被单条消息推高。boot-manager 只引导 `select()` 的
-    /// 槽，故"正在运行的槽"在记录里就是选中槽：不等即拒绝（fail-closed），
-    /// 无需额外通道即可闭合。
+    /// **F70-02（S1）修复：确认基线 = 本次实际运行身份**（可信启动交接
+    /// 数据，`InstallBackend::running_identity`），不是 `select()`。
+    /// `select()` 是"下一引导槽"：A 最后一次试启被 `prepare_attempt`
+    /// 持久扣至 tries=0 后，本次仍运行 A 而记录的 `select()` 已指向 B——
+    /// 旧实现（与 select() 比对）在该形态下把**正在运行槽的健康确认**
+    /// 拒为 `confirm-slot-not-selected`（S1 的确认半边）。现三项核对：
+    ///
+    /// 1. 运行身份缺失 ⇒ 拒绝（`no-running-identity`，§5.2.6 写面关闭）；
+    /// 2. 确认槽 ≠ 实际运行槽 ⇒ 拒绝（`confirm-slot-not-running`）；
+    /// 3. `security_version`/`image_id` ≠ 运行载荷身份（capsule 投影）
+    ///    ⇒ 拒绝（`confirm-secver-mismatch` / `confirm-image-mismatch`，
+    ///    §5.2.5：错身份、虚增安全水位的确认无介质状态推进）。
+    ///
+    /// 拒绝面零写入（记录逐字节不变、floor 不动）。正常最后一次试启的
+    /// 正确确认必须成功（capsule 与请求同源 ⇒ 等值核对恒过）。
     pub fn confirm_running(
         &mut self,
         slot_is_a: bool,
         security_version: u64,
         image_id: [u8; 16],
     ) -> Result<u64, &'static str> {
-        let (current, _) = self.read_current()?;
-        if selected_is_a(&current)? != slot_is_a {
-            return Err("confirm-slot-not-selected");
+        let ident = self.face.running_identity().ok_or("no-running-identity")?;
+        if ident.is_a != slot_is_a {
+            return Err("confirm-slot-not-running");
         }
+        if ident.security_version != security_version {
+            return Err("confirm-secver-mismatch");
+        }
+        if ident.release_id != image_id {
+            return Err("confirm-image-mismatch");
+        }
+        let (current, _) = self.read_current()?;
         let mut next = current; // BootControl: Copy
         if slot_is_a {
             next.slot_a = eneros_boot_protocol::SlotState::successful(
@@ -363,9 +365,21 @@ mod boot_install_tests {
         /// 不缓存就等于"守卫随介质漂移"，与生产语义不符（会掩盖
         /// trial 目标与安装面分叉）。
         guard: core::cell::RefCell<Option<(u64, u64, u64, u64)>>,
+        /// F70-02：本次运行身份（生产 = 只读身份页 capsule；None ⇒ 写面
+        /// 关闭 + 确认拒绝）。默认 = A 槽（factory 种子形态）。
+        running: Option<crate::boot_guard::RunningIdentity>,
     }
 
     const LBA: usize = 512;
+
+    /// 测试用 A 槽运行身份（与 factory 种子的 secver/id 对齐；可按测试覆写）。
+    fn ident_a() -> crate::boot_guard::RunningIdentity {
+        crate::boot_guard::RunningIdentity {
+            is_a: true,
+            security_version: 1,
+            release_id: [9u8; 16],
+        }
+    }
 
     impl MockFace {
         fn new() -> Self {
@@ -374,6 +388,7 @@ mod boot_install_tests {
                 media: alloc::vec![0u8; 18480 * LBA],
                 writes: 0,
                 guard: core::cell::RefCell::new(None),
+                running: Some(ident_a()),
             }
         }
         fn seed_bootctrl(&mut self, rec: &[u8; BOOT_CONTROL_RECORD_SIZE], copy: usize) {
@@ -425,18 +440,20 @@ mod boot_install_tests {
             let (bc_lba, bc_lbas) = lba_range_of(BootPartition::BootCtrl);
             let rec0 = bc_lba as usize * LBA;
             let rec1 = (bc_lba + 8) as usize * LBA;
-            let guard = crate::boot_guard::BootWriteGuard::resolve(
+            let guard = crate::boot_guard::BootWriteGuard::resolve_with_running(
                 &self.media[rec0..rec0 + BOOT_CONTROL_RECORD_SIZE],
                 &self.media[rec1..rec1 + BOOT_CONTROL_RECORD_SIZE],
+                self.running,
             )
             // 双副本均无效 → 非活动区间置空（`write_allowed` 恒拒 =
             // 生产 fail-closed 语义）。
             .unwrap_or(crate::boot_guard::BootWriteGuard {
                 inactive_start_lba: 0,
                 inactive_lbas: 0,
-                active_is_a: true,
+                active_is_a: false,
                 active_security_version: 0,
                 sequence: 0,
+                running: None,
             });
             let out = (
                 guard.inactive_start_lba,
@@ -447,6 +464,11 @@ mod boot_install_tests {
             // 首次调用 = 本 boot 的 init；其后冻结（与生产一致）。
             *self.guard.borrow_mut() = Some(out);
             out
+        }
+
+        /// F70-02：mock 的运行身份 = 构造时给定的身份页事实。
+        fn running_identity(&self) -> Option<crate::boot_guard::RunningIdentity> {
+            self.running
         }
     }
 
@@ -517,42 +539,170 @@ mod boot_install_tests {
 
     #[test]
     fn confirm_marks_successful_and_sequence_advances() {
+        // F70-02：确认对象 = **运行槽**（身份 A）。trial 先装 B（下一引导），
+        // 本次仍运行 A——确认 A（运行载荷身份）→ A successful、floor 推进。
         let mut face = MockFace::new();
         face.seed_bootctrl(&factory_stable(), 0);
         face.seed_bootctrl(&factory_stable(), 1);
+        // 运行载荷身份 = 本次镜像（secver=2、release=[3;16] 的 A 载荷）。
+        face.running = Some(crate::boot_guard::RunningIdentity {
+            is_a: true,
+            security_version: 2,
+            release_id: [3u8; 16],
+        });
         let mut inst = BootInstall::new(&mut face);
         let seq0 = inst.write_bootctrl_trial(2, [3u8; 16]).expect("trial");
-        let seq1 = inst.confirm_running(false, 2, [3u8; 16]).expect("confirm");
+        let seq1 = inst.confirm_running(true, 2, [3u8; 16]).expect("confirm");
         assert_eq!(seq1, seq0 + 1);
         let (c, _) = inst.read_current().expect("read");
-        assert!(c.slot_b.successful, "确认后 B = successful");
-        assert_eq!(c.slot_b.tries_remaining, 0, "successful ⇒ tries 0");
+        assert!(c.slot_a.successful, "确认后 A = successful（运行槽）");
+        assert_eq!(c.slot_a.security_version, 2);
         assert_eq!(c.security_floor, 2, "确认推进 floor（不可逆提交）");
-        // 再次启动选择保持 B（successful 优先级 15 > A 14）。
+        // trial 目标 B 保持 trial（下一引导 B）。
+        assert_eq!(c.slot_b.tries_remaining, 3);
+    }
+
+    /// F70-02（S1 确认半边，红转绿）：A 最后一次试启（prepare_attempt 已把
+    /// tries 1→0 持久、本次仍运行 A），盘上记录 `select()` 已指向 B。
+    /// 旧实现按 `select()` 比对 → 运行槽 A 的健康确认被
+    /// `confirm-slot-not-selected` 拒绝；现按运行身份核对必须**成功**，
+    /// 且 successful 落盘、可重启恢复（下次选择仍按新记录收敛）。
+    #[test]
+    fn confirm_succeeds_on_last_trial_of_running_slot() {
+        let id = [9u8; 16];
+        let mut bc = BootControl::factory(id, 1, id);
+        bc.slot_a = eneros_boot_protocol::SlotState::trial(15, 1, 1, id);
+        bc.slot_b = eneros_boot_protocol::SlotState::successful(14, 1, id);
+        let (booting, persisted) = bc.prepare_attempt().unwrap();
+        assert_eq!(booting.slot, BootSlot::A);
+        let rec = persisted.unwrap().encode().unwrap();
+        let mut face = MockFace::new();
+        face.seed_bootctrl(&rec, 0);
+        face.seed_bootctrl(&rec, 1);
+        let mut inst = BootInstall::new(&mut face);
+        let seq = inst
+            .confirm_running(true, 1, [9u8; 16])
+            .expect("最后一次试启的运行槽确认必须成功");
+        assert!(seq >= 2);
+        let (c, _) = inst.read_current().expect("read");
+        assert!(c.slot_a.successful, "A = successful（不再耗 tries）");
+        assert_eq!(c.slot_a.tries_remaining, 0);
+        assert_eq!(c.security_floor, 1);
+        // 重启后选择：A successful 15 > B 14 → 仍 A（不误回退）。
         let sel = c.select().expect("select");
-        assert_eq!(sel.slot, BootSlot::B);
+        assert_eq!(sel.slot, BootSlot::A);
         assert!(!sel.trial);
     }
 
-    /// 70.14 复查红测：**confirm 只接受 `select()` 选中的槽**。
-    ///
-    /// 缺陷形态（旧实现）：直接采信 wire 上的 `slot_is_a`——发一条与运行槽
-    /// 相反的消息即把**非运行槽**置 successful 并把 `security_floor` 推到
-    /// 任意 secver（`successful(priority.max(1), …)` 连 disabled 槽都会被提成
-    /// 1）；下次引导选择被翻转、不可逆 floor 被单条消息推高。boot-manager
-    /// 只引导 `select()` 的槽，故"正在运行的槽"就是选中槽。
+    /// F70-02 B03：同一 boot 内记录前移（连续 trial / 下一选择变化）不改变
+    /// 本次运行身份——确认与第二次 trial 的目标都不漂移。
     #[test]
-    fn confirm_rejects_slot_that_is_not_selected() {
+    fn running_identity_does_not_drift_with_record_changes() {
         let mut face = MockFace::new();
         face.seed_bootctrl(&factory_stable(), 0);
         face.seed_bootctrl(&factory_stable(), 1);
         let mut inst = BootInstall::new(&mut face);
-        // 稳定种子：select() = A（A=15 successful > B=14）→ 确认 B 必须拒绝。
+        inst.write_bootctrl_trial(2, [3u8; 16])
+            .expect("第一次 trial → B");
+        // 记录已前移（select() 现指 B trial）——运行身份仍是 A：
+        // 确认 A 照常成功；第二次 trial 仍落 B（运行槽对侧）。
+        inst.confirm_running(true, 1, [9u8; 16])
+            .expect("确认运行槽 A");
+        inst.write_bootctrl_trial(3, [4u8; 16])
+            .expect("第二次 trial");
+        let (c, _) = inst.read_current().expect("read");
+        assert_eq!(
+            c.slot_b.security_version, 3,
+            "第二次 trial 仍落 B（运行槽对侧，不随 select() 漂移）"
+        );
+        assert!(c.slot_a.successful, "运行槽 A 已确认");
+    }
+
+    /// F70-02 B04：错槽 / 错载荷身份 / 错安全版本 / 虚增水位的确认一律
+    /// 拒绝，且拒绝面零副作用（记录逐字节不变、floor 不动、写计数为 0）。
+    #[test]
+    fn confirm_rejects_wrong_slot_identity_or_secver_with_zero_side_effects() {
+        // 错槽：运行 A，确认 B。
+        let mut face = MockFace::new();
+        face.seed_bootctrl(&factory_stable(), 0);
+        face.seed_bootctrl(&factory_stable(), 1);
+        let writes0 = face.writes;
+        let before;
+        {
+            let mut inst = BootInstall::new(&mut face);
+            before = inst.read_current().expect("read").0.encode().unwrap();
+            // 错槽：运行 A，确认 B。
+            assert_eq!(
+                inst.confirm_running(false, 1, [9u8; 16]),
+                Err("confirm-slot-not-running")
+            );
+            // 错安全版本（虚增水位：capsule secver=1，请求给 9）。
+            assert_eq!(
+                inst.confirm_running(true, 9, [9u8; 16]),
+                Err("confirm-secver-mismatch")
+            );
+            // 错载荷身份（release_id 不符）。
+            assert_eq!(
+                inst.confirm_running(true, 1, [3u8; 16]),
+                Err("confirm-image-mismatch")
+            );
+            let (c0, _) = inst.read_current().expect("read");
+            assert_eq!(c0.security_floor, 1, "floor 不得被推高");
+            assert_eq!(
+                c0.encode().unwrap(),
+                before,
+                "拒绝面必须零写入（记录逐字节不变）"
+            );
+        }
+        assert_eq!(face.writes, writes0, "拒绝面零介质写");
+    }
+
+    /// F70-02 B05：运行身份缺失（capsule 缺失/无效/Recovery）⇒ 确认与
+    /// trial 都拒绝，写计数为 0（写面已由空区间关闭；cancel/状态诊断
+    /// 保留——受控恢复通道）。
+    #[test]
+    fn missing_identity_rejects_confirm_and_trial() {
+        let mut face = MockFace::new();
+        face.running = None;
+        face.seed_bootctrl(&factory_stable(), 0);
+        face.seed_bootctrl(&factory_stable(), 1);
+        let writes0 = face.writes;
+        {
+            let mut inst = BootInstall::new(&mut face);
+            assert_eq!(
+                inst.confirm_running(true, 1, [9u8; 16]),
+                Err("no-running-identity")
+            );
+            assert_eq!(
+                inst.write_bootctrl_trial(2, [3u8; 16]),
+                Err("install-range-not-a-slot")
+            );
+            // 诊断/受控恢复保留：STATUS 可读。
+            assert!(inst.read_current().is_ok());
+        }
+        assert_eq!(face.writes, writes0, "身份缺失 ⇒ 零介质写");
+    }
+
+    /// 70.14 复查红测（F70-02 基线重订）：**confirm 只接受本次实际运行的
+    /// 槽**（运行身份），不是 wire 自述、也不是 `select()` 的下一选择。
+    ///
+    /// 缺陷形态（旧实现）：直接采信 wire 上的 `slot_is_a`——发一条与运行槽
+    /// 相反的消息即把**非运行槽**置 successful 并把 `security_floor` 推到
+    /// 任意 secver（`successful(priority.max(1), …)` 连 disabled（priority=0）
+    /// 槽都会被提成 1）；下次引导选择被翻转、不可逆 floor 被单条消息推高。
+    /// F70-02 后基线 = 可信运行身份：等值核对（槽/secver/release）全过才写。
+    #[test]
+    fn confirm_rejects_slot_that_is_not_running() {
+        let mut face = MockFace::new();
+        face.seed_bootctrl(&factory_stable(), 0);
+        face.seed_bootctrl(&factory_stable(), 1);
+        let mut inst = BootInstall::new(&mut face);
+        // 稳定种子：运行身份 = A（guard 冻结）→ 确认 B 必须拒绝。
         let before = inst.read_current().expect("read").0.encode().unwrap();
         let err = inst
-            .confirm_running(false, 2, [3u8; 16])
+            .confirm_running(false, 1, [9u8; 16])
             .expect_err("confirm");
-        assert_eq!(err, "confirm-slot-not-selected");
+        assert_eq!(err, "confirm-slot-not-running");
         let (c0, _) = inst.read_current().expect("read");
         assert_eq!(c0.security_floor, 1, "拒绝面零副作用（floor 不得被推高）");
         assert_eq!(
@@ -560,10 +710,9 @@ mod boot_install_tests {
             before,
             "拒绝面必须零写入（记录逐字节不变）"
         );
-        // 正例仍成立：trial 后 select() = B → 确认 B。
-        inst.write_bootctrl_trial(2, [3u8; 16]).expect("trial");
-        inst.confirm_running(false, 2, [3u8; 16])
-            .expect("confirm 选中槽");
+        // 正例仍成立：运行槽 A 的正确确认成功。
+        inst.confirm_running(true, 1, [9u8; 16])
+            .expect("confirm 运行槽");
     }
 
     /// 70.14 复查红测：**trial 目标槽来自安装守卫（`install_ranges`）**，
@@ -608,20 +757,16 @@ mod boot_install_tests {
         assert_eq!(c.slot_a.priority, 13, "非目标槽（A=14）降 1 保留回退资格");
     }
 
-    /// 70.7 复查回归锁：trial 目标槽 = **select() 的裁决对侧**。
+    /// 70.7 复查回归锁（F70-02 基线重订）：trial 目标槽 = **运行槽的
+    /// 对侧**（守卫口径），且新记录 `select()` 恰好指向 trial 槽（试启动
+    /// 语义成立）。
     ///
-    /// 缺陷形态（旧实现）：按 `slot_a.priority >= slot_b.priority` 自判活跃槽。
-    /// 平局时自判 A、select() 也返回 A（successful 平局规则）——但**当活跃
-    /// 槽是 B 且两槽优先级相等**时（B 确认后 A 降 1 再被 trial 写回 15、
-    /// 或 cancel 恢复优先级后两槽同为 successful 15/14 的多轮事务），
-    /// 自判与 select() 相反 → trial 记录落在**正在运行的槽**上（下次引导
-    /// 仍选它 = 试启动自我失效），且 svc-ota 候选身份读面按守卫口径取的
-    /// 是另一分区 → manifest 身份与载荷不符。
-    ///
-    /// 本锁断言：任意种子下，trial 写入的槽恒不等 select() 当前裁决槽，
-    /// 且新记录 select() 恰好指向 trial 槽（试启动语义成立）。
+    /// 缺陷形态（旧实现）：按 `slot_a.priority >= slot_b.priority` 自判
+    /// "活跃槽"——平局/B 活跃等形态下与 `select()` 相反 → trial 记录落在
+    /// 正在运行的槽上（试启动自我失效）。F70-02 后判据单源 = 运行身份
+    /// （`select()` 只回答"下一引导"，A 最后一次试启后两口径分叉）。
     #[test]
-    fn trial_targets_opposite_of_select_not_priority_order() {
+    fn trial_targets_opposite_of_running_slot_across_seed_matrix() {
         // 种子矩阵：A 活跃（15/14）、B 活跃（14/15）、**双 successful 平局
         // 但 B 优先**（15/15 → select 走 successful 规则取 A）、trial 态。
         type Seed = fn() -> [u8; BOOT_CONTROL_RECORD_SIZE];
@@ -637,32 +782,23 @@ mod boot_install_tests {
             face.seed_bootctrl(&rec, 0);
             face.seed_bootctrl(&rec, 1);
             let mut inst = BootInstall::new(&mut face);
-            let before = inst
-                .read_current()
-                .expect("read")
-                .0
-                .select()
-                .expect("select")
-                .slot;
             inst.write_bootctrl_trial(2, [3u8; 16]).expect("trial");
             let after = inst.read_current().expect("read").0;
             let sel = after.select().expect("select");
             // 种子全是可引导态；落到 Recovery 即种子本身失效。
-            assert_ne!(before, BootSlot::Recovery, "{name}: 种子不得落在 Recovery");
-            let expected = match before {
-                BootSlot::A => BootSlot::B,
-                BootSlot::B => BootSlot::A,
-                BootSlot::Recovery => BootSlot::Recovery,
-            };
-            assert_eq!(sel.slot, expected, "{name}: trial 必须落在 select() 对侧");
+            assert_ne!(
+                sel.slot,
+                BootSlot::Recovery,
+                "{name}: 种子不得落在 Recovery"
+            );
+            assert_eq!(
+                sel.slot,
+                BootSlot::B,
+                "{name}: trial 必须落在运行槽（A）的对侧 B——与种子形态无关"
+            );
             assert!(sel.trial, "{name}: 对新记录必须是试启动态");
-            // 回退资格：原活跃槽优先级保留 ≥1（tries 耗尽可回退）。
-            let old = if expected == BootSlot::B {
-                after.slot_a
-            } else {
-                after.slot_b
-            };
-            assert!(old.priority >= 1, "{name}: 原活跃槽保留回退资格");
+            // 回退资格：原运行槽优先级保留 ≥1（tries 耗尽可回退）。
+            assert!(after.slot_a.priority >= 1, "{name}: 运行槽保留回退资格");
         }
     }
 
@@ -704,14 +840,19 @@ mod boot_install_tests {
 
     #[test]
     fn cancel_trial_rejects_confirmed_state() {
-        // trial → confirm（成功提交）之后取消必须拒绝（floor 已推进，
-        // 回退 = 新更新事务）。
+        // F70-02 基线：运行 B（身份 B）+ B 已确认 successful（无 pending
+        // trial）→ 取消必须拒绝（floor 已推进，回退 = 新更新事务）。
         let mut face = MockFace::new();
-        face.seed_bootctrl(&factory_stable(), 0);
-        face.seed_bootctrl(&factory_stable(), 1);
+        face.running = Some(crate::boot_guard::RunningIdentity {
+            is_a: false,
+            security_version: 2,
+            release_id: [9u8; 16],
+        });
+        face.seed_bootctrl(&factory_b_active(), 0);
+        face.seed_bootctrl(&factory_b_active(), 1);
         let mut inst = BootInstall::new(&mut face);
-        inst.write_bootctrl_trial(2, [3u8; 16]).expect("trial");
-        inst.confirm_running(false, 2, [3u8; 16]).expect("confirm");
+        inst.confirm_running(false, 2, [9u8; 16])
+            .expect("confirm B");
         assert_eq!(inst.cancel_trial(), Err("no-pending-trial"));
     }
 

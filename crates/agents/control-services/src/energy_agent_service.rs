@@ -27,6 +27,13 @@ pub use eneros_agent_sdk::ea_wire::{EA_INVALID, EA_NOACTION, EA_OK, EA_UNAVAILAB
 /// 到期放行单次探针，Committed/NoAction 复位）。
 pub const DEFAULT_COOLDOWN_MS: u64 = 30_000;
 
+/// recheck 轮（R10 实弹）：持有计划终态后的 System1 兜底静默窗（毫秒）。
+/// 依据：最坏设定点跳变爬坡清算 = power_max 5kW ÷ 合同 3.333 kW/s = 1.5s，
+/// 加 peer 往返余量取 3s——窗内新远程计划的步 1 不再撞上一计划间歇期
+/// System1 写下的设定点基线（run4 实弹：连续 6 计划 |0-5|kW/0.3~0.9s
+/// 限拒死亡）。
+pub const SYSTEM1_POST_PLAN_HOLD_MS: u64 = 3_000;
+
 /// 遥测客户端（svc-telemetry 消费 seam）。
 ///
 /// 蓝图 70.8 WP-70.8.1：请求码 = `TEL_REQ_SNAPSHOT_INPUT`，应答 =
@@ -65,6 +72,11 @@ pub struct EnergyAgentService {
     pub cooldown_ms: u64,
     /// 冷却截止时刻（0 = 无熔断；预算耗尽时 = now + cooldown_ms）。
     cooldown_until_ms: u64,
+    /// recheck 轮（R10 实弹）：计划终态后 System1 兜底静默截止时刻
+    /// （0 = 无保持）。见 [`SYSTEM1_POST_PLAN_HOLD_MS`]。
+    system1_hold_until_ms: u64,
+    /// 上一 tick 的在途计划数（终态迁移检测：>0 → 0 = 刚完成）。
+    last_held_active: usize,
     /// tick 计数。
     pub tick_count: u64,
     /// 最近一次编排结果（诊断）。
@@ -100,6 +112,8 @@ impl EnergyAgentService {
             policy: eneros_dual_brain::TickPolicy::new(),
             cooldown_ms,
             cooldown_until_ms: 0,
+            system1_hold_until_ms: 0,
+            last_held_active: 0,
             tick_count: 0,
             last_result: None,
         }
@@ -160,6 +174,22 @@ impl EnergyAgentService {
         // 下个 tick 自动恢复兜底（active 归零）。
         if held_active > 0 {
             let resp = self.noaction("held-plan-active: System1 suppressed");
+            return self.settle(TickOutcome::NoAction, resp, now_ms);
+        }
+        // recheck 轮（R10 run3/4 实弹根因）：**计划终态后的短保持窗**——
+        // 旧实现「active 归零即恢复兜底」，System1 在计划间歇立刻写
+        // 5kW，0.3~0.9s 后到达的新远程计划步 1（0kW）撞爬坡限拒
+        //（|0-5|kW/0.3s）⇒ 计划失败 ⇒ 兜底再写 ⇒ 自持振荡（run4 实弹
+        // 连续 6 计划同签名死亡）。保持窗 ≥ 最坏爬坡清算（5kW/3.333kW/s
+        // = 1.5s）+ peer 往返余量；窗内远程计划提交顺延（TTL 60s 无碍），
+        // 窗后兜底照常。
+        let just_finished = self.last_held_active > 0 && held_active == 0;
+        if just_finished {
+            self.system1_hold_until_ms = now_ms.saturating_add(SYSTEM1_POST_PLAN_HOLD_MS);
+        }
+        self.last_held_active = held_active;
+        if now_ms < self.system1_hold_until_ms {
+            let resp = self.noaction("post-plan-ramp-hold: System1 suppressed");
             return self.settle(TickOutcome::NoAction, resp, now_ms);
         }
         if self.policy.in_error() && now_ms < self.cooldown_until_ms {
@@ -445,6 +475,58 @@ mod tests {
             "抑制理由可观测：{:?}",
             String::from_utf8_lossy(&resp)
         );
+    }
+
+    /// recheck 轮（R10 run3/4 实弹根因）：计划终态后的**短保持窗**——
+    /// 计划刚完成（active 1→0）时，System1 兜底必须再静默
+    /// [`SYSTEM1_POST_PLAN_HOLD_MS`]（否则兜底立即写 5kW，0.3~0.9s 后
+    /// 到达的新远程计划步 1（0kW）撞爬坡限拒——自持振荡杀死每个后继
+    /// 计划）。窗后恢复兜底。变异靶：去掉保持窗 → 本测红（间歇 tick
+    /// 的兜底提交到达 dispatch）。
+    #[test]
+    fn tick_holds_system1_after_plan_terminal_within_ramp_clearance() {
+        let mut svc = EnergyAgentService::new(
+            alloc::boxed::Box::new(StubTelemetry { ok: true }),
+            alloc::boxed::Box::new(StubWorker { fail: false }),
+            alloc::boxed::Box::new(StubDispatch {
+                committed: true,
+                held_active: 1,
+            }),
+        );
+        // tick0：计划在途 → 抑制。
+        assert_eq!(svc.tick(0).first(), Some(&EA_NOACTION));
+        // 终态迁移：上一 tick 在途（last_held_active=1）、本 tick 归零——
+        // 计划刚完成的间歇。
+        let mut svc2 = EnergyAgentService::new(
+            alloc::boxed::Box::new(StubTelemetry { ok: true }),
+            alloc::boxed::Box::new(StubWorker { fail: false }),
+            alloc::boxed::Box::new(StubDispatch {
+                committed: true,
+                held_active: 0,
+            }),
+        );
+        svc2.last_held_active = 1;
+        let resp = svc2.tick(100);
+        assert_eq!(
+            resp.first(),
+            Some(&EA_NOACTION),
+            "计划刚完成：保持窗内兜底必须静默"
+        );
+        assert!(
+            String::from_utf8_lossy(&resp).contains("post-plan-ramp-hold"),
+            "保持窗理由可观测：{:?}",
+            String::from_utf8_lossy(&resp)
+        );
+        // 窗内中途仍静默。
+        assert_eq!(
+            svc2.tick(100 + SYSTEM1_POST_PLAN_HOLD_MS / 2).first(),
+            Some(&EA_NOACTION)
+        );
+        // 窗后恢复兜底（到达 dispatch，EA_OK 回执）。
+        let after = svc2.tick(100 + SYSTEM1_POST_PLAN_HOLD_MS + 1);
+        assert_eq!(after[0], EA_OK, "保持窗到期恢复兜底");
+        let (status, ..) = decode_receipt(&after[1..]).expect("receipt");
+        assert_eq!(status, 0);
     }
 
     #[test]

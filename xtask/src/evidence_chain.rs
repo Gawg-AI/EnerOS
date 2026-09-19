@@ -138,6 +138,8 @@ pub struct CandidateLineage {
 pub const REQUIRED_MATRIX_SCHEMA: &str = "eneros.required-matrix.v1";
 /// 当前候选证据索引 schema——`evidence/70/70.15/<candidate_id>/candidate-index.json`。
 pub const CANDIDATE_INDEX_SCHEMA: &str = "eneros.candidate-evidence.v1";
+/// 门运行记录 schema（`tools/run70-candidate-evidence.py record` 生成）。
+pub const RUN_RECORD_SCHEMA: &str = "eneros.gate-run-record.v1";
 
 /// required 矩阵中的一条必需 case（蓝图 70 [11] §2 的 CORE 场景 + 卷内验收）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,6 +150,12 @@ pub struct RequiredCase {
     /// 该 case 至少需要的证据 scope（rank 见 `scope_rank`）。
     pub min_scope: String,
     pub title: String,
+    /// 该 case 必需的 gate 终态来源（F70-01/R4：case 的预期 gate 由本矩阵
+    /// 单源决定，不信记录器调用方自述的 `--gate`）。聚合规则 = 全部列出者
+    /// 都必须有该 gate 的 PASS 终态 run-record；空 = 旧矩阵（未立法，不做
+    /// gate 覆盖判定，但 run-record 一旦存在仍须自洽）。
+    #[serde(default)]
+    pub gates: Vec<String>,
 }
 
 /// 合法阻塞/豁免登记项。
@@ -309,8 +317,159 @@ pub fn load_required_matrix(root: &Path, matrix_id: &str) -> DynResult<RequiredM
                 case.case_id
             )));
         }
+        for g in &case.gates {
+            if g.trim().is_empty() {
+                return Err(invalid(format!(
+                    "required matrix {matrix_id} case {} has empty gate id",
+                    case.case_id
+                )));
+            }
+        }
     }
     Ok(matrix)
+}
+
+/// 一行日志是否是指定 gate 的终态行（`<gate>…: PASS|FAIL`）。
+///
+/// F70-01（R4/E05）+ recheck RR3：case 的成功只能由**指定 gate 自己的
+/// 终态行**证明。归属 = 行首名与 gate（或其**显式别名**）整名相等；
+/// 终态 token 完整匹配（`PASSED_NOT` 这类扩展/截断 token 不是终态）。
+/// 旧实现的 PASS 子串匹配与 gate 前缀/任意 '-' 后缀段推断已退役
+/// （`VOL70.2-R03-…GATE: PASS` 不再证明 `VOL70.2`、`HELD-GATE: PASS`
+/// 不再证明 `R10-HELD`）。与 tools/run70-candidate-evidence.py 的
+/// `gate_terminal_status` 单源同构，两侧必须同时改。
+fn gate_terminal_status(line: &str, gate: &str) -> Option<bool> {
+    let norm = line.trim_matches(|c| c == '=' || c == ' ');
+    let mut saw_pass = false;
+    let mut saw_fail = false;
+    for (name, pass) in terminal_parses(norm) {
+        if line_owned_by_gate(name, gate) {
+            if pass {
+                saw_pass = true;
+            } else {
+                saw_fail = true;
+            }
+        }
+    }
+    if !saw_pass && !saw_fail {
+        return None;
+    }
+    // 命中本 gate 的终态里出现 FAIL（含同批解析冲突）按 FAIL 处理。
+    if saw_fail {
+        return Some(false);
+    }
+    Some(true)
+}
+
+/// 判据行显式别名（gate 名 → 判据行的行首名；不做任意后缀推断）。
+fn line_owned_by_gate(name: &str, gate: &str) -> bool {
+    if name == gate {
+        return true;
+    }
+    match gate {
+        // 复合 gate 在判据行里的行首名：`candidate-check red tests: PASS`。
+        "evidence42-candidate-check" => name == "candidate-check",
+        // 子窗 gate 的判据行携带描述段（vol2 门 R03 断电窗终态行）。
+        "VOL70.2-R03" => name == "VOL70.2-R03-POWER-CUT",
+        _ => false,
+    }
+}
+
+/// 把（已剥装饰的）一行解析为 [(行首名, PASS?)]；解析不出 = 空。
+///
+/// 合法形态：`<name>-GATE:` / `<name> GATE:` / `<name> QEMU WINDOW:` /
+/// `<name> red tests:` / 裸 `<name>:`。name 必须是单 token（不含空格）；
+/// 状态 token 必须完整等于 PASS/FAIL——带尾注或组合行整体不可判。
+fn terminal_parses(norm: &str) -> Vec<(&str, bool)> {
+    fn push_parse<'a>(out: &mut Vec<(&'a str, bool)>, name: &'a str, status: &str) {
+        if name.is_empty() || name.contains(' ') {
+            return;
+        }
+        if status == "PASS" {
+            out.push((name, true));
+        } else if status == "FAIL" {
+            out.push((name, false));
+        }
+    }
+    let mut out = Vec::new();
+    for marker in ["-GATE:", " GATE:", " QEMU WINDOW:", " red tests:"] {
+        let mut from = 0;
+        while let Some(off) = norm[from..].find(marker) {
+            let pos = from + off;
+            let name = &norm[..pos];
+            let status = norm[pos + marker.len()..].trim_matches(|c| c == '=' || c == ' ');
+            push_parse(&mut out, name, status);
+            from = pos + 1;
+        }
+    }
+    if let Some((name, rest)) = norm.split_once(':') {
+        let status = rest.trim_matches(|c| c == '=' || c == ' ');
+        push_parse(&mut out, name, status);
+    }
+    out
+}
+
+/// F70-01（R4 读侧）：校验一份 `eneros.gate-run-record.v1` 与 case 的对应。
+///
+/// 返回 `(违规, 证明的 gate)`——记录完全自洽且属于本 case 时给出
+/// `Some(gate_id)`，供 required gate 覆盖判定聚合（多 gate = 全部列出者
+/// 都要被某份自洽记录证明）。缺字段、case/gate 不符、非零退出码、
+/// verdict 非 PASS、缺该 gate 终态行、终态行冲突均判负。
+fn run_record_case_violations(
+    value: &serde_json::Value,
+    case_id: &str,
+    allowed_gates: &[String],
+) -> (Vec<String>, Option<String>) {
+    let mut v = Vec::new();
+    let get_str = |k: &str| -> String {
+        value
+            .get(k)
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_owned()
+    };
+    let rec_case = get_str("case_id");
+    let gate = get_str("gate_id");
+    let verdict = get_str("verdict");
+    if rec_case.is_empty() || gate.is_empty() {
+        v.push("incomplete:id".to_owned());
+    }
+    if rec_case != case_id {
+        v.push(format!("case-mismatch:{rec_case}!={case_id}"));
+    }
+    if !allowed_gates.is_empty() && !allowed_gates.contains(&gate) {
+        v.push(format!("gate-mismatch:{gate}"));
+    }
+    match value.get("exit_code").and_then(|x| x.as_i64()) {
+        Some(0) => {}
+        Some(n) => v.push(format!("exit-nonzero:{n}")),
+        None => v.push("incomplete:exit_code".to_owned()),
+    }
+    if verdict != "PASS" {
+        v.push(format!("verdict-not-pass:{verdict}"));
+    }
+    match value.get("verdict_lines").and_then(|x| x.as_array()) {
+        Some(arr) => {
+            let mut saw_pass = false;
+            let mut saw_fail = false;
+            for l in arr.iter().filter_map(|l| l.as_str()) {
+                match gate_terminal_status(l, &gate) {
+                    Some(true) => saw_pass = true,
+                    Some(false) => saw_fail = true,
+                    None => {}
+                }
+            }
+            if !saw_pass {
+                v.push(format!("no-terminal-pass:{gate}"));
+            }
+            if saw_fail {
+                v.push(format!("terminal-fail:{gate}"));
+            }
+        }
+        None => v.push("incomplete:verdict_lines".to_owned()),
+    }
+    let proven = if v.is_empty() { Some(gate) } else { None };
+    (v, proven)
 }
 
 /// 候选证据完整性判定（WP-70.15.1/.2 单一判定库）。
@@ -516,6 +675,9 @@ pub fn candidate_case_statuses(
             Some(c) => *c,
             None => continue, // 未知 case 已在上面报出，不再重复判定
         };
+        // 本 case 的全部违规集中收集：任一校验失败时本 case 输出 FAIL，
+        // 不再"一边列违规一边输出 PASS"（F70-01 §4.2.9）。
+        let mut case_v: Vec<String> = Vec::new();
         let rel = entry.envelope.trim_start_matches("./");
         let Ok(disk) = safe_repo_path(root, rel) else {
             v.push(format!("candidate-path-escape:{}", entry.envelope));
@@ -530,25 +692,36 @@ pub fn candidate_case_statuses(
         match hash_file(&disk) {
             Ok(actual) if actual == entry.envelope_sha256 => {}
             Ok(_) => {
-                v.push(format!(
+                case_v.push(format!(
                     "candidate-envelope-digest-mismatch:{}",
                     case.case_id
                 ));
             }
-            Err(_) => v.push(format!("candidate-envelope-unreadable:{}", case.case_id)),
+            Err(_) => case_v.push(format!("candidate-envelope-unreadable:{}", case.case_id)),
         }
         let envelope: EvidenceEnvelope = match read_json(&disk) {
             Ok(e) => e,
             Err(e) => {
+                // 早退前先并入本 case 已收集的违规（如 digest 不符），
+                // 不能丢掉已发现的事实。
+                v.extend(case_v);
                 v.push(format!("candidate-envelope-invalid:{}:{e}", case.case_id));
                 lines.push(format!("CASE {} FAIL invalid-envelope", case.case_id));
                 continue;
             }
         };
         if envelope.schema != ENVELOPE_SCHEMA {
-            v.push(format!(
+            case_v.push(format!(
                 "candidate-envelope-schema-unknown:{}:{}",
                 case.case_id, envelope.schema
+            ));
+        }
+        // F70-01（R3）：合法签名只证明信封内容由签名者签出，不证明它属于
+        // 索引宣称的 case——case 绑定独立于签名验证执行。
+        if envelope.test_id != entry.case_id {
+            case_v.push(format!(
+                "candidate-envelope-case-mismatch:{}:test_id={}",
+                case.case_id, envelope.test_id
             ));
         }
         // 信封身份必须与本 case **声明的产物**同代（"混用两个构建"判负）。
@@ -604,18 +777,18 @@ pub fn candidate_case_statuses(
             ),
         ] {
             if got != want {
-                v.push(format!(
+                case_v.push(format!(
                     "candidate-envelope-identity-mismatch:{}:{name}",
                     case.case_id
                 ));
             }
         }
         for viol in gate_with_context(root, &envelope, Some(&disk)) {
-            v.push(format!("candidate-envelope-gate:{}:{viol}", case.case_id));
+            case_v.push(format!("candidate-envelope-gate:{}:{viol}", case.case_id));
         }
         // 签名三态：无钥 = 不可验（BLOCKED，不是通过）。
         if let Some(word) = verify_envelope_signature(root, &envelope).violation() {
-            v.push(format!("candidate-{word}:{}", case.case_id));
+            case_v.push(format!("candidate-{word}:{}", case.case_id));
         }
         // scope 必须已知且不低于 required。
         let Some(rank) = scope_rank(&envelope.scope) else {
@@ -646,14 +819,14 @@ pub fn candidate_case_statuses(
         ] {
             for a in refs {
                 let Ok(p) = safe_repo_path(root, a.path.trim_start_matches("./")) else {
-                    v.push(format!(
+                    case_v.push(format!(
                         "candidate-{what}-path-escape:{}:{}",
                         case.case_id, a.path
                     ));
                     continue;
                 };
                 if !p.is_file() {
-                    v.push(format!(
+                    case_v.push(format!(
                         "candidate-{what}-missing:{}:{}",
                         case.case_id, a.name
                     ));
@@ -667,11 +840,11 @@ pub fn candidate_case_statuses(
                 }
                 match hash_file(&p) {
                     Ok(actual) if actual == a.sha256 => {}
-                    Ok(_) => v.push(format!(
+                    Ok(_) => case_v.push(format!(
                         "candidate-{what}-digest-mismatch:{}:{}",
                         case.case_id, a.name
                     )),
-                    Err(_) => v.push(format!(
+                    Err(_) => case_v.push(format!(
                         "candidate-{what}-unreadable:{}:{}",
                         case.case_id, a.name
                     )),
@@ -680,28 +853,56 @@ pub fn candidate_case_statuses(
         }
         // 该 case 自身的正/负例结果必须都在终态（防"空结果合法"）。
         if envelope.positive_results.is_empty() || envelope.negative_results.is_empty() {
-            v.push(format!("candidate-results-incomplete:{}", case.case_id));
+            case_v.push(format!("candidate-results-incomplete:{}", case.case_id));
         }
-        // 受测字节闭合：run-record 自记的 `ran_artifact_sha256` 必须等于
-        // 本 case 所用产物的受测摘要（就地启动镜像唯一的"跑过哪份字节"
-        // 证据；与门的 `image.sha256` 同源）。
+        // F70-01（R4 读侧）：run-record 终态验真。外层信封 PASS + 合法
+        // 签名不能覆盖内层运行事实——逐份 artifacts 里的 gate 运行记录
+        // 必须与本 case 严格对应（case_id 一致、gate 在 required 集内、
+        // exit=0、verdict=PASS、有该 gate 的明确终态行且无冲突 FAIL 行）。
+        let mut proven_gates: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
         for a in &envelope.artifacts {
             let Ok(rec) = safe_repo_path(root, a.path.trim_start_matches("./")) else {
                 continue;
             };
+            let looks_like_record = a.path.ends_with(".run-record.json");
             let Ok(value) = read_json::<serde_json::Value>(&rec) else {
+                if looks_like_record {
+                    case_v.push(format!(
+                        "candidate-run-record:{}:unreadable({})",
+                        case.case_id, a.name
+                    ));
+                }
                 continue;
             };
-            if value.get("schema").and_then(|x| x.as_str()) != Some("eneros.gate-run-record.v1") {
+            let schema = value.get("schema").and_then(|x| x.as_str()).unwrap_or("");
+            if !schema.starts_with("eneros.gate-run-record") && !looks_like_record {
                 continue;
             }
+            if schema != RUN_RECORD_SCHEMA {
+                case_v.push(format!(
+                    "candidate-run-record:{}:schema-unknown({schema})",
+                    case.case_id
+                ));
+                continue;
+            }
+            let (rv, proven) = run_record_case_violations(&value, &case.case_id, &case.gates);
+            for x in rv {
+                case_v.push(format!("candidate-run-record:{}:{x}", case.case_id));
+            }
+            if let Some(g) = proven {
+                proven_gates.insert(g);
+            }
+            // 受测字节闭合：run-record 自记的 `ran_artifact_sha256` 必须等于
+            // 本 case 所用产物的受测摘要（就地启动镜像唯一的"跑过哪份字节"
+            // 证据；与门的 `image.sha256` 同源）。
             let ran = value
                 .get("ran_artifact_sha256")
                 .and_then(|x| x.as_str())
                 .unwrap_or("");
             let want = entry.tested_sha256.as_deref().unwrap_or("");
             if ran != want {
-                v.push(format!(
+                case_v.push(format!(
                     "candidate-ran-artifact-mismatch:{}:claimed={} ran={}",
                     case.case_id,
                     want.get(..12).unwrap_or(""),
@@ -711,10 +912,25 @@ pub fn candidate_case_statuses(
                 tested_proven.insert(case.case_id.clone());
             }
         }
-        lines.push(format!(
-            "CASE {} PASS scope={} env={}",
-            case.case_id, envelope.scope, entry.envelope
-        ));
+        // F70-01（E05）：required 声明的每个 gate 都必须被一份自洽 PASS
+        // run-record 证明（聚合规则 = 全部满足；空集 = 旧矩阵未立法）。
+        for g in &case.gates {
+            if !proven_gates.contains(g) {
+                case_v.push(format!(
+                    "candidate-gate-unproven:{}:{g}（无该 gate 的自洽 PASS run-record）",
+                    case.case_id
+                ));
+            }
+        }
+        if case_v.is_empty() {
+            lines.push(format!(
+                "CASE {} PASS scope={} env={}",
+                case.case_id, envelope.scope, entry.envelope
+            ));
+        } else {
+            v.extend(case_v.iter().cloned());
+            lines.push(format!("CASE {} FAIL {}", case.case_id, case_v[0]));
+        }
     }
 
     // --- 4. 逐 case 受测摘要闭合（run-record 自记的受测字节）---
@@ -3725,12 +3941,15 @@ fn command_candidate_check(root: &Path, args: &[String]) -> DynResult<()> {
         println!("{line}");
     }
     if report {
+        // BLOCKED 数量显式上报（F70-01 §4.2.10）：结构一致 ≠ 整组就绪。
+        let blocked_count = lines.iter().filter(|l| l.contains(" BLOCKED ")).count();
         let report = serde_json::json!({
             "schema": "eneros.candidate-check-report.v1",
             "matrix_id": matrix.matrix_id,
             "candidate_id": index.candidate_id,
             "index": index_rel,
             "required": matrix.cases.len(),
+            "blocked": blocked_count,
             "cases": lines,
             "violations": violations,
         });
@@ -6281,6 +6500,7 @@ mod tests {
                         owner: "70.1".to_owned(),
                         min_scope: "L2".to_owned(),
                         title: "host/目标控制窗".to_owned(),
+                        gates: Vec::new(),
                     }],
                     cases
                         .iter()
@@ -6289,6 +6509,7 @@ mod tests {
                             owner: "70.15".to_owned(),
                             min_scope: (*scope).to_owned(),
                             title: "test".to_owned(),
+                            gates: Vec::new(),
                         })
                         .collect(),
                     // blocked 项同样是 required（"阻塞"是状态，不是缺席）。
@@ -6299,6 +6520,7 @@ mod tests {
                             owner: "70.15".to_owned(),
                             min_scope: "L1".to_owned(),
                             title: "test".to_owned(),
+                            gates: Vec::new(),
                         })
                         .collect(),
                 ]
@@ -6406,7 +6628,13 @@ mod tests {
         }
 
         /// 写一份（可选签名、可选改字段的）信封到磁盘。
+        ///
+        /// F70-01 起真实候选信封都携带 gate run-record 证据载荷，夹具与
+        /// 生产同构：每份信封附带一份自洽的 `eneros.gate-run-record.v1`
+        /// （`gate_id` 由 `write_run_record` 记录，供 case 绑定/gate 覆盖
+        /// 判定消费）。
         fn write_envelope(&self, disk: &Path, case_id: &str, scope: &str) -> EvidenceEnvelope {
+            let (rec_rel, rec_sha) = self.write_run_record(case_id, "TEST-GATE");
             let payload = disk
                 .parent()
                 .unwrap()
@@ -6455,11 +6683,18 @@ mod tests {
                 }],
                 verdict: "PASS".to_owned(),
                 violations: Vec::new(),
-                artifacts: vec![ArtifactRef {
-                    name: "payload".to_owned(),
-                    path: payload_rel,
-                    sha256: hash_file(&payload).unwrap(),
-                }],
+                artifacts: vec![
+                    ArtifactRef {
+                        name: "run-record".to_owned(),
+                        path: rec_rel,
+                        sha256: rec_sha,
+                    },
+                    ArtifactRef {
+                        name: "payload".to_owned(),
+                        path: payload_rel,
+                        sha256: hash_file(&payload).unwrap(),
+                    },
+                ],
                 signer: "test".to_owned(),
                 signature: String::new(),
             };
@@ -6469,9 +6704,83 @@ mod tests {
             env
         }
 
+        /// 写一份自洽的 gate run-record（与生产记录器同 schema）并返回
+        /// `(仓库相对路径, sha256)`。
+        fn write_run_record(&self, case_id: &str, gate: &str) -> (String, String) {
+            let rel = format!(
+                "evidence/70/70.15/{}/{}.run-record.json",
+                self.lineage.candidate_id, case_id
+            );
+            let disk = self.root.join(&rel);
+            fs::create_dir_all(disk.parent().unwrap()).unwrap();
+            let record = serde_json::json!({
+                "schema": RUN_RECORD_SCHEMA,
+                "case_id": case_id,
+                "gate_id": gate,
+                "command": "fixture gate command",
+                "exit_code": 0,
+                "recorded_at": "2026-09-19T00:00:00Z",
+                "ran_artifact_sha256": "",
+                "ran_artifact_sha256_source": "",
+                "raw_log": {"name": "fixture.log", "bytes": 1, "sha256": digest_of(b"log")},
+                "verdict_lines": [format!("=== {gate}: PASS ===")],
+                "verdict": "PASS",
+                "candidate": {"candidate_id": self.lineage.candidate_id.clone()},
+            });
+            fs::write(&disk, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+            let sha = hash_file(&disk).unwrap();
+            (rel, sha)
+        }
+
         fn check(&self) -> Vec<String> {
             let (_, v) = self.run();
             v
+        }
+
+        /// 重写某 case 的 run-record 字段（gate/终态行/退出码等），同步刷新
+        /// 信封 artifact 摘要并**重签**——模拟攻击者手工构造相矛盾但签名
+        /// 合法的信封（F70-01 E03/E04/E05/E06 的对抗面）。
+        fn retarget_run_record(&mut self, case_id: &str, patch: serde_json::Value) {
+            let entry = self
+                .index
+                .cases
+                .iter()
+                .find(|c| c.case_id == case_id)
+                .cloned()
+                .unwrap();
+            let disk = self.root.join(&entry.envelope);
+            let mut env: EvidenceEnvelope = read_json(&disk).unwrap();
+            let rec_rel = env
+                .artifacts
+                .iter()
+                .find(|a| a.name == "run-record")
+                .unwrap()
+                .path
+                .clone();
+            let rec_disk = self.root.join(&rec_rel);
+            let mut record: serde_json::Value = read_json(&rec_disk).unwrap();
+            for (k, val) in patch.as_object().unwrap() {
+                record[k.clone()] = val.clone();
+            }
+            fs::write(&rec_disk, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+            let sha = hash_file(&rec_disk).unwrap();
+            for a in env.artifacts.iter_mut() {
+                if a.name == "run-record" {
+                    a.sha256 = sha.clone();
+                }
+            }
+            use ed25519_dalek::Signer;
+            // 验签对"清空签名的信封"做序列化——签名前同样先清（与
+            // `verify_envelope_signature` 的规范形一致）。
+            env.signature.clear();
+            env.signature = hex(&self.key.sign(&serde_json::to_vec(&env).unwrap()).to_bytes());
+            fs::write(&disk, serde_json::to_vec_pretty(&env).unwrap()).unwrap();
+            let idx_sha = hash_file(&disk).unwrap();
+            for c in self.index.cases.iter_mut() {
+                if c.case_id == case_id {
+                    c.envelope_sha256 = idx_sha.clone();
+                }
+            }
         }
 
         fn statuses(&self) -> Vec<String> {
@@ -6516,6 +6825,325 @@ mod tests {
                 .any(|l| l.contains("CORE-70-R11 BLOCKED blocker=EXT-70-HW")),
             "{:?}",
             f.statuses()
+        );
+        // E01：合法签名的通过 case 输出 PASS 行（信封+run-record 均自洽）。
+        assert!(
+            f.statuses()
+                .iter()
+                .any(|l| l.starts_with("CASE CORE-70-R01 PASS")),
+            "{:?}",
+            f.statuses()
+        );
+    }
+
+    // ============================================================
+    // F70-01：证据逐 case 绑定与运行终态验真（E01～E10 host 面）
+    // ============================================================
+
+    /// E02/R3：R02 索引指向 R01 的原信封与原摘要（签名不动）必须被拒，
+    /// 且 R01 自身不受影响。
+    #[test]
+    fn review70_reject_reused_signed_envelope_for_different_case() {
+        let mut f = CandidateFixture::new(
+            &[("CORE-70-R02", "L2")],
+            &[("CORE-70-R11", "EXT-70-HW")],
+            fixture_key(),
+        );
+        assert!(f.check().is_empty());
+        f.index.cases[1].envelope = f.index.cases[0].envelope.clone();
+        f.index.cases[1].envelope_sha256 = f.index.cases[0].envelope_sha256.clone();
+        let lines = f.statuses();
+        let v = f.check();
+        assert!(
+            !v.is_empty(),
+            "Reused R01 signed envelope for R02 was accepted: {lines:?}"
+        );
+        assert!(
+            v.iter()
+                .any(|x| x == "candidate-envelope-case-mismatch:CORE-70-R02:test_id=CORE-70-R01"),
+            "{v:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.starts_with("CASE CORE-70-R02 FAIL")),
+            "{lines:?}"
+        );
+        // R01 不受影响：它的 PASS 行仍在。
+        assert!(
+            lines.iter().any(|l| l.starts_with("CASE CORE-70-R01 PASS")),
+            "{lines:?}"
+        );
+    }
+
+    /// E03/R3：信封 test_id 正确、run_record.case_id 错误，即使重新合法
+    /// 签名也必须被拒——证明不只校验外层。
+    #[test]
+    fn review70_reject_run_record_bound_to_other_case() {
+        let mut f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        assert!(f.check().is_empty());
+        f.retarget_run_record("CORE-70-R01", serde_json::json!({"case_id": "CORE-70-R09"}));
+        let v = f.check();
+        assert!(
+            v.iter()
+                .any(|x| x.starts_with("candidate-run-record:CORE-70-R01:case-mismatch:")),
+            "{v:?}"
+        );
+        assert!(
+            f.statuses()
+                .iter()
+                .any(|l| l.starts_with("CASE CORE-70-R01 FAIL")),
+            "{:?}",
+            f.statuses()
+        );
+    }
+
+    /// E04+E07/R4：指定 gate 的 PASS 行 + 实际 exit=1 / 载荷明确 FAIL——
+    /// 外层 PASS 信封（合法签名）不能覆盖内层失败事实。
+    #[test]
+    fn review70_reject_failed_run_record_under_pass_envelope() {
+        let mut f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        assert!(f.check().is_empty());
+        f.retarget_run_record(
+            "CORE-70-R01",
+            serde_json::json!({
+                "gate_id": "VOL70.1",
+                "exit_code": 1,
+                "verdict": "FAIL",
+                "verdict_lines": ["VOL70.1-GATE: FAIL"],
+            }),
+        );
+        let v = f.check();
+        assert!(
+            v.iter()
+                .any(|x| x.starts_with("candidate-run-record:CORE-70-R01:exit-nonzero:1")),
+            "{v:?}"
+        );
+        assert!(
+            v.iter()
+                .any(|x| x.starts_with("candidate-run-record:CORE-70-R01:verdict-not-pass:FAIL")),
+            "{v:?}"
+        );
+        assert!(
+            v.iter()
+                .any(|x| x.starts_with("candidate-run-record:CORE-70-R01:terminal-fail:")),
+            "{v:?}"
+        );
+    }
+
+    /// E05/R4：case 立法必需 gate VOL70.1，但 run-record 是 VOL70.2 的
+    /// PASS——错误 gate 的 PASS 不能证明本 case；正确 gate 的记录才通过。
+    #[test]
+    fn review70_wrong_gate_pass_cannot_prove_case() {
+        let mut f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        f.matrix.cases[0].gates = vec!["VOL70.1".to_owned()];
+        f.retarget_run_record(
+            "CORE-70-R01",
+            serde_json::json!({
+                "gate_id": "VOL70.2",
+                "verdict_lines": ["=== VOL70.2 QEMU WINDOW: PASS ==="],
+            }),
+        );
+        let v = f.check();
+        assert!(
+            v.iter()
+                .any(|x| x == "candidate-run-record:CORE-70-R01:gate-mismatch:VOL70.2"),
+            "{v:?}"
+        );
+        assert!(
+            v.iter()
+                .any(|x| x.starts_with("candidate-gate-unproven:CORE-70-R01:VOL70.1")),
+            "{v:?}"
+        );
+        // 换回正确 gate 的 PASS 记录：同一夹具通过（E01 变体）。
+        f.retarget_run_record(
+            "CORE-70-R01",
+            serde_json::json!({
+                "gate_id": "VOL70.1",
+                "verdict_lines": ["=== VOL70.1 QEMU WINDOW: PASS ==="],
+            }),
+        );
+        assert!(f.check().is_empty(), "{:?}", f.check());
+    }
+
+    /// recheck RR3：严格终态归属——错误子门/扩展 token/任意后缀段不得
+    /// 证明父 gate；真实判据行的三种形态与显式别名正例保持可判。
+    #[test]
+    fn review70_rr3_strict_gate_terminal_attribution() {
+        use super::gate_terminal_status as g;
+        // 正例（真实判据行形态 + 显式别名映射）。
+        assert_eq!(
+            g("=== VOL70.1 QEMU WINDOW: PASS ===", "VOL70.1"),
+            Some(true)
+        );
+        assert_eq!(g("VOL70.7-GATE: PASS", "VOL70.7"), Some(true));
+        assert_eq!(g("VOL70.3 GATE: PASS", "VOL70.3"), Some(true));
+        assert_eq!(g("=== R10-HELD-GATE: PASS ===", "R10-HELD"), Some(true));
+        assert_eq!(
+            g("VOL70.2-R03-POWER-CUT GATE: PASS", "VOL70.2-R03"),
+            Some(true)
+        );
+        assert_eq!(
+            g(
+                "candidate-check red tests: PASS",
+                "evidence42-candidate-check"
+            ),
+            Some(true)
+        );
+        assert_eq!(g("TEST-GATE: FAIL", "TEST-GATE"), Some(false));
+        // 对抗例（recheck 复现三形态 + 既有防线）：全部不得证明。
+        assert_eq!(g("VOL70.2-R03-POWER-CUT GATE: PASS", "VOL70.2"), None);
+        assert_eq!(g("VOL70.1-GATE: PASSED_NOT", "VOL70.1"), None);
+        assert_eq!(g("HELD-GATE: PASS", "R10-HELD"), None);
+        assert_eq!(g("VOL70.7-GATE: PASS extra", "VOL70.7"), None);
+        assert_eq!(g("VOL70.10-GATE: PASS", "VOL70.1"), None);
+        assert_eq!(g("VOL70.1 boot ok", "VOL70.1"), None);
+    }
+
+    /// recheck RR3（读侧集成）：case 立法必需 gate VOL70.2，run-record 的
+    /// 终态行是子窗 `VOL70.2-R03-POWER-CUT`——错误子门不得充当父 gate
+    /// 证据；换回父 gate 自己的终态行后通过。
+    #[test]
+    fn review70_rr3_subgate_line_cannot_prove_parent_gate() {
+        let mut f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        f.matrix.cases[0].gates = vec!["VOL70.2".to_owned()];
+        f.retarget_run_record(
+            "CORE-70-R01",
+            serde_json::json!({
+                "gate_id": "VOL70.2",
+                "verdict_lines": ["VOL70.2-R03-POWER-CUT GATE: PASS"],
+            }),
+        );
+        let v = f.check();
+        assert!(
+            v.iter()
+                .any(|x| x.starts_with("candidate-run-record:CORE-70-R01:no-terminal-pass:")),
+            "{v:?}"
+        );
+        assert!(
+            v.iter()
+                .any(|x| x.starts_with("candidate-gate-unproven:CORE-70-R01:VOL70.2")),
+            "{v:?}"
+        );
+        f.retarget_run_record(
+            "CORE-70-R01",
+            serde_json::json!({
+                "gate_id": "VOL70.2",
+                "verdict_lines": ["=== VOL70.2 QEMU WINDOW: PASS ==="],
+            }),
+        );
+        assert!(f.check().is_empty(), "{:?}", f.check());
+    }
+
+    /// E06/R4：缺终态、冲突终态、未知 schema 版本、截断记录分别非零且
+    /// 给出准确原因。
+    #[test]
+    fn review70_run_record_terminal_state_must_be_unambiguous() {
+        // 缺指定 gate 终态行。
+        let mut f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        f.retarget_run_record(
+            "CORE-70-R01",
+            serde_json::json!({"verdict_lines": ["别的 gate 的行", "=== VOL70.9: PASS ==="]}),
+        );
+        assert!(
+            f.check()
+                .iter()
+                .any(|x| x.starts_with("candidate-run-record:CORE-70-R01:no-terminal-pass:")),
+            "{:?}",
+            f.check()
+        );
+
+        // 同一 run 冲突终态（PASS 行与 FAIL 行并存）。
+        let mut f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        f.retarget_run_record(
+            "CORE-70-R01",
+            serde_json::json!({"verdict_lines": ["=== TEST-GATE: PASS ===", "TEST-GATE: FAIL"]}),
+        );
+        assert!(
+            f.check()
+                .iter()
+                .any(|x| x.starts_with("candidate-run-record:CORE-70-R01:terminal-fail:")),
+            "{:?}",
+            f.check()
+        );
+
+        // 未知 schema 版本（v2）不得按 v1 放行。
+        let mut f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        f.retarget_run_record(
+            "CORE-70-R01",
+            serde_json::json!({"schema": "eneros.gate-run-record.v2"}),
+        );
+        assert!(
+            f.check().iter().any(|x| x.starts_with(
+                "candidate-run-record:CORE-70-R01:schema-unknown(eneros.gate-run-record.v2)"
+            )),
+            "{:?}",
+            f.check()
+        );
+
+        // 截断记录（重签后仍是坏 JSON）必须显式不可读。
+        let mut f = CandidateFixture::new(&[], &[("CORE-70-R11", "EXT-70-HW")], fixture_key());
+        let entry = f.index.cases[0].clone();
+        let disk = f.root.join(&entry.envelope);
+        let mut env: EvidenceEnvelope = read_json(&disk).unwrap();
+        let rec_rel = env.artifacts[0].path.clone();
+        fs::write(f.root.join(&rec_rel), b"{ truncated").unwrap();
+        env.artifacts[0].sha256 = hash_file(&f.root.join(&rec_rel)).unwrap();
+        use ed25519_dalek::Signer;
+        env.signature.clear();
+        env.signature = hex(&f.key.sign(&serde_json::to_vec(&env).unwrap()).to_bytes());
+        fs::write(&disk, serde_json::to_vec_pretty(&env).unwrap()).unwrap();
+        f.index.cases[0].envelope_sha256 = hash_file(&disk).unwrap();
+        assert!(
+            f.check()
+                .iter()
+                .any(|x| x.starts_with("candidate-run-record:CORE-70-R01:unreadable")),
+            "{:?}",
+            f.check()
+        );
+    }
+
+    /// E05 判据归属规则本身：别的 gate 的 PASS 行、正文 PASS、旧日志
+    /// PASS 都不能记到指定 gate 头上；三种真实判据行格式都能归属。
+    #[test]
+    fn gate_terminal_status_attribution_rules() {
+        use super::gate_terminal_status;
+        // 三种真实格式。
+        assert_eq!(
+            gate_terminal_status("=== VOL70.1 QEMU WINDOW: PASS ===", "VOL70.1"),
+            Some(true)
+        );
+        assert_eq!(
+            gate_terminal_status("VOL70.7-GATE: PASS", "VOL70.7"),
+            Some(true)
+        );
+        assert_eq!(
+            gate_terminal_status("VOL70.2-R03-POWER-CUT GATE: PASS", "VOL70.2-R03"),
+            Some(true)
+        );
+        assert_eq!(
+            gate_terminal_status(
+                "candidate-check red tests: PASS",
+                "evidence42-candidate-check"
+            ),
+            Some(true)
+        );
+        // 别的 gate 的 PASS 不属于本 gate（E05 核心）。
+        assert_eq!(
+            gate_terminal_status("=== VOL70.2 QEMU WINDOW: PASS ===", "VOL70.1"),
+            None
+        );
+        assert_eq!(gate_terminal_status("VOL70.2-GATE: PASS", "VOL70.1"), None);
+        // 前缀相近但数字不同不得误配。
+        assert_eq!(gate_terminal_status("VOL70.10-GATE: PASS", "VOL70.1"), None);
+        // 正文/普通行不算终态。
+        assert_eq!(gate_terminal_status("VOL70.1 boot ok", "VOL70.1"), None);
+        assert_eq!(
+            gate_terminal_status("test result: ok. 29 passed", "VOL70.1"),
+            None
+        );
+        // FAIL 终态。
+        assert_eq!(
+            gate_terminal_status("VOL70.7-GATE: FAIL", "VOL70.7"),
+            Some(false)
         );
     }
 
@@ -6882,6 +7510,7 @@ mod tests {
                 owner: "70.1".to_owned(),
                 min_scope: "L2".to_owned(),
                 title: "t".to_owned(),
+                gates: Vec::new(),
             }],
             blockers: Vec::new(),
             allowed_exemptions: Vec::new(),

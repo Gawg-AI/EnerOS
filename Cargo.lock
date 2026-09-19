@@ -2118,6 +2118,7 @@ dependencies = [
  "eneros-image-format",
  "eneros-ipc-wire",
  "eneros-modbus-rtu",
+ "eneros-ota-ab",
  "eneros-signer-keyring",
  "getrandom 0.2.17",
  "object",

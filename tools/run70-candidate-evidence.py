@@ -110,7 +110,10 @@ def load_index(candidate_id: str) -> tuple[Path, dict]:
 
 
 def save_index(path: Path, index: dict) -> None:
-    path.write_text(json.dumps(index, indent=2, ensure_ascii=False) + "\n")
+    """完整写入后原子切换（tmp + rename）：写到一半不会留下半截索引。"""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(index, indent=2, ensure_ascii=False) + "\n")
+    tmp.replace(path)
 
 
 def verdict_lines(log: Path) -> list[str]:
@@ -128,6 +131,76 @@ def verdict_lines(log: Path) -> list[str]:
         if pat.search(line):
             out.append(line.rstrip())
     return out
+
+
+# recheck RR3 重订：显式别名 + 完整终态 token 匹配（不做任意前后缀推断）。
+GATE_LINE_ALIASES: dict[str, tuple[str, ...]] = {
+    # 复合 gate 在判据行里的行首名（`candidate-check red tests: PASS`）。
+    "evidence42-candidate-check": ("candidate-check",),
+    # 子窗 gate 的判据行携带描述段（vol2 门 R03 断电窗终态行）。
+    "VOL70.2-R03": ("VOL70.2-R03-POWER-CUT",),
+}
+
+_TERMINAL_MARKERS = ("-GATE:", " GATE:", " QEMU WINDOW:", " red tests:")
+
+
+def _line_terminal_parses(line: str) -> list[tuple[str, str]]:
+    """把一行解析为 [(行首 gate 名, PASS|FAIL)]；解析不出 = []。
+
+    合法形态（两端 '='/空白先剥去）：`<name>-GATE:`/`<name> GATE:`/
+    `<name> QEMU WINDOW:`/`<name> red tests:`/裸 `<name>:`。name 必须是
+    单 token（不含空格）；状态 token 必须**完整等于** PASS/FAIL——扩展或
+    截断 token（`PASSED_NOT`）不是终态行，组合/带尾注的行整体不可判。
+    """
+    norm = line.strip("= ")
+    out: list[tuple[str, str]] = []
+    for marker in _TERMINAL_MARKERS:
+        pos = norm.find(marker)
+        while pos != -1:
+            name = norm[:pos]
+            status = norm[pos + len(marker):].strip("= ")
+            if name and " " not in name and status in ("PASS", "FAIL"):
+                out.append((name, status))
+            pos = norm.find(marker, pos + 1)
+    if ":" in norm:
+        name, _, rest = norm.rpartition(":")
+        status = rest.strip("= ")
+        if name and " " not in name and status in ("PASS", "FAIL"):
+            out.append((name, status))
+    return out
+
+
+def gate_terminal_status(line: str, gate: str):
+    """一行是否是指定 gate 的终态行：True=PASS / False=FAIL / None=无关。
+
+    F70-01（R4/E05）+ recheck RR3：case 的成功只能由**指定 gate 自己的
+    终态行**证明。归属 = 行首名与 gate（或其显式别名）**整名相等**；
+    终态 token 完整匹配。旧实现的 PASS 子串匹配（`GATE: PASSED_NOT`
+    命中）与 gate 前缀/任意 '-' 后缀段推断（`VOL70.2-R03-…GATE: PASS`
+    证明 `VOL70.2`、`HELD-GATE: PASS` 证明 `R10-HELD`）已退役。与 xtask
+    `evidence_chain::gate_terminal_status` 单源同构，两侧必须同时改。"""
+    names = {gate, *GATE_LINE_ALIASES.get(gate, ())}
+    states = [s for n, s in _line_terminal_parses(line) if n in names]
+    if not states:
+        return None
+    if "FAIL" in states:
+        return False
+    return True
+
+
+def gate_status_from_log(lines: list[str], gate: str) -> "tuple[str, list[str]] | tuple[None, list[str]]":
+    """从判据行快照判定**指定 gate** 的终态。
+
+    返回 (status, gate_lines)：无该 gate 终态行时 status=None（缺终态，
+    不得凭声明落状态）；有 PASS 无 FAIL → PASS；否则 FAIL。别的 gate 的
+    PASS、正文 PASS、`--verdict-line` 提示值都不参与判定。"""
+    gate_lines = [l for l in lines if gate_terminal_status(l, gate) is not None]
+    states = [gate_terminal_status(l, gate) for l in gate_lines]
+    if not states:
+        return None, gate_lines
+    if any(s is True for s in states) and not any(s is False for s in states):
+        return "PASS", gate_lines
+    return "FAIL", gate_lines
 
 
 def cmd_record(a: argparse.Namespace) -> int:
@@ -168,21 +241,22 @@ def cmd_record(a: argparse.Namespace) -> int:
     raw_bytes = log.stat().st_size
     raw_sha = sha256_file(log)
 
-    # 状态由**原始日志**决定，不由调用方声明：门自己的终态行
-    # （`<gate>: PASS|FAIL` / `... WINDOW: PASS|FAIL`）是唯一来源——
-    # 调用方传的 `--verdict-line` 只声明"预期哪一行存在"（传 FAIL 行即
-    # 声明"本轮预期就是失败"，用于把**失败证据**也如实入库）。
-    verdicts = [
-        l for l in lines if re.search(r"(GATE|WINDOW|red tests): (PASS|FAIL)\b", l)
-    ]
-    if not verdicts:
-        die(f"no gate verdict line in {a.log}——无法判定门终态（不得凭声明落状态）")
-    status = (
-        "PASS"
-        if any(re.search(r": PASS\b", l) is not None for l in verdicts)
-        and not any(re.search(r": FAIL\b", l) is not None for l in verdicts)
-        else "FAIL"
-    )
+    # 状态由**指定 gate 自己的终态行**决定（F70-01/R4）：声明 `--gate
+    # VOL70.1` 而日志里只有 VOL70.2 的 PASS → 拒绝（缺终态）；调用方传的
+    # `--verdict-line` 只是"预期哪一行存在"的提示，不参与判定。
+    status, gate_lines = gate_status_from_log(lines, a.gate)
+    if status is None:
+        die(
+            f"no terminal verdict line for gate {a.gate!r} in {a.log}"
+            "——无法判定门终态（别的 gate 的 PASS 不能充当本 gate 证据）"
+        )
+    # PASS 必须同时有零退出码：非零退出 + PASS 行是矛盾输入，不产生
+    # 成功记录（外层声明不得覆盖实际聚合退出码）。
+    if status == "PASS" and a.exit_code != 0:
+        die(
+            f"gate {a.gate} claims PASS but --exit-code={a.exit_code}: "
+            "PASS 记录要求实际聚合退出码为 0"
+        )
 
     record = {
         "schema": "eneros.gate-run-record.v1",
@@ -210,13 +284,20 @@ def cmd_record(a: argparse.Namespace) -> int:
             "profile": a.profile,
         },
     }
-    rec_path = EVID_DIR / cid / f"{a.case}.run-record.json"
+    # recheck RR4：每次运行使用**独立不可覆盖**的 run 路径（内容摘要做
+    # run id——同内容重写幂等，异内容必然分文件）。旧实现把 run-record/
+    # envelope 写死为 `<case>.*.json` 且在失败分支**之前**落盘：同 case
+    # 先 PASS 后 FAIL 时，失败文件会顶掉索引仍引用的成功文件（摘要失配、
+    # 原始运行证据丢失）。索引只在 PASS 且三件套完整后才原子切换。
+    record_body = json.dumps(record, indent=2, ensure_ascii=False) + "\n"
+    run_id = hashlib.sha256(record_body.encode()).hexdigest()[:16]
+    rec_path = EVID_DIR / cid / f"{a.case}.{run_id}.run-record.json"
     rec_path.parent.mkdir(parents=True, exist_ok=True)
-    rec_path.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n")
+    rec_path.write_text(record_body)
     rec_rel = rel_to_root(rec_path)
     rec_sha = sha256_file(rec_path)
 
-    env_path = EVID_DIR / cid / f"{a.case}.envelope.json"
+    env_path = EVID_DIR / cid / f"{a.case}.{run_id}.envelope.json"
     env_rel = rel_to_root(env_path)
     cmd = [
         "cargo",
@@ -248,6 +329,16 @@ def cmd_record(a: argparse.Namespace) -> int:
     if r.returncode != 0:
         die(f"envelope creation failed: {r.stderr.strip() or r.stdout.strip()}")
     env_sha = sha256_file(env_path)
+
+    if status != "PASS":
+        # 失败运行留档为**失败证据**（run-record + envelope 如实记 FAIL），
+        # 但不得写进索引充当成功条目，也不得顶掉该 case 已有的成功条目
+        # （F70-01 §4.2.8：错误或不完整运行不得替换为一条成功索引记录）。
+        print(f"[candidate-evidence] case={a.case} status=FAIL candidate={cid[:12]}…")
+        print(f"[candidate-evidence] run-record → {rec_rel}")
+        print(f"[candidate-evidence] envelope   → {env_rel}")
+        print("[candidate-evidence] index      → 未变更（失败证据不注册成功条目）")
+        return 1
 
     art_name = a.artifact_name or a.profile
     art_entry = {
@@ -315,7 +406,236 @@ def cmd_record(a: argparse.Namespace) -> int:
     print(f"[candidate-evidence] run-record → {rec_rel}")
     print(f"[candidate-evidence] envelope   → {env_rel}")
     print(f"[candidate-evidence] index      → {rel_to_root(idx_path)}")
-    return 0 if status == "PASS" else 1
+    return 0
+
+
+def _selftest() -> int:
+    """F70-01 记录器长期回归：修前红/修后绿的对抗用例（E04/E05/E06/E08）。
+
+    隔离 tmp 根 + mock lineage/envelope 子进程——不落真实 evidence 目录、
+    不需要 cargo。"""
+    import tempfile
+    from unittest.mock import patch
+
+    failures: list[str] = []
+
+    def check(label: str, cond: bool, detail: str = "") -> None:
+        print(f"[selftest] {'PASS' if cond else 'FAIL'} {label}{'' if cond else ': ' + detail}")
+        if not cond:
+            failures.append(label)
+
+    # --- 归属规则（与 xtask gate_terminal_status 同构）---
+    check(
+        "attrib: vol window",
+        gate_terminal_status("=== VOL70.1 QEMU WINDOW: PASS ===", "VOL70.1") is True,
+    )
+    check("attrib: gate suffix", gate_terminal_status("VOL70.7-GATE: PASS", "VOL70.7") is True)
+    check(
+        "attrib: subgate",
+        gate_terminal_status("VOL70.2-R03-POWER-CUT GATE: PASS", "VOL70.2-R03") is True,
+    )
+    check(
+        "attrib: compound gate suffix",
+        gate_terminal_status(
+            "candidate-check red tests: PASS", "evidence42-candidate-check"
+        )
+        is True,
+    )
+    check(
+        "attrib: other gate not mine (E05)",
+        gate_terminal_status("=== VOL70.2 QEMU WINDOW: PASS ===", "VOL70.1") is None,
+    )
+    check(
+        "attrib: near-prefix not mine",
+        gate_terminal_status("VOL70.10-GATE: PASS", "VOL70.1") is None,
+    )
+    check("attrib: fail terminal", gate_terminal_status("VOL70.7-GATE: FAIL", "VOL70.7") is False)
+    check("attrib: plain line not terminal", gate_terminal_status("VOL70.1 boot ok", "VOL70.1") is None)
+    # recheck RR3 对抗例：错误子门/扩展 token/后缀段推断必须全部拒绝。
+    check(
+        "attrib RR3: subgate line does not prove parent",
+        gate_terminal_status("VOL70.2-R03-POWER-CUT GATE: PASS", "VOL70.2") is None,
+    )
+    check(
+        "attrib RR3: extended PASS token rejected",
+        gate_terminal_status("VOL70.1-GATE: PASSED_NOT", "VOL70.1") is None,
+    )
+    check(
+        "attrib RR3: suffix segment does not prove compound gate",
+        gate_terminal_status("HELD-GATE: PASS", "R10-HELD") is None,
+    )
+    check(
+        "attrib RR3: trailing text after token rejected",
+        gate_terminal_status("VOL70.7-GATE: PASS extra", "VOL70.7") is None,
+    )
+    check(
+        "attrib RR3: bare name terminal kept (compound gate fixtures)",
+        gate_terminal_status("TEST-GATE: FAIL", "TEST-GATE") is False,
+    )
+
+    st, gl = gate_status_from_log(["=== VOL70.2 QEMU WINDOW: PASS ==="], "VOL70.1")
+    check("gate_status: wrong gate absent → None", st is None and gl == [])
+    st, _ = gate_status_from_log(["VOL70.1-GATE: PASS", "VOL70.2-GATE: FAIL"], "VOL70.1")
+    check("gate_status: other gate FAIL ignored", st == "PASS")
+    st, _ = gate_status_from_log(["VOL70.1-GATE: PASS", "VOL70.1-GATE: FAIL"], "VOL70.1")
+    check("gate_status: conflict → FAIL", st == "FAIL")
+
+    # --- 记录端行为（隔离根 + mock；真实 verdict/exit 判定逻辑）---
+    with tempfile.TemporaryDirectory(prefix="run70-selftest-") as td:
+        old_root, old_evid = ROOT, EVID_DIR
+        globals()["ROOT"], globals()["EVID_DIR"] = Path(td), Path(td) / "evidence/70/70.15"
+
+        def lin(profile, artifact):
+            return dict(
+                source_commit="a" * 40,
+                dirty_tree_digest="b" * 64,
+                toolchain_digest="c" * 64,
+                platform_inventory_digest="d" * 64,
+                artifact_sha256=sha256_file(artifact) if artifact else "",
+            )
+
+        def emit(cmd, **kw):
+            # 真实子进程以 cwd=ROOT 运行、--out 是仓库相对路径；mock 同样
+            # 解析到当前（已隔离的）ROOT 下。
+            out = globals()["ROOT"] / cmd[cmd.index("--out") + 1]
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps({"verdict": cmd[cmd.index("--verdict") + 1]}))
+            return argparse.Namespace(returncode=0, stdout="", stderr="")
+
+        # E04：指定 gate PASS 行 + 实际 exit=1 → 必须拒绝（不产生成功记录）。
+        with patch.object(sys.modules[__name__], "lineage", lin), patch.object(
+            sys.modules[__name__].subprocess, "run", emit
+        ):
+            (globals()["ROOT"] / "run.log").write_text("VOL70.1-GATE: PASS\n")
+            (globals()["ROOT"] / "artifact.raw").write_bytes(b"test artifact")
+            a = argparse.Namespace(
+                log="run.log", artifact="artifact.raw", profile="qemu-test",
+                ran_artifact_sha_file="", verdict_line="", case="CORE-70-R01",
+                gate="VOL70.1", command="real gate command", exit_code=1,
+                scope="L2", oracle="external test", positive="ok:PASS:ok",
+                negative="bad:FAIL:rejected", artifact_name="test",
+            )
+            try:
+                cmd_record(a)
+                check("recorder E04: nonzero exit rejected", False, "cmd_record returned")
+            except SystemExit as e:
+                check("recorder E04: nonzero exit rejected", e.code == 2)
+
+        # E05：声明 VOL70.1、日志只有 VOL70.2 的 PASS → 拒绝。
+        with patch.object(sys.modules[__name__], "lineage", lin), patch.object(
+            sys.modules[__name__].subprocess, "run", emit
+        ):
+            (globals()["ROOT"] / "run.log").write_text("VOL70.2-GATE: PASS\n")
+            a = argparse.Namespace(
+                log="run.log", artifact="artifact.raw", profile="qemu-test",
+                ran_artifact_sha_file="", verdict_line="", case="CORE-70-R01",
+                gate="VOL70.1", command="real gate command", exit_code=0,
+                scope="L2", oracle="external test", positive="ok:PASS:ok",
+                negative="bad:FAIL:rejected", artifact_name="test",
+            )
+            try:
+                cmd_record(a)
+                check("recorder E05: wrong gate rejected", False, "cmd_record returned")
+            except SystemExit as e:
+                check("recorder E05: wrong gate rejected", e.code == 2)
+
+        # E06（记录端）：缺任何 gate 终态行 → 拒绝。
+        with patch.object(sys.modules[__name__], "lineage", lin), patch.object(
+            sys.modules[__name__].subprocess, "run", emit
+        ):
+            (globals()["ROOT"] / "run.log").write_text("VOL70.1 boot ok\n[✓][R1] fine\n")
+            a = argparse.Namespace(
+                log="run.log", artifact="artifact.raw", profile="qemu-test",
+                ran_artifact_sha_file="", verdict_line="", case="CORE-70-R01",
+                gate="VOL70.1", command="real gate command", exit_code=0,
+                scope="L2", oracle="external test", positive="ok:PASS:ok",
+                negative="bad:FAIL:rejected", artifact_name="test",
+            )
+            try:
+                cmd_record(a)
+                check("recorder E06: no terminal rejected", False, "cmd_record returned")
+            except SystemExit as e:
+                check("recorder E06: no terminal rejected", e.code == 2)
+
+        # E08：真实负例门（被测进程预期退出非零，门驱动断言全过、门自身
+        # exit=0 + 终态 PASS）→ 正常接纳；日志含 "FAIL" 字样不误拒。
+        with patch.object(sys.modules[__name__], "lineage", lin), patch.object(
+            sys.modules[__name__].subprocess, "run", emit
+        ):
+            (globals()["ROOT"] / "run.log").write_text(
+                "[✗][N1] 预期拒绝样例 skip-trial:FAIL:被拒（负例按预期失败）\n"
+                "VOL70.1-GATE: PASS\n"
+            )
+            a = argparse.Namespace(
+                log="run.log", artifact="artifact.raw", profile="qemu-test",
+                ran_artifact_sha_file="", verdict_line="", case="CORE-70-R01",
+                gate="VOL70.1", command="real gate command", exit_code=0,
+                scope="L2", oracle="external test", positive="ok:PASS:ok",
+                negative="bad:FAIL:rejected", artifact_name="test",
+            )
+            rc = cmd_record(a)
+            check("recorder E08: negative-run gate accepted", rc == 0, f"rc={rc}")
+            recs = list((globals()["EVID_DIR"]).glob("*/CORE-70-R01.*.run-record.json"))
+            check("recorder E08: record written", len(recs) == 1)
+            if recs:
+                verdict = json.loads(recs[0].read_text())["verdict"]
+                check("recorder E08: verdict PASS recorded", verdict == "PASS", verdict)
+            idxs = list((globals()["EVID_DIR"]).glob("*/candidate-index.json"))
+            check("recorder E08: index registered", len(idxs) == 1)
+            # 成功三件套快照（RR4：失败重跑不得破坏）。
+            idx_before = json.loads(idxs[0].read_text())
+            env_entry = next(c for c in idx_before["cases"] if c["case_id"] == "CORE-70-R01")
+            env_file = globals()["ROOT"] / env_entry["envelope"]
+            env_bytes_before = env_file.read_bytes()
+            rec_files_before = sorted(
+                p.name for p in idxs[0].parent.glob("CORE-70-R01.*.run-record.json")
+            )
+
+            # 失败门（终态 FAIL）→ 留失败证据、返回 1、不写成功索引。
+            (globals()["ROOT"] / "run.log").write_text("VOL70.1-GATE: FAIL\n")
+            a2 = argparse.Namespace(
+                log="run.log", artifact="artifact.raw", profile="qemu-test",
+                ran_artifact_sha_file="", verdict_line="", case="CORE-70-R01",
+                gate="VOL70.1", command="real gate command", exit_code=1,
+                scope="L2", oracle="external test", positive="ok:PASS:ok",
+                negative="bad:FAIL:rejected", artifact_name="test",
+            )
+            rc2 = cmd_record(a2)
+            check("recorder FAIL: returns 1", rc2 == 1, f"rc={rc2}")
+            idx2 = json.loads(idxs[0].read_text())
+            check(
+                "recorder FAIL: index untouched by failure",
+                any(c["case_id"] == "CORE-70-R01" for c in idx2["cases"]),
+                "success entry vanished",
+            )
+            # RR4：旧成功信封逐字节保持，索引摘要仍与盘上文件吻合。
+            check(
+                "recorder RR4: success envelope bytes preserved",
+                env_file.read_bytes() == env_bytes_before,
+                "failure run overwrote the indexed success envelope",
+            )
+            check(
+                "recorder RR4: index envelope digest still matches disk",
+                sha256_file(env_file) == env_entry["envelope_sha256"],
+                "indexed digest diverged after failed rerun",
+            )
+            rec_files_after = sorted(
+                p.name for p in idxs[0].parent.glob("CORE-70-R01.*.run-record.json")
+            )
+            check(
+                "recorder RR4: failure run archived separately",
+                len(rec_files_after) == len(rec_files_before) + 1
+                and set(rec_files_before) <= set(rec_files_after),
+                f"before={rec_files_before} after={rec_files_after}",
+            )
+
+        globals()["ROOT"], globals()["EVID_DIR"] = old_root, old_evid
+
+    if failures:
+        print(f"[selftest] {len(failures)} FAILED")
+        return 1
+    print("[selftest] all PASS")
+    return 0
 
 
 def cmd_blocked(a: argparse.Namespace) -> int:
@@ -398,6 +718,9 @@ def main() -> int:
 
     st = sub.add_parser("status")
     st.set_defaults(func=cmd_status)
+
+    self = sub.add_parser("selftest", help="F70-01 记录器对抗回归（离线）")
+    self.set_defaults(func=lambda _a: _selftest())
 
     a = ap.parse_args()
     return a.func(a)

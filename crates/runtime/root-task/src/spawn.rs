@@ -1093,6 +1093,11 @@ mod proto_uart_slot_tests {
             ),
             ("net_mmio", NET_MMIO_VADDR, 2 * page),
             ("uart_mmio", UART_MMIO_VADDR, page),
+            (
+                "storage_boot_identity",
+                eneros_handover_abi::STORAGE_BOOT_IDENTITY_VADDR,
+                page,
+            ),
         ];
         for i in 0..ranges.len() {
             for j in (i + 1)..ranges.len() {
@@ -2217,6 +2222,40 @@ fn configure_service(
     // 不阻断其他服务）。
     let mut storage_handover: Option<StorageHandover> = None;
     if svc.name == "svc-storage" {
+        // F70-02（S1）：本次运行槽身份页——root 把可信身份 capsule
+        //（版本+CRC，boot-manager 写入；qemu-test 闭包 = 显式合成身份）
+        // 逐字节拷入 root 自有帧，以**只读**权限映射到
+        // `STORAGE_BOOT_IDENTITY_VADDR`。capsule 缺失/无效 → 全零页
+        //（服务侧解码失败 = "运行身份缺失" ⇒ 安装/确认写面关闭，
+        // fail-closed——不猜槽、不从 OTA 请求自述取运行槽）。
+        //
+        // **必须成功映射**：服务侧无条件读该地址（缺页 = FAULT 循环），
+        // 资源耗尽与 IPC buffer 同级（spawn 失败 ⇒ 服务不可用，诚实降级）。
+        let identity_frame = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
+        retype_one(ctx, types.arm_frame, OBJ_BITS_SMALL_PAGE, identity_frame)?;
+        let mut identity_page = [0u8; eneros_boot_protocol::IDENTITY_CAPSULE_SIZE];
+        let identity_state = match crate::service::resolve_identity_capsule() {
+            Some(capsule) => {
+                identity_page.copy_from_slice(&capsule.to_bytes());
+                "capsule"
+            }
+            None => "absent(zeros)",
+        };
+        copy_window_bytes(ctx, identity_frame, &identity_page, rights)?;
+        let identity_perm = VmPermissions::RO_NX;
+        map_frame_with_pagetables(
+            ctx,
+            vspace,
+            identity_frame,
+            eneros_handover_abi::STORAGE_BOOT_IDENTITY_VADDR,
+            identity_perm.cap_rights(rights),
+            identity_perm.vm_attributes(),
+        )?;
+        crate::println!(
+            "[eneros-root-task] BOOT-IDENTITY-PAGE: {} → svc-storage vaddr=0x{:x} (RO)",
+            identity_state,
+            eneros_handover_abi::STORAGE_BOOT_IDENTITY_VADDR
+        );
         let mmio_phys = storage_mmio_phys();
         // a) MMIO 设备帧（1 页覆盖 0x200 槽寄存器区）。
         let mmio_frame = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;

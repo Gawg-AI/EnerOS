@@ -169,10 +169,19 @@ pub struct OperationRecord {
     pub detail: String,
 }
 
-/// 账本容量硬上限（条数；每条 String 域截断后常驻 ≤ ~250B，总常驻
-/// ≤ 24×250 = 6 KiB 量级——与 MgmtOps 区段 4 KiB 内的编码行预算匹配：
-/// 编码后每行定长 120B，24 行 + 头 ≤ 3 KiB）。
-pub const MGMT_OPS_MAX: usize = 24;
+/// 账本容量硬上限（条数）。
+///
+/// F70-03（vol6 实弹修订）：上限必须与**持久槽预算**一致——区段
+/// 4096B ÷ 双槽 = 2048B/槽，payload = generation(8) + 头(17) + 129n
+/// ⇒ n ≤ 15。旧值 24 的账本在盘上从未容纳超过 15 条（第 16 条起
+/// `OutOfSpace`；旧实现把该失败静默吞掉 = 内存账本与盘上事实静默
+/// 分叉、已确认操作的幂等记录凭空丢失——本轮"承诺与实现不符"病灶
+/// 的实弹形态）。回归锁：`ledger_cap_fits_durable_slot_budget`。
+pub const MGMT_OPS_MAX: usize = 15;
+
+/// 持久槽预算（MgmtOps 区段 4096B 的单槽 = 2048B；RegionStateStore
+/// 双槽交替）。编码 payload（含 generation 前缀）不得超过本值。
+pub const MGMT_OPS_SLOT_BUDGET: usize = 2048;
 
 /// String 域截断上限。
 const PRINCIPAL_CAP: usize = 24;
@@ -237,6 +246,12 @@ impl OperationLedger {
         core::mem::replace(&mut self.dirty, false)
     }
 
+    /// 非消费型查询（recheck RS2：装配侧重试必须「提交确认后才清 dirty」
+    /// ——先 take 后失败会把待写标志丢掉，之后无新变更时不再触发重试）。
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
     pub fn records(&self) -> &[OperationRecord] {
         &self.records
     }
@@ -246,6 +261,17 @@ impl OperationLedger {
     }
 
     /// 幂等门（副作用操作前置判定）。`arg_digest` = SM3(arg) 前 8B。
+    ///
+    /// F70-03（S3 §6.2）：完整请求身份 = principal + request_id +
+    /// **规范化 action** + 参数摘要。旧实现只比 `arg_digest`——同 ID
+    /// 空参的 `maintenance-enter`/`maintenance-exit` 被判为同一请求，
+    /// 第二个动作拿第一个动作的 Completed 充当回放（执行计数停在一）。
+    ///
+    /// 比较口径（§6.2"上限、规范化必须一致"）：principal/action 均按
+    /// 存储上限（24B，UTF-8 边界截断）规范化后比较——**覆盖范围**：
+    /// 大于 24B 且前 24B 相同的两个不同 principal/action 会判等（固定行
+    /// 编码 24B 的既有格式约束下的残留碰撞面；动作名全集短于 24B，
+    /// principal 由验签会话给出，实际风险面在此声明）。
     pub fn begin(
         &mut self,
         request_id: u64,
@@ -255,15 +281,19 @@ impl OperationLedger {
         config_generation: u64,
         now_ms: u64,
     ) -> OpGate {
-        // 幂等判别：同 principal + request_id。
+        // 幂等判别：同 principal + request_id（规范化比较）。
+        let principal_key = cap_str(principal, PRINCIPAL_CAP);
+        let action_key = cap_str(action, ACTION_CAP_MAX);
         let existing = self
             .records
             .iter()
-            .find(|r| r.request_id == request_id && r.principal == principal);
+            .find(|r| r.request_id == request_id && r.principal == principal_key);
         if let Some(r) = existing {
-            if r.arg_digest == arg_digest {
+            if r.action == action_key && r.arg_digest == arg_digest {
                 return OpGate::Replayed(r.op_id);
             }
+            // 同键不同 action / 不同参数 = 不同请求（Conflict，不返回旧
+            // 成功——旧操作的原代次/终态保留在账本）。
             return OpGate::Conflict;
         }
         if self.records.len() >= MGMT_OPS_MAX {
@@ -281,8 +311,8 @@ impl OperationLedger {
         self.records.push(OperationRecord {
             op_id,
             request_id,
-            principal: cap_str(principal, PRINCIPAL_CAP),
-            action: cap_str(action, ACTION_CAP_MAX),
+            principal: principal_key,
+            action: action_key,
             arg_digest,
             status: OpStatus::Running,
             config_generation,
@@ -291,6 +321,22 @@ impl OperationLedger {
             detail: String::from("accepted"),
         });
         OpGate::New(op_id)
+    }
+
+    /// F70-03（§6.3.3）：撤回一次**尚未执行**的 New 记录（持久意图提交
+    /// 失败时）——副作用 0 次、账本回到受理前形态（盘上从未见过该记录，
+    /// 崩溃后重放按新请求受理）。只允许撤回最新的未动 Running 记录
+    ///（detail 仍为受理词形 = executor 未收口过），防误删他人记录。
+    pub fn abort_new(&mut self, op_id: u64) {
+        if let Some(last) = self.records.last() {
+            if last.op_id == op_id && last.status == OpStatus::Running && last.detail == "accepted"
+            {
+                self.records.pop();
+                if self.next_op_id == op_id.wrapping_add(1) {
+                    self.next_op_id = op_id;
+                }
+            }
+        }
     }
 
     /// 终态/进度写回（op_id 不存在 = 忽略——账本截断后的迟到回调）。
@@ -766,6 +812,40 @@ mod tests {
         payload.extend_from_slice(&bytes);
         let (_, back) = MgmtOpsState::decode(&payload).unwrap();
         assert_eq!(back.ledger.records()[0].detail.len(), ENC_DETAIL_MAX);
+    }
+
+    /// F70-03 回归锁：满账本（MGMT_OPS_MAX 条）的编码 payload 必须落在
+    /// 持久槽预算内——上限与盘上容量分叉时（旧 24 vs 实际 15）第 16 条
+    /// 起恒 OutOfSpace。
+    #[test]
+    fn ledger_cap_fits_durable_slot_budget() {
+        use eneros_durable_state::Encode;
+        let mut led = OperationLedger::new();
+        for i in 0..MGMT_OPS_MAX as u64 {
+            assert!(matches!(
+                led.begin(
+                    1000 + i,
+                    "ops",
+                    "config-set",
+                    arg_digest(&i.to_le_bytes()),
+                    1,
+                    i
+                ),
+                OpGate::New(_)
+            ));
+            led.finish(i + 1, OpStatus::Completed, "ok", i);
+        }
+        assert_eq!(led.records().len(), MGMT_OPS_MAX);
+        let body = MgmtOpsState { ledger: led }.encode().expect("encode");
+        // 生产形态 = store payload（generation(8) ‖ body）。
+        assert!(
+            8 + body.len() <= MGMT_OPS_SLOT_BUDGET,
+            "满账本 payload {}B + 前缀 8B 超出持久槽预算 {}B——上限与盘容量分叉",
+            body.len(),
+            MGMT_OPS_SLOT_BUDGET
+        );
+        // 逐条上限（防行布局膨胀悄悄击穿预算）。
+        assert_eq!(body.len(), 17 + MGMT_OPS_MAX * 129);
     }
 
     #[test]

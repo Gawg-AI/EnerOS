@@ -292,6 +292,8 @@ struct Orchestration {
     chain_rounds: u64,
     /// 50（WP-50.1）：可观测遥测上报 epoch。
     obs_epoch: u64,
+    /// recheck RS2：管理账本持久补写 tick 的 chunked 会话 epoch。
+    mgmt_persist_epoch: u64,
     /// 70.5 复查：身份推送连续传输错误计数（有界重试——见
     /// `identity_push_step`；成功/not-ready 回执归零）。
     identity_push_errs: u8,
@@ -326,6 +328,7 @@ impl Orchestration {
             ota_relay_epoch: 0,
             chain_rounds: 0,
             obs_epoch: 0,
+            mgmt_persist_epoch: 0,
             identity_push_errs: 0,
             mgmt: crate::mgmt::RootMgmtState::new(service_count),
             probe_state: crate::mgt_probe::ProbeState::Idle,
@@ -1226,6 +1229,14 @@ pub fn run_ipc_loop(
                 degrade_observe_tick(h.ep, &mut orch.chain_epoch);
             }
         }
+        // recheck RS2（F70-03 §6.3.4）：管理账本持久补写 tick——生产闭包
+        // 同跑（与 MgtProbe 的 qemu-test-synth 门控不同：这是 svc-mgmt 终
+        // 态补写的**持续**周期来源，无结束点）；服务未 spawn 时自然 no-op。
+        if crate::wiring::periodic_due(crate::wiring::PeriodicTask::MgmtPersistTick, orch.tick) {
+            if let Some(h) = handles.iter().find(|h| h.name == "svc-mgmt") {
+                mgmt_persist_tick(h.ep, &mut orch.mgmt_persist_epoch);
+            }
+        }
         // 47（WP-47.1 Exit 编排驱动）→ 蓝图 62 卷 62.2（WP-62.2.1 接线表
         // 单源 + D-1 修复）：协议服务 EXECUTE 编排驱动——驱动名单/周期/
         // 错峰相位全部来自 wiring::SERVICE_WIRING 的 driven 登记（svc-iec104
@@ -1733,8 +1744,9 @@ fn read_identity_capsule() -> Option<eneros_boot_protocol::IdentityCapsule> {
 /// 专属装配（`qemu-test-synth`，closure gate 强制不出现在 release 闭包）
 /// 以显式 SYNTHETIC 标签构造测试身份；release 缺 capsule → None
 /// （OTA not-ready fail-closed，无任何默认身份分支）。
+/// F70-02：同时是 svc-storage 运行槽身份页（spawn.rs）的内容单源。
 #[cfg(target_os = "none")]
-fn resolve_identity_capsule() -> Option<eneros_boot_protocol::IdentityCapsule> {
+pub(crate) fn resolve_identity_capsule() -> Option<eneros_boot_protocol::IdentityCapsule> {
     let real = read_identity_capsule();
     #[cfg(feature = "qemu-test-synth")]
     {
@@ -2272,6 +2284,24 @@ fn degrade_observe_tick(ai_ep: u64, epoch: &mut u64) {
         let _ = endpoint.call("svc-ai-worker", &[AI_DEGRADE_OBSERVE]);
     }
 }
+
+/// recheck RS2（F70-03 §6.3.4）：管理账本持久补写 tick——向 svc-mgmt
+/// 发 5B `MGT0\0` 帧（`PERSIST_TICK_FRAME`），驱动未确认终态/脏账本的
+/// 补写重试。每 tick 至多一次提交（有界）；空闲 = svc-mgmt 侧零盘写。
+/// 传输失败静默（下个周期重试——补写不依赖本帧送达）。
+#[cfg(all(target_os = "none", feature = "sel4-eipc"))]
+fn mgmt_persist_tick(mgmt_ep: u64, epoch: &mut u64) {
+    let mut endpoint = eneros_agent_sdk::endpoint::ChunkedSession::bind_shared_const(
+        "root-orchestrator",
+        mgmt_ep,
+        epoch,
+    );
+    let _ = endpoint.call("svc-mgmt", b"MGT0\0");
+}
+
+/// host/无 sel4-eipc 构建占位（同 degrade_observe_tick 门控）。
+#[cfg(all(target_os = "none", not(feature = "sel4-eipc")))]
+fn mgmt_persist_tick(_mgmt_ep: u64, _epoch: &mut u64) {}
 
 /// host/无 sel4-eipc 构建占位（观测探针不可用——同 control_chain_tick 门控）。
 #[cfg(all(target_os = "none", not(feature = "sel4-eipc")))]

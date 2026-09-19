@@ -56,6 +56,11 @@ impl DispatchEngine {
         self.input_retainer.is_some()
     }
 
+    /// F70-04：待重试释放数（观测面——空闲重试收敛的可观测事实）。
+    pub fn pending_release_count(&self) -> usize {
+        self.pending_releases.len()
+    }
+
     /// 按当前**非终态**计划重派生钉集（安装/装配两处调用；失败计数不
     /// 静默——已有计划的钉失败不回滚计划本身，只登记可观测事实：后续
     /// drive 的 fail-closed 面仍是输入有效性判据）。
@@ -204,15 +209,38 @@ impl DispatchEngine {
             .ok_or_else(|| DispatchError::IntentPersistFailed(String::from("held store absent")))?
             .accept(plan, certificate, input.encode(), *actor, batches)
         {
-            // 持久化失败回滚钉（不留永久钉——释放面与准入面对称）。
-            if let Some(retainer) = self.input_retainer.as_mut() {
-                let _ = retainer.release(snapshot_id);
+            // F70-04（R1/§7.2.2）：持久化失败只撤回**本次新取得**的持有，
+            // 不撤销仍在途计划的所有权——快照仍被其他非终态/未决计划
+            // 引用时**不得** release（旧实现无条件 release，第三份计划被
+            // 拒后前两份在途计划的保留被一并解除，后续回收可吃掉其输入）。
+            // recheck RR1：引用计数经真实 `store.plans()` 查询——**读取
+            // 失败（poisoned/介质异常/store 缺席）= 状态未知 = 不得按零
+            // 引用释放**（`unwrap_or_default()` 会把查询失败折叠成空集 ⇒
+            // 误判零引用 ⇒ 在途计划的钉被撤）。过度保留 fail-closed；介质
+            // 恢复后由存活引用重算收敛。
+            if self.live_snapshot_ref_count(snapshot_id) == Some(0) {
+                if let Some(retainer) = self.input_retainer.as_mut() {
+                    let _ = retainer.release(snapshot_id);
+                }
             }
             return Err(DispatchError::IntentPersistFailed(e));
         }
+        // F70-04（§7.2.6）：本快照进入新一轮持有（代次 +1）——旧代次的
+        // 完成缓存/待重试归属失效。有界 ≤16（淘汰最旧键；淘汰至多引发
+        // 一次幂等重释放，不损正确性）。
+        {
+            let epoch = self.hold_epochs.entry(snapshot_id).or_insert(0);
+            *epoch = epoch.wrapping_add(1);
+            while self.hold_epochs.len() > 16 {
+                let oldest = *self.hold_epochs.keys().next().expect("nonempty");
+                self.hold_epochs.remove(&oldest);
+            }
+        }
+        // F70-05（R5/§8.2.1）：完整 16B plan id = 机器身份（4B 前缀只供
+        // 阅读——前缀碰撞的不同计划不得合并账目）。
         eneros_runtime::println!(
             "[svc-control-dispatch] PLAN-HELD plan={:02x?} batches={} intents={}",
-            &plan.id().0[..4],
+            plan.id().0,
             batches.len(),
             batches.iter().map(|b| b.intents().len()).sum::<usize>()
         );
@@ -245,6 +273,12 @@ impl DispatchEngine {
         let plans = store.plans().map_err(DispatchError::IntentPersistFailed)?;
         let mut reports = Vec::new();
         let Some(plan) = plans.iter().find(|p| !p.terminal()) else {
+            // F70-04（R2/§7.2.4）：无非终态计划（空闲）也要执行收尾——
+            // 最后一份计划的释放失败不依赖新提案存在：待释放项在后续
+            // 实际调度到的周期继续重试（旧实现在此提前 return，跳过
+            // `finalize_held_plans`，空闲周期内保留持续泄漏、可耗尽钉位
+            // 并阻断后续准入）。
+            self.finalize_held_plans();
             return Ok(reports);
         };
         let now = (self.now_fn)();
@@ -314,13 +348,21 @@ impl DispatchEngine {
             }
             .map_err(DispatchError::IntentPersistFailed)?;
             eneros_runtime::println!(
-                "[svc-control-dispatch] HELD-BATCH batch={:02x?} state={:?} events={}",
+                "[svc-control-dispatch] HELD-BATCH batch={:02x?} state={:?} events={} plan={:02x?}",
                 &report.batch_id[..4],
                 report.final_state,
-                report.events
+                report.events,
+                plan.plan.id().0,
             );
             for command in &report.commands {
-                eneros_runtime::println!("[svc-control-dispatch] HELD-COMMAND intent={:02x?} state={:?} attempts={} readback={:?} reason={}", &command.intent_id[..4], command.state, command.attempts, command.readback, command.reason.as_deref().unwrap_or("-"));
+                // F70-05：HELD-COMMAND 携带完整 intent id + 所属完整
+                // plan id——逐计划守恒/Applied/读回都按同一计划归属重算，
+                // 不再靠日志位置关联（字段追加在行尾，既有词形/正则不受
+                // 影响）。
+                // recheck RR2（§8.2.7 投递 trace）：追加 dev/pt/val 绑定
+                // 锚——外部 transcript 的 WRITE/READ 按 (addr, 值, 时序)
+                // 归属到本 intent，跨计划事务不得互相补数。
+                eneros_runtime::println!("[svc-control-dispatch] HELD-COMMAND intent={:02x?} state={:?} attempts={} readback={:?} reason={} plan={:02x?} dev=0x{:x} pt={} val={}", command.intent_id, command.state, command.attempts, command.readback, command.reason.as_deref().unwrap_or("-"), plan.plan.id().0, command.device, command.point, command.value_kw);
             }
             // One compiled batch per valid tick bounds work. Invalid/recovery
             // ticks may cancel at most the admitted bounded plan's commands.
@@ -336,8 +378,10 @@ impl DispatchEngine {
     /// 终局收尾（ADR-0054:29–30 + 15–16）：计划全部批终态后
     /// ① 打印一次性 `HELD-PLAN-DONE` 证据行（含逐命令终态计数——验收
     ///    从原始工件重算守恒，不搜词形凑数）；
-    /// ② 解除该计划证书引用的冻结输入钉（终态且无未决；未决计划保留
-    ///    钉至对账收敛）。释放失败保留在册，下个 tick 重试（幂等）。
+    /// ② 按快照**存活引用**解除钉（F70-04/§7.2.3：快照仍被其他在途/
+    ///    未决计划引用 ⇒ 保留；无引用才释放——不是"有一份计划结束"就
+    ///    整体释放）。释放失败进有界待释放队列，空闲周期也持续重试
+    ///    （§7.2.4）；快照被新一轮合法持有时队列条目撤销（§7.2.6）。
     fn finalize_held_plans(&mut self) {
         let Some(store) = &self.held_plans else {
             return;
@@ -379,6 +423,44 @@ impl DispatchEngine {
                 });
             }
         }
+        // 存活引用（§7.2.1 事实源 = 持久计划本身）：在途（非终态）或
+        // 未决（对账中）计划各记一份引用——钉集/释放全部由此派生，
+        // 不另立计数。
+        let mut live_refs: alloc::vec::Vec<([u8; 16], usize)> = Vec::new();
+        for plan in &plans {
+            if plan.terminal() && !plan.unresolved() {
+                continue;
+            }
+            if let Some(input) =
+                eneros_agent_sdk::snap_input_wire::TrustedInput::decode(&plan.input)
+            {
+                let id = input.facts().snapshot_id;
+                match live_refs.iter_mut().find(|(x, _)| *x == id) {
+                    Some((_, n)) => *n += 1,
+                    None => live_refs.push((id, 1)),
+                }
+            }
+        }
+        let refs_of = |id: &[u8; 16]| -> usize {
+            live_refs
+                .iter()
+                .find(|(x, _)| x == id)
+                .map(|(_, n)| *n)
+                .unwrap_or(0)
+        };
+        // §7.2.6：代次安全剪除——快照重新获得存活引用（新一轮合法持有）
+        // ⇒ 旧完成事实失效：完成缓存按持有代次比对（覆盖"准入后同 pass
+        // 内完成"——此时引用已归零、但新一轮释放不得被旧缓存抑制）；
+        // 待释放队列按存活引用剪除（仍被在途/未决引用 ⇒ 不释放新持有
+        // 人的钉；引用归零 ⇒ 重试收敛即正确）。
+        let epoch_of = |id: &[u8; 16]| -> u32 { self.hold_epochs.get(id).copied().unwrap_or(0) };
+        self.released_holds
+            .retain(|(id, released_epoch)| epoch_of(id) == *released_epoch);
+        self.pending_releases.retain(|id| refs_of(id) == 0);
+        // 待重试队列 = 进入本 pass 前已在册的失败项（本 pass 新失败者
+        // 入队、下个周期重试——"下个实际调度到的周期"语义）。
+        let retry_now = core::mem::take(&mut self.pending_releases);
+
         for PlanFinality {
             plan_id,
             snapshot_id,
@@ -421,7 +503,7 @@ impl DispatchEngine {
                 }
                 eneros_runtime::println!(
                     "[svc-control-dispatch] HELD-PLAN-DONE plan={:02x?} batches={} applied={} blocked={} failed={} state={}",
-                    &plan_id.0[..4],
+                    plan_id.0,
                     reports.len(),
                     applied,
                     blocked,
@@ -429,21 +511,90 @@ impl DispatchEngine {
                     if committed { "Committed" } else { "Terminal" }
                 );
             }
-            // 释放面：终态且无未决（未决 = 对账中——钉保留至收敛）。
-            if terminal && !unresolved && !self.released_holds.contains(&snapshot_id) {
+            // 释放面（§7.2.3）：终态且无未决，且快照**无任何存活引用**
+            //（其他在途/未决计划仍引用 ⇒ 保留），且本代次的完成未被
+            // 缓存过，才释放。
+            if terminal
+                && !unresolved
+                && !self
+                    .released_holds
+                    .iter()
+                    .any(|(id, e)| *id == snapshot_id && *e == epoch_of(&snapshot_id))
+                && !self.pending_releases.contains(&snapshot_id)
+                && !retry_now.contains(&snapshot_id)
+                && refs_of(&snapshot_id) == 0
+            {
                 let released = self
                     .input_retainer
                     .as_mut()
                     .map(|r| r.release(snapshot_id))
                     .unwrap_or(false);
                 if released {
-                    self.released_holds.push(snapshot_id);
+                    self.released_holds
+                        .push((snapshot_id, epoch_of(&snapshot_id)));
                     if self.released_holds.len() > 16 {
                         self.released_holds.remove(0);
+                    }
+                } else {
+                    // 释放失败：有界待释放队列（§7.2.4/§7.2.7——不无界
+                    // 积累；满额 = 保留在本轮不释放，下轮引用态重算后
+                    // 再入队）。
+                    if self.pending_releases.len() < 16 {
+                        self.pending_releases.push(snapshot_id);
                     }
                 }
             }
         }
+        // 待释放重试（§7.2.4：不依赖新提案——空闲周期 finalize 也会到
+        // 这里；§7.2.5：远端幂等确认，重试至收敛）。引用剪除已在上文
+        // 完成，此处队列中都是无存活引用的快照。
+        let mut still_pending = core::mem::take(&mut self.pending_releases);
+        for id in retry_now {
+            let released = self
+                .input_retainer
+                .as_mut()
+                .map(|r| r.release(id))
+                .unwrap_or(false);
+            if !released {
+                still_pending.push(id);
+            } else if !self
+                .released_holds
+                .iter()
+                .any(|(x, e)| x == &id && *e == epoch_of(&id))
+            {
+                self.released_holds.push((id, epoch_of(&id)));
+                if self.released_holds.len() > 16 {
+                    self.released_holds.remove(0);
+                }
+            }
+        }
+        still_pending.truncate(16);
+        self.pending_releases = still_pending;
+    }
+
+    /// 快照的**存活引用**数（在途 = 非终态，或未决 = 对账中；事实源 =
+    /// 持久计划本身——钉集是它的 RAM 派生态，§7.2.1）。
+    ///
+    /// recheck RR1：返回 `Option<usize>`——`None` = **状态未知**（store
+    /// 缺席 / `plans()` 读取失败（poisoned、介质异常））。读取失败不得
+    /// 折叠成空集当零引用（旧 `unwrap_or_default()` 的缺陷形态：真实
+    /// write-failed 使 store poisoned 后，回滚查询被误解为 0 引用并
+    /// release，另一份在途计划的输入保留被撤销）。调用方对 `None`
+    /// fail-closed：不释放（过度保留可恢复，误释放不可恢复）。
+    fn live_snapshot_ref_count(&self, snapshot_id: [u8; 16]) -> Option<usize> {
+        let store = self.held_plans.as_ref()?;
+        let plans = store.plans().ok()?;
+        Some(
+            plans
+                .iter()
+                .filter(|p| !p.terminal() || p.unresolved())
+                .filter(|p| {
+                    eneros_agent_sdk::snap_input_wire::TrustedInput::decode(&p.input)
+                        .map(|i| i.facts().snapshot_id == snapshot_id)
+                        .unwrap_or(false)
+                })
+                .count(),
+        )
     }
 
     /// Read-only per-command query from the durable source of truth.
