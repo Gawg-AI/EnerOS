@@ -760,6 +760,22 @@ impl<L: DecisionBackend + DegradeArmSeam, P: PeerLink> RemoteBrain<L, P> {
         input: &crate::ai_worker::DecisionInput<'_>,
         now_ms: u64,
     ) -> Result<Vec<u8>, DecisionReject> {
+        // recheck 轮（R10 run3/4/5/6 实弹根因）：**健康期在途请求全程
+        // 压制 System1 兜底**——健康 peer 的应答总会到达并被下一 tick
+        // 消费（run6 实弹：响应延迟 ≈ 一个 EA 咨询间隔 > 原 2s headstart
+        // ⇒ 每周期恰漏出一次兜底 5kW 写，|0-5|kW/<1s 撞合同爬坡限拒）。
+        // 解除条件唯一：在途超时裁决（step 1 清 pending + consecutive
+        // _timeouts+1 ⇒ 本门立即失效，超时 tick 照常兜底——68.5 D3
+        // fail-operational「本次 tick 即刻降级」承诺保持，降级期节律
+        // 不受本门影响）。无在途（未绑定/无规格源/已消费）⇒ 立即兜底，
+        // 与旧行为一致。
+        if let Some(_p) = &self.pending {
+            if self.consecutive_timeouts == 0 {
+                return Err(DecisionReject::NoAction(String::from(
+                    "peer-inflight: System1 deferred (healthy peer response pending)",
+                )));
+            }
+        }
         let wire = self.local.decide(input, now_ms)?;
         self.last_meta = Some(DecisionMeta {
             used_remote: false,
@@ -1256,8 +1272,16 @@ mod tests {
         let mut b = RemoteBrain::new(HeuristicBackend::new(), MockLink::ok(), cfg());
         b.set_plan_spec_source(Box::new(StubSpecs));
         let input = bound_input();
-        b.decide_full(&input, 1_700_000_000_000)
-            .expect("tick1 兜底");
+        match b.decide_full(&input, 1_700_000_000_000) {
+            Ok(_) => {}
+            Err(crate::ai_worker::DecisionReject::NoAction(r)) => {
+                assert!(r.contains("peer-inflight"), "{r}")
+            }
+            other => assert!(
+                matches!(other, Err(crate::ai_worker::DecisionReject::NoAction(_))),
+                "tick1: {other:?}: {other:?}"
+            ),
+        }
         // 发出的请求必须是 v2 结构化 schema（含身份/时域/逐资产规格）。
         let sent = b.link.sent.last().expect("必须发出请求").clone();
         assert!(sent.contains(r#""v":2"#), "结构化轨必须发 v2: {sent}");
@@ -1291,7 +1315,12 @@ mod tests {
         let mut b = RemoteBrain::new(HeuristicBackend::new(), MockLink::ok(), cfg());
         b.set_plan_spec_source(Box::new(StubSpecs));
         let input = bound_input();
-        b.decide_full(&input, 1_700_000_000_000).expect("tick1");
+        let outcome = b.decide_full(&input, 1_700_000_000_000);
+        assert!(
+            outcome.is_ok()
+                || matches!(&outcome, Err(crate::ai_worker::DecisionReject::NoAction(m)) if m.contains("peer-inflight")),
+            "tick1: {outcome:?}"
+        );
         assert_eq!(
             b.on_peer_message(&resp_v2_json(1, 1, [0x77; 16], (-2.0, 3.0)), 1_700_000_100),
             PeerMsgVerdict::Bad
@@ -1313,7 +1342,12 @@ mod tests {
         let mut b = RemoteBrain::new(HeuristicBackend::new(), MockLink::ok(), cfg());
         b.set_plan_spec_source(Box::new(StubSpecs));
         let input = bound_input();
-        b.decide_full(&input, 1_700_000_000_000).expect("tick1");
+        let outcome = b.decide_full(&input, 1_700_000_000_000);
+        assert!(
+            outcome.is_ok()
+                || matches!(&outcome, Err(crate::ai_worker::DecisionReject::NoAction(m)) if m.contains("peer-inflight")),
+            "tick1: {outcome:?}"
+        );
         assert!(b.on_session_reconnect(), "确有在途 → 取消");
         assert_eq!(b.pending_cancelled, 1);
         // 取消后旧应答 = 迟到（无在途配对），不进决策。
@@ -1330,8 +1364,16 @@ mod tests {
     fn t8d_v2_response_on_v1_pending_rejected() {
         let mut b = brain(); // 无规格来源 → v1 迁移轨
         let t = minimal_trusted_at(1_700_000_000_000);
-        b.decide_full(&crate::ai_worker::dinp(&t), 1_700_000_000_000)
-            .expect("tick1");
+        match b.decide_full(&crate::ai_worker::dinp(&t), 1_700_000_000_000) {
+            Ok(_) => {}
+            Err(crate::ai_worker::DecisionReject::NoAction(r)) => {
+                assert!(r.contains("peer-inflight"), "{r}")
+            }
+            other => assert!(
+                matches!(other, Err(crate::ai_worker::DecisionReject::NoAction(_))),
+                "tick1: {other:?}: {other:?}"
+            ),
+        }
         assert_eq!(
             b.on_peer_message(&resp_v2_json(1, 1, [0x5A; 16], (-2.0, 3.0)), 1_700_000_100),
             PeerMsgVerdict::Bad
@@ -1355,7 +1397,12 @@ mod tests {
         let mut b = RemoteBrain::new(HeuristicBackend::new(), MockLink::ok(), cfg());
         b.set_plan_spec_source(Box::new(StubSpecs));
         let input = bound_input();
-        b.decide_full(&input, 1_700_000_000_000).expect("tick1");
+        let outcome = b.decide_full(&input, 1_700_000_000_000);
+        assert!(
+            outcome.is_ok()
+                || matches!(&outcome, Err(crate::ai_worker::DecisionReject::NoAction(m)) if m.contains("peer-inflight")),
+            "tick1: {outcome:?}"
+        );
         assert!(b.pending.is_some(), "结构化请求在途");
         assert_eq!(
             b.on_peer_message(&resp_json(1, 1, -2.0), 1_700_000_100),
@@ -1385,7 +1432,12 @@ mod tests {
         let mut b = RemoteBrain::new(HeuristicBackend::new(), MockLink::ok(), cfg());
         b.set_plan_spec_source(Box::new(StubSpecs));
         let input = bound_input(); // 代 W（[0x5A] / horizon 1_700_000_000_000）
-        b.decide_full(&input, 1_700_000_000_000).expect("tick1");
+        let outcome = b.decide_full(&input, 1_700_000_000_000);
+        assert!(
+            outcome.is_ok()
+                || matches!(&outcome, Err(crate::ai_worker::DecisionReject::NoAction(m)) if m.contains("peer-inflight")),
+            "tick1: {outcome:?}"
+        );
         assert_eq!(
             b.on_peer_message(&resp_v2_json(1, 1, [0x5A; 16], (-2.0, 3.0)), 1_700_000_100),
             PeerMsgVerdict::Accepted
@@ -1422,20 +1474,37 @@ mod tests {
         let mut b = RemoteBrain::new(HeuristicBackend::new(), MockLink::ok(), cfg());
         b.set_plan_spec_source(Box::new(StubSpecs));
         let input = bound_input();
-        b.decide_full(&input, 1_700_000_000_000).expect("tick1");
+        let outcome = b.decide_full(&input, 1_700_000_000_000);
+        assert!(
+            outcome.is_ok()
+                || matches!(&outcome, Err(crate::ai_worker::DecisionReject::NoAction(m)) if m.contains("peer-inflight")),
+            "tick1: {outcome:?}"
+        );
         assert_eq!(
             b.on_peer_message(&resp_v2_json(1, 1, [0x5A; 16], (-2.0, 3.0)), 1_700_000_100),
             PeerMsgVerdict::Accepted
         );
-        // 目录换代（contract 授权基础变了）：远程计划不得消费。
+        // 目录换代（contract 授权基础变了）：远程计划不得消费。换代 tick
+        // 重发新请求（headstart 窗内本地兜底顺延）——stale 丢弃在消费步
+        // 已发生（计数与本 tick 兜底无关）。
         let next = input_gen_cv([0x5C; 16], 1_700_000_030_000, 4);
-        let w = b
-            .decide_full(&next, 1_700_000_030_100)
-            .expect("目录换代走本地兜底");
+        match b.decide_full(&next, 1_700_000_030_100) {
+            Ok(_) => {}
+            Err(crate::ai_worker::DecisionReject::NoAction(r)) => {
+                assert!(r.contains("peer-inflight"), "{r}")
+            }
+            other => assert!(
+                matches!(other, Err(crate::ai_worker::DecisionReject::NoAction(_))),
+                "换代 tick: {other:?}: {other:?}"
+            ),
+        }
         assert_eq!(
             b.stale_generation_accepted_total, 1,
             "目录代次不符仍丢弃可数"
         );
+        let w = b
+            .decide_full(&next, 1_700_000_035_200)
+            .expect("目录换代走本地兜底（超时后恢复）");
         let cand = CandidatePlan::decode_v1(&w).expect("local candidate");
         assert!(
             cand.assignments().iter().all(|a| a.power_kw != -2.0),
@@ -1458,8 +1527,12 @@ mod tests {
         let t = minimal_trusted_at(10_000);
         // tick1：发请求，无超时 → 未武装（healthy 常态 fail-operational
         // 兜底与 68.5 前行为一致）。
-        b.decide_full(&crate::ai_worker::dinp(&t), 10_000)
-            .expect("tick1");
+        let outcome = b.decide_full(&crate::ai_worker::dinp(&t), 10_000);
+        assert!(
+            outcome.is_ok()
+                || matches!(&outcome, Err(crate::ai_worker::DecisionReject::NoAction(m)) if m.contains("peer-inflight")),
+            "tick1: {outcome:?}"
+        );
         assert!(!b.local_degradation_armed(), "healthy 常态不武装");
         assert!(b.drain_events().is_empty());
         // tick2：首次超时裁决（16_000 > 10_000+5_000）→ 武装 + 同 tick
@@ -1475,7 +1548,10 @@ mod tests {
             "须有 LEASE-ARMED 事件"
         );
         let (plan_id, _) = decode_cand(&w);
-        assert_eq!(plan_id, "heur-2", "持签兜底照常产出（tick1=heur-1）");
+        assert_eq!(
+            plan_id, "heur-1",
+            "持签兜底照常产出（tick1 为 headstart 静默；超时裁决 tick 即产兜底）"
+        );
         // 应答到达（超时裁决后已重发 req_id=2——配对走新在途）→ 消费 →
         // 撤销（episode 结束，回 D0）。
         assert_eq!(
@@ -1504,8 +1580,12 @@ mod tests {
             cfg_leased(key, 60), // TTL 60s
         );
         let t = minimal_trusted_at(10_000);
-        b.decide_full(&crate::ai_worker::dinp(&t), 10_000)
-            .expect("tick1");
+        let outcome = b.decide_full(&crate::ai_worker::dinp(&t), 10_000);
+        assert!(
+            outcome.is_ok()
+                || matches!(&outcome, Err(crate::ai_worker::DecisionReject::NoAction(m)) if m.contains("peer-inflight")),
+            "tick1: {outcome:?}"
+        );
         // tick2：超时裁决 → 武装（有效期 [16s, 76s]）。
         b.decide_full(&crate::ai_worker::dinp(&t), 16_000)
             .expect("armed fallback");
@@ -1545,8 +1625,12 @@ mod tests {
     fn t4b_lease_unconfigured_never_arms() {
         let mut b = brain(); // lease_key 全零
         let t = minimal_trusted_at(10_000);
-        b.decide_full(&crate::ai_worker::dinp(&t), 10_000)
-            .expect("tick1");
+        let outcome = b.decide_full(&crate::ai_worker::dinp(&t), 10_000);
+        assert!(
+            outcome.is_ok()
+                || matches!(&outcome, Err(crate::ai_worker::DecisionReject::NoAction(m)) if m.contains("peer-inflight")),
+            "tick1: {outcome:?}"
+        );
         b.decide_full(&crate::ai_worker::dinp(&t), 16_000)
             .expect("timeout tick");
         assert!(!b.local_degradation_armed());
@@ -1564,8 +1648,12 @@ mod tests {
 
         // ── planner 形态：reason 带词形前缀 ──
         let mut b = brain();
-        b.decide_full(&crate::ai_worker::dinp(&t), 10_000)
-            .expect("tick1");
+        let outcome = b.decide_full(&crate::ai_worker::dinp(&t), 10_000);
+        assert!(
+            outcome.is_ok()
+                || matches!(&outcome, Err(crate::ai_worker::DecisionReject::NoAction(m)) if m.contains("peer-inflight")),
+            "tick1: {outcome:?}"
+        );
         assert_eq!(
             b.on_peer_message(
                 &resp_json_reason(
@@ -1602,8 +1690,16 @@ mod tests {
 
         // ── remote-llm 形态：普通 reason ──
         let mut b2 = brain();
-        b2.decide_full(&crate::ai_worker::dinp(&t), 10_000)
-            .expect("tick1");
+        match b2.decide_full(&crate::ai_worker::dinp(&t), 10_000) {
+            Ok(_) => {}
+            Err(crate::ai_worker::DecisionReject::NoAction(r)) => {
+                assert!(r.contains("peer-inflight"), "{r}")
+            }
+            other => assert!(
+                matches!(other, Err(crate::ai_worker::DecisionReject::NoAction(_))),
+                "tick1: {other:?}: {other:?}"
+            ),
+        }
         assert_eq!(
             b2.on_peer_message(&resp_json_reason(1, 2, 2.0, "price arb"), 10_500),
             PeerMsgVerdict::Accepted
@@ -1625,9 +1721,21 @@ mod tests {
         );
 
         // ── heuristic（System1）：used_remote=false，独立词形 ──
+        // （发送 tick 为 headstart 静默；+2.1s 超龄 tick 产 System1 兜底。）
         let mut b3 = brain();
-        b3.decide_full(&crate::ai_worker::dinp(&t), 10_000)
-            .expect("sys1 tick");
+        match b3.decide_full(&crate::ai_worker::dinp(&t), 10_000) {
+            Ok(_) => {}
+            Err(crate::ai_worker::DecisionReject::NoAction(r)) => {
+                assert!(r.contains("peer-inflight"), "{r}")
+            }
+            other => assert!(
+                matches!(other, Err(crate::ai_worker::DecisionReject::NoAction(_))),
+                "sys1 发送 tick: {other:?}: {other:?}"
+            ),
+        }
+        let _ = b3
+            .decide_full(&crate::ai_worker::dinp(&t), 16_100)
+            .expect("sys1 tick（超时后恢复）");
         let meta3 = b3.last_meta().expect("meta3");
         assert!(!meta3.used_remote);
         assert_eq!(meta3.resp_summary, "");
@@ -1663,13 +1771,17 @@ mod tests {
     fn happy_path_remote_proposal() {
         let mut b = brain();
         let t = minimal_trusted_at(10_000);
-        // tick1：Healthy 常态发起请求（req_id=1）+ 本 tick 启发式兜底。
-        let w = b
-            .decide_full(&crate::ai_worker::dinp(&t), 10_000)
-            .expect("wire");
-        let (plan_id, power) = decode_cand(&w);
-        assert_eq!(plan_id, "heur-1");
-        assert!(power.is_finite());
+        // tick1：Healthy 常态发起请求（req_id=1）——headstart 窗内 System1
+        // 兜底静默（R10 实弹根因修复：兜底写不再抢在远程应答前落地）。
+        match b.decide_full(&crate::ai_worker::dinp(&t), 10_000) {
+            Err(crate::ai_worker::DecisionReject::NoAction(r)) => {
+                assert!(r.contains("peer-inflight"), "{r}")
+            }
+            other => assert!(
+                matches!(other, Err(crate::ai_worker::DecisionReject::NoAction(_))),
+                "unreachable: {{other:?}}"
+            ),
+        }
         assert_eq!(b.triggers_sent, 1);
         assert!(b.link.sent[0].contains("\"req_id\":1"));
         // 应答到达（配对 req=1）。
@@ -1697,8 +1809,12 @@ mod tests {
     fn timeout_degrades_to_heuristic_this_tick() {
         let mut b = brain();
         let t = minimal_trusted_at(10_000);
-        b.decide_full(&crate::ai_worker::dinp(&t), 10_000)
-            .expect("tick1");
+        let outcome = b.decide_full(&crate::ai_worker::dinp(&t), 10_000);
+        assert!(
+            outcome.is_ok()
+                || matches!(&outcome, Err(crate::ai_worker::DecisionReject::NoAction(m)) if m.contains("peer-inflight")),
+            "tick1: {outcome:?}"
+        );
         // 超时后 tick：pending 清除 + 计数 + 本 tick 走启发式。
         let w = b
             .decide_full(&crate::ai_worker::dinp(&t), 16_000)
@@ -1715,11 +1831,11 @@ mod tests {
         let mut b = brain();
         let t = minimal_trusted_at(10_000);
         let mut now = 10_000;
-        // 第 1 tick 仅发起请求（无在途可超时）；其后 3 tick 各超时一次。
+        // 第 1 tick 仅发起请求（headstart 窗内静默合法）；其后 3 tick 各
+        // 超时一次。循环目的 = 推进超时计数，返回值忽略。
         for _ in 0..4 {
             now += 6_000;
-            b.decide_full(&crate::ai_worker::dinp(&t), now)
-                .expect("tick");
+            let _ = b.decide_full(&crate::ai_worker::dinp(&t), now);
         }
         assert!(!b.is_healthy());
         assert_eq!(b.timeouts_total, 3);
@@ -1739,11 +1855,11 @@ mod tests {
         let mut b = RemoteBrain::new(HeuristicBackend::new(), MockLink::ok(), c);
         let t = minimal_trusted_at(10_000);
         let mut now = 10_000;
-        // 4 tick：t1 发起，t2-t4 各超时一次 → Unhealthy（consecutive=3）。
+        // 4 tick：t1 发起（headstart 窗内静默合法），t2-t4 各超时一次 →
+        // Unhealthy（consecutive=3）。循环目的 = 推进超时计数，返回值忽略。
         for _ in 0..4 {
             now += 6_000;
-            b.decide_full(&crate::ai_worker::dinp(&t), now)
-                .expect("degrade ticks");
+            let _ = b.decide_full(&crate::ai_worker::dinp(&t), now);
         }
         assert!(!b.is_healthy());
         let sent_after_unhealthy = b.triggers_sent;
@@ -1785,8 +1901,12 @@ mod tests {
     fn over_budget_response_rejected_as_bad() {
         let mut b = brain();
         let t = minimal_trusted_at(10_000);
-        b.decide_full(&crate::ai_worker::dinp(&t), 10_000)
-            .expect("tick1");
+        let outcome = b.decide_full(&crate::ai_worker::dinp(&t), 10_000);
+        assert!(
+            outcome.is_ok()
+                || matches!(&outcome, Err(crate::ai_worker::DecisionReject::NoAction(m)) if m.contains("peer-inflight")),
+            "tick1: {outcome:?}"
+        );
         // 越权提案（|power| > 5kW 预算）→ Bad + 不消费 + 继续降级。
         assert_eq!(
             b.on_peer_message(&resp_json(1, 1, -5.5), 10_500),
@@ -1795,18 +1915,25 @@ mod tests {
         assert_eq!(b.bad_responses_total, 1);
         assert!(b.accepted.is_none());
         let w = b
-            .decide_full(&crate::ai_worker::dinp(&t), 11_000)
+            .decide_full(&crate::ai_worker::dinp(&t), 16_100)
             .expect("tick2");
         let (plan_id, _) = decode_cand(&w);
-        assert_eq!(plan_id, "heur-2", "坏应答不得进入决策（本地启发式兜底）");
+        assert_eq!(
+            plan_id, "heur-1",
+            "坏应答不得进入决策（本地启发式兜底；tick1 在途静默、tick2 超时后恢复）"
+        );
     }
 
     #[test]
     fn replay_and_regression_seq_rejected() {
         let mut b = brain();
         let t = minimal_trusted_at(10_000);
-        b.decide_full(&crate::ai_worker::dinp(&t), 10_000)
-            .expect("tick1");
+        let outcome = b.decide_full(&crate::ai_worker::dinp(&t), 10_000);
+        assert!(
+            outcome.is_ok()
+                || matches!(&outcome, Err(crate::ai_worker::DecisionReject::NoAction(m)) if m.contains("peer-inflight")),
+            "tick1: {outcome:?}"
+        );
         assert_eq!(
             b.on_peer_message(&resp_json(1, 4, -3.0), 10_500),
             PeerMsgVerdict::Accepted
@@ -1815,8 +1942,16 @@ mod tests {
         b.decide_full(&crate::ai_worker::dinp(&t), 11_000)
             .expect("consume");
         // tick3 发起新请求（req=2）。
-        b.decide_full(&crate::ai_worker::dinp(&t), 12_000)
-            .expect("tick3");
+        match b.decide_full(&crate::ai_worker::dinp(&t), 12_000) {
+            Ok(_) => {}
+            Err(crate::ai_worker::DecisionReject::NoAction(r)) => {
+                assert!(r.contains("peer-inflight"), "{r}")
+            }
+            other => assert!(
+                matches!(other, Err(crate::ai_worker::DecisionReject::NoAction(_))),
+                "tick3: {other:?}: {other:?}"
+            ),
+        }
         // 对 req=2 重放旧 seq（≤4）→ Bad。
         assert_eq!(
             b.on_peer_message(&resp_json(2, 4, -3.0), 12_100),
@@ -1829,8 +1964,12 @@ mod tests {
     fn late_response_after_expiry_counted_late_not_bad() {
         let mut b = brain();
         let t = minimal_trusted_at(10_000);
-        b.decide_full(&crate::ai_worker::dinp(&t), 10_000)
-            .expect("tick1");
+        let outcome = b.decide_full(&crate::ai_worker::dinp(&t), 10_000);
+        assert!(
+            outcome.is_ok()
+                || matches!(&outcome, Err(crate::ai_worker::DecisionReject::NoAction(m)) if m.contains("peer-inflight")),
+            "tick1: {outcome:?}"
+        );
         // 超时清除在途后，旧 req 的应答才到达 → Late（非协议违规）。
         b.decide_full(&crate::ai_worker::dinp(&t), 16_000)
             .expect("expire tick");
@@ -1880,7 +2019,10 @@ mod tests {
         t.state.soc_pct = 0.4; // 死区
         match b.decide_full(&crate::ai_worker::dinp(&t), 10_000) {
             Err(crate::ai_worker::DecisionReject::NoAction(_)) => {}
-            other => panic!("死区须透传 NoAction，got {other:?}"),
+            other => assert!(
+                matches!(other, Err(crate::ai_worker::DecisionReject::NoAction(_))),
+                "死区须透传 NoAction，got {other:?}: {other:?}"
+            ),
         }
     }
 
@@ -1891,8 +2033,18 @@ mod tests {
         let mut now = 10_000u64;
         let mut ids = Vec::new();
         for i in 1..=3u64 {
-            b.decide_full(&crate::ai_worker::dinp(&t), now)
-                .expect("tick");
+            // 发送 tick：headstart 窗内 System1 兜底静默（NoAction）——
+            // 远程应答由下一 tick 消费（旧语义「同 tick 返回兜底」已退役，
+            // 见 fallback_tick）。
+            match b.decide_full(&crate::ai_worker::dinp(&t), now) {
+                Err(crate::ai_worker::DecisionReject::NoAction(reason)) => {
+                    assert!(reason.contains("peer-inflight"), "{reason}");
+                }
+                other => assert!(
+                    matches!(other, Err(crate::ai_worker::DecisionReject::NoAction(_))),
+                    "unreachable: {{other:?}}"
+                ),
+            }
             assert_eq!(
                 b.on_peer_message(&resp_json(i, i, -1.0), now + 100),
                 PeerMsgVerdict::Accepted
@@ -1912,6 +2064,43 @@ mod tests {
                 "remote-3".to_string()
             ]
         );
+    }
+
+    /// recheck 轮（R10 run3/4/5/6 实弹根因）：健康期在途 System2 请求
+    /// **全程**压制 System1 兜底（响应延迟可达一个咨询间隔——定长
+    /// headstart 窗每周期恰漏出一次兜底写，run6 实弹 16:16 交替）；
+    /// 解除条件唯一 = 在途超时裁决（consecutive_timeouts>0 ⇒ 本门失效，
+    /// 超时 tick 照常兜底——fail-operational「本次 tick 即刻降级」保持）。
+    /// 变异靶：去掉 fallback_tick 的在途门 → 首断言红。
+    #[test]
+    fn inflight_request_suppresses_system1_until_timeout() {
+        let mut b = brain();
+        let t = minimal_trusted_at(10_000);
+        // 发送 tick：请求在途（健康）→ 静默。
+        match b.decide_full(&crate::ai_worker::dinp(&t), 10_000) {
+            Err(crate::ai_worker::DecisionReject::NoAction(reason)) => {
+                assert!(reason.contains("peer-inflight"), "{reason}");
+            }
+            other => assert!(
+                matches!(other, Err(crate::ai_worker::DecisionReject::NoAction(_))),
+                "健康在途期兜底必须静默，got {other:?}"
+            ),
+        }
+        // 在途中途（1s）仍静默——应答尚未到达。
+        match b.decide_full(&crate::ai_worker::dinp(&t), 11_000) {
+            Err(crate::ai_worker::DecisionReject::NoAction(_)) => {}
+            other => assert!(
+                matches!(other, Err(crate::ai_worker::DecisionReject::NoAction(_))),
+                "在途中途仍须静默，got {other:?}"
+            ),
+        }
+        // 超时裁决（> cfg.timeout_ms=5s）：pending 清除 + consecutive=1
+        // ⇒ 本门失效，同 tick 兜底照常产出（fail-operational）。
+        let w = b
+            .decide_full(&crate::ai_worker::dinp(&t), 16_000)
+            .expect("超时 tick 恢复兜底");
+        let _ = decode_cand(&w);
+        assert_eq!(b.timeouts_total, 1);
     }
 
     /// 复查修复：**规格源拒绝本代次时不发任何请求**（fail-closed）。
@@ -1979,9 +2168,22 @@ mod tests {
         let t = crate::ai_worker::tests_helpers::minimal_trusted_at(10_000);
         let input = crate::ai_worker::dinp(&t);
         assert!(!input.bound(), "本测前提 = 未绑定输入");
-        b.decide_full(&input, 10_000).expect("兜底");
+        // 发送 tick：headstart 窗内静默（v1 轨同样适用——请求已发出）。
+        match b.decide_full(&input, 10_000) {
+            Err(crate::ai_worker::DecisionReject::NoAction(r)) => {
+                assert!(r.contains("peer-inflight"), "{r}")
+            }
+            other => assert!(
+                matches!(other, Err(crate::ai_worker::DecisionReject::NoAction(_))),
+                "v1 发送 tick: {other:?}: {other:?}"
+            ),
+        }
         assert_eq!(b.triggers_sent, 1, "未绑定输入仍走 v1 迁移轨");
         assert!(!b.link.sent.is_empty());
+        // 超龄 tick：v1 轨本地兜底照常产出。
+        let _ = b
+            .decide_full(&input, 16_100)
+            .expect("v1 兜底（超时后恢复）");
     }
 
     /// 复查修复：v2 应答必须**覆盖全部请求资产**（"全量分配"判据本体）。
@@ -2022,7 +2224,12 @@ mod tests {
         let mut b = RemoteBrain::new(HeuristicBackend::new(), MockLink::ok(), cfg());
         b.set_plan_spec_source(Box::new(TwoAssets));
         let input = bound_input();
-        b.decide_full(&input, 1_700_000_000_000).expect("tick1");
+        let outcome = b.decide_full(&input, 1_700_000_000_000);
+        assert!(
+            outcome.is_ok()
+                || matches!(&outcome, Err(crate::ai_worker::DecisionReject::NoAction(m)) if m.contains("peer-inflight")),
+            "tick1: {outcome:?}"
+        );
         // 应答只覆盖 asset 1（缺 asset 2）→ 坏应答。
         let one_asset = r#"{"v":2,"req_id":1,"seq":1,"plan":{"snapshot_id_hex":"5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a","catalog_version":3,"horizon_start_ms":1700000000000,"step_ns":60000000000,"step_count":1,"solver_status":"optimal","model_digest_hex":"1111111111111111111111111111111111111111111111111111111111111111","input_digest_hex":"2222222222222222222222222222222222222222222222222222222222222222","objective_value":-1.5,"relative_gap":0.0,"elapsed_ms":7,"assignments":[{"asset_id":1,"device_id":999,"point_id":999,"unit_code":999,"step_index":1,"power_kw":-2.0}],"target_device":"pcs","ttl_secs":60},"reason":"backend=planner status=optimal"}"#;
         assert_eq!(
@@ -2045,7 +2252,12 @@ mod tests {
         let mut b = RemoteBrain::new(HeuristicBackend::new(), MockLink::ok(), cfg());
         b.set_plan_spec_source(Box::new(StubSpecs));
         let input = bound_input();
-        b.decide_full(&input, 1_700_000_000_000).expect("tick1");
+        let outcome = b.decide_full(&input, 1_700_000_000_000);
+        assert!(
+            outcome.is_ok()
+                || matches!(&outcome, Err(crate::ai_worker::DecisionReject::NoAction(m)) if m.contains("peer-inflight")),
+            "tick1: {outcome:?}"
+        );
         assert_eq!(
             b.on_peer_message(&resp_v2_json(1, 1, [0x5A; 16], (-2.0, 3.0)), 1_700_000_100),
             PeerMsgVerdict::Accepted
