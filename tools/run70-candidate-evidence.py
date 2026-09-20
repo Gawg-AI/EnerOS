@@ -154,19 +154,30 @@ def _line_terminal_parses(line: str) -> list[tuple[str, str]]:
     """
     norm = line.strip("= ")
     out: list[tuple[str, str]] = []
+    def tok(status: str) -> str | None:
+        # 完整 token：PASS/FAIL，可选**一个**信息性括注（如 r12 的
+        # "PASS (review70_* x7)"）——括注外任意尾注（"PASS extra" 等）
+        # 仍整体不可判（recheck RR3 扩展 token 拒绝面保持）。
+        if status in ("PASS", "FAIL"):
+            return status
+        for t in ("PASS", "FAIL"):
+            note = status[len(t):].lstrip(" ")
+            if status.startswith(t) and note.startswith("(") and note.endswith(")"):
+                return t
+        return None
     for marker in _TERMINAL_MARKERS:
         pos = norm.find(marker)
         while pos != -1:
             name = norm[:pos]
-            status = norm[pos + len(marker):].strip("= ")
-            if name and " " not in name and status in ("PASS", "FAIL"):
-                out.append((name, status))
+            t = tok(norm[pos + len(marker):].strip("= "))
+            if name and " " not in name and t:
+                out.append((name, t))
             pos = norm.find(marker, pos + 1)
     if ":" in norm:
         name, _, rest = norm.rpartition(":")
-        status = rest.strip("= ")
-        if name and " " not in name and status in ("PASS", "FAIL"):
-            out.append((name, status))
+        t = tok(rest.strip("= "))
+        if name and " " not in name and t:
+            out.append((name, t))
     return out
 
 
@@ -471,6 +482,18 @@ def _selftest() -> int:
     check(
         "attrib RR3: bare name terminal kept (compound gate fixtures)",
         gate_terminal_status("TEST-GATE: FAIL", "TEST-GATE") is False,
+    )
+    check(
+        "attrib RR3fix: bounded parenthetical note is legal (r12 real format)",
+        gate_terminal_status(
+            "candidate-check red tests: PASS (review70_* x7)",
+            "evidence42-candidate-check",
+        )
+        is True,
+    )
+    check(
+        "attrib RR3fix: unclosed parenthetical still rejected",
+        gate_terminal_status("VOL70.7-GATE: PASS (info", "VOL70.7") is None,
     )
 
     st, gl = gate_status_from_log(["=== VOL70.2 QEMU WINDOW: PASS ==="], "VOL70.1")

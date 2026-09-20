@@ -262,21 +262,15 @@ start_broker_slave "$DB" "$DB"
 start_peer "$DB"
 start_qemu "$DB" "$B_DL"
 wait_ready "$DB" 240 || { echo "段B 首启 PRODUCT-READY 未达"; kill_window; exit 6; }
-# 等 kill 前提：**飞行中**计划（≥1 Applied ∧ 尚未 HELD-PLAN-DONE）。
-# 2026-09-20 步距 7s→2s 后计划 ~6s 整体完成：首个 Applied 即切（原 +3s
-# 等待会让计划完成 ⇒ kill 前提消失、B3 全 absent——marathon3 实弹）；
-# poll 1s；若计划已先完成（DONE 行）则等**下一个**计划重试（窗预算内）。
-BOK=0
-for _ in $(seq 1 "$B_DL"); do
-  if grep -aq "HELD-PLAN-DONE .*state=Committed" "$DB/qemu-serial.log" 2>/dev/null; then
-    sleep 2   # 计划已完成——留间隔后继续等下一个计划
-    continue
-  fi
-  if grep -aq "HELD-COMMAND .*state=Applied" "$DB/qemu-serial.log" 2>/dev/null; then
-    BOK=1; break
-  fi
-  sleep 1
-done
+# **盲切**（2026-09-20 final1-5 实弹定论）：串口文件滞后 ~6-10s 大于
+# 非合并计划全生命周期（~8s）——一切反应式触发（Applied∧Pending /
+# 入场+3s / intents≥4）都在与滞后竞速且结构性迟到（五连割前全 DONE）。
+# 改为固定延时盲切：计划流连续（~1 个/10-15s、在途占比 ~60%），排水
+# （kill 后管道 EOF 冲刷）如实捕获割切时刻的在途前缀/未发步——B0/B2/
+# B3 判据对**捕获到的真实状态**裁决，命中与否由重试覆盖。
+wait_ready "$DB" 240 >/dev/null 2>&1 || true
+sleep 40
+BOK=1
 echo "[段B] kill -9 QEMU（脏断电）"
 kill -9 $(pgrep -f "qemu-system") 2>/dev/null || true
 sleep 3

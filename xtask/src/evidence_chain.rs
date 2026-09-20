@@ -385,10 +385,29 @@ fn terminal_parses(norm: &str) -> Vec<(&str, bool)> {
         if name.is_empty() || name.contains(' ') {
             return;
         }
-        if status == "PASS" {
-            out.push((name, true));
-        } else if status == "FAIL" {
-            out.push((name, false));
+        // 完整 token：PASS/FAIL，可选**一个**信息性括注（r12 真实格式
+        // "PASS (review70_* x7)"）——括注外任意尾注仍整体不可判（recheck
+        // RR3 扩展 token 拒绝面保持；与 py 写侧同构）。
+        let token = if status == "PASS" || status == "FAIL" {
+            Some(status)
+        } else {
+            ["PASS", "FAIL"].iter().find_map(|t| {
+                let note = &status[t.len()..];
+                if status.starts_with(t)
+                    && note.starts_with(' ')
+                    && note[1..].starts_with('(')
+                    && note.ends_with(')')
+                {
+                    Some(*t)
+                } else {
+                    None
+                }
+            })
+        };
+        match token {
+            Some("PASS") => out.push((name, true)),
+            Some("FAIL") => out.push((name, false)),
+            _ => {}
         }
     }
     let mut out = Vec::new();
@@ -6989,6 +7008,16 @@ mod tests {
             Some(true)
         );
         assert_eq!(g("TEST-GATE: FAIL", "TEST-GATE"), Some(false));
+        // 有界括注（r12 真实格式）合法；未闭合/括注外尾注仍拒。
+        assert_eq!(
+            g(
+                "candidate-check red tests: PASS (review70_* x7)",
+                "evidence42-candidate-check"
+            ),
+            Some(true)
+        );
+        assert_eq!(g("VOL70.7-GATE: PASS (info", "VOL70.7"), None);
+        assert_eq!(g("VOL70.7-GATE: PASS note)", "VOL70.7"), None);
         // 对抗例（recheck 复现三形态 + 既有防线）：全部不得证明。
         assert_eq!(g("VOL70.2-R03-POWER-CUT GATE: PASS", "VOL70.2"), None);
         assert_eq!(g("VOL70.1-GATE: PASSED_NOT", "VOL70.1"), None);
