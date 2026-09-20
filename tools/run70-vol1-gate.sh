@@ -98,10 +98,12 @@ cp -f "$S" "$EVROOT/qemu-serial.log"
 cp -f "$EVROOT/broker-transcript.jsonl" "$EVROOT/broker-transcript.jsonl" 2>/dev/null || true
 
 # ---- 结构化判据裁决（G1–G7 单源；退出码即门结果）----
-# 窗长显式声明：G5 的提交下限由"窗长 / 架构决策节奏上界（45s）"推导
-# （见 judge 的 CONTROL_CADENCE_MAX_S）。
+# 窗长显式声明：G5 的提交下限由"窗长 / 决策节奏上界"推导。节奏上界
+# 必须显式传参（R13-R6：无隐式默认——数值依据见 judge 的
+# CONTROL_CADENCE_MAX_S 注与登记册 R13 测量记录，2026-09-20）。
 python3 "$ROOT/tools/run70_gate_judge.py" "$S" "$MIN_ROUNDS" \
   --window-secs "$DL" \
+  --cadence-max-s 45 \
   --transcripts "$EVROOT/modbus.transcript.jsonl" "$EVROOT/iec104.transcript.jsonl"
 RC=$?
 ROUNDS=$(grep -c "CONTROL-CHAIN: round=" "$S")

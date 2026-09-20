@@ -2854,6 +2854,12 @@ impl DispatchEngine {
 
     /// 蓝图 70.8 WP-70.8.4：可信输入准入判据（**只验证、不改写**）。
     ///
+    /// 本判据 = **准入同代**（admission generation，入口侧投递资格：全
+    /// 三元组+摘要）。与消费侧**计划绑定代次**
+    /// （`eneros-control-services::remote_brain::catalog_generation_matches`，
+    /// 仅目录代次——快照推进不丢计划、消费时重锚）**有意不同**，分层
+    /// 不合并（R13-R2 裁决）。
+    ///
     /// 1. 策略：`Required` 下无可信输入的候选一律拒绝（零投递）；
     /// 2. 身份同代：候选 `snapshot_id` / `resource_catalog_version` /
     ///    时域起点必须与可信输入逐字段相等；
@@ -2917,14 +2923,58 @@ impl DispatchEngine {
     }
 }
 
+/// 站点计划投递标签（计划级审计标签；R13-B 单源）。
+///
+/// 语义：进入 CoreCommand/IntentRecord 的 target_device 字段——标识
+/// 「本计划整体投递面向的站点设备类」。与命令级标签
+/// （legacy 单命令路径 "{protocol}:{device}"，engine.rs 逐意图派生）
+/// 是有意分层的两套惯例，不合并。持久化设计=登记 R13-G（未实施）。
+pub const STATION_PLAN_TARGET_LABEL: &str = "pcs";
+
+/// 持有计划逐投递清算超时（毫秒；R13-B 单源）。
+/// 语义≠saga 批 deadline（HeldBatch.deadline_ms，随计划持久化）——
+/// 本值是单次 delivery.deliver 的超时上界（deadline==0 → u64::MAX
+/// 分支见 execute 链）。三消费点：trusted 提交、持有驱动、恢复对账。
+pub const HELD_DELIVERY_SETTLE_MS: u64 = 5_000;
+
+/// 计划派生绑定束（R13-B；ADR-0052 §4 构造收拢义务）。
+/// D-3 教训载体：plan_input_digest 与 plan_sha 同为 [u8;32]，
+/// 命名字段构造取代位置实参后互换在构造点即语义可见。
+///
+/// 可见性：`pub`（非蓝图原判 pub(crate)）——唯一 crate 外现实消费组 =
+/// 本 crate 集成测试（tests/settlement_lock.rs D-3 红测需命名字段构造
+/// input_digest/wire_sha 可区分对）；不构成对外稳定 API 承诺，形态随
+/// 引擎内聚演进（R13-B 登记在案）。
+pub struct PlanBinding {
+    pub plan_id: eneros_decision_contract::PlanId,
+    pub input_digest: [u8; 32],
+    /// = CandidatePlan wire SHA-256（62 v0.315.0 WP-62.1.2；构造方经
+    /// `CandidatePlan::plan_wire_sha256` 单源派生）。
+    pub wire_sha: [u8; 32],
+    pub ttl_ms: u64,
+    pub legacy_single: bool,
+}
+
+/// 计划投递上下文（CONTEXT.md 词条；持久化=登记 R13-G 未实施）。
+/// 随计划同生命周期流动：投递标签（STATION_PLAN_TARGET_LABEL 单源）+
+/// 逐投递清算超时（HELD_DELIVERY_SETTLE_MS 单源，≠saga 批 deadline）。
+/// 可见性同理 `PlanBinding`（集成测试构造面）。
+pub struct DeliveryContext {
+    pub target_label: alloc::string::String,
+    pub settle_timeout_ms: u64,
+}
+
 /// 蓝图 61 Phase 5 WP-5.2（[10] §3.3）：12 步合核 → [`SagaExecutor`]
 /// 生产 adapter——命令批经 [`eneros_control_dispatch::saga::BatchSaga`]
 /// 编排时，逐命令的授权/投递/读回/记账仍由唯一合核承载（不产生第二
 /// 执行真相）。
 ///
-/// > 状态：**deferred（ADR-0052，蓝图 63 v0.316.0）**——零生产消费者冻结
-/// > 资产（同 saga.rs 模块头）。`#[allow(clippy::too_many_arguments)]` 因
-/// > 冻结纪律保留（构造样板收拢归激活前置，见 ADR-0052 裁决 4）。
+/// > 状态：~~deferred（ADR-0052，蓝图 63 v0.316.0）~~ → **定向解冻**
+/// > （ADR-0052 修订 2026-09-20：激活前置 §2b 经 ADR-0054 满足；仅
+/// > 接入所需行为解冻，生产激活证据与时点见修订段）。
+/// > 原 too_many_arguments allow 已随 R13-B 构造收拢删除
+/// > （PlanBinding + DeliveryContext 命名字段构造，ADR-0052 §4 义务
+/// > 执行）。
 ///
 /// - `execute`：走 [`DispatchEngine::execute_core`]-equivalent 链
 ///   （PlanCommand 身份：幂等键 = intent_id 派生 / legacy 单命令 = PlanId
@@ -2953,7 +3003,9 @@ use crate::saga::{CmdOutcome, ReconcileOutcome, SagaExecutor};
 
 /// 能量窗估算单源（WP-64.3.2.3；R-64.e 边界内——`run_typed` 幂等命中
 /// 路径与 [`EngineSagaExecutor::execute_intent`] 两体共用的 crate 内
-/// 私有函数；**不**给 executor 增删参数/方法/行为）。
+/// 私有函数。62 卷「不给 executor 增删参数」冻结注记已随 ADR-0052
+/// 定向解冻（修订 2026-09-20）失效；R13-B 已完成构造收拢，本函数
+/// 签名不变）。
 ///
 /// 语义冻结：`window_secs = (valid_until - now).min(ttl)/1000`（下限
 /// `max(1)` 由调用方施加，保持原表达式位置）；能量上限形态 =
@@ -2982,33 +3034,34 @@ fn request_digest_of(correlation: [u8; 16]) -> [u8; 32] {
 }
 
 impl<'a> EngineSagaExecutor<'a> {
-    #[allow(clippy::too_many_arguments)]
+    /// 构造收拢（R13-B / ADR-0052 §4 义务）：11 参 → 5 参——计划派生
+    /// 绑定束 [`PlanBinding`] + 投递上下文 [`DeliveryContext`] 命名字段
+    /// 构造（[u8;32] 同型互换在构造点即语义可见，62.1 D-3 防御）。
     pub fn new(
         engine: &'a mut DispatchEngine,
         telemetry: &'a TrustedTelemetry,
         actor: &'a AuthenticatedActor,
-        plan_id: eneros_decision_contract::PlanId,
-        plan_input_digest: [u8; 32],
-        // 62 v0.315.0 WP-62.1.2（D-3）：CandidatePlan wire SHA-256 显式
-        // 传入（`CandidatePlan::plan_wire_sha256` 单源派生）——与输入
-        // provenance 摘要语义分离，禁止互相冒充。
-        plan_sha: [u8; 32],
-        plan_ttl_ms: u64,
-        legacy_single: bool,
-        target_device: &str,
-        deadline_ms: u64,
+        binding: PlanBinding,
+        delivery: DeliveryContext,
     ) -> Self {
+        let PlanBinding {
+            plan_id,
+            input_digest,
+            wire_sha,
+            ttl_ms,
+            legacy_single,
+        } = binding;
         Self {
             engine,
             telemetry,
             actor,
             plan_id,
-            plan_input_digest,
-            plan_sha,
-            plan_ttl_ms,
+            plan_input_digest: input_digest,
+            plan_sha: wire_sha,
+            plan_ttl_ms: ttl_ms,
             legacy_single,
-            target_device: alloc::string::String::from(target_device),
-            deadline_ms,
+            target_device: delivery.target_label,
+            deadline_ms: delivery.settle_timeout_ms,
         }
     }
 
@@ -3914,3 +3967,35 @@ impl DispatchEngine {
 
 #[path = "held_engine.rs"]
 pub mod held_engine;
+
+#[cfg(test)]
+mod tests {
+    /// R13-B 源文本守卫（双向锁）：held_engine 生产驱动/对账路径必须经
+    /// STATION_PLAN_TARGET_LABEL / HELD_DELIVERY_SETTLE_MS 单源常量；
+    /// 手抄 "pcs" 字面或裸清算超时（5_000/5000）回流即红。变异验证：
+    /// 回退任一调用点为字面 ⇒ contains 臂红；删常量引用 ⇒ 正臂红。
+    #[test]
+    fn held_engine_delivery_uses_shared_constants() {
+        let src = include_str!("held_engine.rs");
+        assert!(
+            src.contains("EngineSagaExecutor::new("),
+            "驱动路径 executor 构造在位"
+        );
+        assert!(
+            src.contains("crate::engine::STATION_PLAN_TARGET_LABEL"),
+            "投递标签须引用单源常量（R13-B）"
+        );
+        assert!(
+            src.contains("crate::engine::HELD_DELIVERY_SETTLE_MS"),
+            "清算超时须引用单源常量（R13-B）"
+        );
+        assert!(
+            !src.contains("\"pcs\""),
+            "手抄投递标签字面回归（应引 STATION_PLAN_TARGET_LABEL）"
+        );
+        assert!(
+            !src.contains("5_000") && !src.contains("5000"),
+            "手抄清算超时字面回归（应引 HELD_DELIVERY_SETTLE_MS）"
+        );
+    }
+}

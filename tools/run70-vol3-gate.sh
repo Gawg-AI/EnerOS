@@ -127,6 +127,7 @@ cp -f "$DIR/broker-transcript.jsonl" "$EVROOT/broker-transcript.jsonl" 2>/dev/nu
 # ---- R1：判据器 G1–G7 ----------------------------------------------------
 python3 "$ROOT/tools/run70_gate_judge.py" "$S" "$MIN_ROUNDS" \
   --window-secs "$DL" \
+  --cadence-max-s 45 \
   --transcripts "$DIR/modbus.transcript.jsonl" "$DIR/iec104.transcript.jsonl" \
   | tee "$EVROOT/judge.json" || FAIL=1
 

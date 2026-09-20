@@ -13,14 +13,18 @@ PANIC / 分配失败在本裁决器下一律 FAIL，无进程名/文件名豁免
      样本数 ≥ ceil(min_rounds/4)——尾部死亡（最后相位为零）不得被
      全窗累计掩盖
   G5 有效控制总量：rounds ≥ min_rounds 且 dispatch=Committed ≥ committed_floor。
-     committed_floor 由**窗长 × 架构的决策节奏上界**推导（见 CONTROL_CADENCE_MAX_S）：
-     70.8 起生产决策输入 = 冻结快照，而快照按批窗构建（实测刷新周期 ≈18–45s，
-     见 telemetry.rs::DEFAULT_INPUT_FRESHNESS_MS 的派生依据）⇒ 单窗内的提交
-     次数上界远低于轮次数。旧式"Committed ≥ min_rounds"是在"每轮都可能提交"
-     的 70.8 前语义下标定的，今日在**任何可行窗长**内结构不可达（实测提交
-     速率 ≈0.04–0.18 次/s）⇒ 判据被静默架空（永远 FAIL 的判据不是判据）。
+     committed_floor 由**窗长 × 架构的决策节奏上界**推导（见 CONTROL_CADENCE_MAX_S
+     与 --cadence-max-s）：
+     70.8 起生产决策输入 = 冻结快照，而快照按批窗构建（快照建距 =
+     SNAP_EVERY_BATCHES(8) × 批到达周期，随步距/合成节奏变化；测量记录见
+     docs/candidates-registry.md R13 段）⇒ 单窗内的提交次数上界远低于轮次
+     数。旧式"Committed ≥ min_rounds"是在"每轮都可能提交"的 70.8 前语义
+     下标定的，今日在**任何可行窗长**内结构不可达（实测提交速率 ≈0.04–0.18
+     次/s）⇒ 判据被静默架空（永远 FAIL 的判据不是判据）。
      未给 `--window-secs` 时回退旧式严格口径（调用方须显式声明窗长才能启用
-     新口径——不做静默放宽）。
+     新口径——不做静默放宽）；给了 `--window-secs` 时**必须**同时显式传
+     `--cadence-max-s`（节奏上界不再有隐式默认——同"不做静默放宽"纪律；
+     传 `--cadence-max-s` 而不传 `--window-secs` 同样拒绝）。
   G6 决策链健康：CHAIN-KEY-MISSING = 0
   G7 环境工具故障：Modbus/IEC104 transcript 存在且非空（提供方活着）
 
@@ -32,21 +36,31 @@ import re
 import sys
 
 
-#: 架构的决策节奏**上界**（s）：冻结快照的构建批窗决定"多久可能有一次可提交
-#: 决策"。出处 = control-services/telemetry.rs 的实测依据串（"刷新周期
-#: ≈18–45s"）。用它做**结构性**下限：窗长 N 秒内至少应有 N/45 次提交——
-#: 控制链死掉为 0（判负）、被腰斩为设计节奏的一半（判负）。
+#: 架构的决策节奏**上界**参考值（s）：冻结快照的构建批窗决定"多久可能有
+#: 一次可提交决策"。机制 = SNAP_EVERY_BATCHES(8)（control-services/
+#: event_face.rs）× 批到达周期上界——**无任何模块拥有"节奏上界"这个量**
+#: （R13-R6 核实）。数值依据 = 实测测量记录（2026-09-20 起入册
+#: docs/candidates-registry.md R13 段：日期/窗长/计数/平均/最大间隔）。
+#: 历史沿革：旧出处注释宣称"telemetry.rs 实测刷新周期 ≈18–45s"——
+#: 2026-09-20 核实该串从未存在于 telemetry.rs（teleMetry.rs 的
+#: DEFAULT_INPUT_FRESHNESS_MS=30_000ms 是输入新鲜度策略窗，另一概念），
+#: 旧引用已废止。本常量不再是隐式默认：调用方传 `--window-secs` 时必须
+#: 显式传 `--cadence-max-s`；本值仅作 selftest 锚与缺省参考。
 CONTROL_CADENCE_MAX_S = 45
 # R01 与其他持续控制窗共用 G5；不再额外用 agent=OK>512 充当提交率门限。
 # 512 是旧审计 Vec 扩容触发点，容量合同由 vol1 段0 的生产预算满载测试
 # 独立验证。证据/范围限制见 docs/candidates-registry.md §12（2026-09-16）。
 
 
-def committed_floor(window_secs):
-    """窗内**必须**出现的最小提交次数（结构性下限；窗长未知则 None=旧式）。"""
+def committed_floor(window_secs, cadence_max_s):
+    """窗内**必须**出现的最小提交次数（结构性下限；窗长未知则 None=旧式）。
+
+    公式形态 `max(1, window // cadence)` 冻结不变（R13-R6 负例）；
+    cadence 来源 = 调用方显式 `--cadence-max-s`（测量记录支撑），无隐式默认。
+    """
     if window_secs is None:
         return None
-    return max(1, window_secs // CONTROL_CADENCE_MAX_S)
+    return max(1, window_secs // cadence_max_s)
 
 
 def tsdb_open_points(raw):
@@ -70,8 +84,16 @@ def tsdb_persistence(raw):
     return ok, {"checkpoints": len(checkpoints), "failed": checkpoints.count("ERR"), "dropped_batches": dropped}
 
 
-def judge(path, min_rounds, transcripts, window_secs=None):
+def judge(path, min_rounds, transcripts, window_secs=None, cadence_max_s=None):
     report = []
+    # 参数配对校验（R13-R6）：窗长与节奏上界必须成对出现——任一缺配都按
+    # 输入缺失（exit 2）拒绝，杜绝"隐式默认节奏上界"的静默放宽面。
+    if (window_secs is None) != (cadence_max_s is None):
+        print(json.dumps({"id": "INPUT", "verdict": "FAIL",
+                          "reason": ("--window-secs 需要 --cadence-max-s"
+                                     if window_secs is not None else
+                                     "--cadence-max-s 需要 --window-secs")}))
+        return 2
     try:
         with open(path, "rb") as f:
             raw = f.read()
@@ -161,16 +183,16 @@ def judge(path, min_rounds, transcripts, window_secs=None):
                    f" 相位产出(commits)={commit_counts}"
                    f" 尾产出/中段峰值={commit_counts[3]}/{mid_peak}"
                    f"（2026-09-15 重标：产出=commits；轮次仅活性地板）"))
-    # G5 总量（rounds 门限 + 提交次数下限：见 CONTROL_CADENCE_MAX_S）
+    # G5 总量（rounds 门限 + 提交次数下限：见 CONTROL_CADENCE_MAX_S / --cadence-max-s）
     committed = sum(ln.count("dispatch=Committed") for ln in lines)
-    floor = committed_floor(window_secs)
+    floor = committed_floor(window_secs, cadence_max_s)
     if floor is None:
         ok = total_rounds >= min_rounds and committed >= min_rounds
         why = f"rounds={total_rounds} Committed={committed} 门限={min_rounds}（旧式：窗长未声明）"
     else:
         ok = total_rounds >= min_rounds and committed >= floor
         why = (f"rounds={total_rounds}(门限={min_rounds}) Committed={committed}"
-               f"(下限={floor}=窗{window_secs}s/{CONTROL_CADENCE_MAX_S}s)")
+               f"(下限={floor}=窗{window_secs}s/{cadence_max_s}s)")
     report.append(("G5", ok, why))
     # G6 链钥
     ckm = len(find("CHAIN-KEY-MISSING"))
@@ -284,7 +306,7 @@ def selftest():
                 tag = "dispatch=Committed" if r in (100, 200) else "dispatch=-"
                 f.write(f"[svc-control-dispatch] CONTROL-CHAIN: round={r} {tag}\n")
         results.append(("sparse-commits-fail",
-                        judge_quiet(p_sparse, 400, 900) == 1))
+                        judge_quiet(p_sparse, 400, 900, 45) == 1))
         # 正例 3：同窗同轮次、提交次数达到结构性下限 ⇒ 判过（防"一律判负"）。
         p_dense = os.path.join(d, "dense-commits.log")
         with open(p_dense, "w") as f:
@@ -293,7 +315,7 @@ def selftest():
                 tag = "dispatch=Committed" if r % 10 == 0 else "dispatch=-"
                 f.write(f"[svc-control-dispatch] CONTROL-CHAIN: round={r} {tag}\n")
         results.append(("dense-commits-pass",
-                        judge_quiet(p_dense, 400, 900) == 0))
+                        judge_quiet(p_dense, 400, 900, 45) == 0))
         # 负例 6（2026-09-15，G4 产出相位重标的**反向红测**）：轮次均匀、
         # 尾相位提交停止（[50,40,30,0]）⇒ G4 必判负——"产出相变"救不了
         # 真正的尾部产出死亡。
@@ -307,7 +329,7 @@ def selftest():
                        if (r - 1) % 150 < c_bounds[q] else "dispatch=-")
                 f.write(f"[svc-control-dispatch] CONTROL-CHAIN: round={r} {tag}\n")
         results.append(("tail-commits-stop-fail",
-                        judge_quiet(p_tail_stop, 400, 900) == 1))
+                        judge_quiet(p_tail_stop, 400, 900, 45) == 1))
         # 正例 4（同波次）：**工作负载相变**形态——轮次尾相位变慢（每轮做
         # 满提交持久化）但产出密度上升 [2,6,20,80] ⇒ 必须判过。旧 round 行数
         # 尾/二判据在此误判负；重标后的产出判据是本形态唯一正确度量。
@@ -326,7 +348,24 @@ def selftest():
                     f.write(f"[svc-control-dispatch] CONTROL-CHAIN: round={r} {tag}\n")
                 f.write(("[filler] idle\n" * (300 - rnd[q])))
         results.append(("workload-shift-pass",
-                        judge_quiet(p_shift, 400, 900) == 0))
+                        judge_quiet(p_shift, 400, 900, 45) == 0))
+        # --cadence-max-s 参数化三例（R13-R6）：①新参显式可过；②缺参报错
+        # （window 有 cadence 无 ⇒ exit 2；镜像方向 cadence 有 window 无
+        # 同拒）；③缺省回退旧口径（两者都不传 ⇒ 旧式严格判据不受影响）。
+        p_dense2 = os.path.join(d, "dense-commits-2.log")
+        with open(p_dense2, "w") as f:
+            f.write("PRODUCT-READY: true\n")
+            for r in range(1, 601):
+                tag = "dispatch=Committed" if r % 10 == 0 else "dispatch=-"
+                f.write(f"[svc-control-dispatch] CONTROL-CHAIN: round={r} {tag}\n")
+        results.append(("cadence-explicit-pass",
+                        judge_quiet(p_dense2, 400, 900, 45) == 0))
+        results.append(("cadence-missing-with-window-fail",
+                        judge_quiet(p_dense2, 400, 900) == 2))
+        results.append(("cadence-without-window-fail",
+                        judge_quiet(p_dense2, 400, None, 45) == 2))
+        results.append(("cadence-fallback-oldstyle-pass",
+                        judge_quiet(p_ok, 400) == 0))
     ok = all(r for _, r in results)
     for name, passed in results:
         print(f"[selftest] {name}: {'PASS' if passed else 'FAIL'}")
@@ -334,12 +373,12 @@ def selftest():
     return 0 if ok else 1
 
 
-def judge_quiet(path, min_rounds, window_secs=None):
+def judge_quiet(path, min_rounds, window_secs=None, cadence_max_s=None):
     import io
     import contextlib
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        return judge(path, min_rounds, [], window_secs)
+        return judge(path, min_rounds, [], window_secs, cadence_max_s)
 
 
 if __name__ == "__main__":
@@ -362,9 +401,14 @@ if __name__ == "__main__":
         sys.exit(2)
     rest = sys.argv[3:]
     window_secs = None
+    cadence_max_s = None
     if "--window-secs" in rest:
         i = rest.index("--window-secs")
         window_secs = int(rest[i + 1])
         rest = rest[:i] + rest[i + 2:]
+    if "--cadence-max-s" in rest:
+        i = rest.index("--cadence-max-s")
+        cadence_max_s = int(rest[i + 1])
+        rest = rest[:i] + rest[i + 2:]
     tx = rest[1:] if len(rest) > 1 and rest[0] == "--transcripts" else []
-    sys.exit(judge(sys.argv[1], int(sys.argv[2]), tx, window_secs))
+    sys.exit(judge(sys.argv[1], int(sys.argv[2]), tx, window_secs, cadence_max_s))

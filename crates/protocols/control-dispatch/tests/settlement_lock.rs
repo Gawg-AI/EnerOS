@@ -443,6 +443,15 @@ fn unreachable_delivery_settles_failed_and_never_retries() {
     assert_eq!(*h.attempts.borrow(), 1, "重放零投递");
 }
 
+/// R13-B：saga executor 投递上下文夹具（单源常量构造——与生产
+/// held_engine 驱动路径同一标签/超时）。
+fn test_delivery() -> eneros_control_dispatch::engine::DeliveryContext {
+    eneros_control_dispatch::engine::DeliveryContext {
+        target_label: String::from(eneros_control_dispatch::engine::STATION_PLAN_TARGET_LABEL),
+        settle_timeout_ms: eneros_control_dispatch::engine::HELD_DELIVERY_SETTLE_MS,
+    }
+}
+
 /// WP-62.1.2 夹具：合法 CandidatePlan（input_digest [0x65;32] ≠ model/
 /// objective 摘要——两摘要域语义分离）。
 fn candidate_plan() -> eneros_decision_contract::CandidatePlan {
@@ -522,13 +531,14 @@ fn saga_unknown_route_rejected_without_panic_or_intent_write() {
         &mut h.engine,
         &tel,
         &act,
-        *plan.id(),
-        *plan.input_digest(),
-        eneros_decision_contract::CandidatePlan::plan_wire_sha256(&plan),
-        60_000,
-        false,
-        "pcs",
-        5_000,
+        eneros_control_dispatch::engine::PlanBinding {
+            plan_id: *plan.id(),
+            input_digest: *plan.input_digest(),
+            wire_sha: eneros_decision_contract::CandidatePlan::plan_wire_sha256(&plan),
+            ttl_ms: 60_000,
+            legacy_single: false,
+        },
+        test_delivery(),
     );
     let outcome = exec.execute(&saga_intent_for(*plan.id(), 8, 1009), 1);
     assert!(matches!(outcome, CmdOutcome::Rejected { .. }));
@@ -561,13 +571,14 @@ fn saga_executor_binds_plan_wire_sha_not_input_digest() {
             &mut h.engine,
             &tel,
             &act,
-            *plan.id(),
-            *plan.input_digest(),
-            wire_sha,
-            60_000,
-            false,
-            "pcs",
-            5_000,
+            eneros_control_dispatch::engine::PlanBinding {
+                plan_id: *plan.id(),
+                input_digest: *plan.input_digest(),
+                wire_sha,
+                ttl_ms: 60_000,
+                legacy_single: false,
+            },
+            test_delivery(),
         );
         // 投递通道恒 Unreachable——命令仍在投递前完成 durable intent
         // append（步骤 6），plan_sha 已落记录；execute 结果与本判据无关。
@@ -678,13 +689,14 @@ fn saga_reconcile_missing_journal_never_sends() {
         &mut h.engine,
         &tel,
         &act,
-        *plan.id(),
-        *plan.input_digest(),
-        eneros_decision_contract::CandidatePlan::plan_wire_sha256(&plan),
-        60_000,
-        false,
-        "pcs",
-        5_000,
+        eneros_control_dispatch::engine::PlanBinding {
+            plan_id: *plan.id(),
+            input_digest: *plan.input_digest(),
+            wire_sha: eneros_decision_contract::CandidatePlan::plan_wire_sha256(&plan),
+            ttl_ms: 60_000,
+            legacy_single: false,
+        },
+        test_delivery(),
     );
     let outcome = exec.reconcile(&saga_intent(*plan.id()));
     assert!(matches!(outcome, ReconcileOutcome::ResolvedManual { .. }));

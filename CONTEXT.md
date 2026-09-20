@@ -37,6 +37,8 @@
 | `SnapshotWatermark` | **快照构建水位**（snapshot-service）：epoch/seq + event_time/ingest_time 四维，observe 合体——快照域分层判据（⊃ 序列水位 + 两时间维），与 ingestion-core WatermarkTracker 不合并 | `snapshot-service::watermark`（蓝图 63.3.1 消歧定名） | 与 WatermarkTracker 同名混用（禁止——分层关系见 watermark.rs 模块 doc） |
 | `EventStore` | **同名异物消歧**（蓝图 66 WP-66.6.3）：`cloud-sync::event_store::EventStore` = **跨域同步事件缓存**（生产在用，svc-cloud-sync 链）≠ `runtime/event-store` 的 `EventStore` = **分区事件日志**（上游断链 BLOCKED——机制深、生产零消费是裁决内事实）。两词不混用；裸写 `EventStore` 须以 crate 路径限定 | `cloud-sync::event_store` / `runtime/event-store`（蓝图 66 消歧登记） | 同名裸引用（禁止——须路径限定） |
 | `eneros-protocol-keys` | **协议配置键表单源**：12 协议已知键 const 数组 + `by_config_id` 映射（零依赖叶 crate，const-only）——config-bundle 编译面 `known_keys` 与插件面 `KNOWN_KEYS` 双面引用消费 | `protocols/protocol-keys`（蓝图 64.1） | 双面镜像手抄（已删，13 处字面 → 1 处）；双面引用锁 22 道 + 叶内容字面锁；cj188 编译面显式 None（行为新增边界） |
+| 计划绑定代次（catalog-generation plan binding）vs 准入同代（admission generation） | **两判据有意分层，不合并单源化**（R13-R2 裁决）：计划绑定代次 = 消费侧计划保留判据（在途/已接纳绑定的 `catalog_version` 与当前可信输入一致即保留——快照推进不丢计划，消费时重锚定当前代）；准入同代 = 入口侧投递判据（候选 snapshot_id + catalog_version + horizon_start + objective_digest 与当前可信输入逐字段一致，fail-closed 第二层） | `eneros-control-services::remote_brain::catalog_generation_matches` / `eneros-control-dispatch::engine::admit_trusted_input` | 「同集合判据」「答案必须一致」旧宣称（已废止 2026-09-20，R13-R2 订正）；把两判据收敛为共享函数（禁止） |
+| `DeliveryContext`（计划投递上下文） | 计划级投递标签（`STATION_PLAN_TARGET_LABEL` 单源）+ 逐投递清算超时（`HELD_DELIVERY_SETTLE_MS` 单源，≠saga 批 deadline）；随计划同生命周期流动，与 `PlanBinding`（计划派生绑定束：plan_id/input_digest/wire_sha/ttl/legacy_single——[u8;32] 同型互换防御）配对作 `EngineSagaExecutor` 构造面（R13-B，11 参→5 参）；持久化=登记 R13-G 未实施 | `control-dispatch::engine`（蓝图 72 修复批B） | 三处手抄 "pcs"/5_000（已删，源文本守卫锁死）；把 settle 超时混称「批 deadline」 |
 
 ## 2. 市场域词汇
 

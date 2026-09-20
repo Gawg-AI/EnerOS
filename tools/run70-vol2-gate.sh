@@ -125,6 +125,7 @@ echo "[R1] reuse 首个 OPEN points=${POINTS:-missing}（允许并发串口插�
 MIN_ROUNDS="${MIN_ROUNDS:-120}"
 python3 "$ROOT/tools/run70_gate_judge.py" "$S2" "$MIN_ROUNDS" \
   --window-secs "$REUSE_DL" \
+  --cadence-max-s 45 \
   --transcripts "$D2/modbus.transcript.jsonl" "$D2/iec104.transcript.jsonl" || FAIL=1
 ROUNDS=$(grep -c "CONTROL-CHAIN: round=" "$S2")
 echo "[R2] reuse rounds=$ROUNDS（门限=$MIN_ROUNDS）"

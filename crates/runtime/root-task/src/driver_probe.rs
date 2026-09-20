@@ -1,4 +1,9 @@
-//! WP-27.2（蓝图/27 §6）：root-task 侧驱动装配——绑定表 + ProbeReport 日志。
+//! root-task 侧**平台 seam**：驱动绑定表（[`binding_table`]）+ 设备工厂
+//! （virtio 三件套/pl011/wdt/rtc/can/rs485，`virtio_factory` 与六工厂）+
+//! virtio 适配器（`HalPool`/`BlkAdapter`/`VirtioFabric`）+ `RootPlatformCtx`
+//! （[`PlatformCtx`] 唯一生产实现）+ DTB 入口（FDT 解析两函数）；
+//! [`probe_and_report`] 为其探针消费面（ProbeReport 结构化日志）。
+//! 历史起源 = WP-27.2（蓝图/27 §6 探针链，命名沿革见文末登记）。
 //!
 //! # 装配链
 //! 1. boot-manager 把运行时 DTB 拷贝到 [`ENEROS_DTB_PHYS`]（内核 BOOT-007
@@ -13,6 +18,9 @@
 //! - 生产驱动必须实现 `DeviceDriver` seam（can/rs485 已实现，本 WP 迁入）；
 //! - MMIO 映射走 FIX-BUGS-0810 两件套（`SpawnCtx::map_device_mmio`：
 //!   `alloc_device_at` 物理校验 + `node_offset=slot`）。
+//!
+//! 名实差异登记：文件名保留 probe 字样系历史沿革，重命名登记于
+//! candidates-registry R13-C（71 开卷捎带）。
 
 extern crate alloc;
 

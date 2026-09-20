@@ -330,17 +330,25 @@ impl DispatchEngine {
             }
             let report = if allowed && !earlier_failed {
                 let telemetry = telemetry.ok_or(DispatchError::TelemetryExpired)?;
+                // R13-B：投递标签/清算超时单源（计划级 DeliveryContext，
+                // 每批一次构造——与收拢前每批一次字面 String 构造等价）。
                 let mut executor = EngineSagaExecutor::new(
                     self,
                     telemetry,
                     &plan.actor,
-                    *plan.plan.id(),
-                    *plan.plan.input_digest(),
-                    CandidatePlan::plan_wire_sha256(&plan.plan),
-                    plan.plan.ttl_ms(),
-                    crate::compiler::is_legacy_single_command_plan(&plan.plan),
-                    "pcs",
-                    5_000,
+                    crate::engine::PlanBinding {
+                        plan_id: *plan.plan.id(),
+                        input_digest: *plan.plan.input_digest(),
+                        wire_sha: CandidatePlan::plan_wire_sha256(&plan.plan),
+                        ttl_ms: plan.plan.ttl_ms(),
+                        legacy_single: crate::compiler::is_legacy_single_command_plan(&plan.plan),
+                    },
+                    crate::engine::DeliveryContext {
+                        target_label: alloc::string::String::from(
+                            crate::engine::STATION_PLAN_TARGET_LABEL,
+                        ),
+                        settle_timeout_ms: crate::engine::HELD_DELIVERY_SETTLE_MS,
+                    },
                 );
                 saga.drive(&mut executor, now)
             } else {
@@ -636,7 +644,8 @@ impl SagaExecutor for ReadOnlyRecovery<'_> {
         }
     }
     fn reconcile(&mut self, intent: &CommandIntent) -> ReconcileOutcome {
-        self.engine.reconcile_saga_intent(intent, 5_000)
+        self.engine
+            .reconcile_saga_intent(intent, crate::engine::HELD_DELIVERY_SETTLE_MS)
     }
     fn compensate(&mut self, _: &CommandIntent, _: f64) -> CmdOutcome {
         CmdOutcome::Rejected {

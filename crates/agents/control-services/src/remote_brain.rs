@@ -877,10 +877,13 @@ impl<L: DecisionBackend + DegradeArmSeam, P: PeerLink> RemoteBrain<L, P> {
             .map(|spec| spec.asset_id)
     }
 
-    /// 在途/已接纳绑定与**当前**可信输入是否同代（复查修复单源）：
-    /// 快照 id + 目录版本 + 时域起点三元组——与 dispatch 入口
-    /// `admit_trusted_input` 的同代判据同集合（答案必须一致；差异 =
-    /// 候选在中途被拒）。
+    /// 在途/已接纳绑定的保留判据 = **计划绑定代次**（catalog-generation
+    /// plan binding，消费侧）：`catalog_version` 与当前可信输入一致即保留。
+    /// 与 dispatch 入口 `admit_trusted_input` 的**准入同代**（admission
+    /// generation：snapshot_id + catalog_version + horizon_start +
+    /// objective_digest 全三元组+摘要）**有意不同**——快照推进（同目录
+    /// 代次）不丢弃远程计划，消费时重锚定当前代，入口四字段复核为
+    /// fail-closed 第二层。两判据分层设计，不合并单源化（R13-R2 裁决）。
     /// R09 激活收口（2026-09-15）：消费侧绑定**放宽至目录代次**——
     /// 快照推进（同目录代次）不再丢弃远程计划，消费时**重锚定**当前代
     /// （候选身份/时域全取当前输入；远程分配值保留），认证器对重锚计划
@@ -1509,6 +1512,71 @@ mod tests {
         assert!(
             cand.assignments().iter().all(|a| a.power_kw != -2.0),
             "目录换代后远程分配不得进入候选"
+        );
+    }
+
+    /// R13-R2 现状锁（三例，直测私有谓词）：**计划绑定代次**判据 =
+    /// 目录代次单字段——防未来被误"修复"回快照三元组（那会复活 R09
+    /// 前的丢计划行为）。与 dispatch 入口**准入同代**（全三元组+摘要）
+    /// 是有意分层，不合并。
+    #[test]
+    fn catalog_generation_matches_same_catalog_keeps_plan_across_snapshot_advance() {
+        let input = bound_input(); // snapshot_id=[0x5A] / catalog_version=3
+        let binds = eneros_intent_contract::peer::PlanBinds {
+            snapshot_id: [0x11; 16], // 与当前输入**不同**快照 id
+            catalog_version: 3,      // 同目录代次
+            horizon_start_ms: 1_699_000_000_000,
+            step_ns: 60_000_000_000,
+            step_count: 2,
+        };
+        assert!(
+            RemoteBrain::<HeuristicBackend, MockLink>::catalog_generation_matches(&input, &binds),
+            "同目录代次即保留（快照推进不丢计划——R09 放宽锁）"
+        );
+    }
+
+    /// R13-R2 现状锁例 2：目录代次不符 ⇒ 丢弃（合同授权基础变了）。
+    #[test]
+    fn catalog_generation_matches_rejects_catalog_mismatch() {
+        let input = bound_input();
+        let binds = eneros_intent_contract::peer::PlanBinds {
+            snapshot_id: [0x5A; 16],
+            catalog_version: 4, // ≠ 当前输入的 3
+            horizon_start_ms: 1_700_000_000_000,
+            step_ns: 60_000_000_000,
+            step_count: 2,
+        };
+        assert!(
+            !RemoteBrain::<HeuristicBackend, MockLink>::catalog_generation_matches(&input, &binds),
+            "目录代次不符必须拒绝"
+        );
+    }
+
+    /// R13-R2 现状锁例 3：输入未绑定（零 id/零目录版本）⇒ 结构化绑定
+    /// 不可维持，恒 false。
+    #[test]
+    fn catalog_generation_matches_rejects_unbound_input() {
+        let unbound = crate::ai_worker::DecisionInput {
+            telemetry: Box::leak(Box::new(
+                crate::ai_worker::tests_helpers::minimal_trusted_at(1_700_000_000_000),
+            )),
+            facts: Box::leak(Box::new(eneros_agent_sdk::snap_input_wire::SnapshotFacts {
+                snapshot_id: [0u8; 16],
+                ..*bound_input().facts
+            })),
+        };
+        let binds = eneros_intent_contract::peer::PlanBinds {
+            snapshot_id: [0x5A; 16],
+            catalog_version: 3,
+            horizon_start_ms: 1_700_000_000_000,
+            step_ns: 60_000_000_000,
+            step_count: 2,
+        };
+        assert!(
+            !RemoteBrain::<HeuristicBackend, MockLink>::catalog_generation_matches(
+                &unbound, &binds
+            ),
+            "无可信身份 ⇒ 恒 false"
         );
     }
 

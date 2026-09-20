@@ -55,3 +55,21 @@
 
 - product profile 驱动 root-task 接线：维持蓝图 63 [00] §4 登记，不实施。
 - Saga 分片 leader / svc-process / svc-enterprise binary：维持 BLOCKED 登记。
+
+## 修订（2026-09-20）
+
+1. **激活前置已满足**：§2b（批提交入口裁决）经 ADR-0054（2026-09-17
+   Accepted，`docs/adr/ADR-0054-held-plan-production-entry.md`）触发——
+   ADR-0054 明文「本决策满足 ADR-0052 的批入口裁决前置；只有接入这个
+   真实入口所需的行为解冻，不能以本文件宣称生产已激活」。据此对 saga
+   面 + engine 驱动路径做**定向解冻**（仅接入所需行为，冻结纪律对无关
+   扩张面继续生效）。
+2. **生产激活证据与时点状态并记**：R10 专属门 22/22 单次全绿（evidence/
+   70/70.15/ 树，2026-09-18/19）+ 马拉松 v4 R01–R09+R12 PASS = 生产激活
+   证据；候选链 R10 状态在 a72ae68 时点仍为 MISSING（候选重录未完成）——
+   事实与时点并记，不单写「生产已激活」结论。
+3. **解冻后新纪律**：不新增第二 saga 执行真相（ADR-0054 既有约束延续）。
+4. **§4 allow 退役排期**：`EngineSagaExecutor::new` 的
+   `#[allow(clippy::too_many_arguments)]` 于蓝图 72 修复批B B2（构造收拢
+   `PlanBinding` + `DeliveryContext`，11 参 → 5 参）一并删除。
+

@@ -175,13 +175,21 @@ pub fn handle_submit(engine: &mut dyn ControlDispatch, req: &[u8]) -> Vec<u8> {
         service: [0u8; 16],
         session_epoch: 0,
     };
-    let deadline_ms = 5000;
+    // R13-B：typed/trusted 两入口共用的逐投递清算超时（与持有/恢复路径
+    // 同一单源 HELD_DELIVERY_SETTLE_MS）。
+    let deadline_ms = eneros_control_dispatch::engine::HELD_DELIVERY_SETTLE_MS;
     // 单读判别：唯一入口 = `CAND` magic（CandidatePlan V1）。
     if plan_len >= 4 && &body[0..4] == b"CAND" {
         let Ok(cand) = eneros_decision_contract::CandidatePlan::decode_v1(&body[..plan_len]) else {
             return err_receipt("bad candidate");
         };
-        return match engine.submit_typed(&cand, "pcs", &telemetry, &actor, deadline_ms) {
+        return match engine.submit_typed(
+            &cand,
+            eneros_control_dispatch::engine::STATION_PLAN_TARGET_LABEL,
+            &telemetry,
+            &actor,
+            deadline_ms,
+        ) {
             Ok(receipt) => {
                 if !receipt.final_state.is_committed() {
                     eneros_runtime::println!(
@@ -238,7 +246,14 @@ pub fn handle_submit_trusted(engine: &mut dyn ControlDispatch, body: &[u8]) -> V
     let Some(telemetry) = decode_trusted(input.telemetry()) else {
         return err_receipt("bad trusted telemetry payload");
     };
-    match engine.submit_trusted(&cand, &input, "pcs", &telemetry, &actor, 5_000) {
+    match engine.submit_trusted(
+        &cand,
+        &input,
+        eneros_control_dispatch::engine::STATION_PLAN_TARGET_LABEL,
+        &telemetry,
+        &actor,
+        eneros_control_dispatch::engine::HELD_DELIVERY_SETTLE_MS,
+    ) {
         Ok(receipt) => {
             if !receipt.final_state.is_committed() {
                 eneros_runtime::println!(
@@ -310,7 +325,9 @@ pub fn handle_submit_intent(
         service: [0u8; 16],
         session_epoch: 0,
     };
-    let deadline_ms = 5000;
+    // R13-B：逐意图提交路径同用单源清算超时（与 typed/trusted/持有/恢复
+    // 全路径一致——收编前此处为第三处手抄同值字面）。
+    let deadline_ms = eneros_control_dispatch::engine::HELD_DELIVERY_SETTLE_MS;
     match engine.submit_intent(&intent, tel, &actor, deadline_ms) {
         Ok(receipt) => {
             eneros_runtime::println!(
@@ -978,5 +995,33 @@ mod tests {
         *req.last_mut().expect("actor byte") = 1; // Agent
         let resp = handle_submit_intent(&mut engine, &req, Some(&tel));
         assert_eq!(resp[0], DISP_ERR);
+    }
+    /// R13-B 源文本守卫（双向锁）：本服务三个提交入口（typed/trusted/
+    /// intent）的投递标签与清算超时必须经 control-dispatch 单源常量；
+    /// 手抄投递标签字面（同下方断言的反向词形）或裸清算超时数字回流
+    /// 即红。变异验证：回退任一调用点为字面 ⇒ 负臂红；删常量引用 ⇒
+    /// 正臂红。
+    #[test]
+    fn dispatch_service_delivery_uses_shared_constants() {
+        let src = include_str!("dispatch_service.rs");
+        assert!(
+            src.contains("engine::STATION_PLAN_TARGET_LABEL"),
+            "投递标签须引用单源常量（R13-B）"
+        );
+        assert!(
+            src.contains("engine::HELD_DELIVERY_SETTLE_MS"),
+            "清算超时须引用单源常量（R13-B）"
+        );
+        assert!(
+            !src.contains("\"pcs\""),
+            "手抄投递标签字面回归（应引 STATION_PLAN_TARGET_LABEL）"
+        );
+        // 针经字符数组构造（防自咬：断言文本不得包含连续的手抄字面）。
+        let hand_settle_a: String = ['5', '_', '0', '0', '0'].iter().collect();
+        let hand_settle_b: String = ['5', '0', '0', '0'].iter().collect();
+        assert!(
+            !src.contains(&hand_settle_a) && !src.contains(&hand_settle_b),
+            "手抄清算超时字面回归（应引 HELD_DELIVERY_SETTLE_MS）"
+        );
     }
 }
