@@ -178,6 +178,17 @@ pub(crate) trait TickEffects {
 
 ## D. ServiceSpawnSession（configure_service 收口）＋ E. HandoverSet（先做 E）
 
+> **⚠️ 实施期复验订正（2026-09-21 执行会话）：E 前提证伪，判定不实施；D 单独实施。**
+> E 的 `Handover` 枚举把 storage/net/uart 收为**互斥三臂**，而真实写入面是
+> **三路优先链 + 正交 X7**（`initial_registers` spawn.rs:1958–1989）：storage 臂内
+> `set_x(7, boot_dma_vaddr)`，随后 uart 在链外**独立覆盖** X7（源码注释自称
+> "与三路分支正交"）。枚举收口后 `from_parts` 必须"取先登记的一臂、不再叠加 X7"
+> （试点实现自述），即今日 `UART_HANDOVER_TABLE` 为空（真机 bring-up 才登记非
+> console PL011）所掩盖的一条**启动路径潜伏 bug**，会在首块真机上触发。
+> 且 E 想"结构封死"的 X7 截断事故**已被结构封死**：`const _: () = assert!
+> (INITIAL_REG_COUNT > REG_X7)`（spawn.rs:1934）+ 寄存器布局单点持于
+> `initial_registers`。证据与后果见 §11.4。
+
 ### D/E.1 复验事实（订正报告）
 
 - `configure_service`：`spawn.rs:2038-2842`，约 **805 行**、**14 参数**（非 15）、返回 **8 元组**（非 6：5×u64 + StorageHandover/NetHandover/UartHandover 三 Option）。签名带 `#[cfg(target_os = "none")]`——**仅 target 存在，host 不可直测**。
@@ -319,6 +330,35 @@ cargo build -p eneros-root-task --target aarch64-unknown-none \
 收拢中暴露并解决一处新借用约束：`released` 剪枝的代次判据需读 `epochs`，
 分居 engine 两字段时天然不相干、同入一结构后 `retain` 冲突 ⇒ 取出-回填，
 判据仍唯一经 `epoch()`（避免双读漂移）。
+
+### 11.4 候选 E 前提证伪：移交面不是和类型，且 X7 事故已结构封死（证据）
+
+试点实施（E.2 字面执行）落出 157 行纯增量后被判读退回，退回依据三条实证：
+
+| E 的断言 | 实测（`spawn.rs` 基线 `60b73a8`） |
+|---|---|
+| "新增移交种类 = 枚举一臂 + 两方法各一臂，单文件单点" | 写入面已是**单点**：`initial_registers`（1939–1991）是唯一寄存器装配函数，restart 路径（service.rs:1628）也从它重建；E 只是把同一事实抄成第二处 |
+| "X7 截断事故结构封死"（E.2 动机） | **已封死**：`INITIAL_REG_COUNT = 11` + 编译期断言 `const _: () = assert!(INITIAL_REG_COUNT > REG_X7)`（1932–1937，注释直指 D 卷误读 count=10 的历史事故）——比方法级封装更强（错则构建即炸） |
+| "`SpawnedHandle` 尾部三 Option → `Option<Handover>`（16→14 字段）" | 三臂**不正交于彼此**：X3/X4/X5 是 `storage → net → 通用(eipc_mask/heartbeat)` 的**优先链**（1958–1983），X7 由 storage 臂写 `boot_dma_vaddr`、**再由 uart 在链外独立覆盖**（1986–1989 "与三路分支正交"）。收为和类型后 `from_parts` 只能"取先登记一臂、不再叠加 X7"——即设备移交与 UART 移交同服务时 X7 静默丢失 |
+
+为何"今日无真实输入"不是豁免理由：`UART_HANDOVER_TABLE`（955 起）当前为空是
+**真机 bring-up 的 owner 填空项**（表注："真机 bring-up = owner 在此登记板级非
+console pl011 的 reg 基址……届时 C1 host 全链在板上复跑即为真机验收"）。E 落地
+= 把"第一个登记 UART 的板子"变成 X7 丢失的引爆点，且 svc-storage 的
+`boot_dma_vaddr`（X7）与 UART 的 X7 争夺将变成设计期问题而非编译期问题——
+违本蓝图 R-DE1 自身口径。
+
+裁决：**E 不实施**（试点增量已退回，工作树 `spawn.rs` 与 `60b73a8` 逐字节一致）；
+**D 单独实施**（D 的前提经复核成立：`configure_service` 14 参 / 8 元组、
+`cfg(target_os="none")` host 不可直测）。D 的 R-DE2 防御按 §11.5 口径执行。
+
+### 11.5 D 的实施口径收紧（相对 D.2 原设计）
+
+D.2 示意 `ServiceSpawnSession::configure(self, svc, elf)`。执行时**必须**以
+命名字段结构体装配 14 参（五个相邻 `u64`：`fault_ep/ntfn_badge/eipc_mask/
+heartbeat_slot/wall_epoch` 位置错配是本候选首要失败模式，命名字段使其在编译期
+不可能），不得用位置参数列表；函数体 805 行逐字搬运（diff 体内零删改），
+三 `Option<…Handover>` 出参同名进 `ConfiguredService`。
 
 ---
 
