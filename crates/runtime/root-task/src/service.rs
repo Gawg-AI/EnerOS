@@ -2210,7 +2210,9 @@ fn telemetry_report_tick(
     exported
 }
 
-/// host/无 sel4-eipc 构建的占位（可观测上报不可用——如实报错，不伪造）。
+/// 裸机（`target_os = "none"`）无 sel4-eipc 装配的占位（可观测上报不可用——
+/// 如实报错，不伪造）。⚠ 不是 host 臂：本文件**不存在 host/target 孪生**，
+/// 孪生对是 sel4-eipc 特性轴、两臂皆裸机（Deepening-v1 §11.1 证伪记录）。
 #[cfg(all(target_os = "none", not(feature = "sel4-eipc")))]
 fn telemetry_report_tick(
     _obs_ep: u64,
@@ -2255,7 +2257,7 @@ fn control_chain_tick(
     Ok((accepted, ea_status, disp_state))
 }
 
-/// host/无 sel4-eipc 构建的占位（控制链驱动不可用——如实报错，不伪造）。
+/// 裸机（`target_os = "none"`）无 sel4-eipc 装配的占位（控制链驱动不可用——如实报错，不伪造）。
 #[cfg(all(target_os = "none", not(feature = "sel4-eipc")))]
 fn control_chain_tick(
     _telemetry_ep: u64,
@@ -2301,15 +2303,15 @@ fn mgmt_persist_tick(mgmt_ep: u64, epoch: &mut u64) {
     let _ = endpoint.call("svc-mgmt", b"MGT0\0");
 }
 
-/// host/无 sel4-eipc 构建占位（同 degrade_observe_tick 门控）。
+/// 裸机（`target_os = "none"`）无 sel4-eipc 装配占位（同 degrade_observe_tick 门控）。
 #[cfg(all(target_os = "none", not(feature = "sel4-eipc")))]
 fn mgmt_persist_tick(_mgmt_ep: u64, _epoch: &mut u64) {}
 
-/// host/无 sel4-eipc 构建占位（观测探针不可用——同 control_chain_tick 门控）。
+/// 裸机（`target_os = "none"`）无 sel4-eipc 装配占位（观测探针不可用——同 control_chain_tick 门控）。
 #[cfg(all(target_os = "none", not(feature = "sel4-eipc")))]
 fn degrade_observe_tick(_ai_ep: u64, _epoch: &mut u64) {}
 
-/// host/无 sel4-eipc 构建的占位（存储探针不可用——如实报错，不伪造）。
+/// 裸机（`target_os = "none"`）无 sel4-eipc 装配的占位（存储探针不可用——如实报错，不伪造）。
 #[cfg(all(target_os = "none", not(feature = "sel4-eipc")))]
 /// storage persist probe 占位（同 control_chain_tick 门控）。
 #[cfg(all(target_os = "none", not(feature = "sel4-eipc")))]
