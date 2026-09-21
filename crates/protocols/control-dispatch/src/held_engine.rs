@@ -58,7 +58,7 @@ impl DispatchEngine {
 
     /// F70-04：待重试释放数（观测面——空闲重试收敛的可观测事实）。
     pub fn pending_release_count(&self) -> usize {
-        self.pending_releases.len()
+        self.holds.pending_count()
     }
 
     /// 按当前**非终态**计划重派生钉集（安装/装配两处调用；失败计数不
@@ -81,7 +81,7 @@ impl DispatchEngine {
         for id in ids {
             if let Some(retainer) = self.input_retainer.as_mut() {
                 if !retainer.hold(id) {
-                    self.held_pin_failures = self.held_pin_failures.saturating_add(1);
+                    self.holds.note_pin_failure();
                 }
             }
         }
@@ -197,7 +197,7 @@ impl DispatchEngine {
         let snapshot_id = input.facts().snapshot_id;
         if let Some(retainer) = self.input_retainer.as_mut() {
             if !retainer.hold(snapshot_id) {
-                self.held_pin_failures = self.held_pin_failures.saturating_add(1);
+                self.holds.note_pin_failure();
                 return Err(DispatchError::NotAuthorized(String::from(
                     "input retention unavailable: held plan needs pinned frozen snapshot",
                 )));
@@ -226,16 +226,10 @@ impl DispatchEngine {
             return Err(DispatchError::IntentPersistFailed(e));
         }
         // F70-04（§7.2.6）：本快照进入新一轮持有（代次 +1）——旧代次的
-        // 完成缓存/待重试归属失效。有界 ≤16（淘汰最旧键；淘汰至多引发
-        // 一次幂等重释放，不损正确性）。
-        {
-            let epoch = self.hold_epochs.entry(snapshot_id).or_insert(0);
-            *epoch = epoch.wrapping_add(1);
-            while self.hold_epochs.len() > 16 {
-                let oldest = *self.hold_epochs.keys().next().expect("nonempty");
-                self.hold_epochs.remove(&oldest);
-            }
-        }
+        // 完成缓存/待重试归属失效。代次递增与有界淘汰（≤16，淘汰最旧键；
+        // 淘汰至多引发一次幂等重释放，不损正确性）收拢进 HoldRegistry
+        //（Deepening-v1 §A.2）。
+        self.holds.admit(snapshot_id);
         // F70-05（R5/§8.2.1）：完整 16B plan id = 机器身份（4B 前缀只供
         // 阅读——前缀碰撞的不同计划不得合并账目）。
         eneros_runtime::println!(
@@ -460,14 +454,13 @@ impl DispatchEngine {
         // ⇒ 旧完成事实失效：完成缓存按持有代次比对（覆盖"准入后同 pass
         // 内完成"——此时引用已归零、但新一轮释放不得被旧缓存抑制）；
         // 待释放队列按存活引用剪除（仍被在途/未决引用 ⇒ 不释放新持有
-        // 人的钉；引用归零 ⇒ 重试收敛即正确）。
-        let epoch_of = |id: &[u8; 16]| -> u32 { self.hold_epochs.get(id).copied().unwrap_or(0) };
-        self.released_holds
-            .retain(|(id, released_epoch)| epoch_of(id) == *released_epoch);
-        self.pending_releases.retain(|id| refs_of(id) == 0);
+        // 人的钉；引用归零 ⇒ 重试收敛即正确）。两笔剪除 + 重试集取出
+        // 收拢进 HoldRegistry，调用顺序保持（Deepening-v1 §A.2）。
+        self.holds.prune_releases_by_epoch();
+        self.holds.prune_pending_by_live_refs(&live_refs);
         // 待重试队列 = 进入本 pass 前已在册的失败项（本 pass 新失败者
         // 入队、下个周期重试——"下个实际调度到的周期"语义）。
-        let retry_now = core::mem::take(&mut self.pending_releases);
+        let retry_now = self.holds.begin_retry_cycle();
 
         for PlanFinality {
             plan_id,
@@ -504,11 +497,7 @@ impl DispatchEngine {
                             .count();
                         (a + ap, b + bl, f + total - ap - bl)
                     });
-            if !self.held_done_logged.contains(&plan_id) {
-                self.held_done_logged.push(plan_id);
-                if self.held_done_logged.len() > 16 {
-                    self.held_done_logged.remove(0);
-                }
+            if self.holds.mark_done_if_first(plan_id) {
                 eneros_runtime::println!(
                     "[svc-control-dispatch] HELD-PLAN-DONE plan={:02x?} batches={} applied={} blocked={} failed={} state={}",
                     plan_id.0,
@@ -524,11 +513,8 @@ impl DispatchEngine {
             // 缓存过，才释放。
             if terminal
                 && !unresolved
-                && !self
-                    .released_holds
-                    .iter()
-                    .any(|(id, e)| *id == snapshot_id && *e == epoch_of(&snapshot_id))
-                && !self.pending_releases.contains(&snapshot_id)
+                && !self.holds.released_at_current_epoch(&snapshot_id)
+                && !self.holds.contains_pending(&snapshot_id)
                 && !retry_now.contains(&snapshot_id)
                 && refs_of(&snapshot_id) == 0
             {
@@ -538,25 +524,19 @@ impl DispatchEngine {
                     .map(|r| r.release(snapshot_id))
                     .unwrap_or(false);
                 if released {
-                    self.released_holds
-                        .push((snapshot_id, epoch_of(&snapshot_id)));
-                    if self.released_holds.len() > 16 {
-                        self.released_holds.remove(0);
-                    }
+                    self.holds.note_released(snapshot_id);
                 } else {
                     // 释放失败：有界待释放队列（§7.2.4/§7.2.7——不无界
                     // 积累；满额 = 保留在本轮不释放，下轮引用态重算后
                     // 再入队）。
-                    if self.pending_releases.len() < 16 {
-                        self.pending_releases.push(snapshot_id);
-                    }
+                    self.holds.queue_pending(snapshot_id);
                 }
             }
         }
         // 待释放重试（§7.2.4：不依赖新提案——空闲周期 finalize 也会到
         // 这里；§7.2.5：远端幂等确认，重试至收敛）。引用剪除已在上文
         // 完成，此处队列中都是无存活引用的快照。
-        let mut still_pending = core::mem::take(&mut self.pending_releases);
+        let mut retry_still_failed: Vec<[u8; 16]> = Vec::new();
         for id in retry_now {
             let released = self
                 .input_retainer
@@ -564,20 +544,12 @@ impl DispatchEngine {
                 .map(|r| r.release(id))
                 .unwrap_or(false);
             if !released {
-                still_pending.push(id);
-            } else if !self
-                .released_holds
-                .iter()
-                .any(|(x, e)| x == &id && *e == epoch_of(&id))
-            {
-                self.released_holds.push((id, epoch_of(&id)));
-                if self.released_holds.len() > 16 {
-                    self.released_holds.remove(0);
-                }
+                retry_still_failed.push(id);
+            } else if !self.holds.released_at_current_epoch(&id) {
+                self.holds.note_released(id);
             }
         }
-        still_pending.truncate(16);
-        self.pending_releases = still_pending;
+        self.holds.end_retry_cycle(retry_still_failed);
     }
 
     /// 快照的**存活引用**数（在途 = 非终态，或未决 = 对账中；事实源 =

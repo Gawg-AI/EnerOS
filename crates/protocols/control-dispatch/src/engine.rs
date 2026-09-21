@@ -351,21 +351,11 @@ pub struct DispatchEngine {
     /// ADR-0054:29–30：持有输入保留面（None = 未装配——host 测试或
     /// fail-closed 装配由调用方以 NoRetention 显式承担）。
     input_retainer: Option<alloc::boxed::Box<dyn held_engine::HeldInputRetainer>>,
-    /// 已解除钉的 (快照 ID, 持有代次)（防重复 release；有界环形回收）。
-    /// F70-04（§7.2.6）：**代次安全**——快照每被一轮新准入持有，代次 +1；
-    /// 缓存条目代次 ≠ 当前代次 ⇒ 旧完成事实失效，不得抑制新一轮释放
-    ///（覆盖"准入后同 pass 内完成"——引用剪除看不见曾经发生的新持有）。
-    released_holds: alloc::vec::Vec<([u8; 16], u32)>,
-    /// 快照持有代次（每次成功准入 +1；有界 ≤16，最旧键淘汰——淘汰只
-    /// 引发至多一次幂等重释放，不损正确性）。
-    hold_epochs: alloc::collections::BTreeMap<[u8; 16], u32>,
-    /// F70-04（R2/§7.2.4）：释放失败的快照（有界 ≤16）——空闲周期也
-    /// 持续重试；快照被新一轮持有时条目撤销（不释放新持有人的钉）。
-    pending_releases: alloc::vec::Vec<[u8; 16]>,
-    /// 已打印终态行的计划 ID（HELD-PLAN-DONE 一次性证据行）。
-    held_done_logged: alloc::vec::Vec<eneros_decision_contract::PlanId>,
-    /// 钉面失败计数（hold 拒绝/装配缺失面——可观测不静默）。
-    pub held_pin_failures: u64,
+    /// Deepening-v1 §A：钉住账目（持有代次、已释放事实、待重试队列、
+    /// 终态行一次性标记、钉面失败计数）收拢为深 module——原六处四种
+    /// 淘汰惯用法单点化，F70-04 代次安全由注释维系升级为结构维系。
+    /// 存活引用计数仍归 engine（事实源 = 持久计划，R-A2）。
+    holds: hold_registry::HoldRegistry,
 }
 
 // ==========================================================================
@@ -1224,11 +1214,7 @@ impl DispatchEngine {
             held_plans: None,
             held_store_unavailable: false,
             input_retainer: None,
-            released_holds: alloc::vec::Vec::new(),
-            hold_epochs: alloc::collections::BTreeMap::new(),
-            pending_releases: alloc::vec::Vec::new(),
-            held_done_logged: alloc::vec::Vec::new(),
-            held_pin_failures: 0,
+            holds: hold_registry::HoldRegistry::new(),
         };
         // 启动恢复播种：durable 未决记录（v1 遗留 Applied/Persisted 或
         // 崩溃窗口遗留）→ Reconciling。投递与否不可证明——重放零投递、
@@ -1321,6 +1307,13 @@ impl DispatchEngine {
     /// durable intent 未决集（对账）。
     pub fn pending_intents(&self) -> Vec<IntentRecord> {
         self.intent_log.pending()
+    }
+
+    /// 钉面失败计数（Deepening-v1 §A.3.3：原 `pub held_pin_failures`
+    /// 字段两写入点零读者——观测/可写分离下改为只读方法，写入点唯一
+    /// `HoldRegistry::note_pin_failure`）。
+    pub fn held_pin_failures(&self) -> u64 {
+        self.holds.pin_failures()
     }
 
     fn audit(&mut self, exec: ExecOutcome, safety: SafetyOutcome, detail: &str, now_ms: u64) {
@@ -3967,6 +3960,9 @@ impl DispatchEngine {
 
 #[path = "held_engine.rs"]
 pub mod held_engine;
+
+#[path = "hold_registry.rs"]
+pub(crate) mod hold_registry;
 
 #[cfg(test)]
 mod tests {
