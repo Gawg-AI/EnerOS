@@ -318,9 +318,10 @@ fn single_production_arbiter_in_crate() {
     // [10] §4.7：全仓只有一个生产 Arbiter——源码级审计（排除注释行）：
     // `struct CommandArbiter` 只允许出现在 arbiter.rs；gateway/saga/
     // compiler 不得定义第二仲裁结构。
-    let files: [(&str, &str); 8] = [
+    let files: [(&str, &str); 9] = [
         ("arbiter.rs", include_str!("../src/arbiter.rs")),
         ("engine.rs", include_str!("../src/engine.rs")),
+        ("hold_registry.rs", include_str!("../src/hold_registry.rs")),
         ("saga.rs", include_str!("../src/saga.rs")),
         ("compiler.rs", include_str!("../src/compiler.rs")),
         ("degrade.rs", include_str!("../src/degrade.rs")),
