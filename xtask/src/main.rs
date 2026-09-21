@@ -22,6 +22,8 @@ mod evidence;
 mod evidence_chain;
 mod factory;
 mod fault_factory;
+// Deepening-v1 §B.2.1：qa 子命令参数解析四拍样板收拢。
+mod flags;
 mod flasher;
 mod fuzz_driver;
 mod gate;
@@ -35,6 +37,8 @@ mod qa;
 mod qemu_harness;
 // 70.14（WP-70.14.1/4）：浸泡/HIL 运行证据 fail-closed 判据。
 mod sbom;
+// Deepening-v1 §B.2.2：报告「sha256 → ed25519 → .json(+.sig)」链收拢。
+mod signed_report;
 mod soak;
 mod symbolize;
 mod test_results;

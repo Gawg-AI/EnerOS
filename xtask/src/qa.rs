@@ -26,6 +26,10 @@ use serde::{Deserialize, Serialize};
 // 33 GV-05：soak-run artifact_sha256 实算（sha2 为 xtask 既有依赖）。
 use sha2::{Digest, Sha256};
 
+// Deepening-v1 §B.2.1：11 处参数解析循环的四拍样板收拢（文案冻结见 flags.rs）。
+use super::flags::FlagParser;
+// Deepening-v1 §B.2.2：报告「sha256 → ed25519 → .json(+.sig)」链收拢。
+use super::signed_report::SignedReport;
 use super::{invalid, read_json, DynResult};
 
 // ============================================================
@@ -463,16 +467,12 @@ fn command_soak_report(root: &Path, args: &[String]) -> DynResult<()> {
 
     let mut bundle_dir = root.join("target/soak/evidence-bundle");
     let mut out_path = root.join("target/soak/d1-soak-report.json");
-    let mut it = args.iter();
+    let mut it = FlagParser::bare(root, "soak-report", args);
     while let Some(a) = it.next() {
-        let mut val = || {
-            it.next()
-                .ok_or_else(|| invalid(format!("{a} requires a value")))
-        };
-        match a.as_str() {
-            "--bundle" => bundle_dir = root.join(val()?),
-            "--out" => out_path = root.join(val()?),
-            other => return Err(invalid(format!("unknown soak-report arg '{other}'"))),
+        match a {
+            "--bundle" => bundle_dir = it.take_path(a)?,
+            "--out" => out_path = it.take_path(a)?,
+            other => return Err(it.unknown(other)),
         }
     }
 
@@ -665,17 +665,13 @@ fn command_interop_report(root: &Path, args: &[String]) -> DynResult<()> {
     // 蓝图 36 WP-36.8：信息报告模式（--allow-non-pass）——矩阵 verdict
     // 非 D2-PASS 时写 non_release=true，不得被 release evidence gate 消费。
     let (allow_non_pass, rest) = crate::verdict::take_allow_non_pass(args);
-    let mut it = rest.iter();
+    let mut it = FlagParser::bare(root, "interop-report", &rest);
     while let Some(a) = it.next() {
-        let mut val = || {
-            it.next()
-                .ok_or_else(|| invalid(format!("{a} requires a value")))
-        };
-        match a.as_str() {
-            "--dir" => dir = root.join(val()?),
-            "--out" => out_path = root.join(val()?),
-            "--profile" => profile_id = val()?.to_owned(),
-            other => return Err(invalid(format!("unknown interop-report arg '{other}'"))),
+        match a {
+            "--dir" => dir = it.take_path(a)?,
+            "--out" => out_path = it.take_path(a)?,
+            "--profile" => profile_id = it.take_string(a)?,
+            other => return Err(it.unknown(other)),
         }
     }
 
@@ -845,15 +841,11 @@ fn command_kat_report(root: &Path, args: &[String]) -> DynResult<()> {
     }
 
     let mut out_path = root.join("target/kat-report.json");
-    let mut it = args.iter();
+    let mut it = FlagParser::bare(root, "kat-report", args);
     while let Some(a) = it.next() {
-        let mut val = || {
-            it.next()
-                .ok_or_else(|| invalid(format!("{a} requires a value")))
-        };
-        match a.as_str() {
-            "--out" => out_path = root.join(val()?),
-            other => return Err(invalid(format!("unknown kat-report arg '{other}'"))),
+        match a {
+            "--out" => out_path = it.take_path(a)?,
+            other => return Err(it.unknown(other)),
         }
     }
 
@@ -959,20 +951,14 @@ fn command_compliance_report(root: &Path, args: &[String]) -> DynResult<()> {
         signed: bool,
     }
 
-    use sha2::{Digest, Sha256};
-
     let mut out_path = root.join("target/compliance-report.json");
     let mut sign_key: Option<std::path::PathBuf> = None;
-    let mut it = args.iter();
+    let mut it = FlagParser::bare(root, "compliance-report", args);
     while let Some(a) = it.next() {
-        let mut val = || {
-            it.next()
-                .ok_or_else(|| invalid(format!("{a} requires a value")))
-        };
-        match a.as_str() {
-            "--out" => out_path = root.join(val()?),
-            "--sign-key" => sign_key = Some(root.join(val()?)),
-            other => return Err(invalid(format!("unknown compliance-report arg '{other}'"))),
+        match a {
+            "--out" => out_path = it.take_path(a)?,
+            "--sign-key" => sign_key = Some(it.take_path(a)?),
+            other => return Err(it.unknown(other)),
         }
     }
 
@@ -981,12 +967,7 @@ fn command_compliance_report(root: &Path, args: &[String]) -> DynResult<()> {
     let key_path = sign_key.ok_or_else(|| {
         invalid("compliance-report requires --sign-key（34 GV-07：证据签名强制；47.3 出仓后键在 product/security/keys-local/ 或显式注入）")
     })?;
-    let key_bytes = fs::read(&key_path).map_err(|e| invalid(format!("read sign key: {e}")))?;
-    let keypair = ed25519_dalek::SigningKey::from_bytes(
-        &key_bytes[..32]
-            .try_into()
-            .map_err(|_| invalid("key must be 32 bytes"))?,
-    );
+    let keypair = SignedReport::load_key(&key_path)?;
     let verify_key = keypair.verifying_key();
 
     // 1. 信创/等保动态探测（真实 recompute，非硬编码）。
@@ -1050,7 +1031,7 @@ fn command_compliance_report(root: &Path, args: &[String]) -> DynResult<()> {
     .into_iter()
     .map(|(gate, f)| {
         let fp = evidence_dir.join(f);
-        let sigp = std::path::PathBuf::from(format!("{}.sig", fp.display()));
+        let sigp = SignedReport::sidecar_path(&fp);
         QaGateRow {
             gate,
             evidence_file: f.to_owned(),
@@ -1062,7 +1043,7 @@ fn command_compliance_report(root: &Path, args: &[String]) -> DynResult<()> {
 
     // 4. 摘要 + 签名（34 GV-07：签名强制；generated_at 取系统
     // RFC3339，禁止空串占位）。
-    let report = ComplianceReport {
+    let mut report = ComplianceReport {
         schema: "eneros.compliance-report.v1",
         generated_at: rfc3339_now(),
         xinchuang: xinchuang_items,
@@ -1078,22 +1059,17 @@ fn command_compliance_report(root: &Path, args: &[String]) -> DynResult<()> {
         signature: String::new(),
         verdict: "assessment",
     };
-    let json = serde_json::to_vec_pretty(&report)?;
-    let digest = Sha256::digest(&json);
-    let digest_hex = hex_encode(&digest);
-    let mut report = report;
-    report.sha256 = digest_hex;
-
-    // 签名在带摘要的 JSON 上（34 GV-07：key 已在入口强制，必签）。
-    let json_signed = serde_json::to_vec_pretty(&report)?;
-    let signature = {
-        use ed25519_dalek::Signer;
-        hex_encode(&keypair.sign(&json_signed).to_bytes())
-    };
-    report.signature = signature;
-
-    fs::create_dir_all(out_path.parent().unwrap_or(root))?;
-    fs::write(&out_path, serde_json::to_vec_pretty(&report)?)?;
+    // 签名在带摘要的 JSON 上（34 GV-07：key 已在入口强制，必签）；
+    // 链本体（to_vec_pretty → sha256 → 回填 → 再序列化 → ed25519 → 落盘）
+    // 收拢至 signed_report（Deepening-v1 §B.2.2，字节序不变）。
+    SignedReport::seal_inline(
+        root,
+        &out_path,
+        &mut report,
+        &keypair,
+        |r, d| r.sha256 = d.to_owned(),
+        |r, s| r.signature = s.to_owned(),
+    )?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     println!("COMPLIANCE-REPORT → {}", out_path.display());
     Ok(())
@@ -1163,32 +1139,20 @@ pub fn verify_evidence_sig(
 fn command_sign_evidence(root: &Path, args: &[String]) -> DynResult<()> {
     let mut path: Option<std::path::PathBuf> = None;
     let mut sign_key: Option<std::path::PathBuf> = None;
-    let mut it = args.iter();
+    let mut it = FlagParser::bare(root, "sign-evidence", args);
     while let Some(a) = it.next() {
-        let mut val = || {
-            it.next()
-                .ok_or_else(|| invalid(format!("{a} requires a value")))
-        };
-        match a.as_str() {
-            "--sign-key" => sign_key = Some(root.join(val()?)),
-            other if other.starts_with("--") => {
-                return Err(invalid(format!("unknown sign-evidence arg '{other}'")))
-            }
+        match a {
+            "--sign-key" => sign_key = Some(it.take_path(a)?),
+            other if FlagParser::is_flag(other) => return Err(it.unknown(other)),
             other => path = Some(root.join(other)),
         }
     }
     let path = path.ok_or_else(|| invalid("sign-evidence requires <path>"))?;
     let key_path = sign_key.ok_or_else(|| invalid("sign-evidence requires --sign-key"))?;
     let raw = fs::read(&path).map_err(|e| invalid(format!("read {}: {e}", path.display())))?;
-    let key_bytes = fs::read(&key_path).map_err(|e| invalid(format!("read sign key: {e}")))?;
-    let keypair = ed25519_dalek::SigningKey::from_bytes(
-        &key_bytes[..32]
-            .try_into()
-            .map_err(|_| invalid("key must be 32 bytes"))?,
-    );
-    use ed25519_dalek::Signer;
-    let sig = hex_encode(&keypair.sign(&raw).to_bytes());
-    let sig_path = std::path::PathBuf::from(format!("{}.sig", path.display()));
+    let keypair = SignedReport::load_key(&key_path)?;
+    let sig = SignedReport::sign_hex(&keypair, &raw);
+    let sig_path = SignedReport::sidecar_path(&path);
     fs::write(&sig_path, format!("{sig}\n"))?;
     println!("SIGN-EVIDENCE → {}", sig_path.display());
     println!("pubkey={}", hex_encode(keypair.verifying_key().as_bytes()));
@@ -1201,19 +1165,11 @@ fn command_sign_evidence(root: &Path, args: &[String]) -> DynResult<()> {
 fn command_verify_evidence_sig(root: &Path, args: &[String]) -> DynResult<()> {
     let mut path: Option<std::path::PathBuf> = None;
     let mut pub_key: Option<String> = None;
-    let mut it = args.iter();
+    let mut it = FlagParser::bare(root, "verify-evidence-sig", args);
     while let Some(a) = it.next() {
-        let mut val = || {
-            it.next()
-                .ok_or_else(|| invalid(format!("{a} requires a value")))
-        };
-        match a.as_str() {
-            "--pub-key" => pub_key = Some(val()?.clone()),
-            other if other.starts_with("--") => {
-                return Err(invalid(format!(
-                    "unknown verify-evidence-sig arg '{other}'"
-                )))
-            }
+        match a {
+            "--pub-key" => pub_key = Some(it.take_string(a)?),
+            other if FlagParser::is_flag(other) => return Err(it.unknown(other)),
             other => path = Some(root.join(other)),
         }
     }
@@ -1224,7 +1180,7 @@ fn command_verify_evidence_sig(root: &Path, args: &[String]) -> DynResult<()> {
         .map_err(|_| invalid("pub-key must be 32-byte ed25519 pk (hex)"))?;
     let pk = ed25519_dalek::VerifyingKey::from_bytes(&pk_bytes)
         .map_err(|e| invalid(format!("bad pubkey: {e}")))?;
-    let sig_path = std::path::PathBuf::from(format!("{}.sig", path.display()));
+    let sig_path = SignedReport::sidecar_path(&path);
     if verify_evidence_sig(&path, &sig_path, &pk) {
         println!(
             "VERIFY-EVIDENCE-SIG → OK（{} ← {}）",
@@ -1470,15 +1426,11 @@ fn command_g7_audit(root: &Path, args: &[String]) -> DynResult<()> {
 
     let mut out_path = root.join("target/g7-report.json");
     let (allow_non_pass, rest) = crate::verdict::take_allow_non_pass(args);
-    let mut it = rest.iter();
+    let mut it = FlagParser::bare(root, "g7-audit", &rest);
     while let Some(a) = it.next() {
-        let mut val = || {
-            it.next()
-                .ok_or_else(|| invalid(format!("{a} requires a value")))
-        };
-        match a.as_str() {
-            "--out" => out_path = root.join(val()?),
-            other => return Err(invalid(format!("unknown g7-audit arg '{other}'"))),
+        match a {
+            "--out" => out_path = it.take_path(a)?,
+            other => return Err(it.unknown(other)),
         }
     }
 
@@ -1613,31 +1565,19 @@ fn command_soak_run(root: &Path, args: &[String]) -> DynResult<()> {
     // 33 GV-05：内存泄漏阈值（字节/天）——实测 RSS 回归斜率与之比较。
     let mut leak_threshold: u64 = 64 * 1024 * 1024;
 
-    let mut it = args.iter();
+    let mut it = FlagParser::bare(root, "soak-run", args);
     while let Some(a) = it.next() {
-        let mut val = || {
-            it.next()
-                .ok_or_else(|| invalid(format!("{a} requires a value")))
-        };
-        match a.as_str() {
-            "--cycles" => {
-                cycles = val()?
-                    .parse()
-                    .map_err(|_| invalid("--cycles must be usize"))?
-            }
-            "--max-fail" => {
-                max_fail = val()?
-                    .parse()
-                    .map_err(|_| invalid("--max-fail must be usize"))?
-            }
-            "--profile" => profile_id = val()?.to_owned(),
-            "--image" => image = Some(std::path::PathBuf::from(val()?)),
-            "--vars-template" => vars_template = Some(std::path::PathBuf::from(val()?)),
-            "--out" => out_path = root.join(val()?),
+        match a {
+            "--cycles" => cycles = it.take_usize(a, "usize")?,
+            "--max-fail" => max_fail = it.take_usize(a, "usize")?,
+            "--profile" => profile_id = it.take_string(a)?,
+            // --image/--vars-template 与 --out 不同：值原样透传给 `run
+            // qemu-prod` 子进程，不按 root 拼接（现网语义，勿统一）。
+            "--image" => image = Some(std::path::PathBuf::from(it.take_string(a)?)),
+            "--vars-template" => vars_template = Some(std::path::PathBuf::from(it.take_string(a)?)),
+            "--out" => out_path = it.take_path(a)?,
             "--min-duration-days" => {
-                min_duration_days = val()?
-                    .parse()
-                    .map_err(|_| invalid("--min-duration-days must be u64"))?;
+                min_duration_days = it.take_u64(a, "u64")?;
                 if min_duration_days == 0 {
                     println!(
                         "WARNING: --min-duration-days=0 —— CI 短周期浸泡冒烟，\
@@ -1645,12 +1585,8 @@ fn command_soak_run(root: &Path, args: &[String]) -> DynResult<()> {
                     );
                 }
             }
-            "--leak-threshold" => {
-                leak_threshold = val()?
-                    .parse()
-                    .map_err(|_| invalid("--leak-threshold must be u64 (bytes/day)"))?;
-            }
-            other => return Err(invalid(format!("unknown soak-run arg '{other}'"))),
+            "--leak-threshold" => leak_threshold = it.take_u64(a, "u64 (bytes/day)")?,
+            other => return Err(it.unknown(other)),
         }
     }
     if cycles == 0 {
@@ -2123,29 +2059,13 @@ fn command_perf_baseline(root: &Path, args: &[String]) -> DynResult<()> {
     let mut sign_key: Option<std::path::PathBuf> = None;
     let mut slo_threshold: u64 = 0;
     let mut tolerance_pct: u64 = 10;
-    let mut it = args.iter();
+    let mut it = FlagParser::prefixed(root, "perf-baseline", args);
     while let Some(a) = it.next() {
-        match a.as_str() {
-            "--out" => {
-                out_path = root.join(
-                    it.next()
-                        .ok_or_else(|| invalid("perf-baseline --out requires <path>"))?,
-                );
-            }
-            "--sign-key" => {
-                sign_key = Some(
-                    root.join(
-                        it.next()
-                            .ok_or_else(|| invalid("perf-baseline --sign-key requires <path>"))?,
-                    ),
-                );
-            }
+        match a {
+            "--out" => out_path = it.take_path(a)?,
+            "--sign-key" => sign_key = Some(it.take_path(a)?),
             "--slo-threshold" => {
-                slo_threshold = it
-                    .next()
-                    .ok_or_else(|| invalid("perf-baseline --slo-threshold requires <u64>"))?
-                    .parse()
-                    .map_err(|_| invalid("perf-baseline --slo-threshold must be u64"))?;
+                slo_threshold = it.take_u64(a, "u64")?;
                 if slo_threshold == 0 {
                     return Err(invalid(
                         "perf-baseline --slo-threshold must be > 0 to freeze an SLO",
@@ -2153,16 +2073,12 @@ fn command_perf_baseline(root: &Path, args: &[String]) -> DynResult<()> {
                 }
             }
             "--tolerance-pct" => {
-                tolerance_pct = it
-                    .next()
-                    .ok_or_else(|| invalid("perf-baseline --tolerance-pct requires <u64>"))?
-                    .parse()
-                    .map_err(|_| invalid("perf-baseline --tolerance-pct must be u64"))?;
+                tolerance_pct = it.take_u64(a, "u64")?;
                 if tolerance_pct == 0 {
                     return Err(invalid("perf-baseline --tolerance-pct must be > 0"));
                 }
             }
-            other => return Err(invalid(format!("unknown perf-baseline arg '{other}'"))),
+            other => return Err(it.unknown(other)),
         }
     }
 
@@ -2196,43 +2112,22 @@ fn command_perf_baseline(root: &Path, args: &[String]) -> DynResult<()> {
         results.toolchain_digest = lineage.toolchain_digest;
         results.platform_inventory_digest = lineage.platform_inventory_digest;
     }
-    let json = serde_json::to_vec_pretty(&results)?;
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(&json);
-    let digest_hex = hex_encode(&digest);
-    results.baseline_sha256 = digest_hex.clone();
-    let json_signed = serde_json::to_vec_pretty(&results)?;
-
-    // 3. 可选签名。
-    let signature = match &sign_key {
-        Some(key_path) => {
-            let key_bytes =
-                fs::read(key_path).map_err(|e| invalid(format!("read sign key: {e}")))?;
-            let keypair = ed25519_dalek::SigningKey::from_bytes(
-                &key_bytes[..32]
-                    .try_into()
-                    .map_err(|_| invalid("key must be 32 bytes"))?,
-            );
-            use ed25519_dalek::Signer;
-            let sig = keypair.sign(&json_signed);
-            hex_encode(&sig.to_bytes())
-        }
-        None => {
-            println!("WARN: perf-baseline unsigned (pass --sign-key for tamper protection)");
-            String::new()
-        }
-    };
-
-    fs::create_dir_all(out_path.parent().unwrap_or(root))?;
-    fs::write(&out_path, &json_signed)?;
-    let sig_path = out_path.with_extension("json.sig");
-    fs::write(&sig_path, &signature)?;
+    // 2+3. 序列化 → sha256 → 可选 ed25519 签名 → 写 .json + .json.sig
+    // （Deepening-v1 §B.2.2：链收拢至 signed_report，字节序不变）。
+    let sealed = SignedReport::seal_sidecar(
+        root,
+        &out_path,
+        &mut results,
+        sign_key.as_deref(),
+        "WARN: perf-baseline unsigned (pass --sign-key for tamper protection)",
+        |r, d| r.baseline_sha256 = d.to_owned(),
+    )?;
 
     println!(
         "PERF-BASELINE schema=eneros.perf-regression.v1 metrics={} sha256={} signed={} slo={}",
         results.metrics.len(),
-        digest_hex,
-        !signature.is_empty(),
+        sealed.digest_hex,
+        !sealed.signature_hex.is_empty(),
         slo_threshold
     );
     for m in &results.metrics {
@@ -2253,32 +2148,13 @@ fn command_perf_measure(root: &Path, args: &[String]) -> DynResult<()> {
     let mut out_path = root.join("target/perf-candidate.json");
     let mut baseline_path: Option<std::path::PathBuf> = None;
     let mut sign_key: Option<std::path::PathBuf> = None;
-    let mut it = args.iter();
+    let mut it = FlagParser::prefixed(root, "perf-measure", args);
     while let Some(a) = it.next() {
-        match a.as_str() {
-            "--baseline" => {
-                baseline_path = Some(
-                    root.join(
-                        it.next()
-                            .ok_or_else(|| invalid("perf-measure --baseline requires <path>"))?,
-                    ),
-                );
-            }
-            "--out" => {
-                out_path = root.join(
-                    it.next()
-                        .ok_or_else(|| invalid("perf-measure --out requires <path>"))?,
-                );
-            }
-            "--sign-key" => {
-                sign_key = Some(
-                    root.join(
-                        it.next()
-                            .ok_or_else(|| invalid("perf-measure --sign-key requires <path>"))?,
-                    ),
-                );
-            }
-            other => return Err(invalid(format!("unknown perf-measure arg '{other}'"))),
+        match a {
+            "--baseline" => baseline_path = Some(it.take_path(a)?),
+            "--out" => out_path = it.take_path(a)?,
+            "--sign-key" => sign_key = Some(it.take_path(a)?),
+            other => return Err(it.unknown(other)),
         }
     }
     let baseline_path =
@@ -2338,41 +2214,22 @@ fn command_perf_measure(root: &Path, args: &[String]) -> DynResult<()> {
         results.toolchain_digest = lineage.toolchain_digest;
         results.platform_inventory_digest = lineage.platform_inventory_digest;
     }
-    let json = serde_json::to_vec_pretty(&results)?;
-    use sha2::{Digest, Sha256};
-    let digest_hex = hex_encode(&Sha256::digest(&json));
-    results.candidate_sha256 = digest_hex.clone();
-    let json_signed = serde_json::to_vec_pretty(&results)?;
-
-    let signature = match &sign_key {
-        Some(key_path) => {
-            let key_bytes =
-                fs::read(key_path).map_err(|e| invalid(format!("read sign key: {e}")))?;
-            let keypair = ed25519_dalek::SigningKey::from_bytes(
-                &key_bytes[..32]
-                    .try_into()
-                    .map_err(|_| invalid("key must be 32 bytes"))?,
-            );
-            use ed25519_dalek::Signer;
-            let sig = keypair.sign(&json_signed);
-            hex_encode(&sig.to_bytes())
-        }
-        None => {
-            println!("WARN: perf-measure unsigned (pass --sign-key for tamper protection)");
-            String::new()
-        }
-    };
-
-    fs::create_dir_all(out_path.parent().unwrap_or(root))?;
-    fs::write(&out_path, &json_signed)?;
-    let sig_path = out_path.with_extension("json.sig");
-    fs::write(&sig_path, &signature)?;
+    // 序列化 → sha256 → 可选 ed25519 签名 → 写 .json + .json.sig
+    // （Deepening-v1 §B.2.2：链收拢至 signed_report，字节序不变）。
+    let sealed = SignedReport::seal_sidecar(
+        root,
+        &out_path,
+        &mut results,
+        sign_key.as_deref(),
+        "WARN: perf-measure unsigned (pass --sign-key for tamper protection)",
+        |r, d| r.candidate_sha256 = d.to_owned(),
+    )?;
     println!(
         "PERF-MEASURE schema=eneros.perf-regression.v1 metrics={} baseline={} candidate={} signed={}",
         results.metrics.len(),
         results.baseline_sha256,
-        digest_hex,
-        !signature.is_empty()
+        sealed.digest_hex,
+        !sealed.signature_hex.is_empty()
     );
     for m in &results.metrics {
         println!(
@@ -2744,16 +2601,12 @@ fn hex_decode(s: &str) -> Vec<u8> {
 fn command_perf_keygen(root: &Path, args: &[String]) -> DynResult<()> {
     let mut out: Option<std::path::PathBuf> = None;
     let mut pubkey_out: Option<std::path::PathBuf> = None;
-    let mut it = args.iter();
+    let mut it = FlagParser::bare(root, "perf-keygen", args);
     while let Some(a) = it.next() {
-        let mut val = || {
-            it.next()
-                .ok_or_else(|| invalid(format!("{a} requires a value")))
-        };
-        match a.as_str() {
-            "--out" => out = Some(root.join(val()?)),
-            "--pubkey-out" => pubkey_out = Some(root.join(val()?)),
-            other => return Err(invalid(format!("unknown perf-keygen arg '{other}'"))),
+        match a {
+            "--out" => out = Some(it.take_path(a)?),
+            "--pubkey-out" => pubkey_out = Some(it.take_path(a)?),
+            other => return Err(it.unknown(other)),
         }
     }
     let out = out.ok_or_else(|| invalid("perf-keygen requires --out <file>"))?;
@@ -2823,7 +2676,7 @@ fn command_perf_gate(root: &Path, args: &[String]) -> DynResult<()> {
     // 或无效 → 门禁失败（防篡改要求，13 号文 QA-021 基线签名）。
     // WP-26.1：签名文件缺失 → 该项 FAIL（fail-closed）——旧行为（CI 先
     // rm -f *.sig 再校验）主动绕过签名链，已删除。
-    let sig_path = path.with_extension("json.sig");
+    let sig_path = SignedReport::json_sidecar_path(&path);
     if !sig_path.exists() {
         report.violations.push("signature-missing".to_owned());
     }
@@ -4216,5 +4069,861 @@ mod tests {
         ));
         fs::create_dir_all(&sub).unwrap();
         sub.to_string_lossy().into_owned()
+    }
+}
+
+// ============================================================
+// Deepening-v1 §B.4：迁移前行为锁定测试（G4 先红后绿）
+//
+// 三条锁：
+//   R-B1 报错文案逐字冻结——11 处 `while let Some(a) = it.next()` 循环
+//        （soak-report 467 / interop-report 669 / kat-report 849 /
+//         compliance-report 967 / sign-evidence 1167 /
+//         verify-evidence-sig 1205 / g7-audit 1474 / soak-run 1617 /
+//         perf-baseline 2127 / perf-measure 2257 / perf-keygen 2748）
+//        的"缺值/未知 flag/类型错"三类文案，含相邻的必填项校验文案；
+//   R-B2 配对语义——`--flag value` 相邻配对、重复 flag 后值覆盖前值、
+//        位置参数后值覆盖前值；
+//   R-B3 签名字节流——sha256 预镜像 = 回填摘要前的 to_vec_pretty 字节；
+//        ed25519 预镜像 = 落盘字节；侧车词形 `<file>.sig`（追加，含换行）
+//        与 `<base>.json.sig`（with_extension，无换行）不得混用。
+//
+// 本模块在迁移任何生产代码之前即全绿；收拢（flags.rs /
+// signed_report.rs）的验收标准就是"它们保持全绿"。
+// ============================================================
+
+#[cfg(test)]
+#[allow(clippy::disallowed_macros)] // clippy.toml：测试模块豁免 panic! 宏
+mod arg_contract {
+    use super::*;
+
+    type Cmd = fn(&Path, &[String]) -> DynResult<()>;
+
+    fn argv(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    fn sandbox(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "eneros-qa-arg-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn err_text(r: DynResult<()>) -> String {
+        match r {
+            Ok(()) => panic!("期望 fail-closed 参数错误，命令却成功"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    /// R-B3 夹具：固定 ed25519 seed（签名确定性 → 侧车字节可 pin）。
+    const FIXTURE_SEED: [u8; 32] = [7u8; 32];
+    /// 由 FIXTURE_SEED 派生的公钥 hex（pin 住「读的是同一把 key」）。
+    const FIXTURE_PUBKEY_HEX: &str =
+        "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c";
+
+    fn write_fixture_key(root: &Path) {
+        fs::write(root.join("k.bin"), FIXTURE_SEED).unwrap();
+    }
+
+    fn fixture_verifying_key() -> ed25519_dalek::VerifyingKey {
+        let bytes: [u8; 32] = hex_decode(FIXTURE_PUBKEY_HEX).try_into().unwrap();
+        ed25519_dalek::VerifyingKey::from_bytes(&bytes).unwrap()
+    }
+
+    /// pretty JSON 顶层键序（缩进 2 空格 → 顶层键行恰以 `  "` 开头）。
+    fn top_level_keys(text: &str) -> Vec<String> {
+        text.lines()
+            .filter_map(|l| l.strip_prefix("  \""))
+            .filter_map(|l| l.split('"').next().map(str::to_owned))
+            .collect()
+    }
+
+    /// R-B1（其一）：11 处循环的「缺值 / 未知 flag / 类型」三类报错文案，
+    /// 以及紧随其后的必填项校验文案，逐字冻结。
+    #[test]
+    fn b1_arg_error_wording_is_byte_frozen() {
+        let root = sandbox("wording");
+        let cases: Vec<(&str, Cmd, Vec<&str>, &str)> = vec![
+            // 1. soak-report —— `<flag> requires a value` 族
+            (
+                "soak-report/--bundle 缺值",
+                command_soak_report,
+                vec!["--bundle"],
+                "--bundle requires a value",
+            ),
+            (
+                "soak-report/--out 缺值",
+                command_soak_report,
+                vec!["--bundle", "b", "--out"],
+                "--out requires a value",
+            ),
+            (
+                "soak-report 未知 flag",
+                command_soak_report,
+                vec!["--bogus"],
+                "unknown soak-report arg '--bogus'",
+            ),
+            // 2. interop-report
+            (
+                "interop-report/--dir 缺值",
+                command_interop_report,
+                vec!["--dir"],
+                "--dir requires a value",
+            ),
+            (
+                "interop-report/--out 缺值",
+                command_interop_report,
+                vec!["--out"],
+                "--out requires a value",
+            ),
+            (
+                "interop-report/--profile 缺值",
+                command_interop_report,
+                vec!["--profile"],
+                "--profile requires a value",
+            ),
+            (
+                "interop-report 未知 flag",
+                command_interop_report,
+                vec!["--bogus"],
+                "unknown interop-report arg '--bogus'",
+            ),
+            (
+                "interop-report --allow-non-pass 剥离后仍报错",
+                command_interop_report,
+                vec!["--allow-non-pass", "--bogus"],
+                "unknown interop-report arg '--bogus'",
+            ),
+            // 3. kat-report
+            (
+                "kat-report/--out 缺值",
+                command_kat_report,
+                vec!["--out"],
+                "--out requires a value",
+            ),
+            (
+                "kat-report 未知 flag",
+                command_kat_report,
+                vec!["--bogus"],
+                "unknown kat-report arg '--bogus'",
+            ),
+            // 4. compliance-report
+            (
+                "compliance-report/--out 缺值",
+                command_compliance_report,
+                vec!["--out"],
+                "--out requires a value",
+            ),
+            (
+                "compliance-report/--sign-key 缺值",
+                command_compliance_report,
+                vec!["--out", "x.json", "--sign-key"],
+                "--sign-key requires a value",
+            ),
+            (
+                "compliance-report 未知 flag",
+                command_compliance_report,
+                vec!["--bogus"],
+                "unknown compliance-report arg '--bogus'",
+            ),
+            (
+                "compliance-report 缺 --sign-key（34 GV-07）",
+                command_compliance_report,
+                vec![],
+                "compliance-report requires --sign-key（34 GV-07：证据签名强制；47.3 出仓后键在 product/security/keys-local/ 或显式注入）",
+            ),
+            // 5. sign-evidence（位置参数 + flag 混排）
+            (
+                "sign-evidence/--sign-key 缺值",
+                command_sign_evidence,
+                vec!["e.txt", "--sign-key"],
+                "--sign-key requires a value",
+            ),
+            (
+                "sign-evidence 未知 flag",
+                command_sign_evidence,
+                vec!["--bogus"],
+                "unknown sign-evidence arg '--bogus'",
+            ),
+            (
+                "sign-evidence 缺位置参数",
+                command_sign_evidence,
+                vec!["--sign-key", "k.bin"],
+                "sign-evidence requires <path>",
+            ),
+            (
+                "sign-evidence 缺 --sign-key",
+                command_sign_evidence,
+                vec!["e.txt"],
+                "sign-evidence requires --sign-key",
+            ),
+            // 6. verify-evidence-sig
+            (
+                "verify-evidence-sig/--pub-key 缺值",
+                command_verify_evidence_sig,
+                vec!["--pub-key"],
+                "--pub-key requires a value",
+            ),
+            (
+                "verify-evidence-sig 未知 flag",
+                command_verify_evidence_sig,
+                vec!["--bogus"],
+                "unknown verify-evidence-sig arg '--bogus'",
+            ),
+            (
+                "verify-evidence-sig 缺位置参数",
+                command_verify_evidence_sig,
+                vec!["--pub-key", "abcd"],
+                "verify-evidence-sig requires <path>",
+            ),
+            (
+                "verify-evidence-sig 缺 --pub-key",
+                command_verify_evidence_sig,
+                vec!["f.txt"],
+                "verify-evidence-sig requires --pub-key <hex>",
+            ),
+            (
+                "verify-evidence-sig 公钥长度非法",
+                command_verify_evidence_sig,
+                vec!["f.txt", "--pub-key", "zz"],
+                "pub-key must be 32-byte ed25519 pk (hex)",
+            ),
+            // 7. g7-audit
+            (
+                "g7-audit/--out 缺值",
+                command_g7_audit,
+                vec!["--out"],
+                "--out requires a value",
+            ),
+            (
+                "g7-audit 未知 flag",
+                command_g7_audit,
+                vec!["--out", "a.json", "--bogus"],
+                "unknown g7-audit arg '--bogus'",
+            ),
+            (
+                "g7-audit --allow-non-pass 剥离后仍报错",
+                command_g7_audit,
+                vec!["--allow-non-pass", "--bogus"],
+                "unknown g7-audit arg '--bogus'",
+            ),
+            // 8. soak-run
+            ("soak-run/--cycles 缺值", command_soak_run, vec!["--cycles"], "--cycles requires a value"),
+            (
+                "soak-run/--max-fail 缺值",
+                command_soak_run,
+                vec!["--max-fail"],
+                "--max-fail requires a value",
+            ),
+            (
+                "soak-run/--profile 缺值",
+                command_soak_run,
+                vec!["--profile"],
+                "--profile requires a value",
+            ),
+            (
+                "soak-run/--image 缺值",
+                command_soak_run,
+                vec!["--image"],
+                "--image requires a value",
+            ),
+            (
+                "soak-run/--vars-template 缺值",
+                command_soak_run,
+                vec!["--vars-template"],
+                "--vars-template requires a value",
+            ),
+            (
+                "soak-run/--out 缺值",
+                command_soak_run,
+                vec!["--out"],
+                "--out requires a value",
+            ),
+            (
+                "soak-run/--min-duration-days 缺值",
+                command_soak_run,
+                vec!["--min-duration-days"],
+                "--min-duration-days requires a value",
+            ),
+            (
+                "soak-run/--leak-threshold 缺值",
+                command_soak_run,
+                vec!["--leak-threshold"],
+                "--leak-threshold requires a value",
+            ),
+            (
+                "soak-run/--cycles 类型",
+                command_soak_run,
+                vec!["--cycles", "x"],
+                "--cycles must be usize",
+            ),
+            (
+                "soak-run/--max-fail 类型",
+                command_soak_run,
+                vec!["--max-fail", "x"],
+                "--max-fail must be usize",
+            ),
+            (
+                "soak-run/--min-duration-days 类型",
+                command_soak_run,
+                vec!["--min-duration-days", "x"],
+                "--min-duration-days must be u64",
+            ),
+            (
+                "soak-run/--leak-threshold 类型（含单位后缀）",
+                command_soak_run,
+                vec!["--leak-threshold", "x"],
+                "--leak-threshold must be u64 (bytes/day)",
+            ),
+            (
+                "soak-run 未知 flag",
+                command_soak_run,
+                vec!["--bogus"],
+                "unknown soak-run arg '--bogus'",
+            ),
+            (
+                "soak-run --cycles 0",
+                command_soak_run,
+                vec!["--cycles", "0"],
+                "soak-run --cycles must be > 0",
+            ),
+            (
+                "soak-run 缺 --image",
+                command_soak_run,
+                vec!["--cycles", "1"],
+                "soak-run requires --image <path> (for artifact_sha256)",
+            ),
+            // 9. perf-baseline —— `<cmd> <flag> requires <kind>` 族
+            (
+                "perf-baseline/--out 缺值",
+                command_perf_baseline,
+                vec!["--out"],
+                "perf-baseline --out requires <path>",
+            ),
+            (
+                "perf-baseline/--sign-key 缺值",
+                command_perf_baseline,
+                vec!["--sign-key"],
+                "perf-baseline --sign-key requires <path>",
+            ),
+            (
+                "perf-baseline/--slo-threshold 缺值",
+                command_perf_baseline,
+                vec!["--slo-threshold"],
+                "perf-baseline --slo-threshold requires <u64>",
+            ),
+            (
+                "perf-baseline/--tolerance-pct 缺值",
+                command_perf_baseline,
+                vec!["--tolerance-pct"],
+                "perf-baseline --tolerance-pct requires <u64>",
+            ),
+            (
+                "perf-baseline/--slo-threshold 类型",
+                command_perf_baseline,
+                vec!["--slo-threshold", "x"],
+                "perf-baseline --slo-threshold must be u64",
+            ),
+            (
+                "perf-baseline/--tolerance-pct 类型",
+                command_perf_baseline,
+                vec!["--tolerance-pct", "x"],
+                "perf-baseline --tolerance-pct must be u64",
+            ),
+            (
+                "perf-baseline 未知 flag",
+                command_perf_baseline,
+                vec!["--bogus"],
+                "unknown perf-baseline arg '--bogus'",
+            ),
+            // 10. perf-measure
+            (
+                "perf-measure/--baseline 缺值",
+                command_perf_measure,
+                vec!["--baseline"],
+                "perf-measure --baseline requires <path>",
+            ),
+            (
+                "perf-measure/--out 缺值",
+                command_perf_measure,
+                vec!["--out"],
+                "perf-measure --out requires <path>",
+            ),
+            (
+                "perf-measure/--sign-key 缺值",
+                command_perf_measure,
+                vec!["--sign-key"],
+                "perf-measure --sign-key requires <path>",
+            ),
+            (
+                "perf-measure 未知 flag",
+                command_perf_measure,
+                vec!["--bogus"],
+                "unknown perf-measure arg '--bogus'",
+            ),
+            (
+                "perf-measure 缺 --baseline",
+                command_perf_measure,
+                vec!["--out", "c.json"],
+                "perf-measure requires --baseline <baseline.json>",
+            ),
+            // 11. perf-keygen
+            (
+                "perf-keygen/--out 缺值",
+                command_perf_keygen,
+                vec!["--out"],
+                "--out requires a value",
+            ),
+            (
+                "perf-keygen/--pubkey-out 缺值",
+                command_perf_keygen,
+                vec!["--pubkey-out"],
+                "--pubkey-out requires a value",
+            ),
+            (
+                "perf-keygen 未知 flag",
+                command_perf_keygen,
+                vec!["--bogus"],
+                "unknown perf-keygen arg '--bogus'",
+            ),
+            (
+                "perf-keygen 缺 --out",
+                command_perf_keygen,
+                vec![],
+                "perf-keygen requires --out <file>",
+            ),
+        ];
+        for (label, cmd, args, want) in cases {
+            assert_eq!(
+                err_text(cmd(&root, &argv(&args))),
+                want,
+                "文案漂移：{label}"
+            );
+        }
+    }
+
+    /// R-B1（其二）：ed25519 私钥装载链文案与读取顺序（迁移前 4 处调用点
+    /// 逐字相同：`read sign key: {e}` / `key must be 32 bytes`）。
+    #[test]
+    fn b1_sign_key_error_wording_is_byte_frozen() {
+        let root = sandbox("key-wording");
+        // 顺序亦须保持：sign-evidence 先读证据文件、后读 key。
+        fs::write(root.join("e.txt"), b"payload").unwrap();
+        assert_eq!(
+            err_text(command_sign_evidence(
+                &root,
+                &argv(&["missing.txt", "--sign-key", "no-such-key.bin"])
+            ))
+            .split(": ")
+            .next()
+            .unwrap(),
+            format!("read {}", root.join("missing.txt").display())
+        );
+        assert!(
+            err_text(command_sign_evidence(
+                &root,
+                &argv(&["e.txt", "--sign-key", "no-such-key.bin"])
+            ))
+            .starts_with("read sign key: "),
+            "key 缺文件文案漂移"
+        );
+        // ≥32 字节的 key 文件：现实现取 `&key_bytes[..32]`，即**截断使用前 32
+        // 字节**并成功签名（`"key must be 32 bytes"` 实为不可达文案——
+        // try_into 的输入长度恒为 32）。收拢后必须保持截断语义。
+        fs::write(root.join("long.bin"), [1u8; 40]).unwrap();
+        fs::write(root.join("short32.bin"), [1u8; 32]).unwrap();
+        command_sign_evidence(&root, &argv(&["e.txt", "--sign-key", "long.bin"]))
+            .expect("40 字节 key 现语义为截断使用前 32 字节（成功）");
+        let from_long = fs::read_to_string(root.join("e.txt.sig")).unwrap();
+        fs::remove_file(root.join("e.txt.sig")).unwrap();
+        command_sign_evidence(&root, &argv(&["e.txt", "--sign-key", "short32.bin"]))
+            .expect("32 字节 key 须成功");
+        assert_eq!(
+            from_long,
+            fs::read_to_string(root.join("e.txt.sig")).unwrap(),
+            "截断语义漂移：40 字节 key 的签名须等于其前 32 字节 key 的签名"
+        );
+        // 其余 3 处 key 装载点走同一文案（compliance-report 在读 key 前不做
+        // 任何重算；perf-baseline 在读 key 失败时不得落盘）。
+        assert!(
+            err_text(command_compliance_report(
+                &root,
+                &argv(&["--sign-key", "no-such-key.bin"])
+            ))
+            .starts_with("read sign key: "),
+            "compliance-report key 缺文件文案漂移"
+        );
+        assert!(
+            command_perf_baseline(
+                &root,
+                &argv(&[
+                    "--out",
+                    "x.json",
+                    "--sign-key",
+                    "no-such-key.bin",
+                    "--slo-threshold",
+                    "3",
+                ])
+            )
+            .is_err(),
+            "缺 key 时 perf-baseline 必须失败"
+        );
+        assert!(
+            !root.join("x.json").exists(),
+            "读 key 失败时 perf-baseline 不得写报告"
+        );
+    }
+
+    /// 冻结既有缺陷语义（不顺手改）：key 文件短于 32 字节时，迁移前实现先
+    /// `&key_bytes[..32]` 再 `try_into` → 切片越界 panic。收拢后须保持。
+    #[test]
+    #[should_panic]
+    fn b1_short_sign_key_still_panics() {
+        let root = sandbox("short-key");
+        fs::write(root.join("e.txt"), b"payload").unwrap();
+        fs::write(root.join("short.bin"), [1u8; 8]).unwrap();
+        let _ = command_sign_evidence(&root, &argv(&["e.txt", "--sign-key", "short.bin"]));
+    }
+
+    /// R-B2：重复 flag —— 后值覆盖前值（qa.rs 现语义）。
+    #[test]
+    fn b2_repeated_flags_last_value_wins() {
+        let root = sandbox("repeat");
+        // perf-keygen：前值指向不存在的目录（若前值生效则写盘失败）。
+        command_perf_keygen(
+            &root,
+            &argv(&["--out", "no-such-dir/priv.bin", "--out", "priv.bin"]),
+        )
+        .expect("--out 后值必须覆盖前值");
+        assert!(root.join("priv.bin").is_file());
+        assert!(!root.join("no-such-dir/priv.bin").exists());
+        // perf-baseline：--slo-threshold 后值 0 → 触发 >0 校验（前值 5 已被覆盖）
+        assert_eq!(
+            err_text(command_perf_baseline(
+                &root,
+                &argv(&["--slo-threshold", "5", "--slo-threshold", "0"])
+            )),
+            "perf-baseline --slo-threshold must be > 0 to freeze an SLO"
+        );
+        // 后值类型非法 → 以后值报类型错（证明覆盖发生在解析期）
+        assert_eq!(
+            err_text(command_perf_baseline(
+                &root,
+                &argv(&["--slo-threshold", "5", "--slo-threshold", "nope"])
+            )),
+            "perf-baseline --slo-threshold must be u64"
+        );
+        assert_eq!(
+            err_text(command_perf_baseline(
+                &root,
+                &argv(&["--tolerance-pct", "5", "--tolerance-pct", "0"])
+            )),
+            "perf-baseline --tolerance-pct must be > 0"
+        );
+        assert_eq!(
+            err_text(command_soak_run(
+                &root,
+                &argv(&["--cycles", "3", "--cycles", "nope"])
+            )),
+            "--cycles must be usize"
+        );
+        assert_eq!(
+            err_text(command_soak_run(
+                &root,
+                &argv(&["--leak-threshold", "1", "--leak-threshold", "nope"])
+            )),
+            "--leak-threshold must be u64 (bytes/day)"
+        );
+        // 前值合法、后值缺位 → 仍按后一次出现报缺值（不得回退到前值）
+        assert_eq!(
+            err_text(command_perf_keygen(
+                &root,
+                &argv(&["--out", "a.bin", "--out"])
+            )),
+            "--out requires a value"
+        );
+    }
+
+    /// R-B2：位置参数同样后值覆盖前值（sign-evidence / verify-evidence-sig）。
+    #[test]
+    fn b2_positional_last_value_wins() {
+        let root = sandbox("positional");
+        write_fixture_key(&root);
+        fs::write(root.join("a.txt"), b"payload-a").unwrap();
+        fs::write(root.join("b.txt"), b"payload-b").unwrap();
+        command_sign_evidence(&root, &argv(&["a.txt", "--sign-key", "k.bin", "b.txt"]))
+            .expect("位置参数后值必须覆盖前值");
+        assert!(!root.join("a.txt.sig").exists(), "前值不得被签名");
+        assert!(root.join("b.txt.sig").is_file(), "后值须生成侧车");
+    }
+
+    /// R-B3：sign-evidence 侧车字节（固定 seed → 确定性签名，逐字 pin）。
+    #[test]
+    fn b3_sign_evidence_sidecar_bytes_are_frozen() {
+        let root = sandbox("sign-sidecar");
+        write_fixture_key(&root);
+        let payload = b"eneros evidence payload\n";
+        fs::write(root.join("evidence.txt"), payload).unwrap();
+        command_sign_evidence(&root, &argv(&["evidence.txt", "--sign-key", "k.bin"]))
+            .expect("sign-evidence 应成功");
+        // 侧车词形 = 字符串追加 ".sig"，内容 = 128 hex + 尾随换行。
+        assert_eq!(
+            fs::read_to_string(root.join("evidence.txt.sig")).unwrap(),
+            "e97b8cd17381b0383bd19048e39138c106bb527b4ff7f021eb7b844857717b6b05b7635c1f61f854f90f1f8e2edf1d1b3fb26e0294427a2b8d5f030cd56da202\n",
+            "sign-evidence 侧车字节漂移"
+        );
+        // 公钥回显（同 seed）
+        assert_eq!(
+            hex_encode(&fixture_verifying_key().to_bytes()),
+            FIXTURE_PUBKEY_HEX
+        );
+        // 自验闭环（证明签名预镜像 = 落盘字节）
+        assert!(verify_evidence_sig(
+            &root.join("evidence.txt"),
+            &root.join("evidence.txt.sig"),
+            &fixture_verifying_key()
+        ));
+    }
+
+    /// R-B3：perf-baseline「序列化 → sha256 → 签名 → .json + .json.sig」链。
+    #[test]
+    fn b3_perf_baseline_signed_chain_is_frozen() {
+        let root = sandbox("perf-baseline-chain");
+        write_fixture_key(&root);
+        command_perf_baseline(
+            &root,
+            &argv(&[
+                "--out",
+                "pb.json",
+                "--sign-key",
+                "k.bin",
+                "--slo-threshold",
+                "1000",
+            ]),
+        )
+        .expect("perf-baseline 应成功");
+        let out = root.join("pb.json");
+        let text = fs::read_to_string(&out).unwrap();
+        // (1) 序列化形态：pretty 2 空格 + 顶层键序逐字 pin。
+        assert!(
+            text.starts_with(
+                "{\n  \"schema\": \"eneros.perf-regression.v1\",\n  \"baseline_sha256\": \""
+            ),
+            "perf JSON 头部词形漂移：{}",
+            &text[..text.floor_char_boundary(80)]
+        );
+        assert_eq!(
+            top_level_keys(&text),
+            vec![
+                "schema",
+                "baseline_sha256",
+                "candidate_sha256",
+                "measured_at",
+                "run_id",
+                "baseline_measured_at",
+                "candidate_id",
+                "source_commit",
+                "dirty_tree_digest",
+                "product_manifest_digest",
+                "profile_digest",
+                "toolchain_digest",
+                "platform_inventory_digest",
+                "metrics",
+            ],
+            "perf JSON 顶层字段顺序漂移"
+        );
+        assert!(
+            text.ends_with("\n}"),
+            "perf JSON 须以 pretty 收尾且无尾随换行"
+        );
+        // (2) 摘要预镜像 = 「baseline_sha256 置空」的 to_vec_pretty 字节。
+        let results: PerfResults = read_json(&out).unwrap();
+        assert!(!results.baseline_sha256.is_empty());
+        let cleared = text.replace(
+            &format!("\"baseline_sha256\": \"{}\"", results.baseline_sha256),
+            "\"baseline_sha256\": \"\"",
+        );
+        assert_eq!(
+            hex_encode(&Sha256::digest(cleared.as_bytes())),
+            results.baseline_sha256,
+            "sha256 预镜像不再是摘要置空后的字节"
+        );
+        // (3) 签名预镜像 = 落盘字节；侧车 = with_extension("json.sig")、无换行。
+        let side = root.join("pb.json.sig");
+        let sig = fs::read_to_string(&side).unwrap();
+        assert_eq!(sig.len(), 128, "perf 侧车须为 128 hex 且无尾随换行");
+        assert!(verify_evidence_sig(&out, &side, &fixture_verifying_key()));
+        // (4) 未签名路径：侧车存在但为空串。
+        command_perf_baseline(&root, &argv(&["--out", "u.json", "--slo-threshold", "7"]))
+            .expect("无 --sign-key 时 perf-baseline 仍须产报（WARN + 空签名）");
+        assert_eq!(fs::read_to_string(root.join("u.json.sig")).unwrap(), "");
+    }
+
+    /// R-B3：perf-measure 候选链（同形态，candidate_sha256）。
+    #[test]
+    fn b3_perf_measure_candidate_chain_is_frozen() {
+        let root = sandbox("perf-measure-chain");
+        write_fixture_key(&root);
+        let baseline = serde_json::json!({
+            "schema": "eneros.perf-regression.v1",
+            "baseline_sha256": "abc",
+            "measured_at": "2026-08-17T00:00:00Z",
+            "run_id": "perf-run-lockin",
+            "baseline_measured_at": "",
+            "candidate_sha256": "",
+            "metrics": [
+                {"metric_id": "iec104_encode", "slo_threshold": 100000, "measured": 100, "regression_tolerance_pct": 10, "baseline_value": 100000, "critical_path": false, "unit": "frames/s", "direction": "higher_is_better"},
+                {"metric_id": "ipc_wire_roundtrip", "slo_threshold": 100000, "measured": 100, "regression_tolerance_pct": 10, "baseline_value": 100000, "critical_path": true, "unit": "frames/s", "direction": "higher_is_better"},
+                {"metric_id": "modbus_rtu_frame", "slo_threshold": 100000, "measured": 100, "regression_tolerance_pct": 10, "baseline_value": 100000, "critical_path": false, "unit": "frames/s", "direction": "higher_is_better"},
+                {"metric_id": "elf_parse", "slo_threshold": 100000, "measured": 100, "regression_tolerance_pct": 10, "baseline_value": 100000, "critical_path": true, "unit": "parses/s", "direction": "higher_is_better"},
+                {"metric_id": "gguf_parse", "slo_threshold": 100000, "measured": 100, "regression_tolerance_pct": 10, "baseline_value": 100000, "critical_path": false, "unit": "parses/s", "direction": "higher_is_better"},
+            ],
+        });
+        fs::write(
+            root.join("baseline.json"),
+            serde_json::to_vec_pretty(&baseline).unwrap(),
+        )
+        .unwrap();
+        command_perf_measure(
+            &root,
+            &argv(&[
+                "--baseline",
+                "baseline.json",
+                "--out",
+                "cand.json",
+                "--sign-key",
+                "k.bin",
+            ]),
+        )
+        .expect("perf-measure 应成功");
+        let out = root.join("cand.json");
+        let text = fs::read_to_string(&out).unwrap();
+        let results: PerfResults = read_json(&out).unwrap();
+        assert_eq!(results.baseline_sha256, "abc");
+        assert!(!results.candidate_sha256.is_empty());
+        let cleared = text.replace(
+            &format!("\"candidate_sha256\": \"{}\"", results.candidate_sha256),
+            "\"candidate_sha256\": \"\"",
+        );
+        assert_eq!(
+            hex_encode(&Sha256::digest(cleared.as_bytes())),
+            results.candidate_sha256,
+            "candidate sha256 预镜像漂移"
+        );
+        let side = root.join("cand.json.sig");
+        assert_eq!(fs::read_to_string(&side).unwrap().len(), 128);
+        assert!(verify_evidence_sig(&out, &side, &fixture_verifying_key()));
+    }
+
+    /// R-B3：compliance-report 形态（签名回填 JSON 正文、无侧车）——
+    /// 迁移前链路逐字复刻并 pin 常量（ComplianceReport 为函数内私有结构体，
+    /// 故以同形结构复刻规则；迁移后由 signed_report 侧断言等值）。
+    #[test]
+    fn b3_inline_signed_report_chain_is_frozen() {
+        #[derive(Serialize)]
+        struct Row {
+            gate: &'static str,
+            evidence_file: String,
+            present: bool,
+            signed: bool,
+        }
+        #[derive(Serialize)]
+        struct InlineReport {
+            schema: &'static str,
+            generated_at: String,
+            qa_gates: Vec<Row>,
+            self_test_status: String,
+            external_certification: &'static str,
+            sha256: String,
+            signature: String,
+            verdict: &'static str,
+        }
+        let mut r = InlineReport {
+            schema: "eneros.compliance-report.v1",
+            generated_at: "2026-09-21T00:00:00Z".into(),
+            qa_gates: vec![Row {
+                gate: "QA-017",
+                evidence_file: "qa_017.json".into(),
+                present: true,
+                signed: false,
+            }],
+            self_test_status: "PASS".into(),
+            external_certification: "PENDING",
+            sha256: String::new(),
+            signature: String::new(),
+            verdict: "assessment",
+        };
+        // 迁移前 qa.rs:1081-1096 的三步：签名前序列化含摘要、落盘再序列化。
+        let json = serde_json::to_vec_pretty(&r).unwrap();
+        let digest_hex = hex_encode(&Sha256::digest(&json));
+        r.sha256 = digest_hex.clone();
+        let json_signed = serde_json::to_vec_pretty(&r).unwrap();
+        use ed25519_dalek::Signer;
+        let keypair = ed25519_dalek::SigningKey::from_bytes(&FIXTURE_SEED);
+        r.signature = hex_encode(&keypair.sign(&json_signed).to_bytes());
+        let written = serde_json::to_vec_pretty(&r).unwrap();
+        let written_text = String::from_utf8(written).unwrap();
+        assert_eq!(
+            digest_hex, "0d86a51d0c015dcd36967045eddc29b9ba2d00e6d4cf1081ecf0277bd583be96",
+            "内嵌形态 sha256 预镜像漂移"
+        );
+        assert_eq!(
+            r.signature,
+            "57703eb389592af40796fb045d97854f300005820794bd81e5de7c80a1bc3ca8b3a19a0adaebb6882be0d9623632a7b6e71ce1e372b010a0bc0b75422b51a605",
+            "内嵌形态签名预镜像漂移（须为「摘要已回填、签名仍空」的字节）"
+        );
+        assert_eq!(
+            written_text,
+            "{\n  \"schema\": \"eneros.compliance-report.v1\",\n  \"generated_at\": \"2026-09-21T00:00:00Z\",\n  \"qa_gates\": [\n    {\n      \"gate\": \"QA-017\",\n      \"evidence_file\": \"qa_017.json\",\n      \"present\": true,\n      \"signed\": false\n    }\n  ],\n  \"self_test_status\": \"PASS\",\n  \"external_certification\": \"PENDING\",\n  \"sha256\": \"0d86a51d0c015dcd36967045eddc29b9ba2d00e6d4cf1081ecf0277bd583be96\",\n  \"signature\": \"57703eb389592af40796fb045d97854f300005820794bd81e5de7c80a1bc3ca8b3a19a0adaebb6882be0d9623632a7b6e71ce1e372b010a0bc0b75422b51a605\",\n  \"verdict\": \"assessment\"\n}",
+            "内嵌形态落盘字节漂移（第三次序列化须含摘要 + 签名）"
+        );
+
+        // 收拢后：同一夹具走 SignedReport::seal_inline，须与上面逐字节相同
+        // （compliance-report 命令本体需 shell out 跑 cargo test，无法在单元
+        //  测试里执行，故在此把「模块 == 迁移前链」钉死）。
+        let dir = sandbox("inline-module");
+        fs::write(dir.join("k.bin"), FIXTURE_SEED).unwrap();
+        let keypair = SignedReport::load_key(&dir.join("k.bin")).unwrap();
+        let mut via_module = InlineReport {
+            schema: "eneros.compliance-report.v1",
+            generated_at: "2026-09-21T00:00:00Z".into(),
+            qa_gates: vec![Row {
+                gate: "QA-017",
+                evidence_file: "qa_017.json".into(),
+                present: true,
+                signed: false,
+            }],
+            self_test_status: "PASS".into(),
+            external_certification: "PENDING",
+            sha256: String::new(),
+            signature: String::new(),
+            verdict: "assessment",
+        };
+        let sealed = SignedReport::seal_inline(
+            &dir,
+            &dir.join("report.json"),
+            &mut via_module,
+            &keypair,
+            |r, d| r.sha256 = d.to_owned(),
+            |r, s| r.signature = s.to_owned(),
+        )
+        .unwrap();
+        assert_eq!(sealed.digest_hex, digest_hex, "模块摘要与迁移前链不等");
+        assert_eq!(sealed.signature_hex, r.signature, "模块签名与迁移前链不等");
+        assert_eq!(
+            fs::read_to_string(dir.join("report.json")).unwrap(),
+            written_text.as_str(),
+            "模块落盘字节与迁移前链不等"
+        );
+        assert!(!SignedReport::sidecar_path(&dir.join("report.json")).exists());
     }
 }
