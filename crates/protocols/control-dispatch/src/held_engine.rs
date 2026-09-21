@@ -428,7 +428,8 @@ impl DispatchEngine {
         // 存活引用（§7.2.1 事实源 = 持久计划本身）：在途（非终态）或
         // 未决（对账中）计划各记一份引用——钉集/释放全部由此派生，
         // 不另立计数。
-        let mut live_refs: alloc::vec::Vec<([u8; 16], usize)> = Vec::new();
+        let mut live_refs: alloc::collections::BTreeMap<[u8; 16], usize> =
+            alloc::collections::BTreeMap::new();
         for plan in &plans {
             if plan.terminal() && !plan.unresolved() {
                 continue;
@@ -436,31 +437,12 @@ impl DispatchEngine {
             if let Some(input) =
                 eneros_agent_sdk::snap_input_wire::TrustedInput::decode(&plan.input)
             {
-                let id = input.facts().snapshot_id;
-                match live_refs.iter_mut().find(|(x, _)| *x == id) {
-                    Some((_, n)) => *n += 1,
-                    None => live_refs.push((id, 1)),
-                }
+                *live_refs.entry(input.facts().snapshot_id).or_insert(0) += 1;
             }
         }
-        let refs_of = |id: &[u8; 16]| -> usize {
-            live_refs
-                .iter()
-                .find(|(x, _)| x == id)
-                .map(|(_, n)| *n)
-                .unwrap_or(0)
-        };
-        // §7.2.6：代次安全剪除——快照重新获得存活引用（新一轮合法持有）
-        // ⇒ 旧完成事实失效：完成缓存按持有代次比对（覆盖"准入后同 pass
-        // 内完成"——此时引用已归零、但新一轮释放不得被旧缓存抑制）；
-        // 待释放队列按存活引用剪除（仍被在途/未决引用 ⇒ 不释放新持有
-        // 人的钉；引用归零 ⇒ 重试收敛即正确）。两笔剪除 + 重试集取出
-        // 收拢进 HoldRegistry，调用顺序保持（Deepening-v1 §A.2）。
-        self.holds.prune_releases_by_epoch();
-        self.holds.prune_pending_by_live_refs(&live_refs);
-        // 待重试队列 = 进入本 pass 前已在册的失败项（本 pass 新失败者
-        // 入队、下个周期重试——"下个实际调度到的周期"语义）。
-        let retry_now = self.holds.begin_retry_cycle();
+        // §7.2.6 两笔剪除（代次失效 + 存活引用）与重试集转入 pass 私有集，
+        // 收拢为释放协议入口（Deepening-v1 §A.2 / §11.3：协议归属同状态）。
+        self.holds.begin_finalize_pass(&live_refs);
 
         for PlanFinality {
             plan_id,
@@ -508,48 +490,18 @@ impl DispatchEngine {
                     if committed { "Committed" } else { "Terminal" }
                 );
             }
-            // 释放面（§7.2.3）：终态且无未决，且快照**无任何存活引用**
-            //（其他在途/未决计划仍引用 ⇒ 保留），且本代次的完成未被
-            // 缓存过，才释放。
-            if terminal
-                && !unresolved
-                && !self.holds.released_at_current_epoch(&snapshot_id)
-                && !self.holds.contains_pending(&snapshot_id)
-                && !retry_now.contains(&snapshot_id)
-                && refs_of(&snapshot_id) == 0
-            {
-                let released = self
-                    .input_retainer
-                    .as_mut()
-                    .map(|r| r.release(snapshot_id))
-                    .unwrap_or(false);
-                if released {
-                    self.holds.note_released(snapshot_id);
-                } else {
-                    // 释放失败：有界待释放队列（§7.2.4/§7.2.7——不无界
-                    // 积累；满额 = 保留在本轮不释放，下轮引用态重算后
-                    // 再入队）。
-                    self.holds.queue_pending(snapshot_id);
-                }
+            // 释放面（§7.2.3）：`terminal && !unresolved` 是**计划**事实，
+            // 留在调用方；钉住账目的四条合取判据（本代次未记完成 / 本
+            // pass 未入队 / 不在重试集 / 无存活引用）连同释放效应、事实
+            // 登记与失败入队，单点收在 `HoldRegistry::release_if_idle`。
+            if terminal && !unresolved {
+                self.holds
+                    .release_if_idle(snapshot_id, &live_refs, &mut self.input_retainer);
             }
         }
-        // 待释放重试（§7.2.4：不依赖新提案——空闲周期 finalize 也会到
-        // 这里；§7.2.5：远端幂等确认，重试至收敛）。引用剪除已在上文
-        // 完成，此处队列中都是无存活引用的快照。
-        let mut retry_still_failed: Vec<[u8; 16]> = Vec::new();
-        for id in retry_now {
-            let released = self
-                .input_retainer
-                .as_mut()
-                .map(|r| r.release(id))
-                .unwrap_or(false);
-            if !released {
-                retry_still_failed.push(id);
-            } else if !self.holds.released_at_current_epoch(&id) {
-                self.holds.note_released(id);
-            }
-        }
-        self.holds.end_retry_cycle(retry_still_failed);
+        // 待释放重试协议末步（§7.2.4 不依赖新提案 / §7.2.5 远端幂等至
+        // 收敛；含收尾合并与本 pass 新失败在前的截断序）。
+        self.holds.retry_pending(&mut self.input_retainer);
     }
 
     /// 快照的**存活引用**数（在途 = 非终态，或未决 = 对账中；事实源 =
