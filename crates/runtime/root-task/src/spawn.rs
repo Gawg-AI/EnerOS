@@ -1728,58 +1728,54 @@ pub fn sel4_spawn_services(
         // 阶段 1.5 mint 共享同一推导——单一事实源）。
         let (eipc_mask, _) = eipc_grants_for(&svc.name);
         let heartbeat_slot = heartbeat_slot_of(&svc.name);
-        let (
-            tcb,
-            ep,
-            root_fault_ep,
-            ready_ntfn,
-            cnode,
-            storage_handover,
-            net_handover,
-            uart_handover,
-        ) = configure_service(
+        // D（Deepening-v1 §D.2）：会话构造**只此一处**，且必须命名字段——旧 14 参
+        // 位置表里 fault_ep/ntfn_badge/eipc_mask/heartbeat_slot/wall_epoch 五个
+        // 同型 u64 两两相邻（R-DE2），命名字面量让相邻错位在编译期不可表达。
+        let configured = configure_service(
+            ServiceSpawnSession {
+                module,
+                entry,
+                ctx: &mut *ctx,
+                types: &types,
+                rights: &rights,
+                fault_ep,
+                ntfn_badge: svc_idx as u64 + 1, // fault_ep badge（0 保留；supervisor 识别服务用）
+                eipc_mask,
+                heartbeat_slot,
+                wall_epoch,
+                net_page0_frame: &mut net_page0_frame,
+                net_page1_frame: &mut net_page1_frame,
+            },
             svc,
             &elf,
-            module,
-            entry,
-            ctx,
-            &types,
-            &rights,
-            fault_ep,
-            svc_idx as u64 + 1, // fault_ep badge（0 保留；supervisor 识别服务用）
-            eipc_mask,
-            heartbeat_slot,
-            wall_epoch,
-            &mut net_page0_frame,
-            &mut net_page1_frame,
         )?;
-        tcb_slots.push(tcb);
+        tcb_slots.push(configured.tcb);
         handles.push(SpawnedHandle {
             name: svc.name.clone(),
-            tcb,
-            ep,
+            tcb: configured.tcb,
+            ep: configured.ep,
             // K2.3 fault 检测：root 侧带 badge 的 fault_ep 副本（G-R1 修复，
             // 23 G-I 总出口）——fault IPC 走 fault_ep endpoint，接收方 badge
             // = 持有 cap 的 badge；root 在此 poll 得 sender=badge 识别服务
             //（1368180 的 notification badge 方案错位，QEMU 实测 sender=0）。
-            ntfn: root_fault_ep,
+            ntfn: configured.root_fault_ep,
             // 22 §2.W1.3：重启寄存器参数（entry 由 ELF 解析；buffer 紧邻
             // 栈顶上方，与 configure_service 的 buffer_vaddr 计算一致）。
             entry,
             stack_top: svc.stack_top,
             buffer_vaddr: align_up(svc.stack_top, PAGE_SIZE),
             // WP-37.1 #8：就绪 notification root 侧 poll cap。
-            ready_ntfn,
+            ready_ntfn: configured.ready_ntfn_root,
             // WP-37.2：能力位图（module 已解析 flags 高 16 位）。
             capabilities: module.capabilities,
             // WP-37.1：必需性（kind → Requirement）。
             requirement: module.requirement(),
             eipc_mask,
-            cnode,
+            cnode: configured.cnode,
             heartbeat_ntfn: 0,
-            storage_handover,
-            net_handover,
-            uart_handover,
+            storage_handover: configured.storage_handover,
+            net_handover: configured.net_handover,
+            uart_handover: configured.uart_handover,
         });
     }
 
@@ -2023,46 +2019,109 @@ pub(crate) fn gated_wall_epoch(stage: &str) -> u64 {
     x6
 }
 
+/// D（Deepening-v1 §D.2）：一次 EL0 服务配置的**输入面**收口——取代旧
+/// `configure_service` 的 14 参位置表。
+///
+/// 构造必须走**命名字段字面量**（全仓唯一构造点在 `sel4_spawn_services`
+/// 阶段一循环内）：旧位置表里 `fault_ep / ntfn_badge / eipc_mask /
+/// heartbeat_slot / wall_epoch` 五个同型 `u64` 两两相邻（R-DE2——错配一位
+/// 即把心跳槽写进 X3、把 EIPC 掩码写进 X4，类型完全合法，编译期无从发现，
+/// 只在真机上表现为服务收错柄）。命名字段让任何交换都必须各自写一次字段名
+/// ⇒ 参数表内错位不可表达。刻意**不**引入 newtype 包装（§D.4 R-DE2 口径 +
+/// YAGNI：包装只加噪声，命名字段已封死错位面）。
+///
+/// 字段序 = 旧形参序（去掉 `svc`/`elf`——二者留在 `configure_service`
+/// 形参位），逐位可审。`net_page0_frame` / `net_page1_frame` 保持
+/// `&'a mut Option<u64>`：46.5 共享帧登记是 **out-param**（整批 spawn 循环内
+/// 跨服务读写——页 0/页 1 各只真实 retype 一次，同页后续服务 mint 复用），
+/// 语义上不属于任何单次配置，故借位挂在会话上、不折进返回值。
+#[cfg(target_os = "none")]
+struct ServiceSpawnSession<'a> {
+    /// bundle 模块（ELF 段页文件数据源；WP-37.2 能力位图/必需性同源于此）。
+    /// `BundleModule<'a>` 自带 blob 借位（借用内核映射的 bundle 区，长度
+    /// = root-task 全程）；`'a` 取会话借位即可——结构协变，长借位可读作短借位。
+    module: &'a crate::bundle::BundleModule<'a>,
+    /// ELF 入口（PC；ET_DYN 已由 load_verified_elf bias 平移）。
+    entry: u64,
+    /// K1.2 spawn 上下文（cap 分配器 + root 固定 cap + untyped 池）。
+    ctx: &'a mut SpawnCtx,
+    /// seL4 对象类型号表（启动期 resolve 一次）。
+    types: &'a ObjectTypeTable,
+    /// seL4 权限位表。
+    rights: &'a RightsTable,
+    /// root 侧 fault handler endpoint cap（服务 CSpace 槽 1 的 mint 源）。
+    fault_ep: u64,
+    /// fault/ready mint 的 badge（= 服务索引+1；0 保留）。
+    ntfn_badge: u64,
+    /// X3：EIPC 授予位掩码（0 = 未授予任何端点）。
+    eipc_mask: u64,
+    /// X4：心跳 notification 槽（0 = 不参与心跳监控）。
+    heartbeat_slot: u64,
+    /// X6：经 time_gate 闸门的墙钟 epoch 秒（整批 spawn 共享一次读数）。
+    wall_epoch: u64,
+    /// 46.5：virtio 区域页 0 共享帧 cap（out-param，见结构体文档）。
+    net_page0_frame: &'a mut Option<u64>,
+    /// 46.5：virtio 区域页 1 共享帧 cap（out-param，同上）。
+    net_page1_frame: &'a mut Option<u64>,
+}
+
+/// D（Deepening-v1 §D.2）：一次服务配置的**产物**——取代旧 8 元组返回面
+/// （R-DE3：散落各处的解构点位序耦合，自此收口于命名字段）。
+///
+/// 字段与旧元组**逐位对应、语义不变**：服务 TCB / 服务 endpoint / root 侧
+/// fault handler ep（同一 endpoint 对象的 root 视角 cap；服务侧在 CSpace 槽 1
+/// 持 mint 副本）/ 服务就绪 notification 的 root 侧带 badge 副本（WP-37.1 #8
+/// readiness handshake：服务 init 完成后 Signal CSpace 槽 2，root 在此 poll
+/// 判定）/ 服务 CSpace cnode（阶段 1.5 跨服务 mint 目标端点用）/ 三路设备
+/// 移交句柄（含义与旧 `Option<…Handover>` 完全一致——非该种服务恒 None）。
+#[cfg(target_os = "none")]
+struct ConfiguredService {
+    /// 服务 TCB cap（root CSpace 槽）。
+    tcb: u64,
+    /// 服务 endpoint cap（root CSpace 槽；root 侧发 IPC 用）。
+    ep: u64,
+    /// root 侧 fault handler ep 带 badge 副本（→ `SpawnedHandle.ntfn`）。
+    root_fault_ep: u64,
+    /// 就绪 notification 的 root 侧带 badge 副本（→ `SpawnedHandle.ready_ntfn`）。
+    ready_ntfn_root: u64,
+    /// 服务 CSpace cnode（阶段 1.5 跨服务 mint 目标）。
+    cnode: u64,
+    /// 41（WP-41）：svc-storage 设备移交句柄（X3/X4/X5 + 70.7 X7）。
+    storage_handover: Option<StorageHandover>,
+    /// 43/46：协议服务 virtio-net 移交句柄（X3/X4/X5）。
+    net_handover: Option<NetHandover>,
+    /// SPEC-D WP-D.1：UART MMIO 移交句柄（X7）。
+    uart_handover: Option<UartHandover>,
+}
+
 /// 配置单个服务（阶段一）：对象 retype / ASID / 页表 / 页映射与拷贝 /
-/// CSpace mint / 寄存器 / 优先级。返回
-/// `(TCB cap, endpoint cap, fault ep cap, ready ntfn root poll cap, cnode)`。
+/// CSpace mint / 寄存器 / 优先级。
 ///
 /// # 返回值
-/// 元组：服务 TCB / 服务 endpoint / root 侧 fault handler ep（同一
-/// endpoint 对象的 root 视角 cap；服务侧在 CSpace 槽 1 持 mint 副本）/
-/// 服务就绪 notification 的 root 侧带 badge 副本（WP-37.1 #8 readiness
-/// handshake：服务 init 完成后 Signal CSpace 槽 2，root 在此 poll 判定）/
-/// 服务 CSpace cnode（阶段 1.5 跨服务 mint 目标端点用）。
+/// [`ConfiguredService`]（D/§D.2 收口：旧 8 元组的命名字段形态，逐位对应）。
+///
+/// 会话字段在函数首行回落为与旧形参**同名**的局部绑定——函数体逐字迁移，
+/// 本候选只动形参表与返回构造两点（不动任何语句、顺序、格式）。
 #[cfg(target_os = "none")]
-#[allow(clippy::too_many_arguments)]
 fn configure_service(
+    session: ServiceSpawnSession<'_>,
     svc: &SpawnedService,
     elf: &LoadedElf,
-    module: &crate::bundle::BundleModule,
-    entry: u64,
-    ctx: &mut SpawnCtx,
-    types: &ObjectTypeTable,
-    rights: &RightsTable,
-    fault_ep: u64,
-    ntfn_badge: u64,
-    eipc_mask: u64,
-    heartbeat_slot: u64,
-    wall_epoch: u64,
-    net_page0_frame: &mut Option<u64>,
-    net_page1_frame: &mut Option<u64>,
-) -> Result<
-    (
-        u64,
-        u64,
-        u64,
-        u64,
-        u64,
-        Option<StorageHandover>,
-        Option<NetHandover>,
-        Option<UartHandover>,
-    ),
-    SpawnError,
-> {
+) -> Result<ConfiguredService, SpawnError> {
+    let ServiceSpawnSession {
+        module,
+        entry,
+        ctx,
+        types,
+        rights,
+        fault_ep,
+        ntfn_badge,
+        eipc_mask,
+        heartbeat_slot,
+        wall_epoch,
+        net_page0_frame,
+        net_page1_frame,
+    } = session;
     let root_cnode = ctx.root_cnode;
 
     // 1-3. TCB / VSpace / CNode retype。
@@ -2822,7 +2881,7 @@ fn configure_service(
         ntfn_badge
     );
 
-    Ok((
+    Ok(ConfiguredService {
         tcb,
         ep,
         root_fault_ep,
@@ -2831,7 +2890,7 @@ fn configure_service(
         storage_handover,
         net_handover,
         uart_handover,
-    ))
+    })
 }
 
 /// 22 §2.W1.6：映射设备 MMIO 区域进 root-task VSpace（1:1）。
@@ -4544,5 +4603,48 @@ mod tests {
         // entry 0x1000 落在可执行页内 → 返回 entry 本身（页模型）。
         assert_eq!(entry_mapped(&pages, &elf), Ok(0x1000));
         assert_eq!(pages[0].size / PAGE_SIZE, 2, "段按页对齐后跨 2 页");
+    }
+
+    /// D（Deepening-v1 §D.2）结构守卫：服务配置面必须是**命名字段会话**。
+    ///
+    /// 旧 `configure_service` 的 14 参位置表把 `fault_ep / ntfn_badge /
+    /// eipc_mask / heartbeat_slot / wall_epoch` 五个同型 `u64` 排成相邻位
+    ///（R-DE2：交换任意一对都类型合法、编译期不拦，只在真机上表现为服务收
+    /// 错柄），返回面是 8 元组（R-DE3：解构点位序耦合）。二者已收口为
+    /// `ServiceSpawnSession` / `ConfiguredService`。本测试锁新形态并反锁
+    /// 旧形态回归（token 经 `concat!` 拼接防守卫字面量自匹配——service.rs
+    /// `root_wire_faces_live_in_modules` 先例）。被测面是
+    /// `#[cfg(target_os = "none")]` 的 `ServiceSpawnSession` /
+    /// `ConfiguredService`，host 侧只能锁其源码形态；类型正确性由交叉编译
+    /// （`cargo build -p eneros-root-task --target aarch64-unknown-none`）承担。
+    #[test]
+    fn service_configuration_face_is_named_field_session() {
+        let src = include_str!("spawn.rs");
+        // a) 输入面：宽位置表不得回归——全文件不得再需要位置参豁免。
+        assert!(
+            !src.contains(concat!("too_many_", "arguments")),
+            "spawn.rs 再现宽位置参数表（R-DE2 位面复活）"
+        );
+        assert!(
+            src.contains(concat!("session: Service", "SpawnSession")),
+            "configure_service 形参必须收口为 ServiceSpawnSession"
+        );
+        // b) 五相邻 u64 中唯一由表达式算出的一位（badge = 服务索引+1）必须
+        //    显式命名接线——旧形态它就躺在位置表第 9 位上。
+        assert!(
+            src.contains(concat!("ntfn_badge: svc_", "idx as u64 + 1")),
+            "ntfn_badge 必须按名接线，不得回落到位置表序位"
+        );
+        // c) 两个 out-param（46.5 共享帧）仍以**命名字段**挂借位——位置表下
+        //    它们是第 13/14 位，交换即两页帧 cap 互串。
+        assert!(
+            src.contains(concat!("net_page0_frame: &mut net_", "page0_frame")),
+            "net_page0_frame 必须按名挂 &mut（out-param 借位不得回落位置表）"
+        );
+        // d) 返回面：命名字段结构体（旧 8 元组解构点自此消失）。
+        assert!(
+            src.contains(concat!("-> Result<Configured", "Service, SpawnError>")),
+            "返回面必须是 ConfiguredService（R-DE3）"
+        );
     }
 }
