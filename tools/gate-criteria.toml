@@ -1,0 +1,86 @@
+# ============================================================================
+# 门判据登记（蓝图 73 批B / 候选 C4）：id → 判定规格。
+#
+# 三个编译器（bash / python / xtask-rust）凡消费判据的都从本文件取——
+# 判据是数据，不再是散在脚本里的 grep 字面。
+#
+# 模式纪律（C3）：pattern 一律**全 token / 锚定**（行内完整词形匹配，
+# criterion.py 实现左/右边界），禁止裸子串；大小写敏感默认（例外须条目
+# 内注释）。缺输入策略 on_missing_input 只许 "fail" 或显式注释豁免。
+#
+# 回声行（C2）：echo_ok / echo_fail 模板与收编前**逐字节同形**
+# （{count} 占位 = any_of 合并计数）；多消费方文案不同的条目（PANIC-SCAN）
+# 回声由调用点 --echo-ok/--echo-fail 传入。终态行（<name>-GATE: PASS 族）
+# 不经本登记——那是 candidate-evidence.py / evidence_chain.rs 的解析面。
+# ============================================================================
+
+version = 1
+
+[[criterion]]
+id = "VOL70.5-R9"
+description = "窗B 身份面观测：身份推送成功或合成身份标签，且诚实失败为零"
+any_of = [
+    "IDENTITY-PUSH: OK",
+    "IDENTITY: capsule absent — TEST assembly synthetic",
+]
+none_of = ["IDENTITY-PUSH: FAILED"]
+min_count = 1
+on_missing_input = "fail"
+echo_ok = "[✓][R9] 窗B 身份面观测（IDENTITY ×{count}）"
+echo_fail = "[✗][R9] 窗B IDENTITY 缺失"
+# 语义重述（定案点②，owner 立卷时采纳）：any_of = PUSH: OK ∣ synthetic 由
+# 判据名"身份面观测"重推——原 header 的 synthetic token 是条件分支
+# （capsule 缺失时），capsule 在场时永不可满足 = 条件性空转。归档两窗
+# （wa/wb）按此复判均 PASS（docs/architecture/fix73-gate-recheck.md）。
+# 计数口径变化：×{count} = any_of 真实 token 命中数（旧裸子串把
+# BOOT-IDENTITY-PAGE 等 4 行无关词形计入——回声同形，数值语义更严）。
+# none_of：IDENTITY-PUSH: FAILED（诚实失败行）出现即红——失败窗不得判绿。
+
+[[criterion]]
+id = "VOL70.5-R9b"
+description = "窗B 配置取数：OTA-CONFIG 生成代次行在位（全 token 已合格，登记入册）"
+any_of = ["OTA-CONFIG gen="]
+none_of = []
+min_count = 1
+on_missing_input = "fail"
+echo_ok = "[✓][R9b] 窗B 配置取数（OTA-CONFIG ×{count}）"
+echo_fail = "[✗][R9b] 窗B OTA-CONFIG 缺失"
+# 尾缀 '=' = key 形：右边界开放（值为后续字符，"gen=2" 是真命中）。
+
+[[criterion]]
+id = "R10-B4-DELIVERY"
+description = "重启窗写归位：journal 确认执行行计数（--count-only 消费，N6 ≤ N 比较留在脚本）"
+any_of = ["EXEC-JOURNAL applied-confirmed"]
+none_of = []
+min_count = 0
+on_missing_input = "fail"
+# min_count 动态：调用侧以 fc06 差值 N6 比较（B4 特例，见 02-批B §4 P3）。
+# B4 的 T1/T2 转写缺失=红由 fc06 的 exit-3 路径承载（同属 B4 缺输入契约）；
+# 本条目 on_missing_input 针对 --count-only 的 S2 串口输入。
+
+[[criterion]]
+id = "PANIC-SCAN"
+description = "零 PANIC / 零分配失败（none-only，全文件域，大小写敏感）"
+any_of = []
+none_of = [
+    "PANIC: panicked at",
+    "memory allocation of",
+]
+min_count = 0
+on_missing_input = "fail"
+case_sensitive = true
+# 词表采纳 run70_gate_judge.py 现行口径（三者中最严谨；扫描域=全文件，
+# 不得只扫 READY 之后——judge.py:120 注释在案）。vol5 门的 -i 宽面与
+# r10-held 的第三词表（alloc.*failed/ALLOC-FAIL）退役。
+# 回声由调用点覆写（R7 / 窗B / B5 三消费方文案不同，C2 逐字节同形）。
+
+[[criterion]]
+id = "ACQ-MODBUS"
+description = "设备采集 ACQ 行在位（ACQ point= 前缀锚定）"
+any_of = ["ACQ point="]
+none_of = []
+min_count = 1
+on_missing_input = "fail"
+# run61-phase2-e4 的字段序正则（ACQ point=(\d+) value=([-\d.]+) q=good）
+# 是**内容校验**不是判据 token——保留在消费侧（02-批B §4 P3.3）。
+# vol4 的 "[svc-modbus-tcp] ACQ point" 前缀形被本 token 前缀覆盖。
