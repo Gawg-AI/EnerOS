@@ -606,11 +606,16 @@ sha256 前缀 `4466db0f8dc1d8bd…`；树 = 本会话 A/B/D 落地 + owner §11.
 `[svc-control-dispatch]` 词形与 `HELD-*` 行形态未漂移（§11.8 静态字面 diff
 + 本门判据器消费同一词形通过）。
 
-**边界（不得越读）**：本 PASS 建立在**工作树含 owner 未提交改动**之上
-（`Cargo.lock` / `xtask/*` / `tools/*` / `crates/agents/federation/*`），
-候选身份尚未闭合——按本仓纪律，需把该批改动入库并形成候选 commit 后，
-此证据才升格为该候选的证据；换依赖或换码即需复跑。§11.13 其余 host 门
-不含硬件、互操作与整机产品门。
+**身份状态（PASS 之后已更新，不隐瞒）**：本 PASS 实跑时工作树含 owner
+未提交改动（`Cargo.lock` / `xtask/*` / `tools/*` / `crates/agents/federation/*`）；
+随后该批已按 §11.9–§11.12 分成独立 commit 入库，且**入库未改一个字节内容**
+（提交只移动 commit 边界；docs/evidence 不进镜像），
+提交后复跑全门：`cargo fmt --all -- --check` 净、workspace clippy
+`-D warnings` 净、`cargo test --workspace --locked --no-fail-fast` **9198 passed**
+（0 失败——含 §11.12 登记的 iec104 时敏 flake 本轮未触发，其 1/3 失败率仍在，
+不得因一次绿就结案）、两 crate `aarch64-unknown-none` 交叉编译净。
+⇒ **该 PASS 现可归属到当前候选树**；换依赖或换码仍须复跑。
+§11.13 其余 host 门不含硬件、互操作与整机产品发布门。
 
 ---
 
