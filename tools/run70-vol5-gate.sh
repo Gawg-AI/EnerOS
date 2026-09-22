@@ -30,6 +30,9 @@
 #   用法：DL=560 tools/run70-vol5-gate.sh
 set -uo pipefail
 source "$(dirname "$0")/gate-env.sh"
+# 73 批B：判据器自举——门先验自己的判据器，再用它（S4）。
+python3 "$ROOT/tools/criterion.py" --selftest >/dev/null || {
+  echo "criterion.py selftest FAIL"; exit 9; }
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 EVROOT="$ROOT/evidence/70/70.5"
@@ -286,17 +289,21 @@ cp -f "$SB" "$EVROOT/wb.qemu-serial.log"
 
 n=$(grep -ac "OTA-DOWNLOAD: OK" "$SB" || true); n=${n:-0}
 [ "$n" -ge 1 ] && echo "[✓][R8] 签名描述 v2 探针全链（OTA-DOWNLOAD OK ×$n）" || { echo "[✗][R8] 窗B OTA-DOWNLOAD OK 缺失"; FAIL=1; }
-n=$(grep -ac "IDENTITY" "$SB" || true); n=${n:-0}
-[ "$n" -ge 1 ] && echo "[✓][R9] 窗B 身份面观测（IDENTITY ×$n）" || { echo "[✗][R9] 窗B IDENTITY 缺失"; FAIL=1; }
-n=$(grep -ac "OTA-CONFIG gen=" "$SB" || true); n=${n:-0}
-[ "$n" -ge 1 ] && echo "[✓][R9b] 窗B 配置取数（OTA-CONFIG ×$n）" || { echo "[✗][R9b] 窗B OTA-CONFIG 缺失"; FAIL=1; }
+# 73 批B：R9/R9b 判据登记化（tools/gate-criteria.toml 单源；回声逐字节
+# 同形）。R9 旧裸子串被 BOOT-IDENTITY-PAGE 等 4 行无关词形满足的假绿
+# （repro-current.txt 物证）就此关闭；诚实失败行（none_of）出现即红。
+python3 "$ROOT/tools/criterion.py" check VOL70.5-R9 "$SB" || FAIL=1
+python3 "$ROOT/tools/criterion.py" check VOL70.5-R9b "$SB" || FAIL=1
 
 # ---- 段4：窗A 后恢复 5a 锚产物链（供下一卷基线）---------------------------
 gate_compile_config "$RUN/config-compile-restore.log" qemu-prod
 
 echo "=== 窗B/全窗 PANIC 扫描 ==="
-PANICS_B=$(grep -aci "PANIC\|memory allocation of" "$SB" || true)
-[ "$PANICS_B" -eq 0 ] && echo "[✓][窗B] 零 PANIC" || { echo "[✗][窗B] PANIC=$PANICS_B"; FAIL=1; }
+# 73 批B：PANICS_B 判据登记化（PANIC-SCAN：大小写敏感 + 全文件域，
+# 采纳 judge.py 最严口径；旧 -i 宽面退役）。
+python3 "$ROOT/tools/criterion.py" check PANIC-SCAN \
+  --echo-ok "[✓][窗B] 零 PANIC" --echo-fail "[✗][窗B] PANIC={count}" \
+  "$SB" || FAIL=1
 
 if [ "$FAIL" -eq 0 ]; then
   echo "VOL70.5-GATE: PASS"

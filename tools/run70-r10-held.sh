@@ -71,6 +71,9 @@ trap 'if [ -f "$RUN/protocol-mqtt.toml.bak" ]; then mv -f "$RUN/protocol-mqtt.to
 
 python3 "$ROOT/tools/run70_gate_judge.py" --selftest >/dev/null || {
   echo "判据器自检 FAIL"; exit 2; }
+# 73 批B：criterion 判据器自举（S4：门先验自己的判据器，再用它）。
+python3 "$ROOT/tools/criterion.py" --selftest >/dev/null || {
+  echo "criterion.py selftest FAIL"; exit 9; }
 gate_cleanup_env 5577 5582 2404 1883
 kill -9 $(pgrep -f "modbus_slave61.py") 2>/dev/null || true
 kill -9 $(pgrep -f "mqtt_telemetry_broker.py") 2>/dev/null || true
@@ -334,7 +337,7 @@ def fc06(path):
     try:
         fh = open(path)
     except FileNotFoundError:
-        return 0
+        sys.exit(3)  # 73 批B：缺输入=红（旧 return 0 使 0-0=0 ≤ 0 恒绿）
     n = 0
     for l in fh:
         try:
@@ -347,14 +350,24 @@ def fc06(path):
 print(fc06(sys.argv[2]) - fc06(sys.argv[1]))
 PY
 )
-NDELIV=$(grep -ac "EXEC-JOURNAL applied-confirmed" "$S2" || true); NDELIV=${NDELIV:-0}
-if [ "${N6:-99}" -le "${NDELIV:-0}" ]; then
-  echo "[✓][B4] 重启窗 FC06 ×$N6 ≤ journal 确认执行 ×$NDELIV（写可归属；对账只读）"
+# 73 批B：B4 缺输入=红（T1/T2 由 fc06 exit-3 承载，S2 由判据器
+# on_missing_input 承载）；正常路径比较与回声逐字节保持。
+if [ "$N6" = "ERR" ]; then
+  echo "[✗][B4] 重启窗转写缺失（input missing: pre-cut/modbus transcript）——缺输入=红"; FAIL=1
 else
-  echo "[✗][B4] 重启窗 FC06 ×${N6:-?} > journal 确认执行 ×${NDELIV:-0}（存在无归属写——疑补发）"; FAIL=1
+  NDELIV=$(python3 "$ROOT/tools/criterion.py" check R10-B4-DELIVERY --count-only "$S2" 2>/dev/null); NDELIV_RC=$?
+  if [ "$NDELIV_RC" -ne 0 ]; then
+    echo "[✗][B4] 重启窗 journal 输入缺失（input missing: $S2）——缺输入=红"; FAIL=1
+  elif [ "${N6:-99}" -le "${NDELIV:-0}" ]; then
+    echo "[✓][B4] 重启窗 FC06 ×$N6 ≤ journal 确认执行 ×$NDELIV（写可归属；对账只读）"
+  else
+    echo "[✗][B4] 重启窗 FC06 ×${N6:-?} > journal 确认执行 ×${NDELIV:-0}（存在无归属写——疑补发）"; FAIL=1
+  fi
 fi
-PANICS=$(grep -ac "PANIC\|alloc.*failed\|ALLOC-FAIL" "$S2" || true); PANICS=${PANICS:-0}
-[ "$PANICS" -eq 0 ] && echo "[✓][B5] 零 PANIC" || { echo "[✗][B5] PANIC=$PANICS"; FAIL=1; }
+# 73 批B：B5 判据登记化（PANIC-SCAN 单源；旧第三词表退役）。
+python3 "$ROOT/tools/criterion.py" check PANIC-SCAN \
+  --echo-ok "[✓][B5] 零 PANIC" --echo-fail "[✗][B5] PANIC={count}" \
+  "$S2" || FAIL=1
 
 # ============ 段C：部分失败窗 ===============================================
 echo "=== 段C：部分失败窗（0x201 拒写）==="

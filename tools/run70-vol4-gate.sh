@@ -248,8 +248,10 @@ echo "[gate] 恢复点行锚：r1=$R1LINE r2=$R2LINE（总 ${TOTAL:-?} 行）"
 # 不阻断的业务面）；used=true 完整链由段1 健康窗承载。
 POST_COMMIT=$(grep -ac "dispatch=Committed" /tmp/seg3.$$); POST_COMMIT=${POST_COMMIT:-0}
 [ "$POST_COMMIT" -ge 1 ] && echo "[✓][R3] 锚1 后授权控制进展 Committed=$POST_COMMIT" || { echo "[✗][R3] 锚1 后零 Committed"; FAIL=1; }
-n=$(grep -ac "\[svc-modbus-tcp\] ACQ point" /tmp/seg3.$$); n=${n:-0}
-[ "$n" -ge 1 ] && echo "[✓][R3] 锚1 后设备采集回读 modbus ACQ=$n" || { echo "[✗][R3] 锚1 后零设备回读"; FAIL=1; }
+# 73 批B：ACQ 判据登记化（ACQ-MODBUS 单源；回声同形 C2）。
+python3 "$ROOT/tools/criterion.py" check ACQ-MODBUS \
+  --echo-ok "[✓][R3] 锚1 后设备采集回读 modbus ACQ={count}" \
+  --echo-fail "[✗][R3] 锚1 后零设备回读" /tmp/seg3.$$ || FAIL=1
 
 # ---- R4：peer 重启后 seq 严格单调（段0 文件级 + QEMU 窗）-------------------
 POST_READY_LINE=$(awk '/READY broker=/{l=NR} END{print l+0}' "$P")
@@ -294,8 +296,12 @@ if [ "$TOTAL" -gt 0 ] && [ "$LAST_ROUND_LINE" -ge $((TOTAL * 85 / 100)) ]; then
 else
   echo "[✗][R6] 尾部控制停摆（末轮在 $((LAST_ROUND_LINE * 100 / TOTAL))%，总 $TOTAL 行）"; FAIL=1
 fi
-LA=$(tail -n 30000 "$S" | grep -ac "\[svc-modbus-tcp\] ACQ point"); LA=${LA:-0}
-[ "$LA" -ge 1 ] && echo "[✓][R6] 尾部设备回读（尾 3 万行 ACQ=$LA）" || { echo "[✗][R6] 尾部零设备回读"; FAIL=1; }
+# 73 批B：ACQ 判据登记化（同 R3；尾 3 万行切片经临时文件喂判据器）。
+TL_SEG=$(mktemp); tail -n 30000 "$S" > "$TL_SEG"
+python3 "$ROOT/tools/criterion.py" check ACQ-MODBUS \
+  --echo-ok "[✓][R6] 尾部设备回读（尾 3 万行 ACQ={count}）" \
+  --echo-fail "[✗][R6] 尾部零设备回读" "$TL_SEG" || FAIL=1
+rm -f "$TL_SEG"
 
 if [ "$FAIL" -eq 0 ]; then
   echo "=== VOL70.4 GATE: PASS ==="

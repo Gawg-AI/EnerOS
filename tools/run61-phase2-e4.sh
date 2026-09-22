@@ -67,7 +67,11 @@ FAIL=0
 S="$ROOT/target/evidence61-p2/m1-module/qemu-serial.log"
 for pat in "OBS-SOURCE" "ACQ point=" "OBS-ROUND sent=" "OBS-SHADOW MATCH" "OBS-CFG loaded" \
            "CONTRACT-VIEW-ACTIVE" "PLAN-COMPILED" "EXEC-JOURNAL applied-confirmed"; do
-  if grep -q "$pat" "$S"; then echo "[✓] $pat"; else echo "[✗] $pat 缺失"; FAIL=1; fi
+  if [ "$pat" = "ACQ point=" ]; then
+    # 73 批B：ACQ 判据登记化（ACQ-MODBUS 单源；回声同形 C2）。
+    python3 "$ROOT/tools/criterion.py" check ACQ-MODBUS \
+      --echo-ok "[✓] $pat" --echo-fail "[✗] $pat 缺失" "$S" || FAIL=1
+  elif grep -q "$pat" "$S"; then echo "[✓] $pat"; else echo "[✗] $pat 缺失"; FAIL=1; fi
 done
 if grep -q "OBS-SHADOW MISMATCH" "$S"; then echo "[✗] OBS-SHADOW MISMATCH"; FAIL=1; fi
 # legacy wire 退役门：生产协议代码不再发 58B INGEST。
@@ -77,6 +81,8 @@ else
   echo "[✓] legacy INGEST wire 已退役（modbus 仅 OBS 上行）"
 fi
 # 20 点基线一致性：ACQ 好点值与 Phase 0 基线同（400/50/50/0.6/1/0/0）。
+# （字段序正则是内容校验不是判据 token——判据在位性已登记 ACQ-MODBUS，
+#   见 tools/gate-criteria.toml；73 批B §4 P3.3。）
 python3 - "$S" <<'EOF'
 import re, sys
 vals = {}
