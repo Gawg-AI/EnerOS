@@ -7572,6 +7572,51 @@ mod tests {
         assert!(load_required_matrix(&root, "m").is_err());
     }
 
+    /// 蓝图 73 批B（B-P4 / S5）：py↔rust `gate_terminal_status` 共享
+    /// fixture 锁——两侧解析器对同一份 `tools/testdata/gate-terminal-
+    /// fixtures.txt` 逐行判定必须完全一致（C5：共享的是 fixture 数据与
+    /// 一致性行为，不是代码；解析器语义零变化）。py 侧锁 =
+    /// `tools/criterion.py --selftest` 同款用例。
+    #[test]
+    fn gate_terminal_status_shared_fixture_lock() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let path = root.join("tools/testdata/gate-terminal-fixtures.txt");
+        let text = fs::read_to_string(&path)
+            .expect("共享 fixture 必须在库：tools/testdata/gate-terminal-fixtures.txt");
+        let mut n = 0usize;
+        for raw in text.lines() {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (gate, sample, expected) = split_fixture_line(line);
+            let got = gate_terminal_status(sample, gate);
+            assert!(
+                matches!(expected, "PASS" | "FAIL" | "NONE"),
+                "fixture 期望值非法 {expected:?}（{line:?}）"
+            );
+            let want = match expected {
+                "PASS" => Some(true),
+                "FAIL" => Some(false),
+                _ => None,
+            };
+            assert_eq!(got, want, "gate={gate:?} line={sample:?}——py/rust 解析漂移");
+            n += 1;
+        }
+        assert!(n >= 20, "共享 fixture 覆盖面不足（{n} 行）");
+    }
+
+    /// fixture 行 = `<gate> | <样例行> | <PASS|FAIL|NONE>`（三段全角/半角
+    /// 管道各一，空白容许）。
+    fn split_fixture_line(line: &str) -> (&str, &str, &str) {
+        let parts: Vec<&str> = line.splitn(3, '|').collect();
+        assert_eq!(parts.len(), 3, "fixture 行必须三段：{line:?}");
+        (parts[0].trim(), parts[1].trim(), parts[2].trim())
+    }
+
     /// 仓库真实 required 矩阵可加载且语义自洽（防登记文件本身写坏）。
     #[test]
     fn shipped_core70_matrix_loads() {

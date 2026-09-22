@@ -1,0 +1,37 @@
+# gate_terminal_status 共享 fixture（蓝图 73 批B B-P4 / S5）
+# ============================================================
+# py（tools/run70-candidate-evidence.py）与 xtask-rust（xtask/src/
+# evidence_chain.rs）两套 gate_terminal_status 解析器对**同一份本文件**
+# 逐行断言——两侧判定必须完全一致（C5：共享的是 fixture 数据与一致性
+# 行为，不是代码；解析器语义零变化）。
+#
+# 行格式（criterion.py --selftest 与 xtask 测试同款解析）：
+#   <gate> | <样例行> | <期望判定: PASS|FAIL|NONE>
+# '#' 开头为注释；样例行保留原始字节（含前导装饰与全角字符）。
+# 覆盖面：终态两态 / PASSED_NOT 不可判 / 单括注可判（a72ae68 真实历史
+# 形）/ 显式别名 / 别名对他 gate 不可判 / QEMU WINDOW 形 / red tests 形 /
+# 同行冲突 FAIL 胜 / 无关行。
+VOL70.5 | VOL70.5-GATE: PASS | PASS
+VOL70.5 | VOL70.5-GATE: FAIL | FAIL
+R10-HELD | === R10-HELD-GATE: PASS === | PASS
+R10-HELD | === R10-HELD-GATE: FAIL === | FAIL
+VOL70.4 | === VOL70.4 GATE: PASS === | PASS
+VOL70.4 | === VOL70.4 GATE: FAIL === | FAIL
+VOL70.5 | VOL70.5-GATE: PASSED_NOT | NONE
+VOL70.5 | VOL70.5-GATE: FAIL_NOT | NONE
+VOL70.5 | VOL70.5-GATE: PASS extra | NONE
+VOL70.5 | VOL70.5-GATE: PASS (review70_a.md x7) | PASS
+VOL70.5 | VOL70.5-GATE: PASS (note) (two) | PASS
+VOL70.2-R03 | VOL70.2-R03-POWER-CUT: PASS | PASS
+VOL70.2-R03 | VOL70.2-R03-POWER-CUT: FAIL | FAIL
+VOL70.2 | VOL70.2-R03-POWER-CUT: PASS | NONE
+evidence42-candidate-check | candidate-check red tests: PASS | PASS
+evidence42-candidate-check | candidate-check red tests: FAIL | FAIL
+evidence42 | candidate-check red tests: PASS | NONE
+VOL70.1 | VOL70.1 QEMU WINDOW: PASS | PASS
+VOL70.1 | VOL70.1 QEMU WINDOW: FAIL | FAIL
+VOL70.5 | unrelated informational line with PASS inside | NONE
+VOL70.5 | [✓][R9] 窗B 身份面观测（IDENTITY ×1） | NONE
+VOL70.5 | VOL70.5-GATE: PASS VOL70.5-GATE: FAIL | NONE
+VOL70.5 | ==== VOL70.5-GATE: PASS ==== | PASS
+VOL70.5 | BOOT-IDENTITY-PAGE: slot=A | NONE
