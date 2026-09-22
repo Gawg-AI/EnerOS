@@ -91,8 +91,9 @@ impl DmaPool for SvcDmaPool {
     }
 }
 
-/// 生产块后端：VirtioBlkDriver 适配 `BlockBackend`（lba = 字节偏移，
-/// 与 39 命令面 RamBackend 测试语义一致；按 512B 块 RMW 落盘）。
+/// 生产块后端：VirtioBlkDriver 适配 `BlockBackend`（`offset_bytes` =
+/// 字节偏移，数据面单位契约见 trait doc；与 39 命令面 RamBackend 测试
+/// 语义一致；按 512B 块 RMW 落盘）。
 pub struct VirtioBlkBackend<M, P, C>
 where
     M: eneros_storage::driver::virtio_blk::VirtioMmio,
@@ -139,13 +140,13 @@ where
     P: DmaPool,
     C: eneros_storage::driver::virtio_blk::ArmCache,
 {
-    fn read(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
+    fn read(&mut self, offset_bytes: u64, buf: &mut [u8]) -> Result<(), ()> {
         let bs = self.block_size as u64;
         if buf.is_empty() {
             return Ok(());
         }
-        // 可能跨块：逐块读（lba = 字节偏移；块号 = lba / bs）。
-        let mut off = lba;
+        // 可能跨块：逐块读（数据面单位 = 字节偏移；块号 = off / bs）。
+        let mut off = offset_bytes;
         let mut out = buf;
         while !out.is_empty() {
             let block = off / bs;
@@ -166,7 +167,7 @@ where
                     #[cfg(target_os = "none")]
                     eneros_runtime::println!(
                         "[svc-storage] blk read FAILED lba={} block={} err={:?}",
-                        lba,
+                        offset_bytes,
                         block,
                         _e
                     );
@@ -180,7 +181,7 @@ where
         Ok(())
     }
 
-    fn write(&mut self, lba: u64, data: &[u8]) -> Result<(), ()> {
+    fn write(&mut self, offset_bytes: u64, data: &[u8]) -> Result<(), ()> {
         // 70.14 探针（第七轮，REG-70.12-PROBE-BOOT-TRIAL-STALL）：**方法体首行**
         // 先原子自增再打印。上一轮已证 PRE 探针（调用前）的自增与打印都发生、
         // 而本函数旧的"进入"打印**不**出现；本轮把"自增"与"打印"都放到首行，
@@ -200,11 +201,11 @@ where
         #[cfg(target_os = "none")]
         eneros_runtime::println!(
             "[svc-storage] blk-write enter lba={} len={} bs={}",
-            lba,
+            offset_bytes,
             data.len(),
             bs
         );
-        let mut off = lba;
+        let mut off = offset_bytes;
         let mut src = data;
         while !src.is_empty() {
             let block = off / bs;
@@ -398,28 +399,14 @@ impl<
         C: eneros_storage::driver::virtio_blk::ArmCache,
     > crate::block_cmd::InstallBackend for BootSlotBackend<M, P, C>
 {
-    fn install_ranges(&self) -> (u64, u64, u64, u64) {
-        let g = &self.guard;
-        let (bc_lba, bc_lbas) = eneros_ota_ab::boot_disk::lba_range_of(
-            eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
-        );
-        (g.inactive_start_lba, g.inactive_lbas, bc_lba, bc_lbas)
+    fn install_ranges(&self) -> crate::boot_guard::InstallRanges {
+        // 守卫投影单源（BOOTCTRL 侧 = boot_disk 常量；与 73 批A 前的
+        // 手摆位三元组等值——golden 测试锁死 wire 字节不变）。
+        self.guard.install_ranges()
     }
 
-    /// F70-02：本次运行身份（init 期从只读身份页解析、随守卫冻结）。
-    /// 确认面（BLK_BOOT_CONFIRM）据此核对槽/载荷身份/安全版本。
-    fn running_identity(&self) -> Option<crate::boot_guard::RunningIdentity> {
-        self.guard.running
-    }
-}
-
-impl<
-        M: eneros_storage::driver::virtio_blk::VirtioMmio,
-        P: DmaPool,
-        C: eneros_storage::driver::virtio_blk::ArmCache,
-    > crate::block_cmd::BlockBackend for BootSlotBackend<M, P, C>
-{
-    fn read(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
+    /// boot 面读取（512B 扇区 LBA 单位）——boot 面调用点一律走本方法。
+    fn read_sectors(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
         // boot 面单位契约 = **512B 扇区 LBA**（boot_disk::lba_range_of 同
         // 口径）；inner read 形参 = 字节偏移——本处单点换算（try_new_boot
         // 内部读为另一点，见上）。
@@ -451,7 +438,9 @@ impl<
         }
         crate::block_cmd::BlockBackend::read(&mut self.inner, off, buf)
     }
-    fn write(&mut self, lba: u64, data: &[u8]) -> Result<(), ()> {
+
+    /// boot 面写入（512B 扇区 LBA 单位）——boot 面调用点一律走本方法。
+    fn write_sectors(&mut self, lba: u64, data: &[u8]) -> Result<(), ()> {
         // 受限安装写：范围守卫在 handle_boot_cmd 已强制，此处**复核同一
         // 不变量**（深度防御）——非活动槽 ∪ BOOTCTRL 之外零写。扇区→字节
         // 换算后落 inner。单位换算单源 = `InstallBackend::write_allowed`
@@ -534,6 +523,32 @@ impl<
             }
         }
         Ok(())
+    }
+
+    /// F70-02：本次运行身份（init 期从只读身份页解析、随守卫冻结）。
+    /// 确认面（BLK_BOOT_CONFIRM）据此核对槽/载荷身份/安全版本。
+    fn running_identity(&self) -> Option<crate::boot_guard::RunningIdentity> {
+        self.guard.running
+    }
+}
+
+impl<
+        M: eneros_storage::driver::virtio_blk::VirtioMmio,
+        P: DmaPool,
+        C: eneros_storage::driver::virtio_blk::ArmCache,
+    > crate::block_cmd::BlockBackend for BootSlotBackend<M, P, C>
+{
+    /// supertrait 约束保留体（73 批A C9）：数据面 trait 名下的实现，
+    /// 但本类型**只挂 install 面**（`attach_install`），永不进入数据面
+    /// 分派；经 `dyn InstallBackend` 的调用一律走
+    /// [`crate::block_cmd::InstallBackend::read_sectors`]（同一逻辑，
+    /// 512B 扇区单位）。
+    fn read(&mut self, offset_bytes: u64, buf: &mut [u8]) -> Result<(), ()> {
+        crate::block_cmd::InstallBackend::read_sectors(self, offset_bytes, buf)
+    }
+    /// supertrait 约束保留体（同上）——一律走 `write_sectors`。
+    fn write(&mut self, offset_bytes: u64, data: &[u8]) -> Result<(), ()> {
+        crate::block_cmd::InstallBackend::write_sectors(self, offset_bytes, data)
     }
     /// 70.14 复查修复：**必须下沉到 inner**（原实现恒 `Ok(())`）。
     ///
@@ -856,8 +871,13 @@ mod tests {
 
         // 写守卫：factory A=trial(15) 活跃 → 非活动 = BOOT_B；BOOT_B 内
         // 写放行，活跃槽/BOOTCTRL 区外写拒绝。
-        let (is, il, bs_, bl_) = crate::block_cmd::InstallBackend::install_ranges(&boot);
-        assert!(il > 0 && bl_ > 0);
+        let ranges = crate::block_cmd::InstallBackend::install_ranges(&boot);
+        assert!(ranges.inactive_lbas > 0 && ranges.bootctrl_lbas > 0);
+        let (is, bs_, bl_) = (
+            ranges.inactive_start_lba,
+            ranges.bootctrl_start_lba,
+            ranges.bootctrl_lbas,
+        );
         assert!(boot.write(bs_, b"g").is_ok(), "BOOTCTRL 内写放行");
         assert!(boot.write(is, b"g").is_ok(), "非活动槽内写放行");
         assert!(boot.write(0, b"x").is_err(), "活跃槽零写");
@@ -1014,8 +1034,8 @@ mod tests {
             shadow_valid: core::cell::Cell::new(true),
         };
 
-        // install_ranges = (非活动槽基址, 非活动槽扇区数, BOOTCTRL 基址, BOOTCTRL 扇区数)
-        let (_, _, bs_, _) = crate::block_cmd::InstallBackend::install_ranges(&boot);
+        // install_ranges 字段名进类型（73 批A S1：位置解构不可表示）。
+        let bs_ = crate::block_cmd::InstallBackend::install_ranges(&boot).bootctrl_start_lba;
         assert_eq!(bs_, 18432, "qemu-v1 BOOTCTRL 基址");
         boot.write(bs_, &[0xEE, 0xEE, 0xEE])
             .expect("部分写必须放行");
@@ -1073,8 +1093,12 @@ mod tests {
         };
         use crate::block_cmd::BlockBackend as _;
         // 地标：字节 0..512 填 0xAA（扇区 0），字节 512..1024 填 0xBB（扇区 1）。
-        inner.write(0, &[0xAA; 512]).expect("数据面写扇区 0（字节 0）");
-        inner.write(512, &[0xBB; 512]).expect("数据面写扇区 1（字节 512）");
+        inner
+            .write(0, &[0xAA; 512])
+            .expect("数据面写扇区 0（字节 0）");
+        inner
+            .write(512, &[0xBB; 512])
+            .expect("数据面写扇区 1（字节 512）");
         let record = eneros_boot_protocol::BootControl::factory([7u8; 16], 1, [7u8; 16])
             .encode()
             .unwrap();
@@ -1092,8 +1116,11 @@ mod tests {
             shadow_valid: core::cell::Cell::new(true),
         };
         // boot 面：数值 1 = 扇区 LBA 1 → 字节 512..（0xBB 地标）。
+        // C9 落地后走具名单位方法 read_sectors（同一语义）。
+        use crate::block_cmd::InstallBackend as _;
         let mut sector_view = [0u8; 8];
-        boot.read(1, &mut sector_view).expect("boot 面读 lba=1");
+        boot.read_sectors(1, &mut sector_view)
+            .expect("boot 面读 lba=1");
         assert_eq!(
             sector_view, [0xBB; 8],
             "boot 面 lba=1 必须落在字节 512（512B 扇区语义）"

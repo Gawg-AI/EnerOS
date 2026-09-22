@@ -57,10 +57,12 @@ impl<'a> BootInstall<'a> {
         // 栈上 4 KiB 局部会在 boot 安装长链上叠加（实弹反汇编：`BootSlotBackend::write`
         // 的 prologue 即 `sub sp,#0x1000`），逼近 svc-storage 的 64 KiB 栈上限。
         let mut rec: alloc::boxed::Box<[u8; BC_RECORD]> = alloc::boxed::Box::new([0u8; BC_RECORD]);
-        self.face.read(bc_lba, &mut rec[..]).map_err(|_| "read0")?;
+        self.face
+            .read_sectors(bc_lba, &mut rec[..])
+            .map_err(|_| "read0")?;
         let d0 = BootControl::decode(&rec[..]);
         self.face
-            .read(bc_lba + 8, &mut rec[..])
+            .read_sectors(bc_lba + 8, &mut rec[..])
             .map_err(|_| "read1")?;
         let d1 = BootControl::decode(&rec[..]);
         match (d0, d1) {
@@ -106,7 +108,8 @@ impl<'a> BootInstall<'a> {
         // 第二次 trial 就会把记录指向**正在运行**的槽：记录身份与载荷身份
         // 分叉（70.7-BOOT-TRIAL-BIND 修复面反向失效），安装写还会打到运行槽。
         // 现三处（安装写 / 候选身份读 / trial 记录）同源于 `install_ranges`。
-        let (inactive_start, inactive_lbas, _, _) = self.face.install_ranges();
+        let ranges = self.face.install_ranges();
+        let (inactive_start, inactive_lbas) = (ranges.inactive_start_lba, ranges.inactive_lbas);
         let (a_start, a_lbas) =
             eneros_ota_ab::boot_disk::lba_range_of(eneros_ota_ab::boot_disk::BootPartition::BootA);
         let (b_start, b_lbas) =
@@ -166,10 +169,14 @@ impl<'a> BootInstall<'a> {
             first.1.len(),
             bc_lba
         );
-        self.face.write(first.0, first.1).map_err(|_| "write0")?;
+        self.face
+            .write_sectors(first.0, first.1)
+            .map_err(|_| "write0")?;
         #[cfg(target_os = "none")]
         eneros_runtime::println!("[svc-storage] BOOT-TRIAL: write1 lba={}", second.0);
-        self.face.write(second.0, second.1).map_err(|_| "write1")?;
+        self.face
+            .write_sectors(second.0, second.1)
+            .map_err(|_| "write1")?;
         #[cfg(target_os = "none")]
         eneros_runtime::println!("[svc-storage] BOOT-TRIAL: flush");
         self.face.flush().map_err(|_| "flush")?;
@@ -242,9 +249,11 @@ impl<'a> BootInstall<'a> {
         let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
             eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
         );
-        self.face.write(bc_lba, &rec[..]).map_err(|_| "write0")?;
         self.face
-            .write(bc_lba + 8, &rec[..])
+            .write_sectors(bc_lba, &rec[..])
+            .map_err(|_| "write0")?;
+        self.face
+            .write_sectors(bc_lba + 8, &rec[..])
             .map_err(|_| "write1")?;
         self.face.flush().map_err(|_| "flush")?;
         Ok(next.sequence)
@@ -291,9 +300,11 @@ impl<'a> BootInstall<'a> {
         let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
             eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
         );
-        self.face.write(bc_lba, &rec[..]).map_err(|_| "write0")?;
         self.face
-            .write(bc_lba + 8, &rec[..])
+            .write_sectors(bc_lba, &rec[..])
+            .map_err(|_| "write0")?;
+        self.face
+            .write_sectors(bc_lba + 8, &rec[..])
             .map_err(|_| "write1")?;
         self.face.flush().map_err(|_| "flush")?;
         Ok(next.sequence)
@@ -364,7 +375,7 @@ mod boot_install_tests {
         /// 守卫**冻结**缓存（生产 = init 期解析一次、boot 内不变）。
         /// 不缓存就等于"守卫随介质漂移"，与生产语义不符（会掩盖
         /// trial 目标与安装面分叉）。
-        guard: core::cell::RefCell<Option<(u64, u64, u64, u64)>>,
+        guard: core::cell::RefCell<Option<crate::boot_guard::InstallRanges>>,
         /// F70-02：本次运行身份（生产 = 只读身份页 capsule；None ⇒ 写面
         /// 关闭 + 确认拒绝）。默认 = A 槽（factory 种子形态）。
         running: Option<crate::boot_guard::RunningIdentity>,
@@ -398,24 +409,13 @@ mod boot_install_tests {
     }
 
     impl crate::block_cmd::BlockBackend for MockFace {
+        /// supertrait 约束保留体（73 批A C9）——一律走 read_sectors。
         fn read(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
-            let off = lba as usize * LBA;
-            let end = off + buf.len();
-            if end > self.media.len() {
-                return Err(());
-            }
-            buf.copy_from_slice(&self.media[off..end]);
-            Ok(())
+            InstallBackend::read_sectors(self, lba, buf)
         }
+        /// supertrait 约束保留体（同上）——一律走 write_sectors。
         fn write(&mut self, lba: u64, data: &[u8]) -> Result<(), ()> {
-            let off = lba as usize * LBA;
-            let end = off + data.len();
-            if end > self.media.len() {
-                return Err(());
-            }
-            self.media[off..end].copy_from_slice(data);
-            self.writes += 1;
-            Ok(())
+            InstallBackend::write_sectors(self, lba, data)
         }
         fn flush(&mut self) -> Result<(), ()> {
             Ok(())
@@ -432,12 +432,13 @@ mod boot_install_tests {
         /// 各 8 MiB 槽）不符：夹具里的 `write_allowed` 判据与生产**不是同一
         /// 个判据**，安装写面的红测因此没有判别力（trial 目标槽改由
         /// `install_ranges` 单源导出后立即暴露）。
-        fn install_ranges(&self) -> (u64, u64, u64, u64) {
-            use eneros_ota_ab::boot_disk::{lba_range_of, BootPartition};
+        fn install_ranges(&self) -> crate::boot_guard::InstallRanges {
             if let Some(cached) = *self.guard.borrow() {
                 return cached;
             }
-            let (bc_lba, bc_lbas) = lba_range_of(BootPartition::BootCtrl);
+            let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
+                eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
+            );
             let rec0 = bc_lba as usize * LBA;
             let rec1 = (bc_lba + 8) as usize * LBA;
             let guard = crate::boot_guard::BootWriteGuard::resolve_with_running(
@@ -455,15 +456,33 @@ mod boot_install_tests {
                 sequence: 0,
                 running: None,
             });
-            let out = (
-                guard.inactive_start_lba,
-                guard.inactive_lbas,
-                bc_lba,
-                bc_lbas,
-            );
+            let out = guard.install_ranges();
             // 首次调用 = 本 boot 的 init；其后冻结（与生产一致）。
             *self.guard.borrow_mut() = Some(out);
             out
+        }
+
+        /// boot 面读取（512B 扇区 LBA 单位——内存介质直寻址）。
+        fn read_sectors(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
+            let off = lba as usize * LBA;
+            let end = off + buf.len();
+            if end > self.media.len() {
+                return Err(());
+            }
+            buf.copy_from_slice(&self.media[off..end]);
+            Ok(())
+        }
+
+        /// boot 面写入（512B 扇区 LBA 单位）。
+        fn write_sectors(&mut self, lba: u64, data: &[u8]) -> Result<(), ()> {
+            let off = lba as usize * LBA;
+            let end = off + data.len();
+            if end > self.media.len() {
+                return Err(());
+            }
+            self.media[off..end].copy_from_slice(data);
+            self.writes += 1;
+            Ok(())
         }
 
         /// F70-02：mock 的运行身份 = 构造时给定的身份页事实。
@@ -735,7 +754,7 @@ mod boot_install_tests {
         face.seed_bootctrl(&frozen, 1);
         let inst = BootInstall::new(&mut face);
         // 冻结守卫（生产 = init 期）。
-        let (inactive_start, _, _, _) = inst.face.install_ranges();
+        let inactive_start = inst.face.install_ranges().inactive_start_lba;
         let (b_start, _) =
             eneros_ota_ab::boot_disk::lba_range_of(eneros_ota_ab::boot_disk::BootPartition::BootB);
         assert_eq!(inactive_start, b_start, "守卫非活动槽 = BOOT_B");

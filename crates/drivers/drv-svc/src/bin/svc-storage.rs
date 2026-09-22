@@ -115,10 +115,15 @@ pub extern "C" fn _start(
                 ) {
                     Ok(boot) => {
                         use eneros_drv_svc::block_cmd::InstallBackend as _;
-                        let (is, il, bs, _bl) = boot.install_ranges();
+                        // 具名字段访问（73 批A：换位/漏位不可表示）；打印
+                        // 词形与值逐字节不变。
+                        let ranges = boot.install_ranges();
                         s.attach_install(alloc::boxed::Box::new(boot));
                         eneros_runtime::println!(
-                            "[svc-storage] BOOT-INSTALL attached: inactive_lba={is} lbas={il} bootctrl_lba={bs}"
+                            "[svc-storage] BOOT-INSTALL attached: inactive_lba={} lbas={} bootctrl_lba={}",
+                            ranges.inactive_start_lba,
+                            ranges.inactive_lbas,
+                            ranges.bootctrl_start_lba
                         );
                     }
                     Err(e) => {

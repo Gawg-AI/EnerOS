@@ -45,6 +45,57 @@ pub struct RunningIdentity {
     pub release_id: [u8; 16],
 }
 
+/// 安装区间的具名承载（73 批A C2 核验收口）：boot A/B 安全面全部语义
+/// 由字段名承担——替换裸四元组的位置契约后，换位/漏位不再可表示
+///（位置解构 = 编译错）。
+///
+/// 单位：全部字段 = **512B 扇区 LBA / 扇区数**（`boot_disk` 同口径）。
+///
+/// wire（`BLK_BOOT_GUARD` 响应，ADR-0025 IPC wire ABI 面）：[`Self::pack_le`]
+/// 产 40B = 4×u64 小端（offsets 0/8/16/24）+ 尾部 8B 保留恒零；
+/// [`Self::unpack_le`] 读侧忽略保留字节。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InstallRanges {
+    /// 非运行 BOOT 槽（可写安装目标）起始 LBA；身份缺失时 = 0（写面
+    /// 整体关闭——fail-closed，与 [`BootWriteGuard::inactive_start_lba`]
+    /// 同语义）。
+    pub inactive_start_lba: u64,
+    /// 非运行槽 LBA 数（8 MiB / 512B = 16384）。
+    pub inactive_lbas: u64,
+    /// BOOTCTRL 事务分区起始 LBA（qemu-v1 = 18432；boot_disk 单源）。
+    pub bootctrl_start_lba: u64,
+    /// BOOTCTRL 事务分区 LBA 数（qemu-v1 = 2048）。
+    pub bootctrl_lbas: u64,
+}
+
+impl InstallRanges {
+    /// `BLK_BOOT_GUARD` 响应打包（40B：4×u64 小端 offsets 0/8/16/24，
+    /// 尾部 8B 保留恒零）。单源——block_cmd.rs 打包与 svc-ota 解包共用
+    /// 本契约（C1：与 2026-09-22 基线逐字节一致；golden 测试锁死）。
+    pub fn pack_le(&self) -> [u8; 40] {
+        let mut b = [0u8; 40];
+        b[..8].copy_from_slice(&self.inactive_start_lba.to_le_bytes());
+        b[8..16].copy_from_slice(&self.inactive_lbas.to_le_bytes());
+        b[16..24].copy_from_slice(&self.bootctrl_start_lba.to_le_bytes());
+        b[24..32].copy_from_slice(&self.bootctrl_lbas.to_le_bytes());
+        b
+    }
+
+    /// `BLK_BOOT_GUARD` 响应解包（长度非 40 → None；尾部 8B 保留读侧
+    /// 忽略——写侧恒零，两侧对称现状保持）。
+    pub fn unpack_le(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != 40 {
+            return None;
+        }
+        Some(Self {
+            inactive_start_lba: u64::from_le_bytes(bytes[..8].try_into().ok()?),
+            inactive_lbas: u64::from_le_bytes(bytes[8..16].try_into().ok()?),
+            bootctrl_start_lba: u64::from_le_bytes(bytes[16..24].try_into().ok()?),
+            bootctrl_lbas: u64::from_le_bytes(bytes[24..32].try_into().ok()?),
+        })
+    }
+}
+
 /// 可写守卫（安装面状态；init 时解析一次——bootctrl 变更经 0x07 FLUSH
 /// 后由下次 init/查询重读；**运行身份本 boot 内不变**，trial/BOOTCTRL
 /// 改写/驱动重启都不能漂移）。
@@ -125,21 +176,24 @@ impl BootWriteGuard {
         })
     }
 
+    /// 守卫态 → 安装区间投影（BOOTCTRL 侧由 boot_disk 单源常量补齐；
+    /// `InstallBackend::install_ranges` 生产实现与守卫方法入口共用本
+    /// 单源——73 批A 具名化前的三处手摆位收敛于此）。
+    pub fn install_ranges(&self) -> InstallRanges {
+        InstallRanges {
+            inactive_start_lba: self.inactive_start_lba,
+            inactive_lbas: self.inactive_lbas,
+            bootctrl_start_lba: BOOTCTRL_START_LBA,
+            bootctrl_lbas: BOOTCTRL_LBAS,
+        }
+    }
+
     /// 安装写越界判定：`[lba, lba+count)` 必须**完整落**在非运行槽或
     /// BOOTCTRL 分区之一（跨域/出界/运行槽 = 拒绝）。`count` = **512B
     /// 扇区数**（单源判定见 [`install_write_allowed`]）。身份缺失 ⇒ 非
     /// 运行区间为空，仅 BOOTCTRL 事务分区自身可写（事务语义不变）。
     pub fn install_write_allowed(&self, lba: u64, count: u64) -> bool {
-        install_write_allowed(
-            (
-                self.inactive_start_lba,
-                self.inactive_lbas,
-                BOOTCTRL_START_LBA,
-                BOOTCTRL_LBAS,
-            ),
-            lba,
-            count,
-        )
+        install_write_allowed(&self.install_ranges(), lba, count)
     }
 }
 
@@ -151,8 +205,13 @@ impl BootWriteGuard {
 /// 越出 16 扇区的 BOOTCTRL 区间 → 安装事务恒 ST_UNAVAILABLE
 ///（`BOOT-TRIAL: rejected (io)`）。单位换算（字节 → 扇区上取整）只许
 /// 发生在本模块的 [`crate::block_cmd::InstallBackend::write_allowed`]。
-pub fn install_write_allowed(ranges: (u64, u64, u64, u64), lba: u64, count: u64) -> bool {
-    let (inactive_start_lba, inactive_lbas, bootctrl_start_lba, bootctrl_lbas) = ranges;
+pub fn install_write_allowed(ranges: &InstallRanges, lba: u64, count: u64) -> bool {
+    let InstallRanges {
+        inactive_start_lba,
+        inactive_lbas,
+        bootctrl_start_lba,
+        bootctrl_lbas,
+    } = *ranges;
     if count == 0 {
         return false;
     }

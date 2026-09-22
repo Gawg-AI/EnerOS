@@ -526,13 +526,24 @@ fn handle_boot_install(
             let p = alloc::vec::Vec::new();
             match io.raw_command(BLK_BOOT_GUARD, &p) {
                 Ok(r) if r.len() == 40 => {
-                    eneros_runtime::println!(
-                        "[svc-ota] BOOT-GUARD: inactive_lba={} inactive_lbas={}",
-                        u64::from_le_bytes(r[..8].try_into().unwrap()),
-                        u64::from_le_bytes(r[8..16].try_into().unwrap())
-                    );
-                    resp.extend_from_slice(&r);
-                    true
+                    // 73 批A（C5）：解包单源 = InstallRanges::unpack_le
+                    //（drv-svc 侧 pack_le 的对偶；手工偏移解包退役）。
+                    match eneros_drv_svc::boot_guard::InstallRanges::unpack_le(&r) {
+                        Some(ranges) => {
+                            eneros_runtime::println!(
+                                "[svc-ota] BOOT-GUARD: inactive_lba={} inactive_lbas={}",
+                                ranges.inactive_start_lba,
+                                ranges.inactive_lbas
+                            );
+                            resp.extend_from_slice(&r);
+                            true
+                        }
+                        // 不可达（len==40 已由臂卫判定）；对称拒绝，不 panic。
+                        None => {
+                            resp.extend_from_slice(b"ERR:guard-len");
+                            false
+                        }
+                    }
                 }
                 Ok(_) => {
                     resp.extend_from_slice(b"ERR:guard-len");
@@ -724,7 +735,15 @@ fn handle_boot_install(
                     return false;
                 }
             };
-            let inactive_lba = u64::from_le_bytes(guard[..8].try_into().unwrap());
+            // 73 批A（C5）：位置消费 guard[..8] 收编为 unpack_le 字段访问。
+            let inactive_lba = match eneros_drv_svc::boot_guard::InstallRanges::unpack_le(&guard) {
+                Some(ranges) => ranges.inactive_start_lba,
+                // 不可达（len==40 已由臂卫判定）；对称拒绝，不 panic。
+                None => {
+                    resp.extend_from_slice(b"ERR:guard-len");
+                    return false;
+                }
+            };
             // body only（构造器单源；见 0x0B 注）。
             let p = eneros_agent_sdk::block_io::boot_body::read(
                 inactive_lba,
