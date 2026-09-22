@@ -1044,4 +1044,67 @@ mod tests {
         boot.read(bs_, &mut back2).expect("读回副本 0");
         assert_eq!(back2, rec_b, "整条记录写覆盖影子");
     }
+
+    /// 73 批A（T-unit）：双平面单位契约现状锁——同一介质、同一数值实参，
+    /// 两平面读到**不同**字节。boot 面（BootSlotBackend）`lba=1` 读到的是
+    /// 字节 512..（512B 扇区语义）；数据面（VirtioBlkBackend）同数值 `1`
+    /// 读到的是字节 1..（字节偏移语义）。§1.2 的同名异单位分裂由本测变成
+    /// 可执行事实；C9 落地后 boot 面改走 `read_sectors` 断言同一语义。
+    #[test]
+    fn dual_plane_unit_contract_boot_sectors_vs_data_bytes() {
+        let _seq = TEST_SEQ.lock().unwrap();
+        let blocks = 40000u64;
+        let mmio = SimMmio::new(blocks);
+        let pool = TestPool::new();
+        TEST_POOL.store(
+            pool.arena.as_ptr() as u64,
+            core::sync::atomic::Ordering::Relaxed,
+        );
+        let driver = VirtioBlkDriver::new(
+            mmio,
+            pool,
+            eneros_storage::driver::virtio_blk::NoopCache,
+            eneros_storage::StorageConfig::default(),
+        )
+        .expect("驱动初始化（仿真设备）");
+        let mut inner: VirtioBlkBackend<SimMmio, TestPool, _> = VirtioBlkBackend {
+            driver: RefCell::new(driver),
+            block_size: 512,
+        };
+        use crate::block_cmd::BlockBackend as _;
+        // 地标：字节 0..512 填 0xAA（扇区 0），字节 512..1024 填 0xBB（扇区 1）。
+        inner.write(0, &[0xAA; 512]).expect("数据面写扇区 0（字节 0）");
+        inner.write(512, &[0xBB; 512]).expect("数据面写扇区 1（字节 512）");
+        let record = eneros_boot_protocol::BootControl::factory([7u8; 16], 1, [7u8; 16])
+            .encode()
+            .unwrap();
+        let guard = crate::boot_guard::BootWriteGuard::resolve_with_running(
+            &record,
+            &record,
+            test_running_identity(),
+        )
+        .expect("factory 记录可解析");
+        let mut boot = BootSlotBackend {
+            inner,
+            guard,
+            boot_dma_vaddr: 0,
+            shadow: core::cell::RefCell::new([0u8; 8192]),
+            shadow_valid: core::cell::Cell::new(true),
+        };
+        // boot 面：数值 1 = 扇区 LBA 1 → 字节 512..（0xBB 地标）。
+        let mut sector_view = [0u8; 8];
+        boot.read(1, &mut sector_view).expect("boot 面读 lba=1");
+        assert_eq!(
+            sector_view, [0xBB; 8],
+            "boot 面 lba=1 必须落在字节 512（512B 扇区语义）"
+        );
+        // 数据面：同一数值 1 = 字节偏移 1 → 字节 1..（0xAA 地标）。
+        let mut byte_view = [0u8; 8];
+        crate::block_cmd::BlockBackend::read(&mut boot.inner, 1, &mut byte_view)
+            .expect("数据面读 offset=1");
+        assert_eq!(
+            byte_view, [0xAA; 8],
+            "数据面 offset=1 必须落在字节 1（字节偏移语义）"
+        );
+    }
 }

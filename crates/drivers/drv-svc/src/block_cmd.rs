@@ -708,4 +708,59 @@ mod tests {
         assert_eq!(resp.payload_len, 4, "实收长度必须等于请求长度");
         assert_eq!(&resp.payload[..4], b"abcd");
     }
+
+    /// 73 批A（T-golden，C1 执行机构）：`BLK_BOOT_GUARD` 40B 响应逐字节
+    /// 金锁。值 = boot_disk qemu-v1 真值（A 运行 ⇒ 非活动 = BOOT_B
+    /// (36864, 16384)；BOOTCTRL (18432, 2048)）；布局 = 4×u64 小端
+    /// offsets 0/8/16/24 + 尾部 8B 保留恒零，`payload_len=40`。
+    /// 期望字节**手工展开**（不借道生产打包路径）——本测在 InstallRanges
+    /// 具名化（P1）前后必须原样绿，wire 冻结由此执行。
+    #[test]
+    fn blk_boot_guard_response_bytes_golden() {
+        let mut service: StorageService<InstallFace> = StorageService::new();
+        service.attach_install(std::boxed::Box::new(InstallFace {
+            ram: RamBackend::new(1024),
+        }));
+        let mut resp = DriverResponse::new(1, 0, 1);
+        let req = mk_req(BLK_BOOT_GUARD);
+        service.handle(&req, &mut resp);
+        assert_eq!(resp.status, ST_OK);
+        assert_eq!(resp.payload_len, 40, "40B = 32B 有效 + 8B 保留");
+        let expect: [u8; 40] = [
+            // inactive_start_lba = BOOT_B 基址 36864（qemu-v1）
+            0x00, 0x90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            // inactive_lbas = 16384（8 MiB / 512B）
+            0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            // bootctrl_start_lba = 18432
+            0x00, 0x48, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            // bootctrl_lbas = 2048（1 MiB / 512B）
+            0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            // 尾部 8B 保留恒零（active_is_a 登记未上线，不在线格式）
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        assert_eq!(&resp.payload[..40], &expect, "BLK_BOOT_GUARD wire 逐字节");
+    }
+
+    /// 73 批A（T-signature-lock，S1 防回归）：`install_ranges` 不得回归
+    /// 裸四元组返回签名。**窄域**：只扫三个具名文件（蓝图 72 教训——
+    /// 全文件宽子串禁令假红）；**模式**取完整签名尾巴。禁令针在运行时
+    /// 拼装（源码字面不含该串——include 自身会自匹配）。
+    #[test]
+    fn install_ranges_bare_tuple_signature_regression_lock() {
+        let needle: std::string::String = [
+            "-> (u64", ", u64", ", u64", ", u64)",
+        ]
+        .concat();
+        let files: [(&str, &str); 3] = [
+            ("block_cmd.rs", include_str!("block_cmd.rs")),
+            ("blk_backend.rs", include_str!("blk_backend.rs")),
+            ("boot_install.rs", include_str!("boot_install.rs")),
+        ];
+        for (name, src) in files {
+            assert!(
+                !src.contains(needle.as_str()),
+                "{name}: install_ranges 不得回归裸四元组签名（73 批A S1：字段名进类型）"
+            );
+        }
+    }
 }
