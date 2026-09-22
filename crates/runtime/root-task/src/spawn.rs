@@ -15,6 +15,7 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use eneros_boot_protocol::{ENEROS_INIT_BUNDLE_PHYS, ENEROS_RESERVED_WINDOW_LEN};
 use eneros_elf_loader::LoadedElf;
 // K1.2（21-A）：spawn 真实 FFI 封装（configure_service / copy_segment_via_window
 // 等函数签名直接引用，模块级导入保证 cfg(target_os = "none") 路径一致）。
@@ -653,34 +654,54 @@ impl SpawnCtx {
         caps: &eneros_sel4_sys::safe::CapInitThreadTable,
     ) -> Self {
         let mut descs = Vec::new();
+        // BOOT-007 保留窗拉黑（2026-09-23 审计复核施工）：与保留窗重叠的
+        // untyped 标记 blocked，不参与任何分配——但**必须保留在 descs 列表
+        // 里**：分配器 cap 槽号 = cap_base + 列表索引，删除中间项会使后续
+        // 所有 untyped 的 cap 槽号错位 → Retype 打到错误 cap（QEMU 实弹：
+        // spawn FAILED Sel4(InvalidArgument)，首版冒烟即咬）。窗内写权不可
+        // 由任何下游校验检出（模块 sha256 表与 blob 同窗自参照）。
+        let mut blocked = Vec::new();
+        let mut window_blacklisted: u32 = 0;
         for i in 0..reader.untyped_count() {
             if let Some(d) = reader.untyped_at(i) {
+                let is_blocked = overlaps_reserved_window(d.paddr, d.size_bits);
+                if is_blocked {
+                    window_blacklisted += 1;
+                }
                 // 非证据性调试输出（untyped 枚举）：仅 debug 构建打印——
                 // release 下 61 行串口输出拖慢 QEMU boot（200s 预算内
-                // 12 服务 spawn 超时，37 实测）。
-                if cfg!(debug_assertions) {
-                    crate::println!(
-                        "[eneros-root-task] DBG untyped[{}] cap={} paddr=0x{:x} size_bits={} dev={}",
-                        i,
-                        reader.untyped_start() + i,
-                        d.paddr,
-                        d.size_bits,
-                        d.is_device
-                    );
-                } else if d.is_device {
-                    // 46.5 诊断（release）：仅打印 device untyped（通常 ≤10 行），
-                    // 定位 virtio-mmio 区域粒度 → Retype freeIndex 语义下设备帧
-                    // 实际落点。
-                    crate::println!(
-                        "[eneros-root-task] DEV-UNTYPED[{}] paddr=0x{:x} size_bits={}",
-                        i,
-                        d.paddr,
-                        d.size_bits
-                    );
+                // 12 服务 spawn 超时，37 实测）。拉黑项不打印（不代表可用）。
+                if !is_blocked {
+                    if cfg!(debug_assertions) {
+                        crate::println!(
+                            "[eneros-root-task] DBG untyped[{}] cap={} paddr=0x{:x} size_bits={} dev={}",
+                            i,
+                            reader.untyped_start() + i,
+                            d.paddr,
+                            d.size_bits,
+                            d.is_device
+                        );
+                    } else if d.is_device {
+                        // 46.5 诊断（release）：仅打印 device untyped（通常 ≤10 行），
+                        // 定位 virtio-mmio 区域粒度 → Retype freeIndex 语义下设备帧
+                        // 实际落点。
+                        crate::println!(
+                            "[eneros-root-task] DEV-UNTYPED[{}] paddr=0x{:x} size_bits={}",
+                            i,
+                            d.paddr,
+                            d.size_bits
+                        );
+                    }
                 }
                 descs.push(d);
+                blocked.push(is_blocked);
             }
         }
+        // 保留窗拉黑证据行（release 也打印；单行，boot 预算不敏感）。
+        crate::println!(
+            "[eneros-root-task] BOOT-007 reserved-window untyped blacklisted: n={}",
+            window_blacklisted
+        );
         // 空闲槽从 untyped cap 区间之后开始（untyped caps 占据
         // [untyped_start, untyped_end) 槽位，不可复用）。
         crate::println!(
@@ -691,7 +712,7 @@ impl SpawnCtx {
         );
         let slots = CapAllocator::new(reader.untyped_end(), ROOT_CNODE_SLOTS);
         Self {
-            untyped: UntypedAllocator::new(reader.untyped_start(), descs),
+            untyped: UntypedAllocator::with_blocked(reader.untyped_start(), descs, blocked),
             caps: slots,
             root_tcb: caps.tcb,
             root_cnode: caps.cnode,
@@ -710,6 +731,24 @@ impl SpawnCtx {
 /// `KernelRootCNodeSizeBits` 同步 14）。本常量必须与内核配置一致，否则
 /// 分配器提前拒绝（fail-closed 挂起而非越界）。
 pub const ROOT_CNODE_SLOTS: u64 = 1 << 14;
+
+/// BOOT-007 保留窗重叠判定（2026-09-23 审计复核施工）。
+///
+/// seL4 上游 `create_untypeds`（kernel/boot.c）把 normal 内存区间之间的
+/// 洞按 **device untyped** 发放：overlay 生效时保留窗
+/// [0x42000000,0x44000000) 恰为 avail 两段之间的洞（70.6 日志
+/// DEV-UNTYPED[21] paddr=0x42000000 size_bits=25 实证）；overlay 缺失时
+/// 该窗混入 normal untyped（DMA bump 分配可确定性吃进）。两种形态都
+/// 必须在分配入口拉黑：窗内写权（retype 帧→映射）不可由任何下游校验
+/// 检出——模块 sha256 表与 blob 同窗自参照、DTB 仅 FDT magic+totalsize、
+/// 身份 capsule 仅 CRC32。
+#[cfg_attr(not(target_os = "none"), allow(dead_code))] // host 面仅测试使用
+pub(crate) fn overlaps_reserved_window(paddr: u64, size_bits: u64) -> bool {
+    let start = ENEROS_INIT_BUNDLE_PHYS;
+    let end = ENEROS_INIT_BUNDLE_PHYS + ENEROS_RESERVED_WINDOW_LEN;
+    let desc_end = paddr + (1u64 << size_bits);
+    paddr < end && desc_end > start
+}
 
 /// 70.6（WP-70.6.3）：root 管理端点（root 侧 poll cap；sel4_spawn_services
 /// 阶段 1.5 装配）。0 = 未装配（主循环跳过管理轮询）。
@@ -1219,8 +1258,13 @@ pub const STORAGE_DMA_RAM_TOP: u64 = 0x8000_0000;
 pub struct UntypedAllocator {
     /// untyped cap 区间起点（cap 槽 = cap_base + 索引）。
     cap_base: u64,
-    /// 过滤掉 device 内存后的 untyped 描述。
+    /// **全部** untyped 描述（device/normal 都在，索引必须与 bootinfo
+    /// untyped 列表一一对齐——cap 槽号 = cap_base + 索引；device/normal
+    /// 的区分由各分配路径的 `is_device` 检查承担）。
     descs: Vec<UntypedDesc>,
+    /// BOOT-007 保留窗拉黑位（与 descs 等长；true = 该 untyped 不参与
+    /// 任何分配，但保留索引占位——2026-09-23 审计复核施工）。
+    blocked: Vec<bool>,
     /// 每 untyped 已分配字节偏移（镜像 seL4 freeIndex 语义：按对象大小
     /// 对齐递增；21-A 用「对象数」导致混合 size 对象时容量检查错误——
     /// QEMU 实测 `Insufficient memory (1 * 16 bytes needed, 0 bytes
@@ -1232,10 +1276,19 @@ pub struct UntypedAllocator {
 impl UntypedAllocator {
     /// 从 untyped 描述列表构造（`cap_base` = bootinfo `untyped.start`）。
     pub fn new(cap_base: u64, descs: Vec<UntypedDesc>) -> Self {
+        let blocked = alloc::vec![false; descs.len()];
+        Self::with_blocked(cap_base, descs, blocked)
+    }
+
+    /// 带拉黑位构造：`blocked` 与 `descs` 等长（BOOT-007 保留窗拉黑；
+    /// 见 [`overlaps_reserved_window`]）。
+    pub(crate) fn with_blocked(cap_base: u64, descs: Vec<UntypedDesc>, blocked: Vec<bool>) -> Self {
         let used = alloc::vec![0u64; descs.len()];
+        debug_assert_eq!(descs.len(), blocked.len(), "blocked 必须与 descs 等长");
         Self {
             cap_base,
             descs,
+            blocked,
             used,
         }
     }
@@ -1251,6 +1304,9 @@ impl UntypedAllocator {
     pub fn alloc_device_at(&mut self, phys: u64, size_bits: u64) -> Option<(u64, u64)> {
         for i in 0..self.descs.len() {
             let desc = self.descs[i];
+            if self.blocked.get(i).copied().unwrap_or(false) {
+                continue; // BOOT-007 保留窗拉黑（索引占位保留，见 with_blocked）
+            }
             if !desc.is_device || desc.size_bits < size_bits {
                 continue;
             }
@@ -1282,6 +1338,9 @@ impl UntypedAllocator {
     pub fn alloc(&mut self, size_bits: u64) -> Option<(u64, u64)> {
         for i in 0..self.descs.len() {
             let desc = self.descs[i];
+            if self.blocked.get(i).copied().unwrap_or(false) {
+                continue; // BOOT-007 保留窗拉黑（索引占位保留，见 with_blocked）
+            }
             if desc.is_device || desc.size_bits < size_bits {
                 continue;
             }
@@ -1317,6 +1376,9 @@ impl UntypedAllocator {
         let need = (count as u64).checked_mul(obj_size)?;
         for i in 0..self.descs.len() {
             let desc = self.descs[i];
+            if self.blocked.get(i).copied().unwrap_or(false) {
+                continue; // BOOT-007 保留窗拉黑（索引占位保留，见 with_blocked）
+            }
             if desc.is_device || desc.size_bits < OBJ_BITS_SMALL_PAGE {
                 continue;
             }
@@ -1364,6 +1426,9 @@ impl UntypedAllocator {
     pub fn alloc_cap_table(&mut self, size_bits: u64) -> Option<(u64, u64)> {
         for i in 0..self.descs.len() {
             let desc = self.descs[i];
+            if self.blocked.get(i).copied().unwrap_or(false) {
+                continue; // BOOT-007 保留窗拉黑（索引占位保留，见 with_blocked）
+            }
             if desc.is_device || desc.size_bits < size_bits {
                 continue;
             }
@@ -1405,6 +1470,9 @@ impl UntypedAllocator {
     pub fn alloc_at(&mut self, phys: u64, size_bits: u64) -> Option<(u64, u64)> {
         for i in 0..self.descs.len() {
             let desc = self.descs[i];
+            if self.blocked.get(i).copied().unwrap_or(false) {
+                continue; // BOOT-007 保留窗拉黑（索引占位保留，见 with_blocked）
+            }
             if desc.is_device || desc.size_bits < size_bits {
                 continue;
             }
@@ -3996,6 +4064,69 @@ mod tests {
                 is_device: true,
             },
         ]
+    }
+
+    #[test]
+    fn reserved_window_blocked_keeps_cap_index_alignment() {
+        // 复现 2026-09-23 首版拉黑实弹坑：从 descs 删除保留窗 untyped 使
+        // 后续槽号错位 → Retype 打到错误 cap（spawn FAILED
+        // Sel4(InvalidArgument)）。blocked 位必须同时满足：窗内分配被拒 +
+        // cap_base+原索引 保持对齐（拉黑项占位不删除）。
+        let descs = vec![
+            UntypedDesc {
+                paddr: 0x0a00_0000,
+                size_bits: 25,
+                is_device: true,
+            },
+            UntypedDesc {
+                paddr: 0x4200_0000, // 保留窗（70.6 实测形状）
+                size_bits: 25,
+                is_device: true,
+            },
+            UntypedDesc {
+                paddr: 0x4400_0000,
+                size_bits: 25,
+                is_device: false,
+            },
+        ];
+        let blocked: Vec<bool> = descs
+            .iter()
+            .map(|d| super::overlaps_reserved_window(d.paddr, d.size_bits))
+            .collect();
+        assert_eq!(blocked, vec![false, true, false]);
+        let mut alloc = UntypedAllocator::with_blocked(100, descs, blocked);
+        // 窗内地址的 device 分配请求必须被拒（即便对应 cap 存在）
+        assert!(
+            alloc.alloc_device_at(0x4210_0000, 12).is_none(),
+            "保留窗内 device 分配必须被拉黑"
+        );
+        // normal 分配越过索引 0（device）与索引 1（blocked）落在索引 2
+        // → cap = cap_base + 原索引（对齐铁律）
+        let (cap, _) = alloc.alloc(12).expect("索引 2 normal untyped 可分配");
+        assert_eq!(cap, 102, "cap = cap_base + 原索引（拉黑项占位不删除）");
+    }
+
+    #[test]
+    fn reserved_window_blacklist_shapes() {
+        use super::overlaps_reserved_window;
+        // overlay 生效形态：32 MiB device untyped 恰铺满保留窗
+        // （70.6 日志 DEV-UNTYPED[21] 实测形状）
+        assert!(overlaps_reserved_window(0x4200_0000, 25));
+        // overlay 缺失形态：normal 大块连续 untyped 覆盖整窗
+        assert!(overlaps_reserved_window(0x4000_0000, 30));
+        // 部分搭界：起点在窗前、末端探入窗内
+        assert!(overlaps_reserved_window(0x41f0_0000, 21));
+        // 窗内小对象（capsule/DTB 区被碎切时的任意子段）
+        assert!(overlaps_reserved_window(0x427f_f000, 12));
+        // 不误伤：DMA 池常用 normal untyped（0x40800000/8MiB，窗外）
+        assert!(!overlaps_reserved_window(0x4080_0000, 23));
+        // 不误伤：virtio-mmio 设备区（0x0a000000/32MiB）
+        assert!(!overlaps_reserved_window(0x0a00_0000, 25));
+        // 不误伤：窗上方 normal 区（0x44000000 起，紧贴右沿）
+        assert!(!overlaps_reserved_window(0x4400_0000, 20));
+        // 边界语义（exclusive）：末端恰为窗起点 / 起点恰为窗末端
+        assert!(!overlaps_reserved_window(0x41f0_0000, 20));
+        assert!(!overlaps_reserved_window(0x4400_0000, 25));
     }
 
     #[test]

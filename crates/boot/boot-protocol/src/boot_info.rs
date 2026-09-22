@@ -204,6 +204,21 @@ pub const ENEROS_INIT_BUNDLE_PHYS: u64 = 0x4200_0000;
 /// 3.24 MiB，4 MiB 窗内 DTB 容纳上限被击穿——DT_LAYOUT fail-closed 实弹
 /// 拦截；39 卷 2→4 MiB 同款先例。保留区 32 MiB（overlay dts）内扩窗）。
 pub const ENEROS_MAPPED_WINDOW_LEN: u64 = 0x800_000;
+/// BOOT-007 **保留窗全长**（单一事实源 =
+/// `third_party/sel4-top/overlay-init-bundle-reserved.dts` 的
+/// `/reserved-memory/eneros-init-bundle@42000000` reg 长度 0x02000000）。
+/// 内核只 1:1 映射前 [`ENEROS_MAPPED_WINDOW_LEN`]，其余 24 MiB 是「保留
+/// 不映射」的余量（扩窗历史 2→4→8 MiB 均在保留区内就地扩）。
+///
+/// root-task 用它把 bootinfo 中与保留窗重叠的 untyped 从分配器**拉黑**：
+/// seL4 上游 `create_untypeds` 会把 normal 内存区间之间的洞按 device
+/// untyped 发放（overlay 生效时保留窗 = avail 两段之间的洞 → 32 MiB
+/// device untyped 实证见 evidence/70/70.6 日志 DEV-UNTYPED[21]；overlay
+/// 缺失时该窗混入 normal untyped）。窗口内 bundle 模块 sha256 表与
+/// blob 同窗自参照、运行时 DTB 仅 FDT magic 自检、身份 capsule 仅
+/// CRC32——任何经 retype/映射拿到的窗内写权都不可检出，必须 fail-closed
+/// 在分配入口拒绝（2026-09-23 审计复核施工）。
+pub const ENEROS_RESERVED_WINDOW_LEN: u64 = 0x200_0000;
 /// 单 DTB 硬上限（2 MiB = BOOT-007 窗口全尺寸；QEMU virt 运行时 DTB ≈
 /// 0x101000，真机平台 dts 一般更小）。实际边界由 [`dtb_window_for`] 的
 /// 窗口剩余空间决定（bundle 已占部分之外）；本常量是独立于 bundle 的
