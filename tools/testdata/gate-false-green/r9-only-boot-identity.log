@@ -1,0 +1,5 @@
+[eneros-root-task] BOOT-IDENTITY-PAGE: slot=A secver=1 (STORAGE_BOOT_IDENTITY_VADDR mapped)
+[svc-ota] OTA-IDENTITY: secver=1 release=09090909090909090909090909090909
+[svc-storage] BOOT-IDENTITY: missing/invalid —— 安装与确认写面关闭（fail-closed）
+[svc-storage] blk-write enter lba=9437184 len=4 bs=512
+[svc-control-dispatch] tick round=42 holdings=0

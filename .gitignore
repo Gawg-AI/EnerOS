@@ -103,6 +103,8 @@ known_hosts
 *.log
 logs/
 log/
+# 门判据回归 fixture（蓝图 73 批B）：恶意卷宗是判据器的在库测试资产。
+!tools/testdata/gate-false-green/*.log
 
 # ===== 测试覆盖率 / 性能分析产物 =====
 tarpaulin-report.html

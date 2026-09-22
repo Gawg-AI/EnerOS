@@ -1,0 +1,2 @@
+[eneros-root-task] OTA-CONFIG gen=2 origin=config-bundle (svc-ota → svc-config grant OK)
+[eneros-root-task] IDENTITY-PUSH: FAILED (resp=[2, 0]) — OTA not-ready（诚实）
