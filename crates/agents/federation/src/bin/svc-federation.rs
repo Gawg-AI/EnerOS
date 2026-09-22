@@ -91,7 +91,7 @@ struct Args {
 /// E 节，原"登记于执行卡 §WP-64.3.4"指向不周年）。
 fn decode_hex_arg(s: &str) -> Result<Vec<u8>, String> {
     let s = s.trim();
-    eneros_hex::decode_vec(s).ok_or_else(|| alloc::format!("bad hex: {s}"))
+    eneros_hex::decode_vec(s).ok_or_else(|| format!("bad hex: {s}"))
 }
 
 fn hex_decode_or_exit(s: &str) -> Vec<u8> {
@@ -987,5 +987,16 @@ fn main() {
             eprintln!("{USAGE}");
             exit(2);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_hex_arg;
+
+    #[test]
+    fn cli_hex_decode_preserves_error_and_valid_input() {
+        assert_eq!(decode_hex_arg("0g"), Err("bad hex: 0g".to_owned()));
+        assert_eq!(decode_hex_arg(" 0a "), Ok(vec![0x0a]));
     }
 }
