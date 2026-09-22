@@ -1252,3 +1252,46 @@ QEMU R10-B 割切相位、真实硬件与重签候选证据仍开放，不将本
    R14/R15/R16 三批均未触碰 iec104（`git diff --name-only` 零文件）⇒ 判为
    预存时敏 flake。**不私改预算**（放宽会把真实晚到投递掩盖成通过）；
    修法待裁决：改事件驱动等待，或以 `process_rx` 返回可用性为条件而非固定次数。
+
+## R17. 蓝图 73 · 架构深化 v2 核验收口批A 登记（2026-09-22，v0.339.0）
+
+> 来源：架构深化评审 v2（`/tmp/architecture-review-20260922-151840.html`，八候选
+> C1–C8）经独立核验 8/8 成立（`/tmp/architecture-review-20260922-204318.html`）→
+> 顺位前二立卷（批A = C2 目标代码重构承载升版；批B = C4 门判据登记化 host-only
+> 不升版）。基线 `0e4fd05` / v0.338.0 / 全仓 9198。
+
+1. **批A 完成（boot 安装区间具名化与 LBA 单位契约，v0.338.0 → v0.339.0）**：
+   - `InstallRanges` 具名 struct 落 `drv-svc::boot_guard`（4 pub u64 字段 +
+     `pack_le`/`unpack_le` 40B wire 打包/解包单源）；trait 方法/守卫两入口/
+     3 产出点/6 解构点全部迁移——裸四元组退役，位置换位/漏位不再可表示
+     （窄域签名禁令 `install_ranges_bare_tuple_signature_regression_lock` 锁死）。
+   - C9 单位契约：`BlockBackend` doc 写死字节偏移（形参 `offset_bytes` 纯改名）；
+     `InstallBackend` 增 `read_sectors`/`write_sectors` 具名单位方法（无默认体，
+     BootSlotBackend/MockFace/InstallFace 三实现齐落；supertrait 保留体纯委托）；
+     boot 面调用点（`handle_boot_cmd` 2 处 + `boot_install.rs` 9 处）全切换，
+     数据面调用点零改动——同名异单位分裂（REG-70.7-BOOT-TRIAL-IO 前科面）终结。
+   - svc-ota 手工解包（0x0A 显示 + 0x0F 位置消费 `guard[..8]`）收编为
+     `unpack_le` 单源；拒绝分支零改动。
+   - wire 文档纠偏：`BLK_BOOT_GUARD` 响应 = 32B 有效（4×u64 LE）+ 8B 保留
+     恒零——旧表 33B 含 `active_is_a(1)` 声称失实（无写入者）。
+   - 验证（G4 先红后绿）：T-golden（`blk_boot_guard_response_bytes_golden`
+     40B 逐字节金锁，期望手工展开，重构前后原样绿 = C1 wire 冻结执行证据）/
+     T-unit（`dual_plane_unit_contract_boot_sectors_vs_data_bytes` 同介质同数值
+     两平面读不同字节）/ T-signature-lock（P0 红：老签名在案 → P1 绿）。
+     drv-svc 47/47；全仓 **9201/0**（基线 9198 + 3）；fmt 净；clippy
+     `-D warnings` 净；六门绿（feature-matrix violations=[] / audit 三 profile
+     PASS / sign-keys / orphan-check / config-refs / mock-leak 零违规）；
+     **目标侧全链 PASS**（config compile qemu-test → sel4 重链接 → image raw
+     134217728B sha256=34ffffd791d80f56…）；无新 QEMU 行为窗（规格即验收面：
+     串口/wire 逐字节不变，唯一 println 源码变化为内联捕获改位置参数、输出
+     字节不变）。commit 序列（G5）：P0 测试垫底 `be5a002` → P1–P3 实现 →
+     收口+登记随尾。
+2. **Open：`active_is_a` wire 字节是否上线**——owner 决策另立卷（上线 = wire
+   行为变化；现行尾部 8B 保留恒零、全仓无写入者，block_cmd.rs wire 表已订正
+   为真话并标注登记未上线）。
+3. **批B（门判据登记化，host-only 不升版）**：待施工——本段随批B 收口补行。
+4. **登记不修项入册**（执行卡 §5 原文在案）：C1 Applied 第二结算出口（含 B4
+   词形契约矛盾）；C6 绑定五形状 + 两处 `unwrap_or(0)`（**核验后第三顺位，
+   73 收口后优先评估立卷**）；线索D ADR-0054 readback P1 功能缺口；线索A
+   在途归属 5+ 处；线索B System1 两套时钟（半证伪 P3）；线索C usize 路由
+   下标（P3，engine.rs:1976 裸 expect 唯一引线）；C3/C5/C7/C8 顺位其后。
