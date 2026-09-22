@@ -262,15 +262,25 @@ start_broker_slave "$DB" "$DB"
 start_peer "$DB"
 start_qemu "$DB" "$B_DL"
 wait_ready "$DB" 240 || { echo "段B 首启 PRODUCT-READY 未达"; kill_window; exit 6; }
-# **盲切**（2026-09-20 final1-5 实弹定论）：串口文件滞后 ~6-10s 大于
-# 非合并计划全生命周期（~8s）——一切反应式触发（Applied∧Pending /
-# 入场+3s / intents≥4）都在与滞后竞速且结构性迟到（五连割前全 DONE）。
-# 改为固定延时盲切：计划流连续（~1 个/10-15s、在途占比 ~60%），排水
-# （kill 后管道 EOF 冲刷）如实捕获割切时刻的在途前缀/未发步——B0/B2/
-# B3 判据对**捕获到的真实状态**裁决，命中与否由重试覆盖。
-wait_ready "$DB" 240 >/dev/null 2>&1 || true
-sleep 40
-BOK=1
+# 2026-09-22 冷构建隔离复验：盲切 ready+40s 实测 B0 旧 grep 假绿——
+# 首个计划已 DONE（batches=1/intents=3/skipped=9），却仍把旧 PLAN-HELD
+# 和 Applied 分别计数；B2/B3 如实红。不能降低 B2/B3 判据或借别的
+# 计划补数。按真实未完成计划的 Applied 前缀 + Pending 后缀轮询，
+# 串口可能滞后：检测到的 witness 仅作割切触发，kill 后 EOF 排空的
+# pre-cut 文件必须由同一工具再次独立核验（晚到 DONE => FAIL）。
+B_CUT_WAIT_S="${B_CUT_WAIT_S:-80}"
+B_CUT_FOUND=0
+for ((j=0; j<B_CUT_WAIT_S*4; j++)); do
+  if python3 "$ROOT/tools/r10_b_witness.py" witness "$DB/qemu-serial.log" >/dev/null 2>&1; then
+    B_CUT_FOUND=1
+    break
+  fi
+  sleep 0.25
+done
+if [ "$B_CUT_FOUND" -eq 0 ]; then
+  echo "[✗][B-cut] ${B_CUT_WAIT_S}s 内无同计划 Applied+Pending 在途见证（不以盲切伪造覆盖）"
+  FAIL=1
+fi
 echo "[段B] kill -9 QEMU（脏断电）"
 kill -9 $(pgrep -f "qemu-system") 2>/dev/null || true
 sleep 3
@@ -296,50 +306,18 @@ S2="$DB/qemu-serial.log"
 T1="$DB/pre-cut-transcript.jsonl"
 T2="$DB/modbus.transcript.jsonl"
 
-n=$(grep -ac "PLAN-HELD" "$S1" || true); n=${n:-0}
-m=$(grep -ac "HELD-COMMAND .*state=Applied" "$S1" || true); m=${m:-0}
-[ "$n" -ge 1 ] && [ "$m" -ge 1 ] && echo "[✓][B0] kill 前持有+已确认（PLAN-HELD ×$n / Applied ×$m）" \
-  || { echo "[✗][B0] kill 前提不满足（PLAN-HELD ×$n / Applied ×$m）"; FAIL=1; }
+B0=$(python3 "$ROOT/tools/r10_b_witness.py" witness "$S1" 2>&1); B0_RC=$?
+[ "$B0_RC" -eq 0 ] && echo "[✓][B0] $B0" \
+  || { echo "[✗][B0] $B0（rc=$B0_RC）"; FAIL=1; }
 
 n=$(grep -ac "HELD-STORE-OPEN status=OK" "$S2" || true); n=${n:-0}
 [ "$n" -ge 1 ] && echo "[✓][B1] 重启 HELD-STORE-OPEN OK（×$n）" || { echo "[✗][B1] 持有存储未打开"; FAIL=1; }
-n=$(grep -ac "HELD-COMMAND .*state=Blocked" "$S2" || true); n=${n:-0}
-[ "$n" -ge 1 ] && echo "[✓][B2] 未发步取消 Blocked（×$n）" || { echo "[✗][B2] 零未发步取消"; FAIL=1; }
-
-# B3：kill 前 Applied 的 intent 前缀，重启窗仍 Applied 且零 Executing
-python3 - "$S1" "$S2" >"$RUN/b3-check.txt" <<'PY'
-import re, sys
-pre, post = open(sys.argv[1]).read(), open(sys.argv[2]).read()
-# 归属到计划：只有 **割切时仍在途**（pre 里有 Applied、其计划无 DONE 行）
-# 的 intent 才属 B3 前缀保留判据——已完成计划的 intent 不被恢复窗重打
-# （drive 只推进非终态计划），把它们算进来 = 全 absent 误报（步距 2s 后
-# 割前窗内常有多个已完成计划，marathon3 实弹 bad=34 根因）。
-line = re.compile(r"HELD-COMMAND intent=\[([0-9a-fx, ]+)\] state=Applied.*?plan=\[([0-9a-fx, ]+)\]")
-done_plans = set(re.findall(r"HELD-PLAN-DONE plan=\[([0-9a-fx, ]+)\]", pre))
-ids = set()
-for iid, pid in line.findall(pre):
-    if pid not in done_plans:
-        ids.add(iid)
-ok, bad = 0, []
-for i in ids:
-    pat = re.compile(r"HELD-COMMAND intent=\[" + re.escape(i) + r"\] state=(\w+)")
-    states = pat.findall(post)
-    if not states:
-        bad.append((i, "absent")); continue
-    if any(s == "Executing" for s in states):
-        bad.append((i, "re-executed")); continue
-    if any(s == "Applied" for s in states):
-        ok += 1
-    else:
-        bad.append((i, states))
-print(ok)
-for b in bad:
-    print("BAD", b[0], b[1])
-PY
-B3OK=$(head -1 "$RUN/b3-check.txt")
-B3BAD=$(grep -c "^BAD" "$RUN/b3-check.txt" || true); B3BAD=${B3BAD:-0}
-[ "$B3OK" -ge 1 ] && [ "$B3BAD" -eq 0 ] && echo "[✓][B3] 已确认前缀保留（$B3OK 条，零重复执行）" \
-  || { echo "[✗][B3] 前缀保留失败（ok=$B3OK bad=$B3BAD）"; cat "$RUN/b3-check.txt"; FAIL=1; }
+# B2/B3 必须与 B0 同 plan 同 intent 验证（尝试次数也不能漂移）；
+# 任何其他计划的 Blocked / Applied 都不可替该计划填空。
+BVERIFY=$(python3 "$ROOT/tools/r10_b_witness.py" verify "$S1" "$S2" 2>&1)
+BVERIFY_RC=$?
+[ "$BVERIFY_RC" -eq 0 ] && { echo "[✓][B2] 同计划未发步 Blocked"; echo "[✓][B3] $BVERIFY"; } \
+  || { echo "[✗][B2/B3] $BVERIFY（rc=$BVERIFY_RC）"; FAIL=1; }
 
 # B4：重启窗写归因（recheck RR2 同哲学——journal 投递 trace 而非词形计数）——
 # 每次新 FC06 必须可归属到一次**journal 确认的执行**（`EXEC-JOURNAL
