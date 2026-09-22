@@ -26,19 +26,30 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CACHE="${SEL4_CACHE:-$HOME/.cache}"
 mkdir -p "$CACHE"
 
-# 官方 GitHub release tarball（确定性来源）
+# 官方来源（2026-09-23 审计复核施工：全部钉死，moving branch 退役）
+# - seL4 14.0.0 tag tarball：逐字节稳定（2026-09-23 与 GitHub 复核一致）
+# - seL4_tools / util_libs：钉 commit（与 2026-07 缓存同字节；GitHub
+#   archive/<sha> 与 refs/heads/master 两种 URL 的 tarball 根目录名不同、
+#   gzip 字节不同，但解压树逐字节一致——钉 commit 后 master 漂移即
+#   哈希失配 fail-closed，不再有 moving branch 静默漂移）。
 SEL4_URL="https://github.com/seL4/seL4/archive/refs/tags/14.0.0.tar.gz"
-TOOLS_URL="https://github.com/seL4/seL4_tools/archive/refs/heads/master.tar.gz"
-UTILS_URL="https://github.com/seL4/util_libs/archive/refs/heads/master.tar.gz"
+TOOLS_URL="https://github.com/seL4/seL4_tools/archive/7dd5ba144b1fecf1358a12d2bef3eb365aab35c7.tar.gz"
+UTILS_URL="https://github.com/seL4/util_libs/archive/6e55b3c62687779692150e1de411ce61b9d2919a.tar.gz"
 GCC_URL="https://github.com/xpack-dev-tools/aarch64-none-elf-gcc-xpack/releases/download/v15.2.1-1.1/aarch64-none-elf-gcc-xpack-15.2.1-1.1-linux-x64.tar.gz"
 CMAKE_URL="https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-linux-x86_64.tar.gz"
 NINJA_URL="https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-linux.zip"
 
-# 已知 sha256（首次 bootstrap 后固化；未知留空 = 下载后记录）
+# 已知 sha256（下载后 fail-closed 校验）。
+# 注意 seL4_tools/util_libs 两项是 archive/<sha> 形态的字节（根目录名含
+# commit sha）；2026-09-23 前以 refs/heads/master.tar.gz 形态下载的旧缓存
+# 字节不同（e1e7b75f…/ad47fd57…）但解压树一致——已存在的缓存不会被
+# 重新校验（fetch 见文件即跳过），仅新下载走新哈希。
+# 工具链三项（gcc/cmake/ninja）为版本化 release URL，暂未固化（缓存中
+# 只有解压目录无 tarball 可供取哈希）；固化前维持「下载后打印」行为。
 declare -A KNOWN_SHA256=(
-  [sel4-14.0.0.tar.gz]=""
-  [seL4_tools.tar.gz]=""
-  [util_libs.tar.gz]=""
+  [sel4-14.0.0.tar.gz]="c518f6121a56f1b377ee5b596784a0a454edcde5f87bdb402db057c706400c0c4"
+  [seL4_tools.tar.gz]="9f5df17858f57d5e87c9024aa122e2350c205544694501c8e98bd5f8af92f968"
+  [util_libs.tar.gz]="00ecc1a63775140a795bb9903c341b9fe1f270a8161f6613cb41d6c21f5061e6"
   [xpack-gcc.tgz]=""
   [cmake-github.tar.gz]=""
   [ninja.zip]=""

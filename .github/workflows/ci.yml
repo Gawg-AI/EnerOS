@@ -90,12 +90,15 @@ jobs:
           echo "rustdoc: 0 unresolved links"
 
       - name: seL4 kernel toolchain cache (restore)
+        # 2026-09-23：key bump 强制冷路径重跑——seL4 补丁面改收敛器
+        # （sel4-converge-patches.sh）+ overlay/IMAGE_START_ADDR/UTIL_LIBS
+        # 旗标进脚本后，旧缓存命中短路曾让构建脚本修复永不被 CI 执行。
         uses: actions/cache@v4
         with:
           path: |
             ${{ runner.tool_cache }}/sel4
             target/sel4
-          key: sel4-${{ runner.os }}-v0.192.0
+          key: sel4-${{ runner.os }}-v0.339.0-converge
 
       - name: Build seL4 kernel + root image (ADR-0023, KRN-006)
         run: |
@@ -354,7 +357,7 @@ jobs:
           path: |
             ${{ runner.tool_cache }}/sel4
             target/sel4
-          key: sel4-${{ runner.os }}-v0.192.0
+          key: sel4-${{ runner.os }}-v0.339.0-converge
 
       - name: Build seL4 kernel + root image (ADR-0023, image dependency)
         run: |
@@ -569,7 +572,7 @@ jobs:
           path: |
             ${{ runner.tool_cache }}/sel4
             target/sel4
-          key: sel4-${{ runner.os }}-v0.192.0
+          key: sel4-${{ runner.os }}-v0.339.0-converge
 
       - name: Build seL4 kernel + Rust root image (21-A G-KERNEL)
         run: |

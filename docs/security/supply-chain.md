@@ -12,8 +12,16 @@
 - **toolchain pin**：`rust-toolchain.toml` 锁定 nightly-2026-04-04 +
   components（rust-src/clippy/rustfmt）+ targets（aarch64-unknown-none/
   aarch64-unknown-uefi），蓝图 §5.2 依赖锁定。
-- **seL4 pin**：14.0.0 基线（docs/adr/ADR-0023）；third_party/sel4-build.sh
-  脚本化锁定构建。
+- **seL4 pin**：14.0.0 基线（docs/adr/ADR-0023）。third_party/sel4-bootstrap.sh
+  对三源 tarball 做 sha256 fail-closed 校验：seL4 tag 14.0.0 逐字节钉死；
+  seL4_tools/util_libs 钉 commit（与 2026-07 构建缓存解压树逐字节一致），
+  moving branch（refs/heads/master）已退役。补丁面由
+  third_party/sel4-converge-patches.sh 收敛器保证：受管文件
+  （kernel boot.c/vspace.c、elfloader sys_boot.c/linker.lds）收敛到期望
+  sha256 终态并逐文件校验，任何起始状态（fresh/部分应用/感染/漂移）
+  都收敛到同一字节（2026-09-23 审计复核施工，DEF-52-01/-02 家族关闭）。
+  边界如实声明：工具链 tarball（gcc/cmake/ninja）为版本化 release URL、
+  哈希暂未固化；解压树完整性由受管文件收敛校验覆盖，非全树审计。
 
 ## 2. 许可证/漏洞门禁（CI fail-closed）
 

@@ -4,9 +4,8 @@
 #
 # 产出 elfloader 镜像（RUST_ROOT_TASK=ON，root task = eneros-root-task
 # release ELF），供 `cargo xtask image qemu-prod` 打包（K3.1 端到端
-# 启动→spawn→IPC→故障隔离）。C2 (BOOT-007) 内核补丁由 sel4-build.sh
-# 的幂等 patch 步骤（third_party/sel4-patches/）保证，本脚本假定
-# $CACHE/sel4-src 已由 sel4-build.sh 准备（含补丁）。
+# 启动→spawn→IPC→故障隔离）。C2 (BOOT-007) 内核补丁面由
+# sel4-converge-patches.sh 收敛器保证（本脚本内自调用，独立重链安全）。
 #
 # 前置：third_party/sel4-build.sh 已运行至少一次（工具链 + libsel4.a +
 #       $CACHE/sel4-src 就绪）
@@ -80,19 +79,12 @@ echo "[2/3] Building seL4 with RUST_ROOT_TASK=ON..."
 BUILD="$ROOT/third_party/sel4-build/top-rust"
 mkdir -p "$BUILD/elfloader"
 
-# 38（WP-38.4/装载损坏根因）：elfloader DBG-TEMP 写（0x41060040 硬编码
-# CurrentEL）落在内嵌 rootserver ELF 偏移 0x254ec 处——破坏加载内容
-# （QEMU 实测 undefined instruction @ text+0x244ec）。补丁移除该写入
-# （幂等：已应用则跳过；sel4-patches 同风格）。文件不存在 → 视为已应用。
-ELFLOADER_PATCH="$ROOT/third_party/sel4-patches/0002-elfloader-remove-dbg-temp-write.patch"
-if [ -f "$ELFLOADER_PATCH" ]; then
-  if grep -q "DBG-TEMP" "$ELFLOADER_SRC/src/arch-arm/sys_boot.c"; then
-    echo "applying elfloader patch: $(basename "$ELFLOADER_PATCH")"
-    (cd "$ELFLOADER_SRC" && patch -p1 < "$ELFLOADER_PATCH")
-  else
-    echo "elfloader patch already applied: $(basename "$ELFLOADER_PATCH")"
-  fi
-fi
+# 38（WP-38.4/装载损坏根因）→ 2026-09-23 收编：elfloader DBG-TEMP 写
+# （0x41060040 硬编码 CurrentEL，曾破坏内嵌 rootserver）与内核 0001
+# 补丁面统一由收敛器保证：受管文件（boot.c/vspace.c/sys_boot.c/
+# linker.lds）收敛到期望 sha256 终态，任何起始状态都收敛到同一字节。
+# 本脚本独立重链（不经 sel4-build.sh）时也保证补丁面正确。
+bash "$ROOT/third_party/sel4-converge-patches.sh"
 
 # libcpio（elfloader 依赖，与 sel4-build.sh 一致）
 (cd "$CACHE/util_libs-master/libcpio" && \
@@ -130,6 +122,7 @@ fi
   -DELFLOADER_SRC="$ELFLOADER_SRC" \
   -DUTIL_LIBS_INCLUDE="$CACHE/util_libs-master/libcpio/include" \
   -DIMAGE_START_ADDR=0x41000000 \
+  -DKernelCustomDTSOverlay="$ROOT/third_party/sel4-top/overlay-init-bundle-reserved.dts" \
   -DCMAKE_MODULE_PATH="$SEL4_SRC_DIR;$CACHE/seL4_tools-master/cmake-tool/helpers;$ELFLOADER_SRC" \
   -DDTC="$DTC_BIN/dtc" \
   -DQEMU_BINARY="$CACHE/xpack-qemu-arm-9.2.4-1/bin/qemu-system-aarch64" \

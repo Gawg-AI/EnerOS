@@ -16,7 +16,10 @@ CMAKE_BIN="$CACHE/cmake-3.31.6-linux-x86_64/bin"
 NINJA="$CACHE/ninja-bin/ninja"
 DTC_BIN="$CACHE/dtc-deb/usr/bin"
 XMLLINT_BIN="$CACHE/xmllint-bin"
+# sel4-14.0.0/seL4_tools tarball 也在必需项里：补丁收敛器（converge）
+# 从 tarball 还原官方原件，缺 tarball 的缓存无法自愈。
 for required in "$SEL4_SRC/CMakeLists.txt" "$ELFLOADER_SRC/CMakeLists.txt" \
+                "$CACHE/sel4-14.0.0.tar.gz" "$CACHE/seL4_tools.tar.gz" \
                 "$GCC_BIN/aarch64-none-elf-gcc" "$CMAKE_BIN/cmake" "$NINJA" \
                 "$DTC_BIN/dtc" "$XMLLINT_BIN/xmllint"; do
   if [ ! -e "$required" ]; then
@@ -47,27 +50,13 @@ mkdir -p "$BUILD/elfloader"
     -I include -c src/cpio.c -o "$BUILD/elfloader/cpio.o" && \
   ar rcs "$BUILD/elfloader/libcpio.a" "$BUILD/elfloader/cpio.o")
 
-# 1.5) EnerOS 内核补丁（third_party/sel4-patches/）：源码级可复现——
-#      C2 (BOOT-007) init bundle 映射（kernel/boot.c + arm64 vspace.c）。
-#      ~/.cache/sel4-src 由官方 sel4-14.0.0.tar.gz 解压而来。幂等用
-#      特征标记判断（补丁在已应用树上的 patch --dry-run 行为不稳定：
-#      部分 hunk fuzz 匹配、部分 reversed，见 21-A 迭代）。
-PATCHES_DIR="$ROOT/third_party/sel4-patches"
-for P in "$PATCHES_DIR"/*.patch; do
-  MARKER=$(grep -m1 '^+.*ENEROS_INIT_BUNDLE_PHYS' "$P" | sed 's/^+//;s/ =.*//')
-  if [ -z "$MARKER" ]; then
-    echo "ERROR: patch $(basename "$P") has no idempotency marker" >&2
-    exit 1
-  fi
-  if grep -rqF "$MARKER" "$SEL4_SRC/src"; then
-    echo "  [patch] already applied: $(basename "$P")"
-  elif patch -p0 -d "$SEL4_SRC" -f < "$P" >/dev/null 2>&1; then
-    echo "  [patch] applied: $(basename "$P")"
-  else
-    echo "ERROR: failed to apply $(basename "$P") to $SEL4_SRC" >&2
-    exit 1
-  fi
-done
+# 1.5) EnerOS 补丁面收敛（2026-09-23 审计复核施工，DEF-52-01/02 家族关闭）：
+#      受管文件（boot.c/vspace.c/sys_boot.c/linker.lds）收敛到期望 sha256
+#      终态——任何起始状态（fresh/旧版/部分应用 .rej/DBG-TEMP 感染/master
+#      漂移）都收敛到同一字节并 fail-closed 校验。取代旧的 marker-grep
+#      幂等循环（0002 无 marker 串 → fresh clone exit 1；boot.c 打上而
+#      vspace.c hunk 被拒仍判「已应用」——vspace.c.rej 真实现场在案）。
+bash "$ROOT/third_party/sel4-converge-patches.sh"
 
 # 2) 顶层 CMake 配置 + 构建
 "$CMAKE_BIN/cmake" -G Ninja \
@@ -83,6 +72,9 @@ done
   -DKernelRootCNodeSizeBits=13 \
   -DSEL4_SRC="$SEL4_SRC" \
   -DELFLOADER_SRC="$ELFLOADER_SRC" \
+  -DUTIL_LIBS_INCLUDE="$CACHE/util_libs-master/libcpio/include" \
+  -DIMAGE_START_ADDR=0x41000000 \
+  -DKernelCustomDTSOverlay="$ROOT/third_party/sel4-top/overlay-init-bundle-reserved.dts" \
   -DCMAKE_MODULE_PATH="$SEL4_SRC;$CACHE/seL4_tools-master/cmake-tool/helpers;$ELFLOADER_SRC" \
   -DDTC="$DTC_BIN/dtc" \
   -DQEMU_BINARY="$CACHE/xpack-qemu-arm-9.2.4-1/bin/qemu-system-aarch64" \
