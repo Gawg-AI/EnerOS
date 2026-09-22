@@ -617,6 +617,18 @@ sha256 前缀 `4466db0f8dc1d8bd…`；树 = 本会话 A/B/D 落地 + owner §11.
 ⇒ **该 PASS 现可归属到当前候选树**；换依赖或换码仍须复跑。
 §11.13 其余 host 门不含硬件、互操作与整机产品发布门。
 
+### 11.15 门判据登记化落地（2026-09-22，蓝图 73 批B）
+
+架构深化 v2 候选 C4（判据假绿面）已按蓝图 73 批B 落地：`tools/gate-criteria.toml`
+登记 5 条判据（R9/R9b/R10-B4-DELIVERY/PANIC-SCAN/ACQ-MODBUS）+
+`tools/criterion.py` 判据器（`--selftest` 11 项）+ 四脚本收编（vol5 R9 裸
+子串假绿与 r10-held B4 缺输入=0 关闭；`repro-current.txt` 为修复前假绿
+物证）+ py↔rust `gate_terminal_status` 共享 fixture 锁（24 行，xtask
+229/0 双绿）。本节 §11.13 表中 vol5/r10-held 两门的判据行现由登记单源
+供词；**归档复判零翻红**（含 §11.14 的 R10-B 窗 B4 `0 ≤ 0`——其零新写/
+零新投递是重启后未发步取消的真实形态，非缺输入假绿；详表
+`docs/architecture/fix73-gate-recheck.md`）。
+
 ---
 
 > **复验声明**：本蓝图原始文件/行号/计数由蓝图作者在基线 `60b73a8` 上直接 grep/read 核实；与原报告的差异均已订正（淘汰 6 处非 3 处、14 参非 15 参、8 元组非 6 元组、16 字段非 13 字段、invalid 84 调用且 helper 已单点、held_pin_failures 零读者）。2026-09-22 增量见 §11.9–11.13（owner 手工批与本执行会话的补录与门记录）；历史行号不自动代表当前源码行号。

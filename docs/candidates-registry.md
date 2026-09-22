@@ -1289,7 +1289,29 @@ QEMU R10-B 割切相位、真实硬件与重签候选证据仍开放，不将本
 2. **Open：`active_is_a` wire 字节是否上线**——owner 决策另立卷（上线 = wire
    行为变化；现行尾部 8B 保留恒零、全仓无写入者，block_cmd.rs wire 表已订正
    为真话并标注登记未上线）。
-3. **批B（门判据登记化，host-only 不升版）**：待施工——本段随批B 收口补行。
+3. **批B 完成（门判据登记化，host-only 不升版，2026-09-22 同会话）**：
+   - `tools/gate-criteria.toml` 首批 5 条判据登记（VOL70.5-R9 any_of=
+     PUSH:OK∣synthetic + none_of=FAILED——定案点②语义重述；R9b；
+     R10-B4-DELIVERY；PANIC-SCAN 采纳 judge.py 最严口径——vol5 `-i` 与
+     r10-held 第三词表退役；ACQ-MODBUS）+ `tools/criterion.py` 判据器
+     （check/--count-only/--selftest；全 token/锚定边界；缺输入 check=✗/
+     count-only=exit 3；回声逐字节同形）。
+   - 四脚本收编：vol5-gate R9/R9b/PANICS_B + 门头自举 selftest；
+     r10-held fc06 `FileNotFoundError→sys.exit(3)`（缺输入=红）+ B4 显式
+     input-missing 红分支 + NDELIV 走判据器计数 + B5→PANIC-SCAN；run61
+     ACQ 特例；vol4 R3/R6 ACQ 两点。**R9 裸子串假绿（归档实况：4 行无关
+     词形满足判据、目标 token 0 次）与 B4 缺输入=0 假绿关闭**——
+     `repro-current.txt`（3/3 ✓）与 `--post-fix`（3/3 ✗）并排为修复生效
+     物证。
+   - py↔rust `gate_terminal_status` 共享 fixture 锁（24 行，
+     `tools/testdata/gate-terminal-fixtures.txt`；xtask 229/0 +
+     selftest 11/11 双绿——C5：共享 fixture 数据，两侧实现原样）。
+   - 归档复判**零翻红**（`docs/architecture/fix73-gate-recheck.md`：
+     70.5 两窗 R9 计数 4→1=虚胖现真值结论一致；r10-held B4 `0≤0` 经
+     语义注记为重启后未发步取消的真实形态非缺输入假绿；B5 一致）——
+     定案点①不触发，登记未为保绿放宽。
+   - commit 序列（G5/C8 分枚可回退）：P0 fixtures+复现 → P1/P2 登记+
+     判据器 → P3 四脚本收编 → P4 fixture 锁 → P5/P6 复判报告+文档。
 4. **登记不修项入册**（执行卡 §5 原文在案）：C1 Applied 第二结算出口（含 B4
    词形契约矛盾）；C6 绑定五形状 + 两处 `unwrap_or(0)`（**核验后第三顺位，
    73 收口后优先评估立卷**）；线索D ADR-0054 readback P1 功能缺口；线索A
