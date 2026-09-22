@@ -1203,8 +1203,52 @@ vol1(vol1 3967 轮/3549 提交 >512 压力线保持)/vol2/vol3/vol4/vol5/vol6/vo
 1. **候选 A · HoldRegistry（Strong）——Done（`d39fee1` + `6c5ee33`）**：`DispatchEngine` 五钉住字段收拢为 `engine::hold_registry::HoldRegistry`（全私有），六处四种淘汰惯用法单点化，F70-04 代次安全从注释维系升级为结构维系，`held_pin_failures` 去 pub 并补 `pin_failures()` 只读面（原两写点零读者）。R-A1 由 7 枚表级测钉各容器 16/17 边界；R-A2 存活引用计数留 engine；R-A3 词形冻结经**字符串字面逐字节 diff** 静态证实（`60b73a8 → HEAD`：held_engine.rs 仅 `"nonempty"` panic 文案随代码迁走，engine.rs 零生产字面变更）。host：control-dispatch 89 单测 + 全集成（含 typed_chain F70-04/H06 六测回归网）+ 下游 control-services 216 测全绿、clippy `-D warnings`、`aarch64-unknown-none` 交叉编译 exit 0。次生处置：新模块并入 `single_production_arbiter_in_crate` 源码审计清单（8→9 文件），防新面游离审计。
 2. **候选 C · run_ipc_loop 效应器 seam（Worth exploring）——Rejected（前提证伪，登记不施工）**：C.1「17 处 host/target cfg 孪生」实为 17 处**整项门零对手臂**（`not(target_os="none")` 在本文件仅出现于四处 `allow(dead_code)`），所谓孪生对是 `sel4-eipc` **特性轴**且两臂皆裸机；真实孪生 7 对全部落在 `all(none, …)` 形态内（另有 1 处跨行 cfg 使单行 grep 漏计，全文相关属性实计 39）。照文实施的两个硬雷：`service.rs:2430-2494` `include_str!` 源码文本锁（`ea_wire::EA_OK` / `Sel4IpcClient::new` 计数绑死本文件）+ `run_ipc_loop` 本体 host 不可编译 ⇒ C.3 第 2 步不成立。证据表与裁决见蓝图 §11.1。**再次提出本候选须先答 §11.1 两雷**。
 3. **候选 C 相邻 feature 矩阵疑点——登记不修**：`ota_probe_body`（824）门不含 `sel4-eipc` 而调用体 `ota_download_probe`（1816）含——代码读判成立，实弹复验（`--target aarch64-unknown-none --features qemu-test-synth`）证伪其独立性：不带 `sel4-eipc` 的 none 构建失败面 ≥10 处无关错误（`ipc_sel4` 缺席/`ChunkedSession::bind_shared_const` 缺失/`[u8]` 尺寸），即整组合不受支持。单点补门 = 把矩阵一个洞补成另一个洞（伪修复），真修复须整面 feature 矩阵建模（另卷议题）。详见蓝图 §11.2。
-4. **候选 E · HandoverSet（Worth exploring）——Rejected（前提证伪，试点已退回）**：按 E.2 字面试点落出 157 行纯增量后判读退回。三条实证：① 寄存器装配**已是单点**（`initial_registers` spawn.rs:1939–1991，restart 路径 service.rs:1628 同源重建），E 只把同一事实抄第二遍；② E 的动机"X7 截断结构封死"**已封死**——`INITIAL_REG_COUNT=11` + 编译期 `const _: assert!(INITIAL_REG_COUNT > REG_X7)`（1932–1937，注释即 D 卷历史事故），错则构建即炸，强于方法级封装；③ 三臂**非和类型**：X3/X4/X5 是 `storage → net → 通用` 优先链，X7 由 storage 写 `boot_dma_vaddr` 后**再由 uart 链外独立覆盖**（1986–1989 自述"与三路分支正交"）——收为枚举后 `from_parts` 只能"取先登记一臂、不再叠加 X7"，而 `UART_HANDOVER_TABLE` 今日为空恰是**真机 bring-up 的 owner 填空项**，等于把首块真机变成 X7 丢失引爆点（违 R-DE1 自身口径）。证据表见蓝图 §11.4；`spawn.rs` 已退回至与 `60b73a8` 逐字节一致。
+4. **候选 E · HandoverSet（Worth exploring）——Rejected（前提证伪，试点已退回）**：按 E.2 字面试点落出 157 行纯增量后判读退回。三条实证：① 寄存器装配**已是单点**（`initial_registers` spawn.rs:1939–1991，restart 路径 service.rs:1628 同源重建），E 只把同一事实抄第二遍；② E 的动机"X7 截断结构封死"**已封死**——`INITIAL_REG_COUNT=11` + 编译期 `const _: assert!(INITIAL_REG_COUNT > REG_X7)`（1932–1937，注释即 D 卷历史事故），错则构建即炸，强于方法级封装；③ 三臂**非和类型**：X3/X4/X5 是 `storage → net → 通用` 优先链，X7 由 storage 写 `boot_dma_vaddr` 后**再由 uart 链外独立覆盖**（1986–1989 自述"与三路分支正交"）——收为枚举后 `from_parts` 只能"取先登记一臂、不再叠加 X7"，而 `UART_HANDOVER_TABLE` 今日为空恰是**真机 bring-up 的 owner 填空项**，收枚举=把正交性从结构降为注释纪律（该组合今日不可达，属自由度损失而非线上已发生故障——强弱分级见 §11.4）；决定性理由实为①②：E 会在同文件造出第二套寄存器归属真相，正是 A/C 要消灭的多点记账形态，与 §A"注释→结构"的深化方向相反。证据表见蓝图 §11.4；`spawn.rs` 已退回至与 `60b73a8` 逐字节一致（试点增量存 `/tmp/de-agent-partial-E.patch` 备查）。
 5. **候选 D · ServiceSpawnSession——施工（E 已排除，D 单独做）**：D.1 前提复核成立（`configure_service` spawn.rs:2038、14 参、8 元组、`cfg(target_os="none")` host 不可直测）。实施口径按蓝图 §11.5 收紧：14 参必须**命名字段结构体**装配（五相邻 `u64` 位置错配是首要失败模式），805 行函数体逐字搬运零删改，终验以交叉编译 + QEMU 启动门为准。
-6. **候选 B（xtask FlagParser + SignedReport）/ F（并入 A）/ G（搁置）**：B 状态见下一节「R14 收口行」与 `git log`（`Deepening-v1 §B` 标注）；F 按 A.2 口径仅收钉住观测、九 getter 快照化不做；G 依 §10 永不做（A 后导航摩擦未复现）。
+6. **候选 B（xtask FlagParser + SignedReport）/ F（并入 A）/ G（搁置）**：B 落地见 `git log` 中 `Deepening-v1 §B` 提交，实施期订正与历史验收结果见 `docs/architecture/deepening-blueprint-v1.md` §11.7–11.8（本册不存在所谓「下一节 R14 收口行」）；F 按 A.2 口径仅收钉住观测、九 getter 快照化不做；G 依 §10 永不做（A 后导航摩擦未复现）。2026-09-22 续开发中 B 的签章钥长度安全修复见蓝图 §11.9，独立于 2026-09-21 旧验收记录。
 
+## R15. 2026-09-22 后续安全修复与验证边界
 
+`docs/architecture/deepening-blueprint-v1.md` §11.9–11.10 为本轮唯一详细对账位置：
+QA/产线/烧录签钥严格 32B、`rustls` 安全补丁版本锁定到 0.23.45，
+以及启用 federation `tls` 才暴露的 `svc-federation` host 编译缺口均经
+复现、修复和对应回归。新锁的 `cargo deny` 四项、全仓 host 测试、
+TLS 实握手和联邦 TLS 测试、ARM64 交叉编译通过；**旧证据不自动代表新候选身份**。
+QEMU R10-B 割切相位、真实硬件与重签候选证据仍开放，不将本轮 host PASS
+推断为发布 GO。`run70-r10-held.sh` 有全局杀 QEMU 进程及覆写现有 evidence
+的副作用，本轮保护带原有未提交证据的共享工作区，未直接调用。
+
+## R16. R10-B 割切见证实跑结案 + 时敏 flake 登记（2026-09-22，执行会话）
+
+1. **R10-B 首次真 PASS（推翻 R15 的"仍开放"）**：`tools/run70-r10-held.sh`
+   （owner 重写为 witness 触发版）在终树实跑 **20 判据全绿、
+   `=== R10-HELD-GATE: PASS ===`**，镜像 `eneros-qemu-test.raw`
+   sha256 前缀 `4466db0f8dc1d8bd`。关键行：
+   `[✓][B0] plan=83,d6,01,… applied=2 pending=6`（**同一计划内** Applied 前缀与
+   Pending 后缀共存且该计划无 DONE 行）→ `[✓][B2] 同计划未发步 Blocked` →
+   `[✓][B3] … applied=2 cancelled=6`（重启窗零 Executing、attempts 不漂移）；
+   段A 10/10（含 `HELD-PLAN-DONE state=Committed applied=3`、终态守恒、逐计划
+   写后读回绑定、反倾泻）、段C 4/4、三窗零 PANIC。详表见
+   `docs/architecture/deepening-blueprint-v1.md` §11.14；旧 B0 假绿的机制分析见 §11.11。
+   **对 Deepening-v1 §A 的意义**：钉住/释放协议收拢后，实弹同时满足"完成即释"
+   与"在途割切 → 前缀保留 + 未发步取消"，`[svc-control-dispatch]` 词形零漂移。
+   **仍不得越读之处**：本 PASS 建立在**含未提交改动的工作树**上
+   （`Cargo.lock` / `xtask/*` / `tools/*` / `crates/agents/federation/*`），
+   候选身份未闭合——按 R15 同一条纪律，须先入库形成候选 commit 才能升格为
+   该候选的证据；换依赖或换码需复跑。
+2. **执行会话过程偏差（如实登记）**：R15 已判定该脚本"有全局杀 QEMU 与覆写
+   evidence 的副作用，本轮不直接调用"，而本会话在其之前实跑了两次
+   （2026-09-21 23:57 旧盲切版、2026-09-22 12:0x witness 版）。缓解：运行前
+   `evidence/70/70.15/r10-held/` 整目录快照至 `/tmp/r10-held-preserved-baseline-0000`
+   （原 mtime 09-21 21:42-21:48，可复原）；本会话未 `git add` 任何 `evidence/` 路径；
+   事后 `git status configs/protocol-mqtt.toml` 干净（脚本 trap 已复原）；
+   实跑时段宿主无他人 QEMU 在飞。**后续规则**：该门属独占资源，跑前先与
+   owner 对齐、先快照 evidence、并把 `A_DL/B_DL/C_DL` 与 `B_CUT_WAIT_S` 取值记进门记录。
+3. **REG-IEC104-LOOPBACK-FLAKE（新增 Open）**：锚点
+   `crates/protocols/iec104-master/tests/loopback.rs:229`
+   （`loopback_interrogation_telemetry`）——总召后遥测到达判据用
+   `8 × sleep(5ms)` = 40ms 墙钟预算，**空机单跑 3 次挂 1 次**，全仓
+   `--no-fail-fast` 并发套件中必现。本轮全门复跑唯一失败即此测；
+   R14/R15/R16 三批均未触碰 iec104（`git diff --name-only` 零文件）⇒ 判为
+   预存时敏 flake。**不私改预算**（放宽会把真实晚到投递掩盖成通过）；
+   修法待裁决：改事件驱动等待，或以 `process_rx` 返回可用性为条件而非固定次数。
