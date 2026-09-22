@@ -24,8 +24,10 @@ export PATH="$HOME/.cache/xpack-aarch64-none-elf-gcc-15.2.1-1.1/bin:$HOME/.cache
 # xpack 工具链动态库（libxml2/libicu deb 解包）。
 export LD_LIBRARY_PATH="$HOME/.cache/libxml2-deb/usr/lib/x86_64-linux-gnu:$HOME/.cache/libicu74-deb/usr/lib/x86_64-linux-gnu"
 
-# sel4-build 树 FDT 解析（pyfdt）。
-export PYTHONPATH="$HOME/.cache/pyfdt-0.3"
+# sel4-build 树 FDT 解析（pyfdt）。保留调用方额外 Python 工具路径：
+# bitfield_gen.py 同时依赖 ply；清空已有 PYTHONPATH 会让隔离环境
+# 中的 seL4 冷构建在生成 types_gen.h 时失败（ModuleNotFoundError）。
+export PYTHONPATH="$HOME/.cache/pyfdt-0.3${PYTHONPATH:+:$PYTHONPATH}"
 
 # bindgen target 限定 sysroot（newlib 头文件；`_` 分隔的 target 键）。
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_none="--sysroot=$HOME/.cache/xpack-aarch64-none-elf-gcc-15.2.1-1.1/aarch64-none-elf"

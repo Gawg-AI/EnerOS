@@ -128,6 +128,8 @@ fi
   -DKernelRootCNodeSizeBits=14 \
   -DSEL4_SRC="$SEL4_SRC_DIR" \
   -DELFLOADER_SRC="$ELFLOADER_SRC" \
+  -DUTIL_LIBS_INCLUDE="$CACHE/util_libs-master/libcpio/include" \
+  -DIMAGE_START_ADDR=0x41000000 \
   -DCMAKE_MODULE_PATH="$SEL4_SRC_DIR;$CACHE/seL4_tools-master/cmake-tool/helpers;$ELFLOADER_SRC" \
   -DDTC="$DTC_BIN/dtc" \
   -DQEMU_BINARY="$CACHE/xpack-qemu-arm-9.2.4-1/bin/qemu-system-aarch64" \
