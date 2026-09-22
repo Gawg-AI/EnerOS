@@ -1,24 +1,29 @@
 --- src/arch/arm/kernel/boot.c
 +++ src/arch/arm/kernel/boot.c
-@@ -550,6 +550,50 @@
+@@ -550,6 +550,56 @@
      }
      ndks_boot.bi_frame->userImageFrames = create_frames_ret.region;
  
 +    /* EnerOS C2 (BOOT-007): 把 init bundle 区域映射进初始线程 VSpace。
 +     *
 +     * boot-manager 把 init bundle 预加载到 ENEROS_INIT_BUNDLE_PHYS，该区域
-+     * 已被 DTB /reserved-memory 从可用内存排除（不生成 untyped、不清零）。
-+     * 这里显式创建页表链（PUD/PD/PT，1:1 映射）并逐 4 KiB 页映射 frame cap，
++     * 已被 DTB /reserved-memory 从可用 normal 内存排除（不清零）。注意：
++     * 上游 create_untypeds 会把 normal 区间之间的洞按 device untyped 发放
++     * ——保留窗即此洞（32 MiB），root-task 侧对窗内 untyped 拉黑
++     * （spawn.rs overlaps_reserved_window，2026-09-23 审计复核施工）。
++     * 这里显式创建页表链（PD/PT，1:1 映射）并逐 4 KiB 页建 frame 映射，
 +     * root-task 直接读物理地址即可访问 bundle。页表内存已在
-+     * arch_get_n_paging（arm64 vspace.c）中预留 3 个。 */
++     * arch_get_n_paging（arm64 vspace.c）中预留 5 个（PD + PT×4）。 */
 +    {
-+        /* 4 MiB 窗口：覆盖 init bundle + 运行时 DTB（xtask INIT_LOAD_ADDRESS；
-+         * 39 收尾复验由 2 MiB 扩容——bundle 随 EL0 服务增长）*/
++        /* 8 MiB 窗口：覆盖 init bundle + 运行时 DTB（xtask INIT_LOAD_ADDRESS；
++         * 39 收尾复验由 2 MiB 扩容，61 v0.314.33 扩至 8 MiB——bundle 随
++         * EL0 服务增长；保留区 32 MiB（overlay dts）内扩窗）*/
 +        const paddr_t ENEROS_INIT_BUNDLE_PHYS = 0x42000000UL;
 +        const paddr_t ENEROS_INIT_BUNDLE_SIZE = 0x800000UL;
 +        vptr_t bv = (vptr_t)ENEROS_INIT_BUNDLE_PHYS; /* 1:1（物理==虚拟）*/
 +        /* PUD 槽（512 GiB 粒度）已由 create_it_address_space 为 it_v_reg
-+         * 创建（0x42000000 落在 PGD 槽 0 / PUD 槽 0）。此处只需创建
++         * 创建（镜像 0x200000..0x7c2df0 落 PGD 槽 0 / PUD 槽 0，bundle
++         * 0x42000000 落 PGD 槽 0 / PUD 槽 1——不同槽）。此处只需创建
 +         * PD（1 GiB 粒度槽 1）与 PT（2 MiB 粒度槽 1）；若重复创建 PUD
 +         * 会覆盖 PGD 槽 0 的既有页表（0x212c40 等 root-task 代码区的
 +         * 页表链被破坏 → prefetch abort，C2 迭代修复）。 */
@@ -36,12 +41,13 @@
 +        for (f = (word_t)paddr_to_pptr(ENEROS_INIT_BUNDLE_PHYS);
 +             f < (word_t)paddr_to_pptr(ENEROS_INIT_BUNDLE_PHYS + ENEROS_INIT_BUNDLE_SIZE);
 +             f += BIT(PAGE_BITS)) {
-+            cap_t fc = create_mapped_it_frame_cap(
++            /* 2026-09-23（审计 §4-D 收口）：只建映射不 provide_cap——PTE 只存
++             * 物理地址，cap 进根 CNode 后既无 bootinfo 记录也无任何使用者
++             * （root-task 按 1:1 虚地址直读）；2048 槽 = 14 位根 CNode 的
++             * 12.5% 白白占用。create_mapped_it_frame_cap 返回值不 provide
++             * 即不占槽，映射生命周期与 cap 无关。 */
++            (void)create_mapped_it_frame_cap(
 +                it_pd_cap, f, pptr_to_paddr((void *)f), IT_ASID, false, false);
-+            if (!provide_cap(root_cnode_cap, fc)) {
-+                printf("ERROR: could not provide init bundle frame cap\n");
-+                return false;
-+            }
 +        }
 +        printf("EnerOS: init bundle mapped [0x%lx..0x%lx) for initial thread\n",
 +               (unsigned long)ENEROS_INIT_BUNDLE_PHYS,
