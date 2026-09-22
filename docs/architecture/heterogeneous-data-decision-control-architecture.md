@@ -9,6 +9,8 @@
 > 范围：站端、企业端、市场端和联邦资源的异构数据接入、可信状态、混合决策、计划认证、设备执行与闭环核验
 > 事实依据：EnerOS 当前生产代码、产品 profile、配置和测试；本文不以审计报告作为现状依据
 
+> **时点说明（2026-09-22 复查）**：本篇是 **2026-08-29 的 Proposed 目标设计**，不是 2026-09-22 的现行开发执行卡。§2.2 的“当前限制”及 §23–24 的“主要动作/Phase”是撰写时的起点与目标，不能据此认定这些工作今天仍未做，也不能因为已有同名 crate 就认定端到端产品验收完成。现行事实以 `PROJECT.md`、`CONTEXT.md`、已生效的 `docs/adr/` 与实际源码/测试为准；局部深化过程见 `docs/architecture/deepening-blueprint-v1.md`。历史描述保留以便追溯设计演进。
+
 ## 1. 执行摘要
 
 EnerOS 的目标不应被定义为“让 LLM 根据很多数据生成控制命令”，而应定义为：
@@ -63,6 +65,17 @@ ObservedEvent
 - 连续功率设定与开关命令语义、反馈单位和保护反馈映射仍有不一致。
 
 因此，迁移策略必须是“保留有价值的实现，重建统一产物链和深模块 seam”，而不是继续在现有固定快照上添加字段。
+
+### 2.3 2026-09-22 实现对照（仅列已核源码的事实）
+
+| 设计链环节 | 已存在的代码事实 | 尚不可由此推出的结论 |
+|---|---|---|
+| 采集事实与来源门 | `telemetry-model::event::ObservationEvent`；`ingestion-core::SourceRegistry`；`protocol-services::ingestion_stage`；Modbus TCP、IEC104 的 EL0 服务源码存在 | “所有协议与业务源都已生产接通同一快照”或所有真实对端互操作通过 |
+| 决策快照 | `snapshot-service::SnapshotWatermark`、`SnapshotBuilder`、`SnapshotCatalog`；`CONTEXT.md` 记载序列水位和快照水位是不同判据 | 所有企业/市场/联邦输入已经进入同一可信快照，或认证器生产消费已全接线 |
+| 类型化计划与独立认证合同 | `decision-contract::{CandidatePlan, CertifiedPlan, CommandBatch}`；`CommandBatch::compile` 强制持证书和资源视图 | 任何计划都自动获得正确的认证证据；完整求解器/LLM 已生产装配 |
+| 设备执行与回读 | `control-dispatch::engine::settle_command`；`tests/typed_chain.rs::applied_commands_carry_independent_readback_not_setpoint`；`tests/journal_crash_matrix.rs` 的崩溃/重放负例 | 仅靠 host 单测便可宣称 QEMU 三窗、真机、72h 或商用 GO |
+
+**实施纪律**：同名模块存在 ≠ 产物链已验收。未闭合项须分别登记“机制在库 / 生产接线 / 实际对端与时序证据 / 发布门”，不得将其中一层的测试结果替代下一层。R10-B 的割切相位开放项以 `docs/candidates-registry.md` 的对应记录与原始证据重算为准；本篇 Phase 0–5 退出条件不因增加本表而自动打勾。
 
 ## 3. 目标、非目标与设计原则
 
