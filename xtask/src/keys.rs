@@ -93,11 +93,14 @@ pub fn load_signing_key_bytes(
 ) -> DynResult<[u8; 32]> {
     let path = resolve_signing_key(root, explicit, profile)?;
     let bytes = fs::read(&path)?;
-    let key: [u8; 32] = bytes
-        .get(..32)
-        .ok_or_else(|| invalid("signing key too short (need 32B)"))?
-        .try_into()
-        .map_err(|_| invalid("signing key invalid length"))?;
+    let len = bytes.len();
+    let key: [u8; 32] = bytes.try_into().map_err(|_| {
+        invalid(if len < 32 {
+            "signing key too short (need 32B)"
+        } else {
+            "signing key invalid length"
+        })
+    })?;
     Ok(key)
 }
 
@@ -114,7 +117,7 @@ pub fn verify_public_key(root: &Path) -> Option<[u8; 32]> {
     }
     let key_path = root.join(DEV_SIGNING_KEY_REL);
     let bytes = fs::read(&key_path).ok()?;
-    let key_bytes: [u8; 32] = bytes.get(..32)?.try_into().ok()?;
+    let key_bytes: [u8; 32] = bytes.try_into().ok()?;
     Some(
         ed25519_dalek::SigningKey::from_bytes(&key_bytes)
             .verifying_key()
@@ -159,6 +162,30 @@ pub fn gen_ota_anchor(root: &Path) -> crate::DynResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signing_seed_requires_exactly_32_bytes() {
+        let root = std::env::temp_dir().join(format!(
+            "eneros-keys-length-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("seed.bin");
+        for size in [0, 31, 33, 64] {
+            fs::write(&path, vec![3u8; size]).unwrap();
+            assert!(
+                load_signing_key_bytes(&root, Some(&path), ProfileKind::Production).is_err(),
+                "{size}B 不可当作 32B 原始种子"
+            );
+        }
+        fs::write(&path, [3u8; 32]).unwrap();
+        assert_eq!(
+            load_signing_key_bytes(&root, Some(&path), ProfileKind::Production).unwrap(),
+            [3u8; 32]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn resolve_requires_explicit_or_env_for_production() {

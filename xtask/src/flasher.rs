@@ -640,11 +640,14 @@ fn load_signing_key(root: &Path, key: Option<PathBuf>) -> DynResult<[u8; 32]> {
         None => root.join(DEV_SIGNING_KEY_REL),
     };
     let bytes = fs::read(&path)?;
-    bytes
-        .get(..32)
-        .ok_or_else(|| invalid("signing key too short"))?
-        .try_into()
-        .map_err(|_| invalid("signing key invalid length"))
+    let len = bytes.len();
+    bytes.try_into().map_err(|_| {
+        invalid(if len < 32 {
+            "signing key too short"
+        } else {
+            "signing key invalid length"
+        })
+    })
 }
 
 fn unsigned_token(token: &AuthorizationToken) -> DynResult<AuthorizationToken> {
@@ -1503,6 +1506,18 @@ mod tests {
             eligible: false,
             denials: Vec::new(),
         }
+    }
+
+    #[test]
+    fn flasher_seed_rejects_overlong_input() {
+        let root = std::env::temp_dir().join(format!("eneros-flasher-key-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("seed.bin");
+        fs::write(&path, [6u8; 64]).unwrap();
+        assert!(load_signing_key(&root, Some(path.clone())).is_err());
+        fs::write(&path, [6u8; 32]).unwrap();
+        assert_eq!(load_signing_key(&root, Some(path)).unwrap(), [6u8; 32]);
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn test_key() -> [u8; 32] {

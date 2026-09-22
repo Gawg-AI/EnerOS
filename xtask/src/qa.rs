@@ -4536,21 +4536,25 @@ mod arg_contract {
             .starts_with("read sign key: "),
             "key 缺文件文案漂移"
         );
-        // ≥32 字节的 key 文件：现实现取 `&key_bytes[..32]`，即**截断使用前 32
-        // 字节**并成功签名（`"key must be 32 bytes"` 实为不可达文案——
-        // try_into 的输入长度恒为 32）。收拢后必须保持截断语义。
+        // 非法长度一律拒绝，不能把长文件的前 32B 静默当作另一把私钥。
         fs::write(root.join("long.bin"), [1u8; 40]).unwrap();
         fs::write(root.join("short32.bin"), [1u8; 32]).unwrap();
-        command_sign_evidence(&root, &argv(&["e.txt", "--sign-key", "long.bin"]))
-            .expect("40 字节 key 现语义为截断使用前 32 字节（成功）");
-        let from_long = fs::read_to_string(root.join("e.txt.sig")).unwrap();
-        fs::remove_file(root.join("e.txt.sig")).unwrap();
+        assert_eq!(
+            err_text(command_sign_evidence(
+                &root,
+                &argv(&["e.txt", "--sign-key", "long.bin"])
+            )),
+            "key must be 32 bytes"
+        );
+        assert!(!root.join("e.txt.sig").exists(), "非法钥不得产生签名侧车");
         command_sign_evidence(&root, &argv(&["e.txt", "--sign-key", "short32.bin"]))
             .expect("32 字节 key 须成功");
         assert_eq!(
-            from_long,
-            fs::read_to_string(root.join("e.txt.sig")).unwrap(),
-            "截断语义漂移：40 字节 key 的签名须等于其前 32 字节 key 的签名"
+            fs::read_to_string(root.join("e.txt.sig"))
+                .unwrap()
+                .trim()
+                .len(),
+            128
         );
         // 其余 3 处 key 装载点走同一文案（compliance-report 在读 key 前不做
         // 任何重算；perf-baseline 在读 key 失败时不得落盘）。
@@ -4583,15 +4587,21 @@ mod arg_contract {
         );
     }
 
-    /// 冻结既有缺陷语义（不顺手改）：key 文件短于 32 字节时，迁移前实现先
-    /// `&key_bytes[..32]` 再 `try_into` → 切片越界 panic。收拢后须保持。
+    /// 短钥错误不能 panic，且不得污染原证据及侧车。
     #[test]
-    #[should_panic]
-    fn b1_short_sign_key_still_panics() {
+    fn b1_short_sign_key_fails_closed() {
         let root = sandbox("short-key");
         fs::write(root.join("e.txt"), b"payload").unwrap();
         fs::write(root.join("short.bin"), [1u8; 8]).unwrap();
-        let _ = command_sign_evidence(&root, &argv(&["e.txt", "--sign-key", "short.bin"]));
+        assert_eq!(
+            err_text(command_sign_evidence(
+                &root,
+                &argv(&["e.txt", "--sign-key", "short.bin"])
+            )),
+            "key must be 32 bytes"
+        );
+        assert_eq!(fs::read(root.join("e.txt")).unwrap(), b"payload");
+        assert!(!root.join("e.txt.sig").exists());
     }
 
     /// R-B2：重复 flag —— 后值覆盖前值（qa.rs 现语义）。

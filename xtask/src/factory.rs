@@ -230,11 +230,14 @@ fn resolve_factory_key(root: &Path, explicit: Option<PathBuf>) -> DynResult<[u8;
     };
     let bytes = fs::read(&abs)
         .map_err(|e| invalid(format!("signing key read failed ({}): {e}", abs.display())))?;
-    bytes
-        .get(..32)
-        .ok_or_else(|| invalid("signing key too short (need 32B)"))?
-        .try_into()
-        .map_err(|_| invalid("signing key invalid length"))
+    let len = bytes.len();
+    bytes.try_into().map_err(|_| {
+        invalid(if len < 32 {
+            "signing key too short (need 32B)"
+        } else {
+            "signing key invalid length"
+        })
+    })
 }
 
 /// bootctrl Genesis：双副本一致解码 → sequence 归零 → 重编码双写。
@@ -342,6 +345,18 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn factory_seed_rejects_overlong_input() {
+        let root = std::env::temp_dir().join(format!("eneros-factory-key-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("seed.bin");
+        fs::write(&path, [5u8; 64]).unwrap();
+        assert!(resolve_factory_key(&root, Some(path.clone())).is_err());
+        fs::write(&path, [5u8; 32]).unwrap();
+        assert_eq!(resolve_factory_key(&root, Some(path)).unwrap(), [5u8; 32]);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     /// 50：制造记录 schema 往返 + 签章验证 + 篡改检测。
     #[test]

@@ -37,17 +37,15 @@ pub(crate) struct Sealed {
 impl SignedReport {
     /// 读 ed25519 私钥（raw 32 字节 seed）。
     ///
-    /// 文案与语义逐字保留迁移前 4 处调用点：`read sign key: {e}` /
-    /// `"key must be 32 bytes"`（后者在现实现下不可达——`&bytes[..32]` 恒为
-    /// 32 长度，短文件按现语义切片越界 panic，>32 的文件截断取前 32 字节）。
-    /// 收拢不顺手改（蓝图 G3），由 `qa::arg_contract` 锁定。
+    /// 读取错误保留 `read sign key: {e}` 文案；seed 长度必须恰为 32B。
+    /// 短文件安全拒绝，长文件不能静默截断成另一把有效私钥。
+    /// 四个 QA 签名调用点统一经此入口（Deepening-v1 §11.9）。
     pub(crate) fn load_key(key_path: &Path) -> DynResult<SigningKey> {
         let key_bytes = fs::read(key_path).map_err(|e| invalid(format!("read sign key: {e}")))?;
-        Ok(SigningKey::from_bytes(
-            &key_bytes[..32]
-                .try_into()
-                .map_err(|_| invalid("key must be 32 bytes"))?,
-        ))
+        let seed: [u8; 32] = key_bytes
+            .try_into()
+            .map_err(|_| invalid("key must be 32 bytes"))?;
+        Ok(SigningKey::from_bytes(&seed))
     }
 
     /// 文件/报告字节的 ed25519 签名（小写 hex，64 字节 → 128 字符）。
@@ -332,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn load_key_keeps_legacy_wording_and_truncation() {
+    fn load_key_rejects_invalid_lengths_without_truncation_or_panic() {
         let root = sandbox("load-key");
         let missing = SignedReport::load_key(&root.join("nope.bin"))
             .err()
@@ -342,20 +340,39 @@ mod tests {
             missing.starts_with("read sign key: "),
             "文案漂移：{missing}"
         );
-        // >32 字节：截断取前 32 字节（与 32 字节 key 得同一把私钥）。
+        // 原始 Ed25519 seed 的长度必须恰好 32B；超长不能悄悄截断。
         let mut long = vec![9u8; 32];
         long.extend_from_slice(&[0u8; 8]);
         fs::write(root.join("long.bin"), &long).unwrap();
         fs::write(root.join("seed.bin"), [9u8; 32]).unwrap();
         assert_eq!(
             SignedReport::load_key(&root.join("long.bin"))
-                .unwrap()
-                .verifying_key()
-                .to_bytes(),
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default(),
+            "key must be 32 bytes"
+        );
+        for size in [0usize, 8, 31] {
+            let short = root.join(format!("short-{size}.bin"));
+            fs::write(&short, vec![9u8; size]).unwrap();
+            assert_eq!(
+                SignedReport::load_key(&short)
+                    .err()
+                    .map(|e| e.to_string())
+                    .unwrap_or_default(),
+                "key must be 32 bytes",
+                "{size}B seed 应安全拒绝"
+            );
+        }
+        assert_eq!(
             SignedReport::load_key(&root.join("seed.bin"))
                 .unwrap()
                 .verifying_key()
-                .to_bytes()
+                .to_bytes(),
+            SigningKey::from_bytes(&[9u8; 32])
+                .verifying_key()
+                .to_bytes(),
+            "合法 32B seed 的签名身份不变"
         );
     }
 
