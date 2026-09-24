@@ -176,7 +176,10 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
     let mut ctx = crate::spawn::SpawnCtx::from_bootinfo_reader(&reader, &caps);
 
     // 校验内核映射生效：读 bundle 首 8 字节（magic）。
-    // SAFETY: 内核 boot.c 已把 [0x42000000, 0x42200000) 映射进初始 VSpace。
+    // SAFETY: 内核 boot.c 已把 [0x42000000, 0x42800000) 映射进初始 VSpace
+    // （8 MiB 映射窗——WP-74.2.3 订正，旧注 2 MiB 已过时；长度事实源 =
+    // boot-protocol ENEROS_MAPPED_WINDOW_LEN，内核侧 0001 补丁字面由
+    // boot-protocol 对拍门互锁）。
     let probe = unsafe { core::ptr::read_volatile(init_bundle_phys as *const [u8; 8]) };
     crate::println!(
         "[eneros-root-task] BOOT-007 kernel-mapped bundle probe={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",

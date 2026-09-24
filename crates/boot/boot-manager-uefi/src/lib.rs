@@ -18,7 +18,9 @@ pub const MANIFEST_RESERVED_BYTES: u64 = 64 * 1024;
 pub const KERNEL_LOAD_START: u64 = 0x4100_0000;
 pub const KERNEL_LOAD_END: u64 = 0x4180_0000;
 /// 30 RT-010：init bundle 加载区间单一事实源——引用 boot-protocol 常量
-/// （0x4200_0000 起 2 MiB 内核 BOOT-007 窗口）。旧实现允许 8 MiB 浮动区间，
+/// （0x4200_0000 起的内核 BOOT-007 映射窗口；WP-74.2.3 订正：窗口已
+/// 2→4→8 MiB 三轮扩窗，长度事实源 = `ENEROS_MAPPED_WINDOW_LEN`，保留窗
+/// 32 MiB = `ENEROS_RESERVED_WINDOW_LEN`）。旧实现允许 8 MiB 浮动区间，
 /// 与内核固定映射/root-task 固定读冲突（load_address ≠ 0x4200_0000 即静默
 /// 断裂）。validate 收紧：load_address 必须 == INIT_LOAD_START。
 pub const INIT_LOAD_START: u64 = eneros_boot_protocol::ENEROS_INIT_BUNDLE_PHYS;

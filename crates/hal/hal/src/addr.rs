@@ -138,7 +138,8 @@ mod tests {
 
     #[test]
     fn identity_window_translation() {
-        // BOOT-007 窗口 [0x4200_0000, 0x4220_0000)。
+        // 样例窗口参数（2 MiB 仅为本测试的 from_identity_window 样例输入，
+        // 非 BOOT-007 实窗主张——映射窗已 8 MiB，见 boot-protocol 常量）。
         let win = PhysAddr::new(0x4200_0000);
         let inside = PhysAddr::new(0x4200_1000);
         let va = CpuVaddr::from_identity_window(inside, win, 0x20_0000);

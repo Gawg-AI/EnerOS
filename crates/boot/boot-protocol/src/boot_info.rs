@@ -219,10 +219,11 @@ pub const ENEROS_MAPPED_WINDOW_LEN: u64 = 0x800_000;
 /// CRC32——任何经 retype/映射拿到的窗内写权都不可检出，必须 fail-closed
 /// 在分配入口拒绝（2026-09-23 审计复核施工）。
 pub const ENEROS_RESERVED_WINDOW_LEN: u64 = 0x200_0000;
-/// 单 DTB 硬上限（2 MiB = BOOT-007 窗口全尺寸；QEMU virt 运行时 DTB ≈
-/// 0x101000，真机平台 dts 一般更小）。实际边界由 [`dtb_window_for`] 的
-/// 窗口剩余空间决定（bundle 已占部分之外）；本常量是独立于 bundle 的
-/// 防御上限，超限 fail-closed。
+/// 单 DTB 硬上限（**独立防御上限，非窗口全尺寸**——WP-74.2.3 措辞订正：
+/// 映射窗已 8 MiB（[`ENEROS_MAPPED_WINDOW_LEN`]），本常量 2 MiB 与之无关；
+/// QEMU virt 运行时 DTB ≈ 0x101000，真机平台 dts 一般更小）。实际边界由
+/// [`dtb_window_for`] 的窗口剩余空间决定（bundle 已占部分之外）；超限
+/// fail-closed。
 pub const ENEROS_DTB_MAX_LEN: u64 = 0x200_000;
 
 /// bundle 之后的 DTB 放置窗口：起点 = bundle 末端页对齐，长度 = 窗口内
