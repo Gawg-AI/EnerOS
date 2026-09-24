@@ -1284,6 +1284,8 @@ impl UntypedAllocator {
     /// 见 [`overlaps_reserved_window`]）。
     pub(crate) fn with_blocked(cap_base: u64, descs: Vec<UntypedDesc>, blocked: Vec<bool>) -> Self {
         let used = alloc::vec![0u64; descs.len()];
+        // release 下失配由 `is_blocked` 的越界缺省 true 兜底（fail-closed），
+        // debug 下此断言尽早暴露构造方 bug。
         debug_assert_eq!(descs.len(), blocked.len(), "blocked 必须与 descs 等长");
         Self {
             cap_base,
@@ -1293,18 +1295,26 @@ impl UntypedAllocator {
         }
     }
 
+    /// BOOT-007 拉黑判定唯一实现。越界索引按已拉黑处理（fail-closed：
+    /// blocked 与 descs 等长是构造期不变式，失配时宁可拒分配不可放行——
+    /// 旧的 `unwrap_or(false)` 在 release 下越界即静默不拉黑，fail-open）。
+    fn is_blocked(&self, i: usize) -> bool {
+        self.blocked.get(i).copied().unwrap_or(true)
+    }
+
     /// 分配覆盖指定物理地址的 **device** 对象（FIX-BUGS-0810 B2 两件套之二）。
     ///
     /// [`alloc_device`]（first-fit）**不校验物理地址**——MMIO 映射若用它，
     /// 修好 node_offset 后会把"别的设备的物理页"映射到请求的虚拟地址
     /// （静默乱写，比软件模式更糟）。本函数按物理定位 device untyped
-    /// （镜像 [`alloc_at`] 的覆盖检查结构，条件反转为 `is_device` 必须为真），
+    /// （按物理覆盖检查：请求地址对齐到对象大小、落点须落在该 untyped
+    /// 物理区间内；条件反转为 `is_device` 必须为真），
     /// 返回 `(untyped_cap, byte_offset)`；找不到覆盖 `phys` 的 device untyped
     /// 返回 `None`（调用方 fail-closed 走软件模式兜底）。
     pub fn alloc_device_at(&mut self, phys: u64, size_bits: u64) -> Option<(u64, u64)> {
         for i in 0..self.descs.len() {
             let desc = self.descs[i];
-            if self.blocked.get(i).copied().unwrap_or(false) {
+            if self.is_blocked(i) {
                 continue; // BOOT-007 保留窗拉黑（索引占位保留，见 with_blocked）
             }
             if !desc.is_device || desc.size_bits < size_bits {
@@ -1338,8 +1348,8 @@ impl UntypedAllocator {
     pub fn alloc(&mut self, size_bits: u64) -> Option<(u64, u64)> {
         for i in 0..self.descs.len() {
             let desc = self.descs[i];
-            if self.blocked.get(i).copied().unwrap_or(false) {
-                continue; // BOOT-007 保留窗拉黑（索引占位保留，见 with_blocked）
+            if self.is_blocked(i) {
+                continue;
             }
             if desc.is_device || desc.size_bits < size_bits {
                 continue;
@@ -1376,8 +1386,8 @@ impl UntypedAllocator {
         let need = (count as u64).checked_mul(obj_size)?;
         for i in 0..self.descs.len() {
             let desc = self.descs[i];
-            if self.blocked.get(i).copied().unwrap_or(false) {
-                continue; // BOOT-007 保留窗拉黑（索引占位保留，见 with_blocked）
+            if self.is_blocked(i) {
+                continue;
             }
             if desc.is_device || desc.size_bits < OBJ_BITS_SMALL_PAGE {
                 continue;
@@ -1426,8 +1436,8 @@ impl UntypedAllocator {
     pub fn alloc_cap_table(&mut self, size_bits: u64) -> Option<(u64, u64)> {
         for i in 0..self.descs.len() {
             let desc = self.descs[i];
-            if self.blocked.get(i).copied().unwrap_or(false) {
-                continue; // BOOT-007 保留窗拉黑（索引占位保留，见 with_blocked）
+            if self.is_blocked(i) {
+                continue;
             }
             if desc.is_device || desc.size_bits < size_bits {
                 continue;
@@ -1457,35 +1467,6 @@ impl UntypedAllocator {
             {
                 self.used[i] = aligned + obj_size;
                 return Some((self.cap_base + i as u64, aligned));
-            }
-        }
-        None
-    }
-
-    /// 分配覆盖指定物理地址的对象（G-KERNEL BOOT-007：init_bundle 的物理页）。
-    ///
-    /// first-fit [`alloc`](Self::alloc) 不指定物理；bundle 由 boot-manager 加载
-    /// 到固定物理地址（`INIT_BUNDLE_PHYS`），必须按物理定位 untyped。
-    /// 返回 `(untyped_cap, byte_offset)`；找不到覆盖该物理的 untyped 返回 `None`。
-    pub fn alloc_at(&mut self, phys: u64, size_bits: u64) -> Option<(u64, u64)> {
-        for i in 0..self.descs.len() {
-            let desc = self.descs[i];
-            if self.blocked.get(i).copied().unwrap_or(false) {
-                continue; // BOOT-007 保留窗拉黑（索引占位保留，见 with_blocked）
-            }
-            if desc.is_device || desc.size_bits < size_bits {
-                continue;
-            }
-            let obj_size = 1u64 << size_bits;
-            let aligned = phys & !(obj_size - 1);
-            let desc_end = desc.paddr.checked_add(1u64 << desc.size_bits)?;
-            if aligned >= desc.paddr && aligned < desc_end {
-                let byte_off = aligned - desc.paddr;
-                // 标记已用（字节偏移，与 freeIndex 一致）。
-                if self.used[i] < byte_off + obj_size {
-                    self.used[i] = byte_off + obj_size;
-                }
-                return Some((self.cap_base + i as u64, byte_off));
             }
         }
         None
@@ -4104,6 +4085,65 @@ mod tests {
         // → cap = cap_base + 原索引（对齐铁律）
         let (cap, _) = alloc.alloc(12).expect("索引 2 normal untyped 可分配");
         assert_eq!(cap, 102, "cap = cap_base + 原索引（拉黑项占位不删除）");
+    }
+
+    #[test]
+    fn blocked_length_mismatch_fails_closed() {
+        // R15-F（蓝图74-01 WP-74.1.3）：blocked 短于 descs 的病态构造
+        // （等长不变式被破坏）必须 fail-closed。两面设计：
+        // - release：debug_assert 退场，is_blocked 越界缺省 true 兜底——
+        //   任何 alloc* 一律 None（宁可拒分配不可放行，BOOT-007 纪律）；
+        // - debug：with_blocked 构造期断言响亮拦截（测试 profile 为
+        //   unwind，catch_unwind 可验证 panic 面存在）。
+        // 夹具：唯一可分配候选全部落在越界索引上——修复前（越界当未拉黑）
+        // 四个分配口都会成功分配（红），修复后一律 None（绿）。
+        let descs = vec![
+            UntypedDesc {
+                paddr: 0x3000_0000,
+                size_bits: 25,
+                is_device: false, // blocked[0]=true（界内 true）
+            },
+            UntypedDesc {
+                paddr: 0x0a00_0000,
+                size_bits: 25,
+                is_device: true, // 越界索引 1：device 分配唯一候选
+            },
+            UntypedDesc {
+                paddr: 0x3800_0000,
+                size_bits: 25,
+                is_device: false, // 越界索引 2：normal/DMA/CNode 唯一候选
+            },
+        ];
+        let blocked = vec![true]; // 短于 descs.len()=3
+
+        #[cfg(debug_assertions)]
+        {
+            let result = std::panic::catch_unwind(|| {
+                UntypedAllocator::with_blocked(100, descs.clone(), blocked.clone())
+            });
+            assert!(
+                result.is_err(),
+                "debug 下等长失配必须被构造期断言拦截（fail-closed 响亮面）"
+            );
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let mut alloc = UntypedAllocator::with_blocked(100, descs.clone(), blocked.clone());
+            assert!(alloc.alloc(12).is_none(), "越界缺省 true 须拒 normal 分配");
+            assert!(
+                alloc.alloc_device_at(0x0a05_0000, 12).is_none(),
+                "越界缺省 true 须拒 device 分配"
+            );
+            assert!(
+                alloc.alloc_contiguous_pages(1).is_none(),
+                "越界缺省 true 须拒 DMA 连续页分配"
+            );
+            assert!(
+                alloc.alloc_cap_table(0).is_none(),
+                "越界缺省 true 须拒 CNode 分配"
+            );
+            assert_eq!(alloc.allocated(), 0, "病态构造下不得有任何记账字节");
+        }
     }
 
     #[test]
