@@ -538,6 +538,9 @@ trial 臂读取该计数（`BOOT-TRIAL-PROBE pre_count=`）。实测链
 | REG-70.FL-JUDGE-SCAN-SCOPE | `tools/run70_gate_judge.py`（G1/G2） | **P2** | 扫描域被裁到 `PRODUCT-READY` 之后 ⇒ 启动段（spawn/装配/首次 mount，恰是 69.5 那类 OOM 的首发位置）的 PANIC/分配失败不计，而 vol1/2/3 门除 judge 外无全文件兜底。修：G1/G2 扫**全文件**（并报"其中 N 处位于 READY 之前"） |
 | REG-70.FL-TRANSCRIPT-STALE | `tools/run70-vol{1,2,3,4,5}-gate.sh` | **P2** | 对端 transcript 以 append 打开、vol1 落 `$EVROOT` 持久目录且**从不清理** ⇒ 三个对端本轮启动即死，前一轮记录仍让 G7 判"非空存活"。修：五个门在启动对端前先删 transcript（本轮新写才可能通过 G7） |
 | REG-70.FL-COLLECT-SIGPIPE | `tests/soak/collect-evidence.sh::collect_dir_if_present` | **P2** | `find … \| head -1 \| grep -q .` 在 `set -o pipefail` 下**把有内容的大目录判成空**（实测 3000 文件目录 `rc=141 JUDGED_EMPTY`）——证据包越完整越容易被判缺件。修：`find … -print -quit`（无管道）；实证：同目录判 `JUDGED_NONEMPTY` |
+| REG-70.FL-PANIC-TOKEN-GAP | `tools/gate-criteria.toml`（PANIC-SCAN）+ `tools/run70_gate_judge.py`（G1/G2） | **P1** | 登记词表只认 Rust 标准形 `PANIC: panicked at`，而本仓另有三个真实 panic 出口打非标准形：`root-task/src/panic.rs:257` `PANIC reboot #N at …— arming watchdog reset`、`:269` `PANIC #N at …— WDT unmapped — spin`、`services/src/panic.rs:50` `PANIC #N at …— suspending (supervisor restart)`、`runtime/hello/src/main.rs:68` `[PANIC] …` ⇒ **真 panic 判绿**。物证 `evidence/70/70.12/probe-window.qemu-serial.log`（WDT unmapped 一行，PANIC-SCAN 判 ✓）。讽刺面：裸子串方言（`grep PANIC`）偶然兜住它们，"最严谨"的锚定词表反而漏检——注释宣称的"采纳 judge.py 最严口径"是把 judge 的漏检面一并采纳。修：词表补 `PANIC #`/`PANIC reboot #`/`[PANIC]`，并推广 `criterion.match_count` 右边界规则为"仅当 pattern 以词字符结尾时锚定"（否则 `PANIC #` 匹配不到 `PANIC #1`）；红测 `test_panic_scan_hash_form_emitters_red`（fixture 四形逐一证伪）+ `test_standard_panic_form_still_covered`。**归档回归复算**：125 份真串口日志，补词表后旧红→新绿 **0**（零漏检）、旧绿→新红 **0**（零翻红）；judge.py 侧 1 例新红即 70.12 该真 panic，且 70.1~70.15 无任一 judge 消费窗含这些词形 ⇒ 不追溯改写作废既有门记录 |
+| REG-70.FL-RETIRED-DIALECT | `tools/run70-vol{4,5,6,7,89}-gate.sh`、`run70-r10-held.sh`、`run70-r03-powercut.sh` | **P2** | "第三词表/`-i` 宽面退役"此前**只是注释与 toml 宣称**：73 批B 实际只收编了 vol5 窗B 与 r10-held B5 两点，残余 **11 个活体判据点**仍自带裸 grep（vol4 R1、vol5 R7、vol6 R1/R26/R30、vol7 R1/R5/R13、vol89 R7、r10-held A6/C4、r03-powercut R2），`run70_gate_judge.py` 是第十二个（硬编码词表）——同一门内并存两至三种口径，且 `grep -aci` 大小写不敏感 + 裸子串既假红也假绿；缺日志时 `grep … \|\| true` 折 0 恒绿（与已登记的 B4 缺输入=0 同族）。修：12 点全收编 `criterion.py check PANIC-SCAN`（回声逐字节同形，缺输入=红），judge.py G1/G2 改读登记册（删自带词表与 orphaned `find_all`），五个新消费门补 `criterion.py --selftest` 门头自举（S4）。守卫：`test_live_gates_do_not_bare_grep_panic` 以"会打 `[✓][` verdict 回声即判据面"为准则扫守卫面（第一版按 `run70-vol*-gate.sh` glob 曾漏掉 r03-powercut/r10-held，已把该失误固化为断言）+ 禁 judge 自带词表。纯人工诊断转储 `run70-vol1-attrib.sh` 不产 verdict，不在收编面内 |
+| REG-70.FL-BASH-DEAD-PREDICATE | `tools/run70-r10-held.sh` 段A（A2/A4a/A4c/A7） | **P2** | bash 用 awk 拆七元组后重算 `I+S=12`/`uniq≥I ∧ I≥1`/`rbs≥1`/`A+Bk+F=I`，但四条谓词 `r10_plan_accounting.select()` 已强制 ⇒ 重算臂只在 select 通过的分支进入，**结构不可达**（`rbs≥1 ⇒ 存在 Applied ⇒ uniq≥1 ⇒ I≥1`，故 A4a 的 `I≥1` 是 `uniq==I` 臂的推论而非独立判据）；"bash 还独立判一遍"是假象——谁削弱 select 这里照样全 ✓，而 A3 早就是无条件回声（同分支内自相矛盾）。修：谓词收拢为 `passes(row)` 单源，段A 四臂改**观测回声**（回声文本逐字节不变，`verdict_lines` 抓取面不受影响）；逐臂覆盖搬到可达处——selftest A07 六臂证伪表（任一臂破坏即拒）+ A07b 可构造形态（intents=0 带 Applied 读回 → `uniq==I` 臂拒绝）。守卫面实证：`r10_plan_accounting --selftest` 13→20 例全过 |
 | REG-70.FL-FATAL-WORD-BOUNDARY | `xtask/src/soak.rs::scan_fatal_markers` | **P2** | `contains("oom")` 让真实日志的 `ambient room temp=25.0C` 命中 `room` ⇒ 诚实 72h 运行被整场判负（下一次实弹必撞）。修：`fatal_marker_in` 按词段匹配（`panic/panicked/oom` 独立词 + `out of memory`/`memory allocation of` 短语，后者与门窗 G2 同口径）；红测含正反 10 例 |
 | REG-70.FL-QUALIFY-NO-FATAL | `xtask/src/soak.rs::load_and_validate_run` | **P1** | 零泛豁免扫描只挂在 `command_run_check` 第二步，而 `board qualify check/verify` 直接调 `load_and_validate_run` ⇒ 带未处置 PANIC 的 run 可支撑 72h 资格。修：扫描并入 `load_and_validate_run`（单源，所有消费者同得违例）；红测 `fatal_markers_are_part_of_every_run_consumer_verdict` |
 | REG-70.FL-QUALIFY-MANIFEST-PATH | `xtask/src/board.rs::validate_qualification` | **P2** | `runs[].manifest` 未过 `check_rel_path`：`/tmp/x.json` 会替换整个前缀、`../x.json` 可越出仓库（S7/R4 逃逸加固漏了这一处）。修：单源路径判据 + `qualify-run-manifest-escapes-base` |
@@ -1293,7 +1296,11 @@ QEMU R10-B 割切相位、真实硬件与重签候选证据仍开放，不将本
    - `tools/gate-criteria.toml` 首批 5 条判据登记（VOL70.5-R9 any_of=
      PUSH:OK∣synthetic + none_of=FAILED——定案点②语义重述；R9b；
      R10-B4-DELIVERY；PANIC-SCAN 采纳 judge.py 最严口径——vol5 `-i` 与
-     r10-held 第三词表退役；ACQ-MODBUS）+ `tools/criterion.py` 判据器
+     r10-held 第三词表退役【73 批C 订正：此句虚述——当时仅 vol5 窗B 与
+     r10-held B5 两点落地，残余 11 个活体判据点仍裸 grep，且所谓"最严
+     口径"本身漏检三个真实 panic 出口；见 REG-70.FL-RETIRED-DIALECT /
+     REG-70.FL-PANIC-TOKEN-GAP，12 点已全收编 + 守卫锁死】；
+     ACQ-MODBUS）+ `tools/criterion.py` 判据器
      （check/--count-only/--selftest；全 token/锚定边界；缺输入 check=✗/
      count-only=exit 3；回声逐字节同形）。
    - 四脚本收编：vol5-gate R9/R9b/PANICS_B + 门头自举 selftest；
@@ -1332,3 +1339,32 @@ R15-Q/U/F 三 Strong 清偿（第十五轮体检 Top 面）。红测先行 ×3 �
 | REG-74-F | `crates/runtime/root-task/src/spawn.rs` UntypedAllocator | **P2**（release fail-open 边角 + 纪律复制 5 处） | blocked 逐位检查逐字复制 5 处，等长不变式仅 debug_assert：release 下 blocked 短于 descs 时越界 `get(i)=None → unwrap_or(false)` = **静默不拉黑**，与 BOOT-007 全链 fail-closed 纪律相悖。修：`is_blocked` 私有谓词单点化（越界缺省 true——失配时宁可拒分配不可放行），4 活体位点收编（第 5 位点随 alloc_at 删除）；with_blocked debug_assert 保留并升级注释（debug 尽早暴露构造方 bug，release 由谓词兜底）。删孤儿 `alloc_at`（全仓零调用方：init bundle 已由内核 boot.c 直映射、root-task 1:1 直读，注释所述用途不存在），alloc_device_at doc 的 `[alloc_at]` 链接同步改写（rustdoc -D warnings 防断链）。红测 `blocked_length_mismatch_fails_closed` **双面设计**：release 面断言四分配口（alloc/alloc_device_at/alloc_contiguous_pages/alloc_cap_table）一律 None + 零记账（修复前全红=分配成功）；debug 面 catch_unwind 锁构造期断言拦截（测试 profile 强制 unwind）。变异咬合③：缺省翻回 false → release 红测红。**有意设计不动摇**：平行数组+索引占位仍是 BOOT-007 承重决策（cap 槽号 = cap_base+索引 对齐 seL4 语义），不改数据结构，既有 reserved_window 两测试全绿；target 构建 EXIT=0（spawn.rs 为 cfg(none) 主战场，host 绿≠target 可编译） |
 | REG-74-Q-R1 | `crates/ai/fast-path/src/engine.rs:117-123` + `crates/ai/dual-brain/src/coordinator.rs:576-582` 回落原解路径 | **P3**（纵深缺口，登记不修） | 74-01 复查轮（三路对抗审计）发现：mutex 后置门只查 clamp **终态** current_schedule，原解不经该门——若原解含同时充放且规则链恰好把一侧钳到 ≤eps、再叠加钳后重验 4 轮不收敛，`revalidate_clamped().unwrap_or(原解)` 会携带在终态上认证的 `passed=true` 放行未过 mutex 门的原始解。**生产不可达**：电气/爬坡钳制只降超限值不改号不造零（protection.rs 钳制保持符号），条件无生产规则可满足；需自定义非收敛钳制规则才触发。不修理由：修=对原解补过 mutex 门，属 fast-path/coordinator 认证语义设计变更，超出卷一边界（蓝图 §4）。两处「原解已通过全部规则」注释已补注指向本条 |
 | REG-74-Q-R2 | `crates/ai/safety-validator/src/validator.rs:117` mutex 门 NaN 盲区 | **P3**（既有，非本卷引入） | `NaN > SIMUL_EPS` 恒 false，mutex 门对 NaN 失明。默认生产接线（电气规则 WP-26.6 finite 前置 Fatal，validator 循环早退先于 mutex 块）下不可达；`SafetyValidator::empty()` 或自定义无 finite 检查规则集下 NaN 双充放可带 `passed=true` 通过。74-01 前即存在；修属 validator 输入卫生面，与结论面顺序修不同族，登记不修 |
+
+## B74-2. 蓝图 74 · 修复卷二登记（2026-09-25，v0.341.0，启动链事实钉版与构建面收敛）
+
+R15-B/A/D/E/G 五候选清偿 + 施工中新发现 R15-B 次生面（A-R1）。红测先行
+（对拍门 5 断言）、变异咬合 ×4、两构建路径实弹 + QEMU 双路冒烟、bootstrap
+钉版哈希实弹下载校验。提交 1326ec3e（74.2.1）→ 53a5b73c（74.2.4）→
+window_contract_lock（74.2.2）→ 2a34e9ec（74.2.3）→ 3406529e（74.2.5）→
+198c31ff（74.2.6）→ 48cd8f63（74.2.7）。测试计数：开工基线 9231/0 →
+收工 9236/0（+5 = 对拍门五断言组）。
+
+| 条目 | 位置 | 级别 | 修复与证据 |
+|---|---|---|---|
+| REG-74-B | `third_party/sel4-top/overlay-init-bundle-reserved.dts` + `third_party/sel4-patches/0001-init-bundle-mapping.patch` + `crates/boot/boot-protocol/src/boot_info.rs` + 两构建脚本 + `xtask/src/image_factory.rs` | **P1**（启动链最重契约四事实源互不锁） | 窗口三元组（INIT_BUNDLE_PHYS/MAPPED_WINDOW_LEN/RESERVED_WINDOW_LEN）+ 内核加载址共 5 个事实源散布 dts/补丁 C 字面+隐函数/Rust 常量/两构建脚本/xtask，零机器对拍（boot_info.rs:207 注释宣称 dts 为单一事实源但全仓无对拍）。修：新增 `boot-protocol/tests/window_contract_lock.rs` 五断言组互锁（dts reg↔常量 / 补丁字面↔常量 / 隐函数公式 n+=MAPPED/2MiB+1 / 内核加载址 corpus 式三源一致 / 74.2.1 手抄退役回归锁），期望串全由常量 format! 拼接（R14 守卫自咬教训：测试文本零裸字面）。变异咬合 ×4：dts reg 漂移→断言1红；n+=5→4→断言3红；常量 8→4 MiB→断言 2/3 红（dts 断言不红=reg 锁 RESERVED 非 MAPPED，蓝图预言面吻合）；IMAGE_START_ADDR 漂移→断言4红。蓝图两笔误订正：include_str 路径 3 级→4 级（tests/ 至仓根实际深度）；「2<<19」（=1 MiB）→ 2 MiB 粒度（按「8MiB→5；16MiB→9」意图） |
+| REG-74-A | `third_party/sel4-build.sh` + `sel4-build-rust.sh` + 新增 `sel4-build-common.sh` | **P2**（~38 行逐字姊妹拷贝 + 已发现不对称缺陷） | 两构建脚本共享块（工具链 8 路径+3 exports/libcpio 4 行/converge 调用/18 公共 cmake 参数）收编进 common（被 source 非入口），wrapper 只持变体（13 vs 14 / BUILD 目录 / 拷产物 / rust 4 参+3 导出）；**不对称缺陷顺带修复**：依赖自检+自动 bootstrap 环原 build.sh 独有，rust 路径冷缓存此前在 cmake 步骤才裸错——迁入 common 双路径同受益（stub-bash 沙箱实测触发链）。等价性：两路径实弹重建 exit 0（C 40 步/rust 41 步）；top-rust CMakeCache 逐字节一致、top 仅 CMAKE_TOOLCHAIN_FILE 类型标记差异（命令行 -D 对旧缓存条目的既有 cmake 行为，值相同）；converge T1/T2/T5 沙箱咬合（篡改 boot.c 收敛回期望 sha256）。**KernelRootCNodeSizeBits 13/14 不统一**（裁决项见下） |
+| REG-74-A-R1 | canonical 启动线 gic-version=3 全族（CI g0 job / `sel4-powercut.sh` / `sel4-build.sh` echo 线 / docs/sel4 三文档） | **P1**（预存启动断裂，本卷施工冒烟挖出） | seL4 14.0.0 qemu-arm-virt 平台唯一内置 GICv2 驱动（config.cmake 硬编码 `INTERRUPT_CONTROLLER gic_v2.h` + `add_sources gic_v2.c`），而全仓 canonical 启动命令用 `gic-version=3`——GICv3 机器无 GICC 帧，gic_v2 cpu_iface_init 首写 GICC_CTLR 即**同步外部 abort**（ESR 0x96000050=WnR+ext abort；FAR 0xffff_ffff_ffe0_2000 与反汇编 `str wzr,[x0,#4096]` 逐位吻合；qemu 9.2.4 与 10.2.1 同现）。三层对照排除本卷嫌疑：重构前后脚本冷构建同 abort（CMakeCache 等值）；CMakeCache 快照证明 KernelArmGicV3=OFF 系预存（任何脚本版本从未传过该旗标）；生产证据线 xtask qemu_harness **恒 gic-version=2**（三处）从无此病。**失效无人观测的窗口**：主 CI 自 2026-08-31 起未运行（其后 60+ 提交零 CI 验证，g0 job 名存实亡）。修：CI g0/powercut/build.sh echo 三活面订正 gicv2（g0 冒烟实弹：kernel-init/bootinfo-valid/cap-create/ipc-loopback PASS + virtio 三 init/tx/storage 全 PASS）；docs/sel4 三文档为历史交付记录不改、以本条为勘误。**次生面登记不修**：C root task 失败路径空指针崩溃（net-rx FAIL/设备缺失 → vm fault at 0 转储，root-heartbeat/evidence-complete 不可达）——root_task.c 健壮性缺口，属 g0 证据链复活工程（连 CI 恢复），超出本卷 |
+| REG-74-A-SIZEBITS | `KernelRootCNodeSizeBits` 13（C 路径）vs 14（rust 路径） | **P3**（裁决项，登记不修） | build.sh C 路径停 13（g0 证据介质，`eneros.sel4.v1` 5 项证据树绑定 13 位根 CNode 内核），rust 路径 70.15 实弹升 14（槽位耗尽，spawn.rs ROOT_CNODE_SLOTS=1<<14 只对齐 rust 侧）。统一到 14 会改 g0 内核二进制 → 需 g0 证据重跑 + C 路径槽位面重验。本卷参数化显式化（common 化后两 wrapper 各持显式值 + 注释互指），统一与否留 owner 裁决 |
+| REG-74-E | `third_party/sel4-bootstrap.sh` + `sel4-powercut.sh` + `docs/security/supply-chain.md` | **P2**（QEMU 三源三版本，钉版清单缺项） | 两构建脚本 `-DQEMU_BINARY` 指 xpack 9.2.4-1 但 bootstrap 清单不含 qemu（冷缓存死路径）；powercut.sh 默认 8.2.6-1（同死路径）；CI/xtask 用系统 qemu（第三面）。修：bootstrap 第 7 项钉版 qemu-arm 9.2.4-1——哈希取官方 .sha 边车（203dc2c7…）+ 与缓存解压树二进制逐字节比对，**实弹端到端**（重跑现场下载 35.75 MB → fail-closed 校验 OK）；powercut 默认收链 9.2.4-1 + gicv2（REG-74-A-R1）；supply-chain.md 增补钉版分面声明（构建面=钉版 / CI 开发机系统 qemu=登记例外）。**蓝图事实订正**：「r03 断电门证据介质 8.2.6→9.2.4 须重跑重录」不适用——r03 实走 xtask qemu-prod UEFI 链 + harness gicv2，从不调用 sel4-powercut.sh（全仓零调用方），无介质变更 |
+| REG-74-G | `third_party/sel4-top/CMakeLists.txt:31-37` + `third_party/sel4-root/root_task.c.bak` | **P3**（双轨定位颠倒 + 未跟踪残留） | 注释称 Rust ELF「不替代 C root task 的产品地位」与 ADR-0023 §4（Rust 载明主线）及 CI 现实（gkernel 全链依赖 Rust root-task）相反；「eneros-hello」陈旧名。修：注释订正如实图景（Rust=产品主线 / C=G2/G3 证据位=g0 job 5 项，**与「删 C 路径」误读划界**：root_task.c 不删）；删 root_task.c.bak（未跟踪旧备份 63KB，本体在库） |
+
+### B74-2 验证账
+
+- 对拍门 5/5 绿 + 变异 ×4 咬合（当轮 cp 备份恢复，禁 git checkout 纪律遵守）。
+- 两构建路径全日志构建 exit 0；CMakeCache 等价性 diff（rust 逐字节/top 值级）。
+- bootstrap 冷缓存自检触发链（stub bash）+ 真下载哈希校验双实弹。
+- QEMU 冒烟：C 路径 g0 词形（gicv2）+ rust 路径 root-task 横幅/BOOT-007 probe。
+- `bash -n` ×6（common/两 wrapper/bootstrap/powercut/commit 前）；YAML
+  safe_load 过；fmt --check 过；clippy -D warnings 过（收尾全量复跑）。
+- **CI push 三 job 绿**：登记为 CI 面实弹验证项（本地不可全验；主 CI 自
+  2026-08-31 未运行，SEL4_CACHE_KEY bump 后首跑即冷重建——恢复 CI 即自动验证）。
