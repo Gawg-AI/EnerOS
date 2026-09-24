@@ -337,7 +337,10 @@ mod revalidate_tests {
     fn simultaneous_charge_discharge_is_rejected() {
         let v = SafetyValidator::new();
         let r = v.validate(&mutex_schedule(), &state());
-        assert!(!r.passed, "同时充放必须拒绝——mutex 后置检查是 Fatal 纵深防御");
+        assert!(
+            !r.passed,
+            "同时充放必须拒绝——mutex 后置检查是 Fatal 纵深防御"
+        );
         let m = r
             .violations
             .iter()
