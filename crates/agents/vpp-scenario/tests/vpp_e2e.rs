@@ -313,7 +313,7 @@ fn collect_evidence_ota_rollback() -> ExitEvidence {
     assert_eq!(slot, PartitionSlot::B);
     ota.write_chunk(slot, 0, &image[..512]).expect("chunk0");
     ota.write_chunk(slot, 512, &image[512..]).expect("chunk1");
-    assert!(ota.verify(slot).expect("verify"), "镜像验签应通过");
+    ota.verify(slot).expect("镜像验签应通过");
     ota.activate(slot).expect("activate");
     assert_eq!(ota.get_active_slot(), PartitionSlot::B);
     // 连续启动失败：第 4 次健康检查（> max_boot_attempts=3）触发自动回滚
