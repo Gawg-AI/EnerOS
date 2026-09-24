@@ -1317,3 +1317,16 @@ QEMU R10-B 割切相位、真实硬件与重签候选证据仍开放，不将本
    73 收口后优先评估立卷**）；线索D ADR-0054 readback P1 功能缺口；线索A
    在途归属 5+ 处；线索B System1 两套时钟（半证伪 P3）；线索C usize 路由
    下标（P3，engine.rs:1976 裸 expect 唯一引线）；C3/C5/C7/C8 顺位其后。
+
+## B74-1. 蓝图 74 · 修复卷一登记（2026-09-25，v0.340.0，结论面 fail-closed 收口）
+
+R15-Q/U/F 三 Strong 清偿（第十五轮体检 Top 面）。红测先行 ×3 组、
+变异咬合 ×3、target 构建 EXIT=0；提交 d8b7195d（Q）→ 7c515e83 +
+3fb1a32f（U）→ decc5192（F）。测试计数：开工基线 9227/0 → 收工
+9231/0（+4：validator mutex ×3 + spawn fail-closed ×1）。
+
+| 条目 | 位置 | 级别 | 修复与证据 |
+|---|---|---|---|
+| REG-74-Q | `crates/ai/safety-validator/src/validator.rs` validate | **P1**（结论面 fail-open） | `passed` 在 mutex 后置违规入列**前**定型：仅有 charge_discharge_mutex 违规时 `passed = 非空 \|\| !has_hard_reject = true`——31-review P1 AI-05 的后置 Fatal 纵深防御形同虚设，且该词形全仓零测试。修：mutex 块整体上移至 hard_rules/has_hard_reject 计算之前（最小 diff 无新代码；顺序正确性：检查只读 current_schedule（规则链+clamp 终态）与违规列表无交互；规则 Fatal 早退不受影响——早退时本块尚未执行）。红测 ×3（2 红 + 反向锁）：`simultaneous_charge_discharge_is_rejected` / `revalidate_clamped_propagates_mutex_reject`（:161 只看 passed 的传导面）/ `legal_schedules_still_pass_after_mutex_gate`（纯充/纯放/零条目防过收紧）。变异咬合①：块回移原位 → 2 红，cp 当轮备份恢复 → 51/0 绿。**消费面枚举**：fast-path engine.rs:105-110 与 dual-brain coordinator.rs:527,534 由放行转 SafetyFatal 拒绝（合法收紧，行号亲验）；dispatch engine.rs:1481-1483 **结构免疫**——`charge=p.min(0.0).abs()` 与 `discharge=p.max(0.0)` 对同一 p 至多一个非零 ⇒ mutex 不可达，行为零变化（证据留档：未来引擎侧若加同置条目，此面由本登记与 :161 红测共同兜底）；control-gateway safety.rs 同名异物不受影响 |
+| REG-74-U | `crates/security/ota-ab/src/upgrade.rs:134` + `kernel_ota.rs:193,255` + `business-services/src/ota_service.rs:505` | **P2**（幻影布尔臂） | 生产实现 WP-64.3.5 起恒 Ok(true)（错误全走 Err），Ok(false) 唯一来源是测试桩——与 CONTEXT「SignerKeyring Ok(false) 陷阱不外泄」同族，interface 面收尾：verify 收窄 `Result<()>`，布尔臂数据性不可表示（变异咬合②：复现 Ok(false) 臂 → E0308 编译红）。kernel_ota.rs 两处同型 `if !verified` 死臂一并退役（失败经 `?` 按具体 OtaError 传播，可诊断性不降级）；ota_service.rs:505 幻影臂删除（`verify-failed:{err}` 映射词形逐字保留；tools/ 零依赖已复核）；TestOta `verified` 字段退役（10 构造点清边），`negative_verify_failure_rejected` 改走 FaultOta Err 路径——补上 verify_err 此前从未置 Some 的无活体覆盖面（`ERR:ota:verify-failed:sm3-hash-mismatch`，与 t39 候选词形同族）；**blueprint 枚举外漏网点** vpp_e2e.rs:316 由全量套件编译网捕获（E0600）→ 3fb1a32f 补遗（教训：grep 完整性 sweep 被 head 截断=假完备，全量编译才是真网）。rollback.rs:264 `load_from_device` 的 Ok(bool) 为恢复/回退独立语义，不在本面 |
+| REG-74-F | `crates/runtime/root-task/src/spawn.rs` UntypedAllocator | **P2**（release fail-open 边角 + 纪律复制 5 处） | blocked 逐位检查逐字复制 5 处，等长不变式仅 debug_assert：release 下 blocked 短于 descs 时越界 `get(i)=None → unwrap_or(false)` = **静默不拉黑**，与 BOOT-007 全链 fail-closed 纪律相悖。修：`is_blocked` 私有谓词单点化（越界缺省 true——失配时宁可拒分配不可放行），4 活体位点收编（第 5 位点随 alloc_at 删除）；with_blocked debug_assert 保留并升级注释（debug 尽早暴露构造方 bug，release 由谓词兜底）。删孤儿 `alloc_at`（全仓零调用方：init bundle 已由内核 boot.c 直映射、root-task 1:1 直读，注释所述用途不存在），alloc_device_at doc 的 `[alloc_at]` 链接同步改写（rustdoc -D warnings 防断链）。红测 `blocked_length_mismatch_fails_closed` **双面设计**：release 面断言四分配口（alloc/alloc_device_at/alloc_contiguous_pages/alloc_cap_table）一律 None + 零记账（修复前全红=分配成功）；debug 面 catch_unwind 锁构造期断言拦截（测试 profile 强制 unwind）。变异咬合③：缺省翻回 false → release 红测红。**有意设计不动摇**：平行数组+索引占位仍是 BOOT-007 承重决策（cap 槽号 = cap_base+索引 对齐 seL4 语义），不改数据结构，既有 reserved_window 两测试全绿；target 构建 EXIT=0（spawn.rs 为 cfg(none) 主战场，host 绿≠target 可编译） |
