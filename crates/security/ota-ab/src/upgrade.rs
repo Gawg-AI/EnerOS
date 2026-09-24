@@ -131,7 +131,12 @@ pub trait OtaManager {
     ) -> Result<(), OtaError>;
 
     /// 校验：回读镜像做 SM3 哈希比对 + SM2 签名验证；双过置 Verified。
-    fn verify(&mut self, slot: PartitionSlot) -> Result<bool, OtaError>;
+    ///
+    /// R15-U（蓝图74-01 WP-74.1.2）：失败即 Err，成功即 `Ok(())`——
+    /// 不存在「验签通过但未通过」的中间态，`Ok(false)` 词汇退役
+    /// （实现侧 WP-64.3.5 已消灭布尔陷阱，本签名让它在 interface 面
+    /// 结构性不可表示）。
+    fn verify(&mut self, slot: PartitionSlot) -> Result<(), OtaError>;
 
     /// 激活：仅 Verified 态可切换；新分区 Active、旧分区保留 Verified 备用。
     fn activate(&mut self, slot: PartitionSlot) -> Result<(), OtaError>;

@@ -202,7 +202,7 @@ fn int1_full_upgrade_persist_reboot() {
 
     write_image(&mut ota, slot, &image, CHUNK_SIZE);
 
-    assert!(ota.verify(slot).expect("verify 应通过"));
+    ota.verify(slot).expect("verify 应通过");
     assert_eq!(part(&ota, slot).state, PartitionState::Verified);
 
     ota.activate(slot).expect("activate 应成功");
@@ -268,7 +268,7 @@ fn int2_auto_rollback_after_boot_failures() {
     let (image, meta) = make_image(&kp, &mut rng, 128 * 1024, 32 * 1024);
     let slot = ota.prepare_upgrade(meta).expect("prepare");
     write_image(&mut ota, slot, &image, 32 * 1024);
-    assert!(ota.verify(slot).expect("verify"));
+    ota.verify(slot).expect("verify");
     ota.activate(slot).expect("activate");
     assert_eq!(ota.get_active_slot(), PartitionSlot::B);
 
@@ -332,7 +332,7 @@ fn int3_interrupted_write_then_retry() {
 
     // 重传完整镜像并完成升级
     write_image(&mut ota, slot2, &image, 16 * 1024);
-    assert!(ota.verify(slot2).expect("重试 verify 应通过"));
+    ota.verify(slot2).expect("重试 verify 应通过");
     ota.activate(slot2).expect("重试 activate 应成功");
     assert_eq!(ota.get_active_slot(), PartitionSlot::B);
     assert_eq!(part(&ota, slot2).version.as_str(), "0.123.0");
@@ -396,7 +396,7 @@ fn perf5_write_and_verify_10mb() {
             .expect("write_chunk 应成功");
         offset += chunk.len() as u64;
     }
-    assert!(ota.verify(slot).expect("verify 应通过"));
+    ota.verify(slot).expect("verify 应通过");
     let elapsed = start.elapsed();
 
     let profile = if cfg!(debug_assertions) {

@@ -372,7 +372,7 @@ mod tests {
         let slot = ota.prepare_upgrade(meta).expect("prepare");
         ota.write_chunk(slot, 0, &image[..512]).expect("chunk0");
         ota.write_chunk(slot, 512, &image[512..]).expect("chunk1");
-        assert!(ota.verify(slot).expect("verify"));
+        ota.verify(slot).expect("verify");
         ota.activate(slot).expect("activate");
         assert_eq!(ota.get_active_slot(), PartitionSlot::B);
     }

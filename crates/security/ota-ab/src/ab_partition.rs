@@ -510,7 +510,7 @@ impl<D: BlockDevice> OtaManager for AbPartitionOta<D> {
         Ok(())
     }
 
-    fn verify(&mut self, slot: PartitionSlot) -> Result<bool, OtaError> {
+    fn verify(&mut self, slot: PartitionSlot) -> Result<(), OtaError> {
         let idx = Self::slot_index(slot);
         if self.partitions[idx].state != PartitionState::Written {
             return Err(OtaError::VerifyFailed);
@@ -524,7 +524,8 @@ impl<D: BlockDevice> OtaManager for AbPartitionOta<D> {
         }
         // 2) SM2 签名验证（设备根公钥）——WP-64.3.5：类型化原语
         // verify_signature（Ok(false)/Err 统一 Err → SignatureInvalid，
-        // fail-closed 行为不变；布尔陷阱消亡）。
+        // fail-closed 行为不变；布尔陷阱消亡）。R15-U：trait 收窄为
+        // Result<()> 后，生产实现不存在任何 Ok(false) 臂。
         let hash = self.partitions[idx].hash;
         let sig = Sm2Signature::from_bytes(&self.partitions[idx].signature);
         let sig_valid =
@@ -534,7 +535,7 @@ impl<D: BlockDevice> OtaManager for AbPartitionOta<D> {
             return Err(OtaError::SignatureInvalid);
         }
         self.partitions[idx].state = PartitionState::Verified;
-        Ok(true)
+        Ok(())
     }
 
     fn activate(&mut self, slot: PartitionSlot) -> Result<(), OtaError> {
@@ -745,7 +746,7 @@ mod tests {
         assert_eq!(ota.get_partitions()[1].state, PartitionState::Written);
 
         // 校验：真实 SM3 回读 + SM2 验签
-        assert!(ota.verify(slot).expect("verify 应通过"));
+        ota.verify(slot).expect("verify 应通过");
         assert_eq!(ota.get_partitions()[1].state, PartitionState::Verified);
 
         // 激活：原子切换

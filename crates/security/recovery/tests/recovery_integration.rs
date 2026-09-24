@@ -325,7 +325,7 @@ fn int2_ota_ab_compat_partition_table_regression() {
     let meta = make_meta(&image, &kp, &mut rng, "0.123.0");
     let slot = ota.prepare_upgrade(meta).expect("prepare");
     ota_write_image(&mut ota, slot, &image);
-    assert!(ota.verify(slot).expect("verify"));
+    ota.verify(slot).expect("verify");
     ota.activate(slot).expect("activate");
     for i in 1..=3u32 {
         assert!(boot_health_check(&mut ota, 2_000 + u64::from(i)));

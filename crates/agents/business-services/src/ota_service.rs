@@ -501,15 +501,13 @@ impl<M: OtaManager> OtaService<M> {
             offset += chunk_bytes.len() as u64;
         }
         // 真实回读验签（SM3 + SM2；恒真闭包在此无立足点）。69.5：失败
-        // 环节可区分（SM3 哈希 vs SM2 验签 vs 状态机）。
-        let verified = self.ota.verify(slot).map_err(|e| match e {
+        // 环节可区分（SM3 哈希 vs SM2 验签 vs 状态机）。R15-U：verify
+        // 收窄为 Result<()> 后不存在 Ok(false) 臂，拒绝一律走 Err 映射。
+        self.ota.verify(slot).map_err(|e| match e {
             OtaError::HashMismatch => String::from("verify-failed:sm3-hash-mismatch"),
             OtaError::SignatureInvalid => String::from("verify-failed:sm2-signature-invalid"),
             other => alloc::format!("verify-failed:{other:?}"),
         })?;
-        if !verified {
-            return Ok(OtaStep::Rejected("verify-failed"));
-        }
         Ok(OtaStep::Verified)
     }
 
@@ -749,10 +747,11 @@ mod tests {
 
     /// 测试 OtaManager（真实状态机骨架；验证/写路径由 ota-ab 自身测试
     /// 覆盖——此处只验证 svc-ota 的策略/试启动编排，不做恒真闭包）。
+    /// R15-U：verify 收窄 Result<()> 后，Ok(false) 模拟面不可表示；
+    /// verify 失败注入走 FaultOta Err 路径。
     struct TestOta {
         active: PartitionSlot,
         activated: bool,
-        verified: bool,
     }
     impl OtaManager for TestOta {
         fn prepare_upgrade(&mut self, _meta: UpgradeMeta) -> Result<PartitionSlot, OtaError> {
@@ -766,8 +765,8 @@ mod tests {
         ) -> Result<(), OtaError> {
             Ok(())
         }
-        fn verify(&mut self, _slot: PartitionSlot) -> Result<bool, OtaError> {
-            Ok(self.verified)
+        fn verify(&mut self, _slot: PartitionSlot) -> Result<(), OtaError> {
+            Ok(())
         }
         fn activate(&mut self, slot: PartitionSlot) -> Result<(), OtaError> {
             self.active = slot;
@@ -958,7 +957,6 @@ mod tests {
             TestOta {
                 active: PartitionSlot::A,
                 activated: false,
-                verified: true,
             },
             &sk,
         );
@@ -984,7 +982,6 @@ mod tests {
         let ota = TestOta {
             active: PartitionSlot::A,
             activated: false,
-            verified: true,
         };
         let mut svc = OtaService::new(ota, policy(key), &identity());
         let img = vec![0xABu8; 64];
@@ -1022,7 +1019,6 @@ mod tests {
             TestOta {
                 active: PartitionSlot::A,
                 activated: false,
-                verified: true,
             },
             &sk,
         );
@@ -1059,7 +1055,6 @@ mod tests {
             TestOta {
                 active: PartitionSlot::A,
                 activated: false,
-                verified: true,
             },
             &sk,
         );
@@ -1085,7 +1080,6 @@ mod tests {
             TestOta {
                 active: PartitionSlot::A,
                 activated: false,
-                verified: true,
             },
             policy(key_a),
             &identity(),
@@ -1107,7 +1101,6 @@ mod tests {
             TestOta {
                 active: PartitionSlot::A,
                 activated: false,
-                verified: true,
             },
             policy(key_b),
             &identity(),
@@ -1140,7 +1133,6 @@ mod tests {
                 TestOta {
                     active: PartitionSlot::A,
                     activated: false,
-                    verified: true,
                 },
                 &sk,
             );
@@ -1215,7 +1207,6 @@ mod tests {
             TestOta {
                 active: PartitionSlot::A,
                 activated: false,
-                verified: true,
             },
             &sk,
         );
@@ -1238,14 +1229,18 @@ mod tests {
 
     #[test]
     fn negative_verify_failure_rejected() {
-        let (sk, _) = keypair(0x5A);
-        let mut svc = svc_with(
-            TestOta {
-                active: PartitionSlot::A,
-                activated: false,
-                verified: false,
+        // R15-U：verify 收窄 Result<()> 后 Ok(false) 模拟不可表示——
+        // 拒绝注入改走 FaultOta Err 路径，断言 verify-failed:{err} 映射词形
+        // （失败环节可区分：SM3 哈希失配 ≠ SM2 验签失效，与 t39 候选词形同族）。
+        let (sk, key) = keypair(0x5A);
+        let mut svc = OtaService::new(
+            FaultOta {
+                prepare_err: None,
+                write_err: None,
+                verify_err: Some(OtaError::HashMismatch),
             },
-            &sk,
+            policy(key),
+            &identity(),
         );
         let img = vec![0xABu8; 128];
         let req = req02_valid(&sk, "1.1.0", &img);
@@ -1253,7 +1248,7 @@ mod tests {
         assert!(!handle_ota_ab_command(Some(&mut svc), &req, &mut resp));
         assert_eq!(
             core::str::from_utf8(&resp).unwrap(),
-            "ERR:rejected:verify-failed"
+            "ERR:ota:verify-failed:sm3-hash-mismatch"
         );
         assert!(svc.trial.is_none());
     }
@@ -1267,7 +1262,6 @@ mod tests {
             TestOta {
                 active: PartitionSlot::A,
                 activated: false,
-                verified: true,
             },
             pol,
             &identity(),
@@ -1319,11 +1313,11 @@ mod tests {
             }
             Ok(())
         }
-        fn verify(&mut self, _slot: PartitionSlot) -> Result<bool, OtaError> {
+        fn verify(&mut self, _slot: PartitionSlot) -> Result<(), OtaError> {
             if let Some(e) = self.verify_err.clone() {
                 return Err(e);
             }
-            Ok(true)
+            Ok(())
         }
         fn activate(&mut self, _slot: PartitionSlot) -> Result<(), OtaError> {
             Ok(())

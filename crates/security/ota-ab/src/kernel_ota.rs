@@ -189,11 +189,9 @@ impl<D: BlockDevice> KernelOta<D> {
             remaining = &remaining[n..];
         }
 
-        // 5. 校验（SM3 + SM2）
-        let verified = self.ab.verify(slot)?;
-        if !verified {
-            return Err(KernelOtaError::Ota(OtaError::VerifyFailed));
-        }
+        // 5. 校验（SM3 + SM2）。R15-U：Result<()> 收窄后 Ok(false) 死臂
+        // 不可表示——失败经 ? 按具体 OtaError 传播（可诊断性不降级）。
+        self.ab.verify(slot)?;
 
         // 6. 激活
         self.ab.activate(slot)?;
@@ -251,11 +249,8 @@ impl<D: BlockDevice> KernelOta<D> {
             remaining = &remaining[n..];
         }
 
-        // 3. 校验
-        let verified = self.ab.verify(slot)?;
-        if !verified {
-            return Err(KernelOtaError::Ota(OtaError::VerifyFailed));
-        }
+        // 3. 校验（R15-U：Ok(false) 死臂退役，失败经 ? 传播）
+        self.ab.verify(slot)?;
 
         // 4. 执行热迁移
         migrator.migrate(image)?;
