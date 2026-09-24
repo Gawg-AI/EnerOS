@@ -5,13 +5,17 @@
 #   - 默认：缺失项自动下载到 $SEL4_CACHE（默认 ~/.cache），幂等（已存在跳过）
 #   - --verify-only：只校验已有缓存完整，不下载
 #
-# 覆盖依赖（核心 6 项自动 fetch；deb/pip 次要项按文档命令获取）：
+# 覆盖依赖（核心 7 项自动 fetch；deb/pip 次要项按文档命令获取）：
 #   1. sel4-src           官方 seL4 14.0.0（GitHub release tarball）
 #   2. seL4_tools-master  官方 seL4_tools（master tarball）
 #   3. util_libs-master   官方 util_libs（master tarball）
 #   4. xpack gcc          xpack-dev-tools aarch64-none-elf-gcc 15.2.1-1.1
 #   5. cmake              Kitware CMake 3.31.6 linux-x86_64
 #   6. ninja              ninja-build 1.12.1 linux
+#   7. xpack qemu-arm     xpack-dev-tools qemu-arm 9.2.4-1（WP-74.2.6 收链：
+#                         两构建脚本 -DQEMU_BINARY 的钉版清单化——此前
+#                         bootstrap 不覆盖 qemu，冷缓存构建在 cmake 步骤
+#                         才以缺 QEMU_BINARY 死路径失败）
 #   次要（deb 包 / pip wheel，bootstrap 打印获取命令）：
 #   - dtc（device-tree-compiler 1.7.2-2ubuntu1）、xmllint（libxml2-utils）、
 #     libxml2/libicu74 运行库（Ubuntu 包）
@@ -38,6 +42,7 @@ UTILS_URL="https://github.com/seL4/util_libs/archive/6e55b3c62687779692150e1de41
 GCC_URL="https://github.com/xpack-dev-tools/aarch64-none-elf-gcc-xpack/releases/download/v15.2.1-1.1/aarch64-none-elf-gcc-xpack-15.2.1-1.1-linux-x64.tar.gz"
 CMAKE_URL="https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-linux-x86_64.tar.gz"
 NINJA_URL="https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-linux.zip"
+QEMU_URL="https://github.com/xpack-dev-tools/qemu-arm-xpack/releases/download/v9.2.4-1/xpack-qemu-arm-9.2.4-1-linux-x64.tar.gz"
 
 # 已知 sha256（下载后 fail-closed 校验）。
 # 注意 seL4_tools/util_libs 两项是 archive/<sha> 形态的字节（根目录名含
@@ -46,6 +51,9 @@ NINJA_URL="https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-
 # 重新校验（fetch 见文件即跳过），仅新下载走新哈希。
 # 工具链三项（gcc/cmake/ninja）为版本化 release URL，暂未固化（缓存中
 # 只有解压目录无 tarball 可供取哈希）；固化前维持「下载后打印」行为。
+# qemu-arm（WP-74.2.6）：哈希已钉——取自官方 .sha 边车
+# （xpack-qemu-arm-9.2.4-1-linux-x64.tar.gz.sha），并与本机缓存解压树
+# 逐字节比对（bin/qemu-system-aarch64 sha256 一致，2026-09-25 蓝图 74 卷二）。
 declare -A KNOWN_SHA256=(
   [sel4-14.0.0.tar.gz]="c518f6121a56f1b377ee5b596784a0a454edcde5f87bdb402db057c706400c0c4"
   [seL4_tools.tar.gz]="9f5df17858f57d5e87c9024aa122e2350c205544694501c8e98bd5f8af92f968"
@@ -53,6 +61,7 @@ declare -A KNOWN_SHA256=(
   [xpack-gcc.tgz]=""
   [cmake-github.tar.gz]=""
   [ninja.zip]=""
+  [xpack-qemu-arm.tgz]="203dc2c71e25fcf97b95181328e9b888cc8092ff404bffd4d267b9defabcb698"
 )
 
 fetch() {
@@ -115,12 +124,17 @@ if [ ! -d "$CACHE/ninja-bin" ]; then
   mkdir -p "$CACHE/ninja-bin"
   (cd "$CACHE/ninja-bin" && unzip -o -q "$CACHE/ninja.zip")
 fi
+# 7) xpack qemu-arm（WP-74.2.6：构建面 QEMU_BINARY 钉版收链；与两构建
+#    脚本 -DQEMU_BINARY 的 xpack-qemu-arm-9.2.4-1 路径单点一致）
+fetch "xpack-qemu-arm.tgz" "$QEMU_URL"
+extract_tar "xpack-qemu-arm.tgz" "xpack-qemu-arm-9.2.4-1"
 
 # 关键校验（fail-closed：核心工具必须可执行）
 for tool in \
   "$CACHE/xpack-aarch64-none-elf-gcc-15.2.1-1.1/bin/aarch64-none-elf-gcc" \
   "$CACHE/cmake-3.31.6-linux-x86_64/bin/cmake" \
-  "$CACHE/ninja-bin/ninja"; do
+  "$CACHE/ninja-bin/ninja" \
+  "$CACHE/xpack-qemu-arm-9.2.4-1/bin/qemu-system-aarch64"; do
   if [ ! -x "$tool" ]; then
     echo "ERROR: bootstrap incomplete — missing $tool" >&2
     exit 1

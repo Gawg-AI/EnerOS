@@ -5,13 +5,18 @@
 # 运行前需 truncate 磁盘；QEMU 必须 cache=none（写直达，断电点确定）。
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-QEMU="${SEL4_QEMU:-$HOME/.cache/xpack-qemu-arm-8.2.6-1/bin/qemu-system-aarch64}"
+# WP-74.2.6：默认 qemu 收链到 bootstrap 钉版 9.2.4-1（此前默认 8.2.6-1
+# 不在 bootstrap 清单内=冷缓存死路径；SEL4_QEMU 可覆盖）。
+QEMU="${SEL4_QEMU:-$HOME/.cache/xpack-qemu-arm-9.2.4-1/bin/qemu-system-aarch64}"
 IMG="$ROOT/third_party/sel4-build/top/images/eneros-root-image-arm-qemu-arm-virt"
 DISK="$ROOT/target/sel4-disk.raw"
 OUT="$ROOT/target/powercut"
 mkdir -p "$OUT"
 
-QEMU_ARGS=(-machine virt,gic-version=3,secure=off -cpu cortex-a57 -smp 4 -m 1024M
+# REG-74-A-R1 订正：gic-version=3 与 seL4 14.0.0 qemu-arm-virt 平台唯一
+# 内置的 GICv2 驱动矛盾（GICv3 机器无 GICC 帧 → 内核 cpu_iface_init 首写
+# 即同步外部 abort）；对齐 xtask qemu_harness 生产证据线（恒 gicv2）。
+QEMU_ARGS=(-machine virt,gic-version=2,secure=off -cpu cortex-a57 -smp 4 -m 1024M
   -nographic -monitor none
   -device virtio-rng-device
   -device virtio-blk-device,drive=d0
