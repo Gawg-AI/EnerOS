@@ -74,7 +74,7 @@ pub struct AbPartitionOta<D: BlockDevice> {                       // D4：泛型
 pub trait OtaManager {                                            // 蓝图 §4.2 七方法
     fn prepare_upgrade(&mut self, meta: UpgradeMeta) -> Result<PartitionSlot, OtaError>; // 选非激活分区置 Writing + 回填元数据
     fn write_chunk(&mut self, slot: PartitionSlot, offset: u64, data: &[u8]) -> Result<(), OtaError>; // 仅 Writing；读-改-写落盘；写满置 Written
-    fn verify(&mut self, slot: PartitionSlot) -> Result<bool, OtaError>;  // 回读 SM3 比对 + SM2 验签；双过置 Verified
+    fn verify(&mut self, slot: PartitionSlot) -> Result<(), OtaError>;  // 回读 SM3 比对 + SM2 验签；双过置 Verified；失败即 Err（R15-U：Ok(false) 词汇退役）
     fn activate(&mut self, slot: PartitionSlot) -> Result<(), OtaError>;  // 仅 Verified；新 Active/旧 Verified 备用/boot_attempts 清零
     fn rollback(&mut self) -> Result<PartitionSlot, OtaError>;            // 目标须 Verified；当前 Failed/目标 Active
     fn get_active_slot(&self) -> PartitionSlot;

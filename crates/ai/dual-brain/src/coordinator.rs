@@ -572,7 +572,8 @@ impl<S: Solver> DualBrainCoordinator<S> {
         } else if let Some(clamped) = validation.clamped_schedule.clone() {
             // 复查 FIX（61 §3.4）：passed 且有 clamp 建议——截断结果重跑
             // 全部规则（revalidate_clamped，≤4 轮）；收敛干净才采信，
-            // 否则回落原解（原解已通过全部规则）。
+            // 否则回落原解（原解已通过全部规则。注：mutex 后置门只查
+            // clamp 终态、原解不经该门——REG-74-Q-R1）。
             // 不收敛（None）→ 保留原 schedule + 原 validation（已 passed）。
             if let Some((sched, re)) = self.validator.revalidate_clamped(clamped, &state.system) {
                 final_schedule = sched;
