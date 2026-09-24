@@ -30,10 +30,15 @@ endif()
 
 # ---- root task（无 libc，链接 libsel4 的 sel4 target）----
 #
-# 两条路径，由 RUST_ROOT_TASK 选项选择：
-#  - OFF（默认）：C root task（root_task.c），含 G2 闭环 + G3 virtio I/O。
-#  - ON：预编译 Rust ELF（eneros-hello），证明 Rust→seL4 FFI 端到端通（Track A2）。
-#        不含 G3 virtio；用于 FFI 验证，不替代 C root task 的产品地位。
+# 两条路径，由 RUST_ROOT_TASK 选项选择（WP-74.2.7 定位订正，原注释与
+# ADR-0023 §4 及 CI 现实颠倒、「eneros-hello」系陈旧名）：
+#  - ON（产品主线）：预编译 Rust ELF（eneros-root-task，由
+#    sel4-build-rust.sh 构建）——gkernel 全链（CI）与全部生产证据
+#    （xtask qemu-prod）依赖此路径（ADR-0023 §4 载明）。
+#  - OFF：C root task（root_task.c），含 G2 闭环 + G3 virtio I/O——
+#    **证据位**（CI g0 job 5 项 eneros.sel4.v1 词形），非产品路径；
+#    KernelRootCNodeSizeBits 停在 13（REG-74-A-SIZEBITS 裁决项）。
+#    与 R15-G 的「删 C 路径」误读划清界限：root_task.c 不删。
 option(RUST_ROOT_TASK "Use pre-built Rust ELF as root task (Track A2 FFI proof)" OFF)
 
 if(RUST_ROOT_TASK)
