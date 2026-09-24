@@ -16,6 +16,11 @@ env:
   ENEROS_RELEASE_PUBLIC_KEY_HEX: "8e5150375a22ae2ad55ea85a3e7a8faee8196315a413163fd4778c82c59af9a7"
   ENEROS_RELEASE_KEY_ID_HEX: "4e28c578ebd8c3c68b83ff1d0b1a16df"
   ENEROS_PLATFORM_ID_HEX: "6afc39cf058a1ca52a5e36d8eefa1463"
+  # WP-74.2.5（蓝图 74 卷二）：seL4 构建缓存键单点——key bump 只改这一处
+  # （此前三 job 手抄三处，旧缓存命中短路曾让构建脚本修复永不被 CI 执行）。
+  # bump = 一次性冷重建（预期行为）。gkernel/C 路径脚面旗标或补丁面变更
+  # 时随卷版本递增。
+  SEL4_CACHE_KEY: "v0.341.0-converge"
 
 jobs:
   g0-fail-closed:
@@ -90,15 +95,16 @@ jobs:
           echo "rustdoc: 0 unresolved links"
 
       - name: seL4 kernel toolchain cache (restore)
-        # 2026-09-23：key bump 强制冷路径重跑——seL4 补丁面改收敛器
-        # （sel4-converge-patches.sh）+ overlay/IMAGE_START_ADDR/UTIL_LIBS
-        # 旗标进脚本后，旧缓存命中短路曾让构建脚本修复永不被 CI 执行。
+        # WP-74.2.5：key 单点化（顶层 env.SEL4_CACHE_KEY）。2026-09-23 教训
+        # 保留在案：seL4 补丁面/构建旗标变更后，旧缓存命中短路曾让构建
+        # 脚本修复永不被 CI 执行——key bump 强制冷路径重跑，bump 只改
+        # 顶层 env 一处。
         uses: actions/cache@v4
         with:
           path: |
             ${{ runner.tool_cache }}/sel4
             target/sel4
-          key: sel4-${{ runner.os }}-v0.339.0-converge
+          key: sel4-${{ runner.os }}-${{ env.SEL4_CACHE_KEY }}
 
       - name: Build seL4 kernel + root image (ADR-0023, KRN-006)
         run: |
@@ -132,8 +138,13 @@ jobs:
           # G3 套件需要 virtio-rng/blk/net 三设备，缺任一 → bus-enum FAIL；
           # virtio-net RX 必须由外部 peer 经 socket 后端主动发帧（root_task.c:2451），
           # user 模式网卡无 peer 注入 → virtio-net-rx FAIL，故用 socket + sel4-net-peer.py。
+          # WP-74.2.5 订正（REG-74-A-R1）：gic-version=3 与 seL4 14.0.0
+          # qemu-arm-virt 平台唯一内置的 GICv2 驱动矛盾——GICC 帧在 GICv3
+          # 机器不存在，内核 cpu_iface_init 首写即同步外部 abort（g0 词形
+          # 零命中）。xtask qemu_harness 生产证据线恒 gic-version=2，此处
+          # 对齐（实弹证据见蓝图 74 卷二 WP-74.2.4 冒烟）。
           truncate -s 16M target/sel4/disk.raw
-          timeout 120 qemu-system-aarch64 -machine virt,gic-version=3,secure=off -cpu cortex-a57 \
+          timeout 120 qemu-system-aarch64 -machine virt,gic-version=2,secure=off -cpu cortex-a57 \
             -smp 4 -m 1024M -nographic \
             -device virtio-rng-device \
             -device virtio-blk-device,drive=d0 -drive file=target/sel4/disk.raw,if=none,id=d0,format=raw,cache=none \
@@ -357,7 +368,7 @@ jobs:
           path: |
             ${{ runner.tool_cache }}/sel4
             target/sel4
-          key: sel4-${{ runner.os }}-v0.339.0-converge
+          key: sel4-${{ runner.os }}-${{ env.SEL4_CACHE_KEY }}
 
       - name: Build seL4 kernel + root image (ADR-0023, image dependency)
         run: |
@@ -572,7 +583,7 @@ jobs:
           path: |
             ${{ runner.tool_cache }}/sel4
             target/sel4
-          key: sel4-${{ runner.os }}-v0.339.0-converge
+          key: sel4-${{ runner.os }}-${{ env.SEL4_CACHE_KEY }}
 
       - name: Build seL4 kernel + Rust root image (21-A G-KERNEL)
         run: |
