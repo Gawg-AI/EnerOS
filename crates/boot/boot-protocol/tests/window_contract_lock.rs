@@ -26,6 +26,7 @@ const BUILD_COMMON: &str = include_str!("../../../../third_party/sel4-build-comm
 const BUILD_C: &str = include_str!("../../../../third_party/sel4-build.sh");
 const BUILD_RUST: &str = include_str!("../../../../third_party/sel4-build-rust.sh");
 const IMAGE_FACTORY: &str = include_str!("../../../../xtask/src/image_factory.rs");
+const BOOT_MANAGER: &str = include_str!("../../../../crates/boot/boot-manager-uefi/src/lib.rs");
 
 /// 期望 `reg = <0x00 {base} 0x00 {len}>`（dts cell 为 8 位补零十六进制）。
 fn dts_reg_expected() -> String {
@@ -147,5 +148,29 @@ fn init_load_address_literal_retired() {
     assert!(
         IMAGE_FACTORY.contains("ENEROS_INIT_BUNDLE_PHYS"),
         "image_factory.rs 不再引用 ENEROS_INIT_BUNDLE_PHYS（单源断裂）"
+    );
+}
+
+#[test]
+fn kernel_load_address_consistent_across_rust_surface() {
+    // 断言 6（复查轮补锁）：内核加载址 Rust 侧两字面互锁——xtask
+    // KERNEL_LOAD_ADDRESS ↔ boot-manager-uefi KERNEL_LOAD_START（U830
+    // 校验面）。两处同事实字面此前无任何机器对拍，一面漂移即静默断裂。
+    let boot_manager_line = BOOT_MANAGER
+        .lines()
+        .find(|l| l.contains("pub const KERNEL_LOAD_START"))
+        .expect("boot-manager-uefi 缺少 KERNEL_LOAD_START 定义行");
+    let raw = boot_manager_line
+        .split('=')
+        .nth(1)
+        .and_then(|rest| rest.split(';').next())
+        .expect("KERNEL_LOAD_START 行无值")
+        .trim();
+    let v = u64::from_str_radix(&raw.replace('_', "").replace("0x", ""), 16)
+        .expect("KERNEL_LOAD_START 非十六进制字面");
+    assert_eq!(
+        kernel_load_address(),
+        v,
+        "xtask KERNEL_LOAD_ADDRESS 与 boot-manager KERNEL_LOAD_START 漂移"
     );
 }

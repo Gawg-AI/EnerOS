@@ -1,8 +1,9 @@
 /*
  * EnerOS overlay: 保留 init bundle 物理区域（C2/BOOT-007 修复）。
  *
- * boot-manager 把 init bundle 预加载到 0x4200_0000（INIT_LOAD_ADDRESS，
- * 见 xtask/src/image_factory.rs）。若不保留，seL4 会把该区域当作可用内存
+ * boot-manager 把 init bundle 预加载到 0x4200_0000（bundle 加载址，
+ * 唯一事实源 = boot-protocol `ENEROS_INIT_BUNDLE_PHYS`；WP-74.2.1 后
+ * xtask 侧手抄已退役）。若不保留，seL4 会把该区域当作可用内存
  * 生成 untyped，root-task 的分配器可能 retype 它（freeIndex 消耗）导致
  * bundle 内容被覆盖。
  *

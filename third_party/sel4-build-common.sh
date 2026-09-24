@@ -18,6 +18,12 @@
 # 需 g0 证据重跑，登记 REG-74-A-SIZEBITS 裁决项。
 # ============================================================
 
+# ---- ROOT/CACHE 解析（蓝图 §2.4 单源清单项）----
+# BASH_SOURCE[0] = 本文件被 source 时的自身路径 → dirname/.. = 仓根；
+# wrapper/沙箱可预置 ROOT/CACHE 传入（:- 缺省不覆盖）。
+ROOT="${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+CACHE="${CACHE:-${SEL4_CACHE:-$HOME/.cache}}"
+
 # ---- 工具链路径（版本目录名单点定义）----
 SEL4_SRC_DIR="$CACHE/sel4-src"
 ELFLOADER_SRC="$CACHE/seL4_tools-master/elfloader-tool"

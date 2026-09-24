@@ -21,10 +21,8 @@
 # ============================================================
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CACHE="${SEL4_CACHE:-$HOME/.cache}"
-
-. "$ROOT/third_party/sel4-build-common.sh"
+# ROOT/CACHE 由 sel4-build-common.sh 单源解析（WP-74.2.4）。
+. "$(dirname "$0")/sel4-build-common.sh"
 
 sel4_require_cache_or_bootstrap
 sel4_export_toolchain_env
