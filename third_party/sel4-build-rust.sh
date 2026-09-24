@@ -12,23 +12,22 @@
 #
 # 产物：third_party/sel4-build/top-rust/elfloader/elfloader →
 #       target/sel4/elfloader-arm-qemu-arm-virt（xtask 从此读取）
+#
+# WP-74.2.4（蓝图 74 卷二）：公共面收编进 sel4-build-common.sh；本 wrapper
+# 持 rust 路径变体：cargo root-task 构建、SEL4_BUILD_DIR/SEL4_SRC/CROSS_COMPILE
+# 导出（留在 wrapper，避免污染 C 路径环境）、KernelRootCNodeSizeBits=14
+# （70.15 实弹槽位耗尽 13→14——REG-74-A-SIZEBITS 裁决项）+ rust 专属 4 参
+# + BUILD=top-rust + 拷 1 产物。
 # ============================================================
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CACHE="${SEL4_CACHE:-$HOME/.cache}"
 
-# ---- 工具链环境（与 sel4-build.sh 一致）----
-SEL4_SRC_DIR="$CACHE/sel4-src"
-ELFLOADER_SRC="$CACHE/seL4_tools-master/elfloader-tool"
-GCC_BIN="$CACHE/xpack-aarch64-none-elf-gcc-15.2.1-1.1/bin"
-CMAKE_BIN="$CACHE/cmake-3.31.6-linux-x86_64/bin"
-NINJA="$CACHE/ninja-bin/ninja"
-DTC_BIN="$CACHE/dtc-deb/usr/bin"
-XMLLINT_BIN="$CACHE/xmllint-bin"
-export PATH="$GCC_BIN:$CMAKE_BIN:$DTC_BIN:$XMLLINT_BIN:$PATH"
-export LD_LIBRARY_PATH="$CACHE/libxml2-deb/usr/lib/x86_64-linux-gnu:$CACHE/libicu74-deb/usr/lib/x86_64-linux-gnu"
-export PYTHONUSERBASE="$CACHE/pyuser"
+. "$ROOT/third_party/sel4-build-common.sh"
+
+sel4_require_cache_or_bootstrap
+sel4_export_toolchain_env
 
 # 告诉 eneros-sel4-sys/build.rs 去哪找 libsel4.a 和 seL4 头文件。
 # 必须指向 top-rust（本脚本构建的 RUST_ROOT_TASK 内核目录）：invocation
@@ -77,20 +76,9 @@ echo "  ✓ ELF magic OK"
 echo ""
 echo "[2/3] Building seL4 with RUST_ROOT_TASK=ON..."
 BUILD="$ROOT/third_party/sel4-build/top-rust"
-mkdir -p "$BUILD/elfloader"
 
-# 38（WP-38.4/装载损坏根因）→ 2026-09-23 收编：elfloader DBG-TEMP 写
-# （0x41060040 硬编码 CurrentEL，曾破坏内嵌 rootserver）与内核 0001
-# 补丁面统一由收敛器保证：受管文件（boot.c/vspace.c/sys_boot.c/
-# linker.lds）收敛到期望 sha256 终态，任何起始状态都收敛到同一字节。
-# 本脚本独立重链（不经 sel4-build.sh）时也保证补丁面正确。
-bash "$ROOT/third_party/sel4-converge-patches.sh"
-
-# libcpio（elfloader 依赖，与 sel4-build.sh 一致）
-(cd "$CACHE/util_libs-master/libcpio" && \
-  "$GCC_BIN/aarch64-none-elf-gcc" -ffreestanding -fno-pic -fno-pie -march=armv8-a \
-    -I include -c src/cpio.c -o "$BUILD/elfloader/cpio.o" && \
-  ar rcs "$BUILD/elfloader/libcpio.a" "$BUILD/elfloader/cpio.o")
+sel4_run_converge
+build_libcpio "$BUILD"
 
 # 41（WP 装配）：root CSpace 12→13 bits（4096→8192 槽）——34 个 EL0
 # 服务（40 控制链 5 + 41 业务/运维 8 + 协议/驱动/demo）spawn 期
@@ -107,25 +95,8 @@ bash "$ROOT/third_party/sel4-converge-patches.sh"
 # root-task 使能物理定时器需 EXPORT_PTMR_USER=EL0PTEN——缺省时
 # msr cntp_ctl_el0 触发 user exception EC=0x18，QEMU 实测）。与 PCNT
 # 同属开发/证据配置（存储通道警告接受：QEMU 证据用途）。
-"$CMAKE_BIN/cmake" -G Ninja \
-  -DCMAKE_MAKE_PROGRAM="$NINJA" \
-  -DCMAKE_TOOLCHAIN_FILE="$SEL4_SRC_DIR/gcc.cmake" \
-  -DCROSS_COMPILER_PREFIX="aarch64-none-elf-" \
-  -DKernelArch=arm -DKernelSel4Arch=aarch64 \
-  -DKernelPlatform=qemu-arm-virt \
-  -DKernelSel4ArchAarch64=ON \
-  -DPLATFORM=qemu-arm-virt \
-  -DARM_CPU=cortex-a57 -DQEMU_GIC_VERSION=3 \
-  -DKernelVerificationBuild=OFF -DKernelPrinting=ON \
+"$CMAKE_DIR/cmake" "${CMAKE_COMMON_ARGS[@]}" \
   -DKernelRootCNodeSizeBits=14 \
-  -DSEL4_SRC="$SEL4_SRC_DIR" \
-  -DELFLOADER_SRC="$ELFLOADER_SRC" \
-  -DUTIL_LIBS_INCLUDE="$CACHE/util_libs-master/libcpio/include" \
-  -DIMAGE_START_ADDR=0x41000000 \
-  -DKernelCustomDTSOverlay="$ROOT/third_party/sel4-top/overlay-init-bundle-reserved.dts" \
-  -DCMAKE_MODULE_PATH="$SEL4_SRC_DIR;$CACHE/seL4_tools-master/cmake-tool/helpers;$ELFLOADER_SRC" \
-  -DDTC="$DTC_BIN/dtc" \
-  -DQEMU_BINARY="$CACHE/xpack-qemu-arm-9.2.4-1/bin/qemu-system-aarch64" \
   -DRUST_ROOT_TASK=ON \
   -DRUST_ROOT_ELF="$RUST_ELF" \
   -DKernelArmExportPCNTUser=ON \
@@ -134,7 +105,7 @@ bash "$ROOT/third_party/sel4-converge-patches.sh"
 # 23 G-I 总出口修复（KernelArmExportPCNTUser=ON）：允许 EL0 读
 # CNTPCT_EL0/CNTFRQ_EL0（root-task time_init 的 Arm64Timer 依赖）。seL4
 # 默认关闭（EXPORT_PCNT_USER disabled）→ `mrs cntpct_el0` 触发 cap fault
-# （QEMU 实测）。注释放 cmake 命令之后，避免破坏 `\` 续行。
+# （QEMU 实测）。
 "$NINJA" -C "$BUILD"
 
 # ---- Step 3: 产物对齐到 target/sel4（image 构建从此读取）----
