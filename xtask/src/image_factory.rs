@@ -11,7 +11,7 @@ use eneros_boot_protocol::manifest::{
 use eneros_boot_protocol::{
     BootControl, Component, ComponentRole, InstallManifest, ManifestHeader, ManifestSlot,
     ProductVersion, ReleaseManifest, SlotState, BOOT_CONTROL_COPY_OFFSETS,
-    BOOT_CONTROL_FLAG_MANUAL_RECOVERY, BOOT_CONTROL_RECORD_SIZE,
+    BOOT_CONTROL_FLAG_MANUAL_RECOVERY, BOOT_CONTROL_RECORD_SIZE, ENEROS_INIT_BUNDLE_PHYS,
 };
 use eneros_image_format::{parse_gpt, write_gpt, Gpt, Guid, PartitionSpec};
 use serde::Serialize;
@@ -23,7 +23,6 @@ use super::{
 };
 
 const KERNEL_LOAD_ADDRESS: u64 = 0x4100_0000;
-const INIT_LOAD_ADDRESS: u64 = 0x4200_0000;
 const MANIFEST_RESERVED_BYTES: usize = 64 * 1024;
 const ESP_TYPE_GUID: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
 const UEFI_VARIABLE_OWNER_GUID: &str = "454e4552-4f53-4001-8000-000000000db0";
@@ -2180,7 +2179,10 @@ fn write_boot_partition(
             flags: COMPONENT_FLAG_REQUIRED,
             media_offset: u64::try_from(init_offset)?,
             media_length: u64::try_from(init_bundle.len())?,
-            load_address: INIT_LOAD_ADDRESS,
+            // WP-74.2.1：bundle 加载址单源 boot-protocol（对拍锁见
+            // boot-protocol tests/window_contract_lock.rs；旧手抄
+            // 0x4200_0000 退役）。
+            load_address: ENEROS_INIT_BUNDLE_PHYS,
             memory_length: u64::try_from(init_bundle.len())?,
             entry_address: 0,
             security_version,
