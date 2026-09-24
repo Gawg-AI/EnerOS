@@ -67,7 +67,11 @@ impl SafetyValidator {
     ///
     /// - 前序规则截断后，后续规则基于截断后的调度方案继续校验。
     /// - 任一规则触发 `Fatal` 违规时立即终止并返回 `passed: false`。
-    /// - 最终 `passed = all_violations.is_empty() || 所有 violation 非 Fatal`。
+    /// - `passed` 在**全部**违规（规则链 + clamp 终态上的后置同时充放检查）
+    ///   组装完成后计算：无 Fatal，且无 hard 规则产生的 Critical。
+    ///   （R15-Q 订正：旧文案「passed = 非空 || 所有 violation 非 Fatal」
+    ///   双错——漏 hard-rule Critical 语义，且旧实现在后置检查入列**前**
+    ///   定型结论，mutex 违规拦不住 passed。）
     pub fn validate(&self, schedule: &ScheduleResult, state: &SystemState) -> ValidationResult {
         let mut current_schedule = schedule.clone();
         let mut all_violations = Vec::new();
@@ -98,24 +102,16 @@ impl SafetyValidator {
             }
         }
 
-        // 61 v0.314.25 §3.4：`is_hard()==true` 规则的任何 Critical/Fatal
-        // 都拒绝（旧语义「只有 Fatal 才 passed=false」退役——状态过流等
-        // Critical 不能带着 passed=true 放行）。
-        let hard_rules: alloc::vec::Vec<&str> = self
-            .rules
-            .iter()
-            .filter(|r| r.is_hard())
-            .map(|r| r.name())
-            .collect();
-        let has_hard_reject = all_violations.iter().any(|v| {
-            v.severity == Severity::Fatal
-                || (v.severity == Severity::Critical && hard_rules.contains(&v.rule.as_str()))
-        });
-
         // 31-review（P1 AI-05）：后置校验（规则链之后、最终调度上）——同一时段
         // 不得同时充电与放电。LP 线性互斥允许部分同时（60+40≤100），蓝图要求
         // 二元变量（MIP，已入模型）或 safety-validator 后置拒绝；此处为纵深
         // 防御：任何来源（解算器/规则 clamp）的同时充放一律 Fatal。
+        //
+        // R15-Q（蓝图74-01 WP-74.1.1）：本块必须在 `has_hard_reject` 计算
+        // **之前**入列——结论面只允许在违规集最终组装完成后定型（fail-closed）。
+        // 顺序正确性：本检查只读 `current_schedule`（规则链 + clamp 的终态），
+        // 与违规列表无交互；规则循环在两种顺序下都先于此完成；上方规则
+        // Fatal 早退路径同样不受影响（早退时本块尚未执行，与原行为一致）。
         const SIMUL_EPS: f64 = 1e-6;
         for entry in current_schedule.schedule.iter() {
             if entry.charge_power_kw > SIMUL_EPS && entry.discharge_power_kw > SIMUL_EPS {
@@ -129,6 +125,20 @@ impl SafetyValidator {
                 ));
             }
         }
+
+        // 61 v0.314.25 §3.4：`is_hard()==true` 规则的任何 Critical/Fatal
+        // 都拒绝（旧语义「只有 Fatal 才 passed=false」退役——状态过流等
+        // Critical 不能带着 passed=true 放行）。
+        let hard_rules: alloc::vec::Vec<&str> = self
+            .rules
+            .iter()
+            .filter(|r| r.is_hard())
+            .map(|r| r.name())
+            .collect();
+        let has_hard_reject = all_violations.iter().any(|v| {
+            v.severity == Severity::Fatal
+                || (v.severity == Severity::Critical && hard_rules.contains(&v.rule.as_str()))
+        });
 
         ValidationResult {
             passed: all_violations.is_empty() || !has_hard_reject,
@@ -297,5 +307,82 @@ mod revalidate_tests {
             .expect("首轮即干净");
         assert!((sched.schedule[0].discharge_power_kw - 5.0).abs() < 1e-9);
         assert!(re.passed && !re.clamped);
+    }
+
+    // ---- R15-Q（WP-74.1.0）：后置同时充放检查的结论面 ----
+    // 31-review P1 AI-05 的 mutex 后置检查此前在 `has_hard_reject` 定型
+    // **之后**才入列违规——仅有 mutex 违规时
+    // `passed = 非空 || !has_hard_reject = true`，纵深防御形同虚设。
+    // 三个测试：拒绝（红→绿）、revalidate 传导（红→绿）、合法解不误伤（恒绿）。
+
+    fn mutex_schedule() -> ScheduleResult {
+        // LP 部分同时解的典型形状（60+40≤100 各自满足 max_power=100 ⇒
+        // 规则链零违规），唯一防线就是 mutex 后置检查。
+        ScheduleResult {
+            schedule: alloc::vec![ScheduleEntry {
+                period: 0,
+                charge_power_kw: 60.0,
+                discharge_power_kw: 40.0,
+                net_power_kw: 100.0,
+                soc_pct: 0.5,
+                revenue_yuan: 0.0,
+            }],
+            total_revenue_yuan: 0.0,
+            objective_value: 0.0,
+            solve_status: SolveStatus::Optimal,
+        }
+    }
+
+    #[test]
+    fn simultaneous_charge_discharge_is_rejected() {
+        let v = SafetyValidator::new();
+        let r = v.validate(&mutex_schedule(), &state());
+        assert!(!r.passed, "同时充放必须拒绝——mutex 后置检查是 Fatal 纵深防御");
+        let m = r
+            .violations
+            .iter()
+            .find(|v| v.rule == "charge_discharge_mutex")
+            .expect("违规列表必须含 charge_discharge_mutex");
+        assert_eq!(m.severity, Severity::Fatal);
+    }
+
+    #[test]
+    fn revalidate_clamped_propagates_mutex_reject() {
+        // :161 只看 `r.passed` 的传导面——validate 拒绝后 revalidate_clamped
+        // 不得把同时充放候选当"收敛干净"放行。
+        let v = SafetyValidator::empty();
+        assert!(
+            v.revalidate_clamped(mutex_schedule(), &state()).is_none(),
+            "携带同时充放条目的截断候选不得被采信"
+        );
+    }
+
+    #[test]
+    fn legal_schedules_still_pass_after_mutex_gate() {
+        // 反向锁（防过收紧）：纯放电 / 纯充电 / 零条目 schedule 的 passed
+        // 不变——mutex 门只咬双同时>eps 的条目。
+        let v = SafetyValidator::new();
+        assert!(v.validate(&schedule(30.0), &state()).passed, "纯放电合法解");
+        let pure_charge = ScheduleResult {
+            schedule: alloc::vec![ScheduleEntry {
+                period: 0,
+                charge_power_kw: 30.0,
+                discharge_power_kw: 0.0,
+                net_power_kw: -30.0,
+                soc_pct: 0.5,
+                revenue_yuan: 0.0,
+            }],
+            total_revenue_yuan: 0.0,
+            objective_value: 0.0,
+            solve_status: SolveStatus::Optimal,
+        };
+        assert!(v.validate(&pure_charge, &state()).passed, "纯充电合法解");
+        let empty = ScheduleResult {
+            schedule: alloc::vec![],
+            total_revenue_yuan: 0.0,
+            objective_value: 0.0,
+            solve_status: SolveStatus::Optimal,
+        };
+        assert!(v.validate(&empty, &state()).passed, "零条目 schedule");
     }
 }
