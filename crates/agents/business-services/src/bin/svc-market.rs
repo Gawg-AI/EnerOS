@@ -42,11 +42,19 @@ pub extern "C" fn _start(
     let fact_face = eneros_agent_sdk::eipc_granted_slot("svc-market", eipc_mask, "svc-storage")
         .and_then(|slot| eneros_agent_sdk::block_io::eipc_block_io(slot, 0, 5_000))
         .and_then(|io| {
-            eneros_business_services::fact_face::open_fact_face(
+            match eneros_business_services::fact_face::open_fact_face(
                 io,
                 eneros_ota_ab::ab_partition::DataRegion::FactFace,
-            )
-            .ok()
+            ) {
+                Ok(face) => Some(face),
+                Err(e) => {
+                    // WP-75.2.5（R16-R）：降级词形两态分立——本词形仅
+                    // 区段打开失败（授予缺失/绑定失败仍落
+                    // FACT-FACE-UNAVAILABLE）；行为不变仍降级 None。
+                    eneros_runtime::println!("[svc-market] FACT-FACE-OPEN-FAILED {e:?}");
+                    None
+                }
+            }
         });
     let fact_sink = match fact_face {
         Some((mut sink, report)) => {

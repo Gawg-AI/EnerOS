@@ -84,7 +84,11 @@ pub extern "C" fn _start(
     let mut handler = BusHandler {
         bus: eneros_business_services::agent_bus::AgentBus::new(state, acl),
     };
-    handler.bus.restore().ok();
+    // WP-75.2.5（R16-R）：恢复失败显式可见（原 `.ok()` 全吞零日志）；
+    // 行为不变——失败仍继续启动（cursor 保持初始态）。
+    if let Err(e) = handler.bus.restore() {
+        eneros_runtime::println!("[svc-agent-bus] BUS-RESTORE-FAILED {e:?}");
+    }
     eneros_runtime::println!(
         "[svc-agent-bus] AgentBus up (broker transport not granted -> publish Unavailable)"
     );

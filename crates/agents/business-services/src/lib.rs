@@ -88,6 +88,38 @@ macro_rules! svc_panic {
     };
 }
 
+/// WP-75.2.5（R16-R）守卫（红测先行）：降级词形两态分立——
+/// ① svc-market 事实区段打开失败须有独立词形（与授予缺失/绑定失败
+/// 的 FACT-FACE-UNAVAILABLE 分立）且 `.ok()` 旁路零残留；
+/// ② svc-agent-bus 恢复失败须有独立词形且 `restore().ok()` 全吞旁路
+/// 零残留。针经分段拼接构造（防自咬）。
+#[cfg(test)]
+mod degradation_wordform_guard_tests {
+    #[test]
+    fn fact_face_open_failure_wordform_distinct() {
+        let src = include_str!("bin/svc-market.rs");
+        let word = concat!("FACT-FACE-OPEN-", "FAILED");
+        assert!(src.contains(&word), "svc-market 缺区段打开失败独立词形 {word}");
+        let bypass = concat!(")", ".ok()");
+        assert!(
+            !src.contains(bypass),
+            "svc-market `.ok()` 旁路复现（WP-75.2.5 两态分立）"
+        );
+    }
+
+    #[test]
+    fn bus_restore_failure_wordform_distinct() {
+        let src = include_str!("bin/svc-agent-bus.rs");
+        let word = concat!("BUS-RESTORE-", "FAILED");
+        assert!(src.contains(&word), "svc-agent-bus 缺恢复失败独立词形 {word}");
+        let bypass = concat!("restore", "().ok()");
+        assert!(
+            !src.contains(bypass),
+            "svc-agent-bus `restore().ok()` 全吞旁路复现（WP-75.2.5 两态分立）"
+        );
+    }
+}
+
 #[cfg(test)]
 mod panic_guard_tests {
     /// WP-75.2.3 守卫（红测先行）：八 bin panic 声化单源——
