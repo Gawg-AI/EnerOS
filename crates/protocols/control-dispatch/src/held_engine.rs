@@ -3,6 +3,12 @@
 //! internals. C1 转正（2026-09-24）：crate 级真模块（lib.rs 声明）——原
 //! `#[path]` 暗挂 + `use super::*` 全吸 engine 私有命名空间；现 engine
 //! 公开面经 `crate::engine::*` glob，依赖类型显式 import。
+//!
+//! 「持有」概念的读者入口在本文件与 [`crate::held_plan`]/[`crate::hold_registry`]
+//! （durable 路径，ADR-0054 唯一实现）。会话级持有原型 plan_hold.rs 已删
+//! （2026-09-25，R16-A / 蓝图 75 WP-75.1.0；REG-70.11-HOLD-UNWIRED 销项
+//! ——其 doc 自认的持久化归宿 WP-70.11.4 由 ADR-0054 durable 路径落地，
+//! 绕过了该原型）。
 use alloc::string::String;
 use alloc::vec::Vec;
 

@@ -50,7 +50,6 @@ pub(crate) mod hold_registry;
 pub use held_engine::{HeldInputRetainer, NoRetention};
 pub mod intent;
 pub mod journal;
-pub mod plan_hold;
 pub mod saga;
 /// C1 拆分（2026-09-24）：EngineSagaExecutor/PlanBinding/DeliveryContext
 /// 自 engine.rs 迁出（engine 侧 re-export 保路径）。
