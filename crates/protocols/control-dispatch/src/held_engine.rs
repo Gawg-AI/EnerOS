@@ -249,11 +249,14 @@ impl DispatchEngine {
         self.holds.admit(snapshot_id);
         // F70-05（R5/§8.2.1）：完整 16B plan id = 机器身份（4B 前缀只供
         // 阅读——前缀碰撞的不同计划不得合并账目）。
+        // 词形单源 = evidence 表（蓝图 75 WP-75.1.2，R16-G）。
         eneros_runtime::println!(
-            "[svc-control-dispatch] PLAN-HELD plan={:02x?} batches={} intents={}",
-            plan.id().0,
-            batches.len(),
-            batches.iter().map(|b| b.intents().len()).sum::<usize>()
+            "{}",
+            crate::evidence::plan_held(
+                &plan.id().0,
+                batches.len(),
+                batches.iter().map(|b| b.intents().len()).sum::<usize>(),
+            )
         );
         self.drive_held_plans(Some(input), Some(telemetry))?;
         let held = self
@@ -367,12 +370,15 @@ impl DispatchEngine {
                 )
             }
             .map_err(DispatchError::IntentPersistFailed)?;
+            // 词形单源 = evidence 表（WP-75.1.2）。
             eneros_runtime::println!(
-                "[svc-control-dispatch] HELD-BATCH batch={:02x?} state={:?} events={} plan={:02x?}",
-                &report.batch_id[..4],
-                report.final_state,
-                report.events,
-                plan.plan.id().0,
+                "{}",
+                crate::evidence::held_batch(
+                    &report.batch_id[..4],
+                    &report.final_state,
+                    report.events,
+                    &plan.plan.id().0,
+                )
             );
             for command in &report.commands {
                 // F70-05：HELD-COMMAND 携带完整 intent id + 所属完整
@@ -382,7 +388,21 @@ impl DispatchEngine {
                 // recheck RR2（§8.2.7 投递 trace）：追加 dev/pt/val 绑定
                 // 锚——外部 transcript 的 WRITE/READ 按 (addr, 值, 时序)
                 // 归属到本 intent，跨计划事务不得互相补数。
-                eneros_runtime::println!("[svc-control-dispatch] HELD-COMMAND intent={:02x?} state={:?} attempts={} readback={:?} reason={} plan={:02x?} dev=0x{:x} pt={} val={}", command.intent_id, command.state, command.attempts, command.readback, command.reason.as_deref().unwrap_or("-"), plan.plan.id().0, command.device, command.point, command.value_kw);
+                // 词形单源 = evidence 表（WP-75.1.2）。
+                eneros_runtime::println!(
+                    "{}",
+                    crate::evidence::held_command(
+                        &command.intent_id,
+                        &command.state,
+                        command.attempts,
+                        &command.readback,
+                        command.reason.as_deref().unwrap_or("-"),
+                        &plan.plan.id().0,
+                        command.device,
+                        command.point,
+                        command.value_kw,
+                    )
+                );
             }
             // One compiled batch per valid tick bounds work. Invalid/recovery
             // ticks may cancel at most the admitted bounded plan's commands.
@@ -498,14 +518,17 @@ impl DispatchEngine {
                         (a + ap, b + bl, f + total - ap - bl)
                     });
             if self.holds.mark_done_if_first(plan_id) {
+                // 词形单源 = evidence 表（WP-75.1.2）。
                 eneros_runtime::println!(
-                    "[svc-control-dispatch] HELD-PLAN-DONE plan={:02x?} batches={} applied={} blocked={} failed={} state={}",
-                    plan_id.0,
-                    reports.len(),
-                    applied,
-                    blocked,
-                    failed,
-                    if committed { "Committed" } else { "Terminal" }
+                    "{}",
+                    crate::evidence::held_plan_done(
+                        &plan_id.0,
+                        reports.len(),
+                        applied,
+                        blocked,
+                        failed,
+                        if committed { "Committed" } else { "Terminal" },
+                    )
                 );
             }
             // 释放面（§7.2.3）：`terminal && !unresolved` 是**计划**事实，

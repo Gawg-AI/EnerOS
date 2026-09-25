@@ -1152,13 +1152,16 @@ impl DispatchEngine {
         // 观测面：最近一次独立认证的 proof digest（Gateway/审计读点；
         // 与证书内证据同一字段，供证据行比对）。
         self.last_transition_proof_digest = Some(*certificate.proof_digest());
+        // 词形单源 = evidence 表（蓝图 75 WP-75.1.2，R16-G）。
         eneros_runtime::println!(
-            "[svc-control-dispatch] CERTIFIED plan={:02x?} cert={:02x?} constraints={} key={}/{}",
-            &plan_sha[..4],
-            &certificate.certificate_id().0[..4],
-            certificate.hard_constraint_count(),
-            reply.key_id,
-            reply.key_version
+            "{}",
+            crate::evidence::certified(
+                &plan_sha[..4],
+                &certificate.certificate_id().0[..4],
+                certificate.hard_constraint_count(),
+                reply.key_id,
+                reply.key_version,
+            )
         );
 
         // —— PlanCompiler：全 assignments → 确定性命令批（WP-5.1）——
@@ -1190,20 +1193,22 @@ impl DispatchEngine {
             .unwrap_or([0u8; 32]);
         // F70-05（R5/§8.2.2）：编译行携带**完整 plan id**——紧邻日志位置
         // 只能辅助阅读，不得作为唯一关联（完整 id 才是机器身份；摘要
-        // 保留 4B 前缀供阅读）。
+        // 保留 4B 前缀供阅读）。词形单源 = evidence 表（WP-75.1.2）。
         eneros_runtime::println!(
-            "[svc-control-dispatch] PLAN-COMPILED batches={} intents={} skipped={} manual={} compiler={:02x?} batch={:02x?} plan={:02x?}",
-            outcome.batches.len(),
-            outcome
-                .batches
-                .iter()
-                .map(|b| b.intents().len())
-                .sum::<usize>(),
-            outcome.skipped.len(),
-            outcome.manual_approval.len(),
-            &outcome.compiler_digest[..4],
-            &first_digest[..4],
-            plan.id().0,
+            "{}",
+            crate::evidence::plan_compiled(
+                outcome.batches.len(),
+                outcome
+                    .batches
+                    .iter()
+                    .map(|b| b.intents().len())
+                    .sum::<usize>(),
+                outcome.skipped.len(),
+                outcome.manual_approval.len(),
+                &outcome.compiler_digest[..4],
+                &first_digest[..4],
+                &plan.id().0,
+            )
         );
 
         // An irreversible command needs an explicit approval capability. The
@@ -1367,18 +1372,21 @@ impl DispatchEngine {
                 let now = (self.now_fn)();
                 if now < intent.valid_from_ms() {
                     deferred_steps = deferred_steps.saturating_add(1);
+                    // 词形单源 = evidence 表（WP-75.1.2）。
                     eneros_runtime::println!(
-                        "[svc-control-dispatch] PLAN-COMMAND-DEFERRED intent={:02x?} due_in_ms={}",
-                        &intent.intent_id().0[..4],
-                        intent.valid_from_ms().saturating_sub(now),
+                        "{}",
+                        crate::evidence::plan_command_deferred(
+                            &intent.intent_id().0[..4],
+                            intent.valid_from_ms().saturating_sub(now),
+                        )
                     );
                     continue;
                 }
                 if now >= intent.valid_until_ms() {
                     expired_steps = expired_steps.saturating_add(1);
                     eneros_runtime::println!(
-                        "[svc-control-dispatch] PLAN-COMMAND-SKIP-EXPIRED intent={:02x?}",
-                        &intent.intent_id().0[..4],
+                        "{}",
+                        crate::evidence::plan_command_skip_expired(&intent.intent_id().0[..4])
                     );
                     continue;
                 }
@@ -1430,11 +1438,14 @@ impl DispatchEngine {
             }
         }
         // 延期/过期步数一次性对账（0/0 也打印：缺行与"无延期"必须可区分）。
+        // 词形单源 = evidence 表（WP-75.1.2）。
         eneros_runtime::println!(
-            "[svc-control-dispatch] PLAN-COMMANDS-DEFERRED deferred={} expired={} delivered={}",
-            deferred_steps,
-            expired_steps,
-            u32::from(delivered_any),
+            "{}",
+            crate::evidence::plan_commands_deferred(
+                deferred_steps,
+                expired_steps,
+                u32::from(delivered_any),
+            )
         );
         // 蓝图 70 R10：在途登记按涉备逐一清账（与仲裁登记同键集）。
         for &d in &involved {
