@@ -191,7 +191,7 @@ impl<'a> EngineSagaExecutor<'a> {
                 // 62 v0.315.0 WP-62.1.2（D-3）：wire SHA-256（原此处传
                 // plan_input_digest——输入摘要冒充 wire 绑定摘要）。
                 plan_sha: Some(self.plan_sha),
-                idem_note: String::from("saga idempotent-hit（原结果，不重复写）"),
+                idem_note: crate::engine::IdemNote::SagaReplay,
             },
             self.telemetry,
             self.actor,

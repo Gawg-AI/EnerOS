@@ -84,6 +84,32 @@ pub(crate) enum CoreIdentity {
     },
 }
 
+/// IdempotentHit 回执注记（R16-P，蓝图 75 WP-75.1.4）：两入口 +
+/// saga 执行器的三处注记枚举化——原 `CoreCommand.idem_note: String`
+/// 三处冻结字面（进 durable 回执 note，journal 持久化）收为三变体
+/// `as_str()`，词形逐字节不变（journal 既有记录读回不反解 note，
+/// 纯展示，无兼容面）。golden：`unit_tests::idem_note_word_forms`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IdemNote {
+    /// 协议意图写重放（run_intent 入口）。
+    IntentReplay,
+    /// 计划命令重放（run_typed 逐命令合核）。
+    PlanReplay,
+    /// saga 批内命令重放（EngineSagaExecutor::execute_intent）。
+    SagaReplay,
+}
+
+impl IdemNote {
+    /// 现行三条字面逐字节（冻结词形——变异即 golden 红）。
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            IdemNote::IntentReplay => "idempotent-hit（同 (protocol,seq) 重放——不重复写）",
+            IdemNote::PlanReplay => "idempotent-hit（原结果，不重复写）",
+            IdemNote::SagaReplay => "saga idempotent-hit（原结果，不重复写）",
+        }
+    }
+}
+
 /// WP-54.2 合核入参：入口完成纯计算（校验/值域/target/digest），副作用序
 /// 由 [`DispatchEngine::execute_core`] 独占。
 pub(crate) struct CoreCommand {
@@ -99,8 +125,8 @@ pub(crate) struct CoreCommand {
     pub(crate) input_digest: Option<[u8; 32]>,
     /// None=意图写（无能量语义，仅速率）；Some(kWh)=AI 计划能量预算。
     pub(crate) energy_kwh: Option<f64>,
-    /// IdempotentHit 回执文案（两入口注记不同）。
-    pub(crate) idem_note: String,
+    /// IdempotentHit 回执文案（两入口注记不同；R16-P 起枚举化）。
+    pub(crate) idem_note: IdemNote,
     /// 蓝图 61 v0.314.29：CandidatePlan wire SHA-256（typed 链 durable
     /// 绑定；意图写 None）。
     pub(crate) plan_sha: Option<[u8; 32]>,
@@ -1050,7 +1076,7 @@ impl DispatchEngine {
                 input_digest: None,
                 energy_kwh: None,
                 plan_sha: None,
-                idem_note: String::from("idempotent-hit（同 (protocol,seq) 重放——不重复写）"),
+                idem_note: IdemNote::IntentReplay,
             },
             telemetry,
             actor,
@@ -1411,7 +1437,7 @@ impl DispatchEngine {
                         input_digest: Some(*plan.input_digest()),
                         energy_kwh: energy,
                         plan_sha: Some(plan_sha),
-                        idem_note: String::from("idempotent-hit（原结果，不重复写）"),
+                        idem_note: IdemNote::PlanReplay,
                     },
                     telemetry,
                     actor,
@@ -1694,7 +1720,7 @@ impl DispatchEngine {
                     correlation,
                     started,
                     (self.now_fn)(),
-                    &cmd.idem_note,
+                    cmd.idem_note.as_str(),
                 ));
             }
             None => {}
@@ -2421,6 +2447,22 @@ mod unit_tests {
             solve_status: eneros_energy_lp_model::result::SolveStatus::Optimal,
         };
         assert!((schedule_energy_kwh(&s) - 1.25).abs() < 1e-9);
+    }
+
+    /// R16-P golden（蓝图 75 WP-75.1.4）：IdemNote 三变体渲染 == 原三处
+    /// `CoreCommand.idem_note` 冻结字面（进 durable 回执 note——journal
+    /// 持久化词形）。变异验证：任改一条 as_str ⇒ 红。
+    #[test]
+    fn idem_note_word_forms() {
+        assert_eq!(
+            IdemNote::IntentReplay.as_str(),
+            "idempotent-hit（同 (protocol,seq) 重放——不重复写）"
+        );
+        assert_eq!(IdemNote::PlanReplay.as_str(), "idempotent-hit（原结果，不重复写）");
+        assert_eq!(
+            IdemNote::SagaReplay.as_str(),
+            "saga idempotent-hit（原结果，不重复写）"
+        );
     }
     // ===== SPEC-SERIES-2026-08-27/A · WP-A.2 电气护栏单测 =====
 
