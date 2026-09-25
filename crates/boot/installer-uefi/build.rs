@@ -69,8 +69,8 @@ fn main() -> BuildResult {
         literal(&key_id),
         literal(&platform_id),
     );
-    let output = PathBuf::from(env::var_os("OUT_DIR").ok_or("OUT_DIR is set")?)
-        .join("installer_trust.rs");
+    let output =
+        PathBuf::from(env::var_os("OUT_DIR").ok_or("OUT_DIR is set")?).join("installer_trust.rs");
     fs::write(output, source).map_err(|e| format!("write installer trust anchor: {e}"))?;
     Ok(())
 }
