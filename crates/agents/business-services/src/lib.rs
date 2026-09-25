@@ -48,6 +48,9 @@ pub mod mgmt_history;
 /// 签发 token + ECDSA P-256 验签；wire 角色字节验签后才进授权）。
 pub mod mgmt_ops;
 pub mod mgmt_principal;
+/// WP-75.2.8（R16-I）：svc-mgmt 判据下沉库（ConfigSet 中继归类/重启
+/// 对账终态/快照分节格式化）。
+pub mod mgmt_relay;
 pub mod mgmt_rpc;
 pub mod observability;
 pub mod ota_service;

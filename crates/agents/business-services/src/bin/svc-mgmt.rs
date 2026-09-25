@@ -287,12 +287,9 @@ impl TargetExecutor {
         use alloc::format;
         use alloc::string::String;
         let mut out: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(1024);
+        // 分节行格式化下沉 mgmt_relay（WP-75.2.8 相C；golden 锁词形）。
         let section = |name: &str, body: &str, out: &mut alloc::vec::Vec<u8>| {
-            let d = eneros_crypto::sm3_hash(body.as_bytes());
-            let line = format!(
-                "{name}|digest={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}|{body}\n",
-                d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]
-            );
+            let line = eneros_business_services::mgmt_relay::format_snapshot_section(name, body);
             out.extend_from_slice(line.as_bytes());
         };
         // ① 启动身份（workspace 版本 + 管理面 epoch 观测）。
@@ -304,12 +301,10 @@ impl TargetExecutor {
         // ② 服务状态（本服务真实计数 + root 维护态投影）。
         let maint = self
             .root_call(&eneros_agent_sdk::root_mgmt::encode_maint_query())
-            .and_then(|r| eneros_agent_sdk::root_mgmt::parse_maint_query_resp(&r).ok())
-            .map(|(active, tick)| format!("maintenance={} entered_tick={tick}", active))
-            .unwrap_or_else(|| String::from("missing:root-unbound"));
+            .and_then(|r| eneros_agent_sdk::root_mgmt::parse_maint_query_resp(&r).ok());
         section(
             "status",
-            &format!("requests_seen={}\n{maint}", self.requests_seen),
+            &eneros_business_services::mgmt_relay::format_status_body(self.requests_seen, maint),
             &mut out,
         );
         // ③ 配置摘要（digest+generation；不可得 = 缺项词形）。CFG1
@@ -329,44 +324,29 @@ impl TargetExecutor {
                         u64::from_le_bytes(r[4 + n..4 + n + 8].try_into().ok()?),
                     ))
                 });
-                match digest_info {
-                    Some((digest, g)) if digest.len() == 32 => {
-                        let hex =
-                            |b: &[u8]| -> String { b.iter().map(|x| format!("{x:02x}")).collect() };
-                        format!(
-                            "generation={g} digest={} source=svc-config",
-                            hex(&digest[..16])
-                        )
-                    }
-                    _ => String::from("missing:config-unreachable"),
-                }
+                eneros_business_services::mgmt_relay::format_config_body(digest_info)
             }
+            // config 未绑定（独立缺项词形——与不可得分立）。
             None => String::from("missing:config-unbound"),
         };
         section("config", &cfg, &mut out);
         // ④ 日志面（logging 配置摘要；运行日志未经支持包分页面——显式缺项）。
         use eneros_agent_sdk::config_client;
         let log = match self.config_ep.as_mut() {
-            Some(ep) => match config_client::get_entry(ep, "logging") {
-                Ok(raw) => format!(
-                    "log-config-bytes={} runtime-logs=missing:support-bundle-page-only",
-                    raw.len()
-                ),
-                Err(_) => String::from("missing:log-config-unreachable"),
-            },
+            Some(ep) => {
+                eneros_business_services::mgmt_relay::format_logging_body(
+                    config_client::get_entry(ep, "logging").map(|raw| raw.len()).ok(),
+                )
+            }
             None => String::from("missing:config-unbound"),
         };
         section("logging", &log, &mut out);
         // ⑤ 持久恢复状态（操作账本存储连通性 + 快照时刻）。
         section(
             "persistence",
-            &format!(
-                "ops_store={} at_ms={now_ms}",
-                if self.ops_store_ok {
-                    "ok"
-                } else {
-                    "missing:storage-unbound"
-                }
+            &eneros_business_services::mgmt_relay::format_persistence_body(
+                self.ops_store_ok,
+                now_ms,
             ),
             &mut out,
         );
@@ -404,36 +384,26 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
         eneros_business_services::mgmt_ops::OpStatus,
         alloc::string::String,
     )> {
-        use alloc::format;
-
-        use eneros_business_services::mgmt_ops::OpStatus;
-        // 受控重启在途对账：detail 形如 "restart <target> base_gen=<g>"。
+        // 受控重启在途对账：detail 解析 + 终态三态判定下沉 mgmt_relay
+        // （WP-75.2.8 相B）；root 探针（拨号面）留 bin。
         if record.action != "agent-restart" {
             return None;
         }
-        let rest = record.detail.strip_prefix("restart ")?;
-        let (target, base_text) = rest.split_once(" base_gen=")?;
-        let base_gen: u64 = base_text.parse().ok()?;
-        let resp = self.root_call(&eneros_agent_sdk::root_mgmt::encode_instance_query(target))?;
+        let (target, base_gen) =
+            eneros_business_services::mgmt_relay::parse_restart_detail(&record.detail)?;
+        let resp = self.root_call(&eneros_agent_sdk::root_mgmt::encode_instance_query(&target))?;
         let (gen, _lc, restarts, ready) =
             eneros_agent_sdk::root_mgmt::parse_instance_resp(&resp).ok()?;
-        if gen > base_gen {
-            return Some((
-                OpStatus::Completed,
-                format!(
-                    "restart-complete:target={target} gen={gen} restarts={restarts} ready={ready}"
-                ),
-            ));
-        }
-        if now_ms.saturating_sub(record.created_ms) > RESTART_TIMEOUT_MS {
-            return Some((
-                OpStatus::Failed,
-                format!(
-                    "restart-timeout:target={target} base_gen={base_gen} last_gen={gen}; verify root serial (MGMT-RESTART words)"
-                ),
-            ));
-        }
-        None // 仍在途
+        eneros_business_services::mgmt_relay::classify_restart_observation(
+            &target,
+            base_gen,
+            gen,
+            restarts,
+            ready,
+            record.created_ms,
+            now_ms,
+            RESTART_TIMEOUT_MS,
+        )
     }
 
     fn execute(
@@ -763,29 +733,12 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
                             };
                         };
                         match client.call("svc-config", &req) {
-                            // 成功 = 单字节回显分片序号。**先判失败词形**：
-                            // svc-config 的拒绝以 `ERR:` 文本承载（长度 ≥1 且
-                            // 首字节 'E'=69），"非空即成功"会把每次拒绝都记成
-                            // `config-stage-part:69/N accepted` 并作为**已完成**
-                            // 副作用写进幂等账本（同一 request_id 无法重试）。
-                            Ok(r) if r.starts_with(b"ERR:") => ActionResult {
-                                status: RpcStatus::Failed,
-                                detail: format!(
-                                    "config-stage-rejected:{}",
-                                    core::str::from_utf8(&r).unwrap_or("?")
-                                ),
-                                payload: None,
-                            },
-                            Ok(r) if !r.is_empty() => ActionResult {
-                                status: RpcStatus::Completed,
-                                detail: format!("config-stage-part:{}/{} accepted", r[0], arg[2]),
-                                payload: None,
-                            },
-                            Ok(_) => ActionResult {
-                                status: RpcStatus::Failed,
-                                detail: "config-stage-rejected:empty-response".into(),
-                                payload: None,
-                            },
+                            // 响应归类下沉 mgmt_relay（WP-75.2.8 相A）——
+                            // **先判 ERR** 判据（拒绝不得记成完成副作用）
+                            // 由 host 测试锁死；EIPC Err 臂留 bin（拨号面）。
+                            Ok(r) => {
+                                eneros_business_services::mgmt_relay::classify_stage_resp(&r, arg[2])
+                            }
                             Err(e) => ActionResult {
                                 status: RpcStatus::Failed,
                                 detail: format!("config-stage-eipc:{e:?}"),
@@ -817,23 +770,8 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
                             };
                         };
                         match client.call_with_timeout("svc-config", &req, 60_000) {
-                            Ok(r) if r.len() == 32 => {
-                                let hex: alloc::string::String =
-                                    r[..8].iter().map(|b| format!("{b:02x}")).collect();
-                                ActionResult {
-                                    status: RpcStatus::Completed,
-                                    detail: format!("config-staged:digest={hex}…"),
-                                    payload: Some(r),
-                                }
-                            }
-                            Ok(r) => ActionResult {
-                                status: RpcStatus::Failed,
-                                detail: format!(
-                                    "config-commit-rejected:{}",
-                                    core::str::from_utf8(&r).unwrap_or("?")
-                                ),
-                                payload: None,
-                            },
+                            // 响应归类下沉 mgmt_relay（WP-75.2.8 相A）。
+                            Ok(r) => eneros_business_services::mgmt_relay::classify_commit_resp(&r),
                             Err(e) => ActionResult {
                                 status: RpcStatus::Failed,
                                 detail: format!("config-commit-eipc:{e:?}"),
@@ -868,22 +806,10 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
                         req.push(config_service::CMD_ACTIVATE);
                         // 宽松超时同 commit 臂（盘写 8KiB + 启动级验签）。
                         match client.call_with_timeout("svc-config", &req, 60_000) {
-                            Ok(r) if r.len() == 8 => {
-                                let gen = u64::from_le_bytes(r[..8].try_into().unwrap());
-                                ActionResult {
-                                    status: RpcStatus::Completed,
-                                    detail: format!("config-activated:gen={gen}"),
-                                    payload: Some(r),
-                                }
+                            // 响应归类下沉 mgmt_relay（WP-75.2.8 相A）。
+                            Ok(r) => {
+                                eneros_business_services::mgmt_relay::classify_activate_resp(&r)
                             }
-                            Ok(r) => ActionResult {
-                                status: RpcStatus::Failed,
-                                detail: format!(
-                                    "config-activate-rejected:{}",
-                                    core::str::from_utf8(&r).unwrap_or("?")
-                                ),
-                                payload: None,
-                            },
                             Err(e) => ActionResult {
                                 status: RpcStatus::Failed,
                                 detail: format!("config-activate-eipc:{e:?}"),
