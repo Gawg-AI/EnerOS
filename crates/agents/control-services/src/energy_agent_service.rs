@@ -228,7 +228,7 @@ impl EnergyAgentService {
         disp_req.push(DISP_SUBMIT_TRUSTED);
         disp_req.extend_from_slice(proposal_wire);
         disp_req.extend_from_slice(input);
-        disp_req.push(2); // ActorKind::Ai
+        disp_req.push(eneros_telemetry_model::command::ActorKind::Ai as u8);
         match self.dispatch.0.submit(&disp_req) {
             Ok(receipt_wire) => {
                 self.tick_count += 1;

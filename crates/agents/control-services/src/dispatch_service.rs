@@ -970,6 +970,28 @@ mod tests {
         );
     }
 
+    /// 守卫扩面（蓝图 75 卷二 WP-75.2.0）：EA tick 构帧点的 actor 语义
+    /// 单源——`energy_agent_service.rs` 构帧 push 须走
+    /// `ActorKind::Ai as u8`，匿名 `push(2)` 字面零命中（漂移即红）。
+    /// 字节恒等前提同锁（Ai=2，wire 零变化）。
+    /// 针经分段拼接构造（防自咬）；扫描目标为 EA 文件整体（含行尾注释
+    /// 形态，不按 `//` 豁免——收编后该字面任何形态都不合法）。
+    #[test]
+    fn ea_tick_actor_kind_single_source_guard() {
+        assert_eq!(
+            eneros_telemetry_model::command::ActorKind::Ai as u8,
+            2,
+            "ActorKind::Ai 判别值冻结（wire 字节恒等前提）"
+        );
+        let push2 = concat!("push", "(", "2", ")");
+        let src = include_str!("energy_agent_service.rs");
+        let offenders: Vec<&str> = src.lines().filter(|l| l.contains(push2)).collect();
+        assert!(
+            offenders.is_empty(),
+            "EA 构帧匿名 actor 字面复现（WP-75.2.0 已收编 ActorKind 单源）：{offenders:?}"
+        );
+    }
+
     #[test]
     fn submit_intent_routes_to_engine_committed() {
         let mut engine = engine();
