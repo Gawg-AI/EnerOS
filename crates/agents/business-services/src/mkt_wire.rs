@@ -6,10 +6,55 @@
 //! 下沉后由本模块独立执法，`try_into().unwrap()` 不越界）；错误类别
 //! 与序逐字保形：先总长门（ERR_LEN）后枚举域（ERR:market）。
 
+/// 0x01 SUBMIT 载荷长度（bin 手抄门值保形：`req.len() != 5 + 93`）。
+pub const SUBMIT_BODY: usize = 93;
+
+/// 解析 0x01 SUBMIT 请求（`req` = 完整信封；信封层由调用方先经
+/// [`crate::svc_wire::parse_envelope`] 判定）。
+///
+/// 错误序保形：先总长门（[`crate::svc_wire::ERR_LEN`]）后 market 枚举
+/// 域（`ERR:market`，1-6 显式映射、越界拒不放行）。
+pub fn parse_submit_req(req: &[u8]) -> Result<crate::market::QuoteMessage, &'static [u8]> {
+    use eneros_durable_state::IdempotencyKey;
+    use eneros_market_types::{MarketType, MilliYuan, TimeSlot, YuanPerMwh};
+
+    if req.len() != 5 + SUBMIT_BODY || req[4] != 0x01 {
+        return Err(crate::svc_wire::ERR_LEN);
+    }
+    let p = &req[5..];
+    let market = match p[32] {
+        1 => MarketType::DayAhead,
+        2 => MarketType::IntraDay,
+        3 => MarketType::Realtime,
+        4 => MarketType::Spot,
+        5 => MarketType::AncillaryService,
+        6 => MarketType::DemandResponse,
+        _ => return Err(b"ERR:market"),
+    };
+    Ok(crate::market::QuoteMessage {
+        quote_ref: crate::market::QuoteRef {
+            external_id: u64::from_le_bytes(p[0..8].try_into().unwrap()),
+            idempotency: IdempotencyKey(p[8..24].try_into().unwrap()),
+            deadline_ms: u64::from_le_bytes(p[24..32].try_into().unwrap()),
+            market,
+            tenant: u32::from_le_bytes(p[33..37].try_into().unwrap()),
+            product: u32::from_le_bytes(p[37..41].try_into().unwrap()),
+        },
+        slot: TimeSlot {
+            start: u64::from_le_bytes(p[41..49].try_into().unwrap()),
+            end: u64::from_le_bytes(p[49..57].try_into().unwrap()),
+        },
+        volume_kwh: u64::from_le_bytes(p[57..65].try_into().unwrap()),
+        price: YuanPerMwh(f64::from_le_bytes(p[65..73].try_into().unwrap())),
+        amount: MilliYuan(i64::from_le_bytes(p[73..81].try_into().unwrap())),
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
     use eneros_market_types::MarketType;
+
+    use super::*;
 
     /// 合法 0x01 SUBMIT 请求（全字段独特值）。
     fn valid_submit_req() -> alloc::vec::Vec<u8> {
@@ -99,48 +144,4 @@ mod tests {
         req[5 + 32] = 7; // 越界枚举 + 短长并存 → 长度门先行
         assert_eq!(parse_submit_req(&req), Err(crate::svc_wire::ERR_LEN));
     }
-}
-
-/// 0x01 SUBMIT 载荷长度（bin 手抄门值保形：`req.len() != 5 + 93`）。
-pub const SUBMIT_BODY: usize = 93;
-
-/// 解析 0x01 SUBMIT 请求（`req` = 完整信封；信封层由调用方先经
-/// [`crate::svc_wire::parse_envelope`] 判定）。
-///
-/// 错误序保形：先总长门（[`crate::svc_wire::ERR_LEN`]）后 market 枚举
-/// 域（`ERR:market`，1-6 显式映射、越界拒不放行）。
-pub fn parse_submit_req(req: &[u8]) -> Result<crate::market::QuoteMessage, &'static [u8]> {
-    use eneros_durable_state::IdempotencyKey;
-    use eneros_market_types::{MarketType, MilliYuan, TimeSlot, YuanPerMwh};
-
-    if req.len() != 5 + SUBMIT_BODY || req[4] != 0x01 {
-        return Err(crate::svc_wire::ERR_LEN);
-    }
-    let p = &req[5..];
-    let market = match p[32] {
-        1 => MarketType::DayAhead,
-        2 => MarketType::IntraDay,
-        3 => MarketType::Realtime,
-        4 => MarketType::Spot,
-        5 => MarketType::AncillaryService,
-        6 => MarketType::DemandResponse,
-        _ => return Err(b"ERR:market"),
-    };
-    Ok(crate::market::QuoteMessage {
-        quote_ref: crate::market::QuoteRef {
-            external_id: u64::from_le_bytes(p[0..8].try_into().unwrap()),
-            idempotency: IdempotencyKey(p[8..24].try_into().unwrap()),
-            deadline_ms: u64::from_le_bytes(p[24..32].try_into().unwrap()),
-            market,
-            tenant: u32::from_le_bytes(p[33..37].try_into().unwrap()),
-            product: u32::from_le_bytes(p[37..41].try_into().unwrap()),
-        },
-        slot: TimeSlot {
-            start: u64::from_le_bytes(p[41..49].try_into().unwrap()),
-            end: u64::from_le_bytes(p[49..57].try_into().unwrap()),
-        },
-        volume_kwh: u64::from_le_bytes(p[57..65].try_into().unwrap()),
-        price: YuanPerMwh(f64::from_le_bytes(p[65..73].try_into().unwrap())),
-        amount: MilliYuan(i64::from_le_bytes(p[73..81].try_into().unwrap())),
-    })
 }

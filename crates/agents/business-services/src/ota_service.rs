@@ -992,8 +992,9 @@ mod tests {
     /// （结构性根由：`UpdateDescription::decode` 本身强制 canonical
     /// 重编码一致，非 canonical 字节在 parse 处即被拒。）
     #[test]
+    #[allow(clippy::disallowed_macros)] // clippy.toml：测试模块豁免 panic! 宏
     fn check_desc_reencode_identity_differential() {
-        use eneros_agent_sdk::ota_wire::{parse_check_desc_req, DESC_SKU_LEN, DESC_SIZE};
+        use eneros_agent_sdk::ota_wire::{parse_check_desc_req, DESC_SIZE, DESC_SKU_LEN};
         let sig = [0x11u8; 64]; // 差分不消费签名，占位即可。
         let mut samples: Vec<UpdateDescription> = Vec::new();
         // 典型样例。
@@ -1097,7 +1098,10 @@ mod tests {
         let mut resp2 = Vec::new();
         let out2 =
             handle_ota_ab_command(Some(&mut svc), &encode_check_desc(&d2, &dsig2), &mut resp2);
-        assert!(out2.handled, "Deny 仍是已处理命令（回执 0）——handled 与 verdict 分离");
+        assert!(
+            out2.handled,
+            "Deny 仍是已处理命令（回执 0）——handled 与 verdict 分离"
+        );
         assert!(!out2.check_pass, "Deny 态 check_pass 须假");
         assert_eq!(resp2, vec![0]);
         // 信封违例：handled = false、check_pass = false（原 bool 语义逐语义等）。
@@ -1564,11 +1568,10 @@ mod tests {
             &identity(),
         );
         let mut resp = Vec::new();
-        assert!(!handle_ota_ab_command(
-            Some(&mut svc),
-            &req02_valid(&sk, "1.1.0", &img),
-            &mut resp
-        ).handled);
+        assert!(
+            !handle_ota_ab_command(Some(&mut svc), &req02_valid(&sk, "1.1.0", &img), &mut resp)
+                .handled
+        );
         let cap_resp = core::str::from_utf8(&resp).unwrap().to_owned();
         // 设备写失败。
         let mut svc = OtaService::new(
@@ -1581,11 +1584,10 @@ mod tests {
             &identity(),
         );
         let mut resp = Vec::new();
-        assert!(!handle_ota_ab_command(
-            Some(&mut svc),
-            &req02_valid(&sk, "1.1.0", &img),
-            &mut resp
-        ).handled);
+        assert!(
+            !handle_ota_ab_command(Some(&mut svc), &req02_valid(&sk, "1.1.0", &img), &mut resp)
+                .handled
+        );
         let write_resp = core::str::from_utf8(&resp).unwrap().to_owned();
         // 策略门拒绝（降级版本）。
         let mut svc = OtaService::new(
@@ -1598,11 +1600,10 @@ mod tests {
             &identity(),
         );
         let mut resp = Vec::new();
-        assert!(!handle_ota_ab_command(
-            Some(&mut svc),
-            &req02_valid(&sk, "1.0.0", &img),
-            &mut resp
-        ).handled);
+        assert!(
+            !handle_ota_ab_command(Some(&mut svc), &req02_valid(&sk, "1.0.0", &img), &mut resp)
+                .handled
+        );
         let policy_resp = core::str::from_utf8(&resp).unwrap().to_owned();
         assert_eq!(
             cap_resp,

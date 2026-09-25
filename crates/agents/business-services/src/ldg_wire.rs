@@ -3,6 +3,37 @@
 //!
 //! 不变式：先总长门后切片（64B 定长载荷；`try_into().unwrap()` 不越界）。
 
+/// 0x01 POST 载荷长度（bin 手抄门值保形：`req.len() != 5 + 64`）。
+pub const POST_BODY: usize = 64;
+
+/// POST 请求字段组（bin 手抄顺序保形）。
+pub type PostFields = (
+    crate::ledger::TransactionId,
+    crate::ledger::AccountId,
+    crate::ledger::AccountId,
+    eneros_market_types::MilliYuan,
+    u64,
+    crate::ledger::ReceiptDigest,
+);
+
+/// 解析 0x01 POST 请求（`req` = 完整信封；信封层由调用方先经
+/// [`crate::svc_wire::parse_envelope`] 判定）。总长门错误 =
+/// [`crate::svc_wire::ERR_LEN`]。
+pub fn parse_post_req(req: &[u8]) -> Result<PostFields, &'static [u8]> {
+    if req.len() != 5 + POST_BODY || req[4] != 0x01 {
+        return Err(crate::svc_wire::ERR_LEN);
+    }
+    let p = &req[5..];
+    Ok((
+        crate::ledger::TransactionId(u64::from_le_bytes(p[0..8].try_into().unwrap())),
+        crate::ledger::AccountId(u32::from_le_bytes(p[8..12].try_into().unwrap())),
+        crate::ledger::AccountId(u32::from_le_bytes(p[12..16].try_into().unwrap())),
+        eneros_market_types::MilliYuan(i64::from_le_bytes(p[16..24].try_into().unwrap())),
+        u64::from_le_bytes(p[24..32].try_into().unwrap()),
+        crate::ledger::ReceiptDigest(p[32..64].try_into().unwrap()),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -44,35 +75,4 @@ mod tests {
             assert_eq!(parse_post_req(&req), Err(crate::svc_wire::ERR_LEN));
         }
     }
-}
-
-/// 0x01 POST 载荷长度（bin 手抄门值保形：`req.len() != 5 + 64`）。
-pub const POST_BODY: usize = 64;
-
-/// POST 请求字段组（bin 手抄顺序保形）。
-pub type PostFields = (
-    crate::ledger::TransactionId,
-    crate::ledger::AccountId,
-    crate::ledger::AccountId,
-    eneros_market_types::MilliYuan,
-    u64,
-    crate::ledger::ReceiptDigest,
-);
-
-/// 解析 0x01 POST 请求（`req` = 完整信封；信封层由调用方先经
-/// [`crate::svc_wire::parse_envelope`] 判定）。总长门错误 =
-/// [`crate::svc_wire::ERR_LEN`]。
-pub fn parse_post_req(req: &[u8]) -> Result<PostFields, &'static [u8]> {
-    if req.len() != 5 + POST_BODY || req[4] != 0x01 {
-        return Err(crate::svc_wire::ERR_LEN);
-    }
-    let p = &req[5..];
-    Ok((
-        crate::ledger::TransactionId(u64::from_le_bytes(p[0..8].try_into().unwrap())),
-        crate::ledger::AccountId(u32::from_le_bytes(p[8..12].try_into().unwrap())),
-        crate::ledger::AccountId(u32::from_le_bytes(p[12..16].try_into().unwrap())),
-        eneros_market_types::MilliYuan(i64::from_le_bytes(p[16..24].try_into().unwrap())),
-        u64::from_le_bytes(p[24..32].try_into().unwrap()),
-        crate::ledger::ReceiptDigest(p[32..64].try_into().unwrap()),
-    ))
 }

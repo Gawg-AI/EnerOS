@@ -4,6 +4,37 @@
 //! 不变式：先总长门后切片；变长段钳制逻辑照搬 bin 现状
 //! （`5 + 55 + plen > req.len()` → ERR_LEN）。
 
+/// 0x01 UPLOAD 定长头部（bin 手抄门值保形：`req.len() < 5 + 56` 拒）。
+pub const UPLOAD_FIXED: usize = 56;
+
+/// 解析 0x01 UPLOAD 请求（`req` = 完整信封；信封层由调用方先经
+/// [`crate::svc_wire::parse_envelope`] 判定）。
+///
+/// 变长段钳制照搬 bin 现状：`plen` u16 在 p[53..55]，实际载荷不足时
+/// （`5 + 55 + plen > req.len()`）→ [`crate::svc_wire::ERR_LEN`]。
+pub fn parse_upload_req(req: &[u8]) -> Result<crate::cloud_sync::UploadItem, &'static [u8]> {
+    if req.len() < 5 + UPLOAD_FIXED || req[4] != 0x01 {
+        return Err(crate::svc_wire::ERR_LEN);
+    }
+    let p = &req[5..];
+    let mut schema = [0u8; 8];
+    schema.copy_from_slice(&p[5..13]);
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&p[21..53]);
+    let plen = u16::from_le_bytes(p[53..55].try_into().unwrap()) as usize;
+    if 5 + 55 + plen > req.len() {
+        return Err(crate::svc_wire::ERR_LEN);
+    }
+    Ok(crate::cloud_sync::UploadItem {
+        tenant: u32::from_le_bytes(p[0..4].try_into().unwrap()),
+        data_class: p[4],
+        schema: alloc::string::String::from_utf8_lossy(&schema).into_owned(),
+        sequence: u64::from_le_bytes(p[13..21].try_into().unwrap()),
+        hash,
+        payload: req[5 + 55..5 + 55 + plen].to_vec(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,35 +97,4 @@ mod tests {
         req.extend_from_slice(&p);
         assert_eq!(parse_upload_req(&req), Err(crate::svc_wire::ERR_LEN));
     }
-}
-
-/// 0x01 UPLOAD 定长头部（bin 手抄门值保形：`req.len() < 5 + 56` 拒）。
-pub const UPLOAD_FIXED: usize = 56;
-
-/// 解析 0x01 UPLOAD 请求（`req` = 完整信封；信封层由调用方先经
-/// [`crate::svc_wire::parse_envelope`] 判定）。
-///
-/// 变长段钳制照搬 bin 现状：`plen` u16 在 p[53..55]，实际载荷不足时
-/// （`5 + 55 + plen > req.len()`）→ [`crate::svc_wire::ERR_LEN`]。
-pub fn parse_upload_req(req: &[u8]) -> Result<crate::cloud_sync::UploadItem, &'static [u8]> {
-    if req.len() < 5 + UPLOAD_FIXED || req[4] != 0x01 {
-        return Err(crate::svc_wire::ERR_LEN);
-    }
-    let p = &req[5..];
-    let mut schema = [0u8; 8];
-    schema.copy_from_slice(&p[5..13]);
-    let mut hash = [0u8; 32];
-    hash.copy_from_slice(&p[21..53]);
-    let plen = u16::from_le_bytes(p[53..55].try_into().unwrap()) as usize;
-    if 5 + 55 + plen > req.len() {
-        return Err(crate::svc_wire::ERR_LEN);
-    }
-    Ok(crate::cloud_sync::UploadItem {
-        tenant: u32::from_le_bytes(p[0..4].try_into().unwrap()),
-        data_class: p[4],
-        schema: alloc::string::String::from_utf8_lossy(&schema).into_owned(),
-        sequence: u64::from_le_bytes(p[13..21].try_into().unwrap()),
-        hash,
-        payload: req[5 + 55..5 + 55 + plen].to_vec(),
-    })
 }

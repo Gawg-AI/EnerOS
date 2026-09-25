@@ -126,8 +126,7 @@ fn held_tick_arm(engine: &mut dyn ControlDispatch, req: &[u8]) -> Vec<u8> {
     let input = if req.len() == 1 {
         None
     } else {
-        let Some(input) = eneros_agent_sdk::snap_input_wire::TrustedInput::decode(&req[1..])
-        else {
+        let Some(input) = eneros_agent_sdk::snap_input_wire::TrustedInput::decode(&req[1..]) else {
             return err_receipt("bad held tick input");
         };
         Some(input)
@@ -1024,16 +1023,25 @@ mod tests {
         let mut engine = engine();
         // SUBMIT 臂（空 body → short request 拒绝词形——臂可达可观测）。
         let resp = handle_request(&mut engine, &[DISP_SUBMIT], None);
-        assert!(decode_receipt(&resp).expect("receipt").4.contains("short request"));
+        assert!(decode_receipt(&resp)
+            .expect("receipt")
+            .4
+            .contains("short request"));
         // TRUSTED 臂（空 body → short trusted request）。
         let resp = handle_request(&mut engine, &[DISP_SUBMIT_TRUSTED], None);
-        assert!(decode_receipt(&resp).expect("receipt").4.contains("short trusted request"));
+        assert!(decode_receipt(&resp)
+            .expect("receipt")
+            .4
+            .contains("short trusted request"));
         // HELD_TICK 臂（无输入 tick → Ok + 在场计数）。
         let resp = handle_request(&mut engine, &[DISP_HELD_TICK], None);
         assert_eq!(resp[0], DISP_OK);
         // HELD_QUERY 臂（空引擎 → held batch not found 词形）。
         let resp = handle_request(&mut engine, &[DISP_HELD_QUERY, 0], None);
-        assert!(decode_receipt(&resp).expect("receipt").4.contains("held batch not found"));
+        assert!(decode_receipt(&resp)
+            .expect("receipt")
+            .4
+            .contains("held batch not found"));
         // INTENT 臂无遥测 → fail-closed（词形保现行）。
         // encode_intent_request 帧已含 opcode + actor 字节（帧壳单源）。
         let req = eneros_protocol_abstract::write::encode_intent_request(
@@ -1053,10 +1061,16 @@ mod tests {
             .contains("no trusted telemetry"));
         // unknown opcode → not-submit 拒绝词形（单表 `Some(_)` 臂）。
         let resp = handle_request(&mut engine, &[99], None);
-        assert!(decode_receipt(&resp).expect("receipt").4.contains("unknown opcode"));
+        assert!(decode_receipt(&resp)
+            .expect("receipt")
+            .4
+            .contains("unknown opcode"));
         // 空请求 → empty request 词形（None 臂保形）。
         let resp = handle_request(&mut engine, &[], None);
-        assert!(decode_receipt(&resp).expect("receipt").4.contains("empty request"));
+        assert!(decode_receipt(&resp)
+            .expect("receipt")
+            .4
+            .contains("empty request"));
     }
 
     #[test]

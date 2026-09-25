@@ -288,12 +288,12 @@ impl<S: Solver> AgentRuntime for EnergyAgent<S> {
                     &plan,
                     MIGRATION_CATALOG_VERSION,
                 )
-                        .and_then(|cand| {
-                            // R14-A：投递标签/超时已退役为引擎内部自派生
-                            // （原实参 plan.target_device/0 仅被测试 double
-                            // 丢弃，无可观测消费）。
-                            self.dispatch.submit_typed(&cand, &telemetry, &actor)
-                        });
+                .and_then(|cand| {
+                    // R14-A：投递标签/超时已退役为引擎内部自派生
+                    // （原实参 plan.target_device/0 仅被测试 double
+                    // 丢弃，无可观测消费）。
+                    self.dispatch.submit_typed(&cand, &telemetry, &actor)
+                });
                 match submission {
                     Ok(receipt) if receipt.final_state.is_committed() => {
                         // 5. 观测相（WP-40.12）：learning 只消费 Committed——
@@ -848,8 +848,7 @@ mod w26_twin_feedforward_tests {
             .parse()
             .expect("contract_version 是 u64");
         assert_eq!(
-            v,
-            MIGRATION_CATALOG_VERSION,
+            v, MIGRATION_CATALOG_VERSION,
             "catalog.toml contract_version 与 MIGRATION_CATALOG_VERSION 漂移（同步升级两者）"
         );
     }

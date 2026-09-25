@@ -270,17 +270,20 @@ impl ControlDispatch for RecordingDispatch {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_macros)] // clippy.toml：测试模块豁免 panic! 宏
 mod recording_face_tests {
-    use super::*;
     use eneros_decision_contract::{
         Assignment, CandidatePlan, CandidatePlanParts, PlanId, SnapshotId, SolveStatusKind,
     };
+
+    use super::*;
 
     /// WP-75.2.4 记录面真化：typed/intent 提交逐次留痕（原 typed 臂整体
     /// 丢弃、intent 臂伪造占位 ProposedControlPlan——submitted 为陈旧
     /// 形态死字段，doc「记录轨迹」宣称失实）。轨迹 = 最小事实摘要
     /// （plan_id/actor/遥测身份摘要；协议+序号），submit_count 随之有牙。
     #[test]
+    #[allow(clippy::field_reassign_with_default)] // 44.2：测试夹具 default+覆写模式（语义等价）
     fn submissions_recorded_as_minimal_facts() {
         let mut d = RecordingDispatch::default();
         // 结果配置无关记录面（记录发生在提交时，成败均留痕）。

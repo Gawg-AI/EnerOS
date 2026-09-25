@@ -7,7 +7,6 @@
 #![cfg_attr(target_os = "none", no_main)]
 #![allow(clippy::empty_loop)]
 
-
 #[cfg(target_os = "none")]
 extern crate alloc;
 #[cfg(target_os = "none")]
@@ -333,11 +332,11 @@ impl TargetExecutor {
         // ④ 日志面（logging 配置摘要；运行日志未经支持包分页面——显式缺项）。
         use eneros_agent_sdk::config_client;
         let log = match self.config_ep.as_mut() {
-            Some(ep) => {
-                eneros_business_services::mgmt_relay::format_logging_body(
-                    config_client::get_entry(ep, "logging").map(|raw| raw.len()).ok(),
-                )
-            }
+            Some(ep) => eneros_business_services::mgmt_relay::format_logging_body(
+                config_client::get_entry(ep, "logging")
+                    .map(|raw| raw.len())
+                    .ok(),
+            ),
             None => String::from("missing:config-unbound"),
         };
         section("logging", &log, &mut out);
@@ -397,9 +396,11 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
         eneros_business_services::mgmt_relay::classify_restart_observation(
             &target,
             base_gen,
-            gen,
-            restarts,
-            ready,
+            eneros_business_services::mgmt_relay::RestartFacts {
+                gen,
+                restarts,
+                ready,
+            },
             record.created_ms,
             now_ms,
             RESTART_TIMEOUT_MS,
@@ -736,9 +737,9 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
                             // 响应归类下沉 mgmt_relay（WP-75.2.8 相A）——
                             // **先判 ERR** 判据（拒绝不得记成完成副作用）
                             // 由 host 测试锁死；EIPC Err 臂留 bin（拨号面）。
-                            Ok(r) => {
-                                eneros_business_services::mgmt_relay::classify_stage_resp(&r, arg[2])
-                            }
+                            Ok(r) => eneros_business_services::mgmt_relay::classify_stage_resp(
+                                &r, arg[2],
+                            ),
                             Err(e) => ActionResult {
                                 status: RpcStatus::Failed,
                                 detail: format!("config-stage-eipc:{e:?}"),

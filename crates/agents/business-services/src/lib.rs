@@ -19,18 +19,18 @@ pub mod agent_bus;
 /// 41（WP-41.3 落盘）：durable-state PersistIo 的 EIPC 块客户端
 /// （业务服务经 svc-storage 真落盘；host 可测）。
 pub mod block_io;
-pub mod cloud_sync;
-pub mod config_service;
-pub mod ledger;
-pub mod market;
-/// R14-E（2026-09-24）：控制服务 bin 族信封单源（magic‖cmd‖payload +
-/// ERR 词形；bin 族手抄收编，wire 字节零变化）。
-pub mod svc_wire;
 /// WP-75.2.6（R16-C）：market/ledger/cloud-sync 载荷 codec 下沉
 /// （svc_wire 同层位——本 crate 裁载荷层；bin 只剩 match 臂）。
 pub mod cld_wire;
+pub mod cloud_sync;
+pub mod config_service;
 pub mod ldg_wire;
+pub mod ledger;
+pub mod market;
 pub mod mkt_wire;
+/// R14-E（2026-09-24）：控制服务 bin 族信封单源（magic‖cmd‖payload +
+/// ERR 词形；bin 族手抄收编，wire 字节零变化）。
+pub mod svc_wire;
 
 /// 蓝图 61 v0.314.31（[07] §3.4）：市场事实接入 adapter——经认证信封
 /// （SM3 摘要 + SM2 验签）走同一 IngestionModule 合同；修订/过期纪律。
@@ -107,7 +107,10 @@ mod degradation_wordform_guard_tests {
     fn fact_face_open_failure_wordform_distinct() {
         let src = include_str!("bin/svc-market.rs");
         let word = concat!("FACT-FACE-OPEN-", "FAILED");
-        assert!(src.contains(&word), "svc-market 缺区段打开失败独立词形 {word}");
+        assert!(
+            src.contains(word),
+            "svc-market 缺区段打开失败独立词形 {word}"
+        );
         let bypass = concat!(")", ".ok()");
         assert!(
             !src.contains(bypass),
@@ -119,7 +122,10 @@ mod degradation_wordform_guard_tests {
     fn bus_restore_failure_wordform_distinct() {
         let src = include_str!("bin/svc-agent-bus.rs");
         let word = concat!("BUS-RESTORE-", "FAILED");
-        assert!(src.contains(&word), "svc-agent-bus 缺恢复失败独立词形 {word}");
+        assert!(
+            src.contains(word),
+            "svc-agent-bus 缺恢复失败独立词形 {word}"
+        );
         let bypass = concat!("restore", "().ok()");
         assert!(
             !src.contains(bypass),
@@ -143,7 +149,10 @@ mod panic_guard_tests {
             ("svc-cloud-sync", include_str!("bin/svc-cloud-sync.rs")),
             ("svc-config", include_str!("bin/svc-config.rs")),
             ("svc-mgmt", include_str!("bin/svc-mgmt.rs")),
-            ("svc-observability", include_str!("bin/svc-observability.rs")),
+            (
+                "svc-observability",
+                include_str!("bin/svc-observability.rs"),
+            ),
             ("svc-ota", include_str!("bin/svc-ota.rs")),
         ];
         let macro_open = concat!("svc_panic", "!(\"");

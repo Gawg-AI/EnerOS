@@ -10,7 +10,6 @@
 #![cfg_attr(target_os = "none", no_main)]
 #![allow(clippy::empty_loop)]
 
-
 #[cfg(target_os = "none")]
 extern crate alloc;
 #[cfg(target_os = "none")]

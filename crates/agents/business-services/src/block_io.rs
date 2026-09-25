@@ -260,11 +260,7 @@ mod tests {
         let image: Vec<u8> = (0..1024u32).map(|i| (i % 251) as u8).collect();
         let req = req02(&sk, "0.123.0", &image);
         let mut resp = Vec::new();
-        assert!(crate::ota_service::handle_ota_ab_command(
-            Some(&mut svc),
-            &req,
-            &mut resp
-        ).handled);
+        assert!(crate::ota_service::handle_ota_ab_command(Some(&mut svc), &req, &mut resp).handled);
         assert_eq!(resp, vec![2u8]); // Verified
         let trial = svc
             .mark_trial_boot(eneros_ota_ab::ab_partition::PartitionSlot::B, "0.123.0")
@@ -407,9 +403,12 @@ mod tests {
         let mut req: Vec<u8> = b"OTA1".to_vec();
         req.push(0x01);
         req.resize(5 + 158 + 64, 0u8);
-        assert!(!handle_ota_ab_command::<
-            eneros_ota_ab::ab_partition::AbPartitionOta<EipcBlockDevice<SimClient>>,
-        >(None, &req, &mut resp).handled);
+        assert!(
+            !handle_ota_ab_command::<
+                eneros_ota_ab::ab_partition::AbPartitionOta<EipcBlockDevice<SimClient>>,
+            >(None, &req, &mut resp)
+            .handled
+        );
         assert!(resp.starts_with(b"ERR:ota-unavailable"));
     }
 
