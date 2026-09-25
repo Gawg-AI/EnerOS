@@ -264,7 +264,7 @@ mod tests {
             Some(&mut svc),
             &req,
             &mut resp
-        ));
+        ).handled);
         assert_eq!(resp, vec![2u8]); // Verified
         let trial = svc
             .mark_trial_boot(eneros_ota_ab::ab_partition::PartitionSlot::B, "0.123.0")
@@ -298,7 +298,7 @@ mod tests {
         let image: Vec<u8> = (0..1224u32).map(|i| (i % 251) as u8).collect();
         let req = req02(&sk, "0.123.0", &image);
         let mut resp = Vec::new();
-        assert!(handle_ota_ab_command(Some(&mut svc), &req, &mut resp));
+        assert!(handle_ota_ab_command(Some(&mut svc), &req, &mut resp).handled);
         assert_eq!(resp, vec![2u8]); // Verified
     }
 
@@ -323,7 +323,7 @@ mod tests {
         let image: Vec<u8> = (0..1024u32).map(|i| (i % 251) as u8).collect();
         let req = req02(&sk, "0.123.0", &image);
         let mut resp = Vec::new();
-        assert!(handle_ota_ab_command(Some(&mut svc), &req, &mut resp));
+        assert!(handle_ota_ab_command(Some(&mut svc), &req, &mut resp).handled);
         assert_eq!(resp, [2u8]);
 
         // 0x03 TRIAL
@@ -334,13 +334,13 @@ mod tests {
         ver[..7].copy_from_slice(b"0.123.0");
         req3.extend_from_slice(&ver);
         let mut resp3 = Vec::new();
-        assert!(handle_ota_ab_command(Some(&mut svc), &req3, &mut resp3));
+        assert!(handle_ota_ab_command(Some(&mut svc), &req3, &mut resp3).handled);
         assert_eq!(resp3, [3u8]);
 
         // 0x04 COMMIT
         let req4: Vec<u8> = b"OTA1".to_vec().into_iter().chain([0x04]).collect();
         let mut resp4 = Vec::new();
-        assert!(handle_ota_ab_command(Some(&mut svc), &req4, &mut resp4));
+        assert!(handle_ota_ab_command(Some(&mut svc), &req4, &mut resp4).handled);
         assert_eq!(resp4, [4u8]);
     }
 
@@ -380,7 +380,7 @@ mod tests {
         let desc_sig = ota_v2::sign_digest(&sk, &sm3_hash(&bytes));
         let req1 = encode_check_desc(&desc, &desc_sig);
         let mut resp1 = Vec::new();
-        assert!(handle_ota_ab_command(Some(&mut svc), &req1, &mut resp1));
+        assert!(handle_ota_ab_command(Some(&mut svc), &req1, &mut resp1).handled);
         assert_eq!(resp1, [0u8]);
 
         // 0x02 镜像签章损坏 → verify-failed（回读 SM2 验签拒绝，不激活）。
@@ -390,13 +390,13 @@ mod tests {
         let isig_off = 5 + 158 + 64;
         req2[isig_off] ^= 0xFF;
         let mut resp2 = Vec::new();
-        assert!(!handle_ota_ab_command(Some(&mut svc), &req2, &mut resp2));
+        assert!(!handle_ota_ab_command(Some(&mut svc), &req2, &mut resp2).handled);
         assert!(resp2.starts_with(b"ERR:"));
 
         // 0x09 unknown -> ERR:cmd
         let req9: Vec<u8> = b"OTA1".to_vec().into_iter().chain([0x09]).collect();
         let mut resp9 = Vec::new();
-        assert!(!handle_ota_ab_command(Some(&mut svc), &req9, &mut resp9));
+        assert!(!handle_ota_ab_command(Some(&mut svc), &req9, &mut resp9).handled);
         assert!(resp9.starts_with(b"ERR:cmd"));
     }
 
@@ -409,7 +409,7 @@ mod tests {
         req.resize(5 + 158 + 64, 0u8);
         assert!(!handle_ota_ab_command::<
             eneros_ota_ab::ab_partition::AbPartitionOta<EipcBlockDevice<SimClient>>,
-        >(None, &req, &mut resp));
+        >(None, &req, &mut resp).handled);
         assert!(resp.starts_with(b"ERR:ota-unavailable"));
     }
 
@@ -436,7 +436,7 @@ mod tests {
         let image: Vec<u8> = (0..512u32).map(|i| (i % 251) as u8).collect();
         let req2 = req02(&sk, "0.123.0", &image);
         let mut resp2 = Vec::new();
-        assert!(handle_ota_ab_command(Some(&mut svc), &req2, &mut resp2));
+        assert!(handle_ota_ab_command(Some(&mut svc), &req2, &mut resp2).handled);
         assert_eq!(resp2, [2u8]);
 
         // 0x03 trial
@@ -447,13 +447,13 @@ mod tests {
         ver[..7].copy_from_slice(b"0.123.0");
         req3.extend_from_slice(&ver);
         let mut resp3 = Vec::new();
-        assert!(handle_ota_ab_command(Some(&mut svc), &req3, &mut resp3));
+        assert!(handle_ota_ab_command(Some(&mut svc), &req3, &mut resp3).handled);
         assert_eq!(resp3, [3u8]);
 
         // 0x05 regression with max_boot_attempts=1 -> rollback
         let req5: Vec<u8> = b"OTA1".to_vec().into_iter().chain([0x05]).collect();
         let mut resp5 = Vec::new();
-        assert!(handle_ota_ab_command(Some(&mut svc), &req5, &mut resp5));
+        assert!(handle_ota_ab_command(Some(&mut svc), &req5, &mut resp5).handled);
         assert_eq!(resp5, [5u8]);
     }
 

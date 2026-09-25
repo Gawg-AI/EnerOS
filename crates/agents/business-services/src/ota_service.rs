@@ -571,20 +571,43 @@ impl<M: OtaManager> OtaService<M> {
 /// （失败关闭——生产不回退到不绑定 metadata 的写路径）。
 /// 0x06/0x07 trial 持久化留在 svc-ota 二进制（依赖 BlockIo/trial store），
 /// 不在此纯逻辑函数中。
+/// WP-75.2.2（R16-J）：A/B 命令处理结果类型化。`handled` 与原 bool
+/// 返回逐语义等（已处理/未拒信封——含 CHECK Deny，判定本身在 resp[0]）；
+/// `check_pass` 仅 0x01 CHECK 臂有意义（验签链通过 → 安装武装判据，
+/// 70.7），其余臂恒假。resp 仍经 `&mut Vec<u8>` 出参——wire 构造不动。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AbCommandOutcome {
+    pub handled: bool,
+    pub check_pass: bool,
+}
+
+impl AbCommandOutcome {
+    /// 命令未处理（信封/长度/ota-unavailable/拒绝类失败——原 `false`）。
+    pub const NOT_HANDLED: Self = Self {
+        handled: false,
+        check_pass: false,
+    };
+    /// 命令已处理且 CHECK 判定无关（原 `true`；非 0x01 臂专用）。
+    pub const HANDLED: Self = Self {
+        handled: true,
+        check_pass: false,
+    };
+}
+
 pub fn handle_ota_ab_command<M: OtaManager>(
     svc: Option<&mut OtaService<M>>,
     req: &[u8],
     resp: &mut Vec<u8>,
-) -> bool {
+) -> AbCommandOutcome {
     if crate::svc_wire::parse_envelope(b"OTA1", req).is_none() {
         resp.extend_from_slice(crate::svc_wire::ERR_PROTO);
-        return false;
+        return AbCommandOutcome::NOT_HANDLED;
     }
     match req[4] {
         0x01 => {
             let Some(s) = svc else {
                 resp.extend_from_slice(b"ERR:ota-unavailable");
-                return false;
+                return AbCommandOutcome::NOT_HANDLED;
             };
             // parse 即 canonical 校验门（decode 强制重编码一致——差分锁
             // check_desc_reencode_identity_differential）；解出的描述值
@@ -593,7 +616,7 @@ pub fn handle_ota_ab_command<M: OtaManager>(
                 Ok(v) => v,
                 Err(_) => {
                     resp.extend_from_slice(crate::svc_wire::ERR_LEN);
-                    return false;
+                    return AbCommandOutcome::NOT_HANDLED;
                 }
             };
             // 描述 canonical 字节直取请求段（与 0x02 同法——parse 已过
@@ -615,12 +638,15 @@ pub fn handle_ota_ab_command<M: OtaManager>(
                 DescVerdict::Rejected(r) => PolicyVerdict::Reject(r),
             };
             resp.push(if verdict == PolicyVerdict::Pass { 1 } else { 0 });
-            true
+            AbCommandOutcome {
+                handled: true,
+                check_pass: verdict == PolicyVerdict::Pass,
+            }
         }
         0x02 => {
             let Some(s) = svc else {
                 resp.extend_from_slice(b"ERR:ota-unavailable");
-                return false;
+                return AbCommandOutcome::NOT_HANDLED;
             };
             let (desc_bytes, desc_sig, image_sig, image) =
                 match eneros_agent_sdk::ota_wire::parse_download_v2_req(req) {
@@ -633,7 +659,7 @@ pub fn handle_ota_ab_command<M: OtaManager>(
                     }
                     Err(_) => {
                         resp.extend_from_slice(crate::svc_wire::ERR_LEN);
-                        return false;
+                        return AbCommandOutcome::NOT_HANDLED;
                     }
                 };
             match s.download_and_verify(&desc_bytes, &desc_sig, &image_sig, image) {
@@ -647,23 +673,23 @@ pub fn handle_ota_ab_command<M: OtaManager>(
                         OtaStep::Rejected(r) => {
                             resp.extend_from_slice(b"ERR:rejected:");
                             resp.extend_from_slice(r.as_bytes());
-                            return false;
+                            return AbCommandOutcome::NOT_HANDLED;
                         }
                     };
                     resp.push(code);
-                    true
+                    AbCommandOutcome::HANDLED
                 }
                 Err(e) => {
                     resp.extend_from_slice(b"ERR:ota:");
                     resp.extend_from_slice(e.as_bytes());
-                    false
+                    AbCommandOutcome::NOT_HANDLED
                 }
             }
         }
         0x03 => {
             if req.len() != 5 + 33 {
                 resp.extend_from_slice(crate::svc_wire::ERR_LEN);
-                return false;
+                return AbCommandOutcome::NOT_HANDLED;
             }
             let slot = if req[5] == 0 {
                 eneros_ota_ab::ab_partition::PartitionSlot::A
@@ -676,69 +702,69 @@ pub fn handle_ota_ab_command<M: OtaManager>(
                 .to_owned();
             let Some(s) = svc else {
                 resp.extend_from_slice(b"ERR:ota-unavailable");
-                return false;
+                return AbCommandOutcome::NOT_HANDLED;
             };
             match s.mark_trial_boot(slot, &version) {
                 Ok(OtaStep::TrialStarted) => {
                     resp.push(3);
-                    true
+                    AbCommandOutcome::HANDLED
                 }
                 Ok(_) => {
                     resp.push(0);
-                    true
+                    AbCommandOutcome::HANDLED
                 }
                 Err(e) => {
                     resp.extend_from_slice(b"ERR:ota:");
                     resp.extend_from_slice(e.as_bytes());
-                    false
+                    AbCommandOutcome::NOT_HANDLED
                 }
             }
         }
         0x04 => {
             let Some(s) = svc else {
                 resp.extend_from_slice(b"ERR:ota-unavailable");
-                return false;
+                return AbCommandOutcome::NOT_HANDLED;
             };
             match s.commit() {
                 Ok(OtaStep::Committed) => {
                     resp.push(4);
-                    true
+                    AbCommandOutcome::HANDLED
                 }
                 Ok(_) => {
                     resp.push(0);
-                    true
+                    AbCommandOutcome::HANDLED
                 }
                 Err(e) => {
                     resp.extend_from_slice(b"ERR:ota:");
                     resp.extend_from_slice(e.as_bytes());
-                    false
+                    AbCommandOutcome::NOT_HANDLED
                 }
             }
         }
         0x05 => {
             let Some(s) = svc else {
                 resp.extend_from_slice(b"ERR:ota-unavailable");
-                return false;
+                return AbCommandOutcome::NOT_HANDLED;
             };
             match s.health_regression() {
                 Ok(OtaStep::RolledBack) => {
                     resp.push(5);
-                    true
+                    AbCommandOutcome::HANDLED
                 }
                 Ok(_) => {
                     resp.push(0);
-                    true
+                    AbCommandOutcome::HANDLED
                 }
                 Err(e) => {
                     resp.extend_from_slice(b"ERR:ota:");
                     resp.extend_from_slice(e.as_bytes());
-                    false
+                    AbCommandOutcome::NOT_HANDLED
                 }
             }
         }
         _ => {
             resp.extend_from_slice(crate::svc_wire::ERR_CMD);
-            false
+            AbCommandOutcome::NOT_HANDLED
         }
     }
 }
@@ -1018,7 +1044,7 @@ mod tests {
         let mut req = encode_check_desc(&d, &dsig);
         req.truncate(req.len() - 1); // 签名尾差 1B → 总长门拒绝。
         let mut resp = Vec::new();
-        assert!(!handle_ota_ab_command(Some(&mut svc), &req, &mut resp));
+        assert!(!handle_ota_ab_command(Some(&mut svc), &req, &mut resp).handled);
         assert_eq!(resp, crate::svc_wire::ERR_LEN);
     }
 
@@ -1039,6 +1065,48 @@ mod tests {
         );
     }
 
+    /// WP-75.2.2 武装门判据 host 直测：CHECK Pass/Deny 两态 →
+    /// `outcome.check_pass` 随判据变（武装语义不再埋在 resp 首字节）；
+    /// `handled` 与原 bool 逐语义等（Deny 仍是已处理命令——回执 0）。
+    /// 变异：check_pass 恒 true → Deny 臂红。
+    #[test]
+    fn ab_command_outcome_check_pass_tracks_verdict() {
+        let (sk, key) = keypair(0x5A);
+        let mut svc = OtaService::new(
+            TestOta {
+                active: PartitionSlot::A,
+                activated: false,
+            },
+            policy(key),
+            &identity(),
+        );
+        let img = vec![0xABu8; 64];
+        let hash = sm3_hash(&img);
+        // Pass 态：合法描述（secver 2 ≥ 水位 1，升级版本，sku 匹配）。
+        let d = desc("1.1.0", hash, img.len() as u64);
+        let dsig = sign_desc(&sk, &d);
+        let mut resp = Vec::new();
+        let out = handle_ota_ab_command(Some(&mut svc), &encode_check_desc(&d, &dsig), &mut resp);
+        assert!(out.handled, "Pass 态 handled 须真");
+        assert!(out.check_pass, "Pass 态 check_pass 须真");
+        assert_eq!(resp, vec![1]);
+        // Deny 态：同形描述 secver 降到 0（< 水位）→ 拒。
+        let mut d2 = desc("1.1.0", hash, img.len() as u64);
+        d2.security_version = 0;
+        let dsig2 = sign_desc(&sk, &d2);
+        let mut resp2 = Vec::new();
+        let out2 =
+            handle_ota_ab_command(Some(&mut svc), &encode_check_desc(&d2, &dsig2), &mut resp2);
+        assert!(out2.handled, "Deny 仍是已处理命令（回执 0）——handled 与 verdict 分离");
+        assert!(!out2.check_pass, "Deny 态 check_pass 须假");
+        assert_eq!(resp2, vec![0]);
+        // 信封违例：handled = false、check_pass = false（原 bool 语义逐语义等）。
+        let mut resp3 = Vec::new();
+        let out3 = handle_ota_ab_command(Some(&mut svc), b"XXXX", &mut resp3);
+        assert!(!out3.handled && !out3.check_pass);
+        assert_eq!(resp3, crate::svc_wire::ERR_PROTO);
+    }
+
     /// 70.5 正测：合法目标经过验签、准入、（假件）镜像验签。
     #[test]
     fn positive_full_flow_commit() {
@@ -1053,7 +1121,7 @@ mod tests {
         let img = vec![0xABu8; 128];
         let req = req02_valid(&sk, "1.1.0", &img);
         let mut resp = Vec::new();
-        assert!(handle_ota_ab_command(Some(&mut svc), &req, &mut resp));
+        assert!(handle_ota_ab_command(Some(&mut svc), &req, &mut resp).handled);
         assert_eq!(resp, vec![2]); // Verified
         assert_eq!(
             svc.mark_trial_boot(PartitionSlot::B, "1.1.0").unwrap(),
@@ -1083,7 +1151,7 @@ mod tests {
         // CHECK → 0。
         let check = encode_check_desc(&d, &dsig);
         let mut resp = Vec::new();
-        assert!(handle_ota_ab_command(Some(&mut svc), &check, &mut resp));
+        assert!(handle_ota_ab_command(Some(&mut svc), &check, &mut resp).handled);
         assert_eq!(resp, vec![0]);
         // 直接 DOWNLOAD → 同样拒绝（不能绕过 CHECK）。
         let kp = Sm2KeyPair::from_private_key(&sk).expect("kp");
@@ -1093,7 +1161,7 @@ mod tests {
         image_sig.copy_from_slice(&isig.to_bytes()[..64]);
         let dl = encode_download_v2(&d, &dsig, &image_sig, 64, &img);
         let mut resp = Vec::new();
-        assert!(!handle_ota_ab_command(Some(&mut svc), &dl, &mut resp));
+        assert!(!handle_ota_ab_command(Some(&mut svc), &dl, &mut resp).handled);
         assert_eq!(
             core::str::from_utf8(&resp).unwrap(),
             "ERR:rejected:expired-security-version"
@@ -1119,7 +1187,7 @@ mod tests {
         // CHECK 通过（水位 1，desc secver=2）。
         let check = encode_check_desc(&d, &dsig);
         let mut resp = Vec::new();
-        assert!(handle_ota_ab_command(Some(&mut svc), &check, &mut resp));
+        assert!(handle_ota_ab_command(Some(&mut svc), &check, &mut resp).handled);
         assert_eq!(resp, vec![1]);
         // 水位提升（root 身份分发面）→ desc secver 2 < 3 → DOWNLOAD 拒绝。
         svc.set_security_floor(3).expect("floor raise");
@@ -1130,7 +1198,7 @@ mod tests {
         image_sig.copy_from_slice(&isig.to_bytes()[..64]);
         let dl = encode_download_v2(&d, &dsig, &image_sig, 64, &img);
         let mut resp = Vec::new();
-        assert!(!handle_ota_ab_command(Some(&mut svc), &dl, &mut resp));
+        assert!(!handle_ota_ab_command(Some(&mut svc), &dl, &mut resp).handled);
         assert_eq!(
             core::str::from_utf8(&resp).unwrap(),
             "ERR:rejected:expired-security-version"
@@ -1176,11 +1244,11 @@ mod tests {
         );
         let req_a = req02_valid(&sk_a, "1.1.0", &img);
         let mut resp = Vec::new();
-        assert!(handle_ota_ab_command(Some(&mut svc_a), &req_a, &mut resp));
+        assert!(handle_ota_ab_command(Some(&mut svc_a), &req_a, &mut resp).handled);
         assert_eq!(resp, vec![2]);
         let req_b = req02_valid(&sk_b, "1.1.0", &img);
         let mut resp = Vec::new();
-        assert!(!handle_ota_ab_command(Some(&mut svc_a), &req_b, &mut resp));
+        assert!(!handle_ota_ab_command(Some(&mut svc_a), &req_b, &mut resp).handled);
         assert_eq!(
             core::str::from_utf8(&resp).unwrap(),
             "ERR:rejected:desc-signature-invalid"
@@ -1196,10 +1264,10 @@ mod tests {
             &identity(),
         );
         let mut resp = Vec::new();
-        assert!(handle_ota_ab_command(Some(&mut svc_b), &req_b, &mut resp));
+        assert!(handle_ota_ab_command(Some(&mut svc_b), &req_b, &mut resp).handled);
         assert_eq!(resp, vec![2]);
         let mut resp = Vec::new();
-        assert!(!handle_ota_ab_command(Some(&mut svc_b), &req_a, &mut resp));
+        assert!(!handle_ota_ab_command(Some(&mut svc_b), &req_a, &mut resp).handled);
         assert_eq!(
             core::str::from_utf8(&resp).unwrap(),
             "ERR:rejected:desc-signature-invalid"
@@ -1227,7 +1295,7 @@ mod tests {
                 &sk,
             );
             let mut resp = Vec::new();
-            let _ = handle_ota_ab_command(Some(&mut svc), req, &mut resp);
+            let _ = handle_ota_ab_command(Some(&mut svc), req, &mut resp).handled;
             core::str::from_utf8(&resp).unwrap_or("").to_owned()
         };
         // ① 只改 secver 不重签 → 签名拒绝。
@@ -1303,7 +1371,7 @@ mod tests {
         let mut req = Vec::from(b"OTA1\x02".as_slice());
         req.resize(5 + 52 + 64, 0xEE);
         let mut resp = Vec::new();
-        assert!(!handle_ota_ab_command(Some(&mut svc), &req, &mut resp));
+        assert!(!handle_ota_ab_command(Some(&mut svc), &req, &mut resp).handled);
         assert_eq!(core::str::from_utf8(&resp).unwrap(), "ERR:len");
     }
 
@@ -1313,7 +1381,7 @@ mod tests {
         let img = [0u8; 8];
         let req = req02_valid(&keypair(0x5A).0, "1.1.0", &img);
         let mut resp = Vec::new();
-        assert!(!handle_ota_ab_command::<TestOta>(None, &req, &mut resp));
+        assert!(!handle_ota_ab_command::<TestOta>(None, &req, &mut resp).handled);
         assert_eq!(core::str::from_utf8(&resp).unwrap(), "ERR:ota-unavailable");
     }
 
@@ -1335,7 +1403,7 @@ mod tests {
         let img = vec![0xABu8; 128];
         let req = req02_valid(&sk, "1.1.0", &img);
         let mut resp = Vec::new();
-        assert!(!handle_ota_ab_command(Some(&mut svc), &req, &mut resp));
+        assert!(!handle_ota_ab_command(Some(&mut svc), &req, &mut resp).handled);
         assert_eq!(
             core::str::from_utf8(&resp).unwrap(),
             "ERR:ota:verify-failed:sm3-hash-mismatch"
@@ -1359,7 +1427,7 @@ mod tests {
         let img = vec![0xABu8; 128];
         let req = req02_valid(&sk, "1.1.0", &img);
         let mut resp = Vec::new();
-        assert!(handle_ota_ab_command(Some(&mut svc), &req, &mut resp));
+        assert!(handle_ota_ab_command(Some(&mut svc), &req, &mut resp).handled);
         svc.mark_trial_boot(PartitionSlot::B, "1.1.0").unwrap();
         assert_eq!(svc.health_regression().unwrap(), OtaStep::TrialStarted);
         assert_eq!(svc.trial.as_ref().unwrap().remaining, 1);
@@ -1470,7 +1538,7 @@ mod tests {
         let img = vec![0u8; 64];
         let req = req02_valid(&sk, "1.1.0", &img);
         let mut resp = Vec::new();
-        assert!(!handle_ota_ab_command(Some(&mut svc), &req, &mut resp));
+        assert!(!handle_ota_ab_command(Some(&mut svc), &req, &mut resp).handled);
         assert_eq!(
             core::str::from_utf8(&resp).unwrap(),
             "ERR:ota:prepare-failed:image-too-large:10485760>1048576"
@@ -1500,7 +1568,7 @@ mod tests {
             Some(&mut svc),
             &req02_valid(&sk, "1.1.0", &img),
             &mut resp
-        ));
+        ).handled);
         let cap_resp = core::str::from_utf8(&resp).unwrap().to_owned();
         // 设备写失败。
         let mut svc = OtaService::new(
@@ -1517,7 +1585,7 @@ mod tests {
             Some(&mut svc),
             &req02_valid(&sk, "1.1.0", &img),
             &mut resp
-        ));
+        ).handled);
         let write_resp = core::str::from_utf8(&resp).unwrap().to_owned();
         // 策略门拒绝（降级版本）。
         let mut svc = OtaService::new(
@@ -1534,7 +1602,7 @@ mod tests {
             Some(&mut svc),
             &req02_valid(&sk, "1.0.0", &img),
             &mut resp
-        ));
+        ).handled);
         let policy_resp = core::str::from_utf8(&resp).unwrap().to_owned();
         assert_eq!(
             cap_resp,
@@ -1569,7 +1637,7 @@ mod tests {
         let img = vec![0u8; 64];
         let req = req02_valid(&sk, "1.1.0", &img);
         let mut resp = Vec::new();
-        assert!(!handle_ota_ab_command(Some(&mut svc), &req, &mut resp));
+        assert!(!handle_ota_ab_command(Some(&mut svc), &req, &mut resp).handled);
         assert_eq!(resp.first(), Some(&b'E'));
         let full_len = resp.len();
         assert!(

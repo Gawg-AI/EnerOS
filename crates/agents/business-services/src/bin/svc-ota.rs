@@ -404,12 +404,14 @@ impl eneros_control_services::ControlServiceHandler for OtaHandler {
         // 0x01-0x05 由可测的纯逻辑函数处理（ota_service::handle_ota_ab_command）。
         if (0x01..=0x05).contains(&req[4]) {
             self.ensure_ready(_now_ms);
-            let ok = handle_ota_ab_command(self.ota.as_mut(), req, resp);
-            // 70.7：CHECK-DESC 判定=1（验签链通过）→ 安装武装。
-            if req[4] == 0x01 && resp.first() == Some(&1) {
+            let outcome = handle_ota_ab_command(self.ota.as_mut(), req, resp);
+            // 70.7：CHECK-DESC 验签链通过 → 安装武装（WP-75.2.2：判定
+            // 语义随 AbCommandOutcome.check_pass 类型化出参，bin 不再
+            // 跨 seam 解读 resp 首字节）。
+            if req[4] == 0x01 && outcome.check_pass {
                 self.install_armed = true;
             }
-            return ok;
+            return outcome.handled;
         }
         match req[4] {
             // 41：trial 状态真落盘（RegionStateStore CAS；首次写入
