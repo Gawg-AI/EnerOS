@@ -8,7 +8,8 @@
 // 5. DRV-008 virtio-net：TX/RX 基础闭环。
 //
 // 构建：third_party/sel4-top/CMakeLists.txt（aarch64-none-elf-gcc，无 libc）。
-// QEMU：-machine virt,gic-version=3,secure=off -cpu cortex-a57 -smp 4 -m 1024M \
+// QEMU：-machine virt,gic-version=2,secure=off -cpu cortex-a57 -smp 4 -m 1024M \
+//      （REG-74-A-R1：平台唯一内置 GICv2 驱动，gic-version=3 启动即外部 abort）\
 //       -device virtio-rng-device -device virtio-blk-device,drive=d0 \
 //       -drive file=disk.raw,if=none,id=d0,format=raw,cache=none \
 //       -device virtio-net-device,netdev=n0 -netdev user,id=n0 \

@@ -111,8 +111,9 @@ jobs:
           # 复查轮 P1 修复：按产物变体隔离缓存键——旧共享键下 C 路径与
           # rust 路径向 target/sel4 写同名 elfloader（sizebits13 vs
           # RUST_ROOT_TASK=ON），「存在即跳过」门 = 间歇性变体假命中
-          # （actions/cache 同键先存者独占）。g0/image job = C 路径共享 -c，
-          # gkernel 链 = -rust。
+          # （actions/cache 同键先存者独占）。g0 与 g1 两 job = C 路径共享
+          # -c，gkernel 链 = -rust（74 复查轮订正：旧注「g0/image job」
+          # 失准——C 变体是 g0-fail-closed 与 g1-fuzz-gates 两个 job）。
           key: sel4-${{ runner.os }}-${{ env.SEL4_CACHE_KEY }}-c
 
       - name: Build seL4 kernel + root image (ADR-0023, KRN-006)

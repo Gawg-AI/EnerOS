@@ -578,7 +578,7 @@ mod tests {
         if is_dir {
             record[25] = 0x02;
         }
-        record[28] = 1; // file version
+        record[28] = 1; // volume sequence number（ISO9660 §9.1；解析器不读，file version 是名称的 `;1` 后缀）
         record[32] = name.len() as u8;
         record[33..33 + name.len()].copy_from_slice(name);
         record

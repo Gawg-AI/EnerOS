@@ -94,8 +94,10 @@ CMAKE_COMMON_ARGS=(
   -DKernelPlatform=qemu-arm-virt
   -DKernelSel4ArchAarch64=ON
   -DPLATFORM=qemu-arm-virt
-  # QEMU_GIC_VERSION=3 在 seL4 14.0.0 为惰性变量（平台 config.cmake 零
-  # 消费者，复查轮全树 grep 实证）——驱动选择由平台硬编码 gic_v2 决定；
+  # QEMU_GIC_VERSION=3 在 seL4 14.0.0 为惰性变量——驱动选择由平台硬编码
+  # gic_v2 决定；唯一消费者 = seL4_tools simulation.cmake 的
+  # GenerateSimulateScript（本构建形态零调用方 = 死代码；74 复查轮订正：
+  # 旧注「复查轮全树 grep 实证零消费者」失实，该函数在册但未接线）。
   # 保留作未来 seL4 版本消费预留（勿据此推断内核 GIC 版本）。
   -DARM_CPU=cortex-a57 -DQEMU_GIC_VERSION=3
   -DKernelVerificationBuild=OFF -DKernelPrinting=ON

@@ -388,4 +388,49 @@ mod revalidate_tests {
         };
         assert!(v.validate(&empty, &state()).passed, "零条目 schedule");
     }
+
+    // ---- REG-74-Q-R1 论据锁（74 三卷复查轮订正）----
+    // 回落原解分支（fast-path engine.rs / coordinator）的不可达性由
+    // 「生产规则全 hard ⇒ 钳制必伴 hard Critical ⇒ passed=false 于闸门
+    // 拒出 ⇒『passed=true 且带 clamp 建议』不可表示」承载。旧论证
+    // 「钳制不改号不造零」失实——断言②实证爬坡钳制可把一侧钳到恰 0
+    // （钳没），但钳没使终态更干净，不是放行路径。
+
+    #[test]
+    fn reg74_q_r1_argument_lock_production_rules_all_hard() {
+        let v = SafetyValidator::new();
+        // ① 需钳制的调度（相邻净功率跳 130 > 50 触发爬坡）⇒ 硬 Critical
+        //    ⇒ passed=false 且带 clamp 建议——「passed 且带建议」只能由
+        //    软钳规则产生；生产规则集下此形态不可表示。
+        let mut ramp_jump = schedule(0.0);
+        ramp_jump.schedule.push(entry(1, 130.0));
+        let r = v.validate(&ramp_jump, &state());
+        assert!(!r.passed, "爬坡违规 = hard Critical，必须拒绝");
+        assert!(r.clamped, "带 clamp 建议");
+        // ② 钳没实证：prev_net=80 → charge=40/discharge=60（net=20），
+        //    delta=60 > 50 ⇒ safe_value = prev+50 = 130（绝对目标），
+        //    先消同向 take=min(110,40)=40 ⇒ charge 恰好归 0。旧论证
+        //    「钳制不造零」在此被证伪——锁住这一事实防止其回流。
+        let mut clamp_away = schedule(80.0);
+        clamp_away.schedule.push(ScheduleEntry {
+            period: 1,
+            charge_power_kw: 40.0,
+            discharge_power_kw: 60.0,
+            net_power_kw: 20.0,
+            soc_pct: 0.5,
+            revenue_yuan: 0.0,
+        });
+        let r2 = v.validate(&clamp_away, &state());
+        let final_schedule = r2.clamped_schedule.expect("爬坡钳制必须产出截断终态");
+        assert_eq!(
+            final_schedule.schedule[1].charge_power_kw, 0.0,
+            "爬坡钳制把充电侧钳到恰 0（钳没可达——REG-74-Q-R1 论据订正的实证）"
+        );
+        assert!(final_schedule.schedule[1].discharge_power_kw > 0.0);
+        // ③ 干净调度 ⇒ passed=true 且无 clamp 建议（any_clamped=false）。
+        let clean = v.validate(&schedule(50.0), &state());
+        assert!(clean.passed);
+        assert!(!clean.clamped);
+        assert!(clean.clamped_schedule.is_none());
+    }
 }

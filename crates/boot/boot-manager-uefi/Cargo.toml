@@ -21,9 +21,14 @@ required-features = ["uefi-app"]
 eneros-hex = { path = "../../abi/hex" }
 eneros-boot-protocol = { path = "../boot-protocol" }
 eneros-image-format = { path = "../image-format" }
-ed25519-dalek = { version = "2.2.0", default-features = false, features = ["alloc", "fast", "zeroize"] }
 sha2 = { version = "0.10.9", default-features = false }
 uefi = { version = "0.39.0", optional = true, features = ["alloc", "global_allocator", "panic_handler"] }
+
+# 74 三卷复查轮：生产面唯一密码学路径在 boot-protocol::signature（WP-74.3.1
+# provider 迁入），本 crate 对 dalek 的唯一直接使用是测试桩现签
+# （src/lib.rs #[cfg(test)]）——与 installer 同款降 dev-dep。
+[dev-dependencies]
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["alloc", "fast", "zeroize"] }
 
 [features]
 default = []

@@ -114,7 +114,11 @@ impl<S: Solver> RealtimePathEngine<S> {
         // 截断结果作为新候选重跑全部规则（revalidate_clamped，≤4 轮）；
         // 收敛干净才采信，否则回落原解（原解已通过全部规则——clamp 只是
         // 建议，不是可以跳过认证的豁免。注：mutex 后置门只查 clamp 终态、
-        // 原解不经该门；生产规则不会钳出/钳没同时充放对——REG-74-Q-R1）。
+        // 原解不经该门；生产规则全 hard，钳制必伴 hard Critical 使
+        // passed=false 在上方闸门拒出——「passed 且带建议」生产不可表示，
+        // 本分支仅自定义软钳规则可及；软钳可把一侧钳到恰 0（74 复查轮
+        // 订正：旧句「生产规则不会钳没同时充放对」失实），但钳没使终态
+        // 更干净。REG-74-Q-R1）。
         let (schedule, validation) = match validation.clamped_schedule.clone() {
             None => (schedule, validation),
             Some(clamped) => self

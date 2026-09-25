@@ -14,8 +14,13 @@
 //! 留各 crate——共享层只收 wire 骨架。各 crate 错误词形经 `From<JsonlError>`
 //! 映射且变体名冻结（`LogError::SerializeFailed` / `MetricsError::InvalidValue`）.
 //!
-//! 登记不扩面（异族）：security/recovery 两处 `hstr_truncate`、pentest
-//! 自定义 `HString` 别位不在本单源（蓝图 74 卷三 §1 R15-L）.
+//! 登记不扩面（异族，74 三卷复查轮订正清点——旧文「security/recovery
+//! 两处」漏计换名与别族）：security/recovery **三处**截断转换（diag.rs /
+//! lib.rs 两处 `hstr_truncate` + factory_reset.rs `truncate_heapless`
+//! 换名同语义）、vpp-scenario exit_report 两处（`hstr`/`write_bounded`）、
+//! pentest 自定义 `HString` 别位、dashboard ws.rs `esc`（WS 帧面 JSON
+//! 转义，`\n\r\t` 走短形方言——零依赖叶属性保留，其产物不经 JSONL
+//! 线路）不在本单源（蓝图 74 卷三 §1 R15-L）.
 
 #![no_std]
 #![forbid(unsafe_code)]

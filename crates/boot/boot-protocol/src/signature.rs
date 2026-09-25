@@ -164,6 +164,13 @@ impl BootSignatureProvider for Ed25519SignatureProvider {
         message: &[u8],
         signature: &[u8],
     ) -> Result<(), SignatureError> {
+        // 域自证（74 三卷复查轮）：provider 与算法绑定——domain 声称的
+        // 算法必须与本实现一致。「调用方先跑 check_signature_domain」是
+        // doc 契约，此处结构性兜底：Sm2 域配 Ed25519 签名 bytes 不再可能
+        // 静默通过（本 crate 的 pub API 直调时同样受保护）。
+        if domain.algorithm != SignatureAlgorithm::Ed25519 {
+            return Err(SignatureError::AlgorithmMismatch);
+        }
         // 摘要/消息一致性：sha256(message) 必须 == domain.payload_digest
         // （防止"摘要与消息错配"——替换 payload 的密码学侧防线）。
         let digest: [u8; 32] = Sha256::digest(message).into();
@@ -205,6 +212,22 @@ mod tests {
             key_domain: KeyDomain::Normal,
             payload_digest: [0xAB; 32],
         }
+    }
+
+    /// 74 三卷复查轮：provider 域自证——Sm2 域配 Ed25519 provider 必拒
+    /// `AlgorithmMismatch`（修复前算法义务全压在「调用方先跑
+    /// check_signature_domain」的 doc 契约上，pub API 直调可绕过）。
+    #[test]
+    fn provider_rejects_mismatched_algorithm_domain() {
+        let mut domain = normal_domain(1);
+        domain.algorithm = SignatureAlgorithm::Sm2;
+        let provider = Ed25519SignatureProvider {
+            public_key: [7u8; 32],
+        };
+        assert_eq!(
+            provider.verify(&domain, b"message", &[0u8; 64]),
+            Err(SignatureError::AlgorithmMismatch)
+        );
     }
 
     /// 正例：算法/长度/域/版本/digest 全匹配。
