@@ -157,8 +157,6 @@ struct MarketHandler {
 impl eneros_control_services::ControlServiceHandler for MarketHandler {
     fn handle(&mut self, req: &[u8], resp: &mut alloc::vec::Vec<u8>, now_ms: u64) -> bool {
         use eneros_business_services::market::*;
-        use eneros_durable_state::{IdempotencyKey, OutboxId};
-        use eneros_market_types::{MilliYuan, TimeSlot, YuanPerMwh};
         const MAGIC: &[u8; 4] = b"MKT1";
         if eneros_business_services::svc_wire::parse_envelope(MAGIC, req).is_none() {
             resp.extend_from_slice(eneros_business_services::svc_wire::ERR_PROTO);
@@ -166,39 +164,14 @@ impl eneros_control_services::ControlServiceHandler for MarketHandler {
         }
         match req[4] {
             0x01 => {
-                if req.len() != 5 + 93 {
-                    resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
-                    return false;
-                }
-                let p = &req[5..];
-                let market = match p[32] {
-                    1 => eneros_market_types::MarketType::DayAhead,
-                    2 => eneros_market_types::MarketType::IntraDay,
-                    3 => eneros_market_types::MarketType::Realtime,
-                    4 => eneros_market_types::MarketType::Spot,
-                    5 => eneros_market_types::MarketType::AncillaryService,
-                    6 => eneros_market_types::MarketType::DemandResponse,
-                    _ => {
-                        resp.extend_from_slice(b"ERR:market");
+                // WP-75.2.6（R16-C）：载荷 decode 下沉 mkt_wire（偏移/枚举
+                // 映射/错误序 golden 锁定）——bin 只剩 match 臂。
+                let quote = match eneros_business_services::mkt_wire::parse_submit_req(req) {
+                    Ok(q) => q,
+                    Err(bytes) => {
+                        resp.extend_from_slice(bytes);
                         return false;
                     }
-                };
-                let quote = QuoteMessage {
-                    quote_ref: QuoteRef {
-                        external_id: u64::from_le_bytes(p[0..8].try_into().unwrap()),
-                        idempotency: IdempotencyKey(p[8..24].try_into().unwrap()),
-                        deadline_ms: u64::from_le_bytes(p[24..32].try_into().unwrap()),
-                        market,
-                        tenant: u32::from_le_bytes(p[33..37].try_into().unwrap()),
-                        product: u32::from_le_bytes(p[37..41].try_into().unwrap()),
-                    },
-                    slot: TimeSlot {
-                        start: u64::from_le_bytes(p[41..49].try_into().unwrap()),
-                        end: u64::from_le_bytes(p[49..57].try_into().unwrap()),
-                    },
-                    volume_kwh: u64::from_le_bytes(p[57..65].try_into().unwrap()),
-                    price: YuanPerMwh(f64::from_le_bytes(p[65..73].try_into().unwrap())),
-                    amount: MilliYuan(i64::from_le_bytes(p[73..81].try_into().unwrap())),
                 };
                 match self.adapter.submit_quote(quote, now_ms) {
                     Ok(outcome) => {

@@ -3,8 +3,10 @@
 //! cloud-sync/config/observability/ota 七 bin + `ota_service` 库内
 //! A/B 命令路径）逐字收编；wire 字节零变化。
 //!
-//! 层位：本模块只裁**信封层**；载荷编解码仍在各服务 module（跨 binary
-//! 的 obs_wire/ota_wire 等单源在 agent-sdk，不在此重复）。MGT1 不走本
+//! 层位：本模块只裁**信封层**；market/ledger/cloud-sync 载荷 codec 已
+//! 入 lib [`crate::mkt_wire`]/[`crate::ldg_wire`]/[`crate::cld_wire`]
+//! （WP-75.2.6；其余服务 module 就地持有；跨 binary 的 obs_wire/
+//! ota_wire 等单源在 agent-sdk，不在此重复）。MGT1 不走本
 //! 信封族（session 形状判别单源在 [`crate::mgmt_principal`]）。
 
 /// 信封不符（magic 不匹配或总长 < 5）。

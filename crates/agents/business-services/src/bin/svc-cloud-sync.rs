@@ -104,27 +104,14 @@ impl eneros_control_services::ControlServiceHandler for CloudHandler {
         }
         match req[4] {
             0x01 => {
-                if req.len() < 5 + 56 {
-                    resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
-                    return false;
-                }
-                let p = &req[5..];
-                let mut schema = [0u8; 8];
-                schema.copy_from_slice(&p[5..13]);
-                let mut hash = [0u8; 32];
-                hash.copy_from_slice(&p[21..53]);
-                let plen = u16::from_le_bytes(p[53..55].try_into().unwrap()) as usize;
-                if 5 + 55 + plen > req.len() {
-                    resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
-                    return false;
-                }
-                let item = UploadItem {
-                    tenant: u32::from_le_bytes(p[0..4].try_into().unwrap()),
-                    data_class: p[4],
-                    schema: alloc::string::String::from_utf8_lossy(&schema).into_owned(),
-                    sequence: u64::from_le_bytes(p[13..21].try_into().unwrap()),
-                    hash,
-                    payload: req[5 + 55..5 + 55 + plen].to_vec(),
+                // WP-75.2.6（R16-C）：载荷 decode 下沉 cld_wire（变长钳制
+                // 逻辑照搬保形）——bin 只剩 match 臂。
+                let item = match eneros_business_services::cld_wire::parse_upload_req(req) {
+                    Ok(item) => item,
+                    Err(bytes) => {
+                        resp.extend_from_slice(bytes);
+                        return false;
+                    }
                 };
                 match self.sync.upload(item) {
                     Ok(id) => {

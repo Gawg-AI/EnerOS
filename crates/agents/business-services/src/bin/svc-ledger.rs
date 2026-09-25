@@ -139,7 +139,6 @@ impl eneros_control_services::ControlServiceHandler for LedgerHandler {
         use alloc::string::ToString;
 
         use eneros_business_services::ledger::*;
-        use eneros_market_types::MilliYuan;
         const MAGIC: &[u8; 4] = b"LDG1";
         if eneros_business_services::svc_wire::parse_envelope(MAGIC, req).is_none() {
             resp.extend_from_slice(eneros_business_services::svc_wire::ERR_PROTO);
@@ -147,20 +146,17 @@ impl eneros_control_services::ControlServiceHandler for LedgerHandler {
         }
         match req[4] {
             0x01 => {
-                // POST：tx(8) debit(4) credit(4) amount(8) time(8) receipt(32)
-                if req.len() != 5 + 64 {
-                    resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
-                    return false;
-                }
-                let p = &req[5..];
-                let result = self.ledger.post(
-                    TransactionId(u64::from_le_bytes(p[0..8].try_into().unwrap())),
-                    AccountId(u32::from_le_bytes(p[8..12].try_into().unwrap())),
-                    AccountId(u32::from_le_bytes(p[12..16].try_into().unwrap())),
-                    MilliYuan(i64::from_le_bytes(p[16..24].try_into().unwrap())),
-                    u64::from_le_bytes(p[24..32].try_into().unwrap()),
-                    ReceiptDigest(p[32..64].try_into().unwrap()),
-                );
+                // WP-75.2.6（R16-C）：载荷 decode 下沉 ldg_wire（偏移
+                // golden 锁定）——bin 只剩 match 臂。
+                let (tx, debit, credit, amount, time, receipt) =
+                    match eneros_business_services::ldg_wire::parse_post_req(req) {
+                        Ok(f) => f,
+                        Err(bytes) => {
+                            resp.extend_from_slice(bytes);
+                            return false;
+                        }
+                    };
+                let result = self.ledger.post(tx, debit, credit, amount, time, receipt);
                 match result {
                     Ok(id) => {
                         // 持久化账本快照；失败 → 返回错误（不伪装成功）。

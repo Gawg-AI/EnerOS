@@ -26,6 +26,11 @@ pub mod market;
 /// R14-E（2026-09-24）：控制服务 bin 族信封单源（magic‖cmd‖payload +
 /// ERR 词形；bin 族手抄收编，wire 字节零变化）。
 pub mod svc_wire;
+/// WP-75.2.6（R16-C）：market/ledger/cloud-sync 载荷 codec 下沉
+/// （svc_wire 同层位——本 crate 裁载荷层；bin 只剩 match 臂）。
+pub mod cld_wire;
+pub mod ldg_wire;
+pub mod mkt_wire;
 
 /// 蓝图 61 v0.314.31（[07] §3.4）：市场事实接入 adapter——经认证信封
 /// （SM3 摘要 + SM2 验签）走同一 IngestionModule 合同；修订/过期纪律。
