@@ -129,12 +129,16 @@ pub extern "C" fn _start(
     ) {
         protocol_ladder_gate::MqttGateVerdict::Proceed {
             lines,
-            inject_tls_material,
+            // B75-1 附带发现（预存）：本绑定与同模块自由函数
+            // `inject_tls_material` 同名遮蔽——target-only cfg 下 E0618
+            // （host 空 bin 桩不可见，C9 收口在途层遗留）。改名 `inject`
+            // 保留调用词形与行为。
+            inject_tls_material: inject,
         } => {
             for line in &lines {
                 eneros_runtime::println!("{line}");
             }
-            if inject_tls_material {
+            if inject {
                 inject_tls_material(wall_epoch, &mut plugin);
             }
         }

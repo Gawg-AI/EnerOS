@@ -65,9 +65,9 @@ pub(crate) fn held_horizon_violation(
     certificate: &eneros_decision_contract::CertifiedPlan,
     batches: &[CommandBatch],
 ) -> Option<DispatchError> {
-    let horizon_end = plan.horizon_start_ms().saturating_add(
-        plan.step_ns().saturating_mul(u64::from(plan.step_count())) / 1_000_000,
-    );
+    let horizon_end = plan
+        .horizon_start_ms()
+        .saturating_add(plan.step_ns().saturating_mul(u64::from(plan.step_count())) / 1_000_000);
     if horizon_end > telemetry.valid_until_ms
         || horizon_end > certificate.valid_until_ms()
         || batches
