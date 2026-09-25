@@ -13,6 +13,18 @@
 
 mod support;
 
+/// R16-O：单位集显式传参（点 4=Ratio、5/6=Other——走 RequiredPointCoverage 其他校验路径；行为逐字节保持）。
+fn trusted_telemetry() -> eneros_safety_validator::TrustedTelemetry {
+    support::trusted_telemetry_with(&[
+        eneros_safety_validator::PointUnit::Volt,
+        eneros_safety_validator::PointUnit::Ampere,
+        eneros_safety_validator::PointUnit::Hertz,
+        eneros_safety_validator::PointUnit::Ratio,
+        eneros_safety_validator::PointUnit::Other,
+        eneros_safety_validator::PointUnit::Other,
+    ])
+}
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -24,10 +36,6 @@ use eneros_control_dispatch::{
 use eneros_control_gateway::chain::ControlChain;
 use eneros_control_gateway::envelope::ActorKind;
 use eneros_dual_brain::{DecisionPath, ProposedControlPlan};
-use eneros_safety_validator::{
-    EvaluatorConfig, IntegrityStatus, RequiredPoint, RequiredPointCoverage, SampleQuality,
-    StateBindings, TelemetrySample, TelemetryTrustEvaluator,
-};
 
 const KEY: &[u8] = b"w62-settlement-lock-key-000000000000000000";
 const LEASE_ID: [u8; 16] = [0x62; 16];
@@ -54,90 +62,6 @@ fn build_chain() -> ControlChain {
     let mut chain = ControlChain::from_profile(KEY, &profile);
     let _ = profile.issue_lease(&mut chain, now_ms() / 1000);
     chain
-}
-
-fn trusted_telemetry() -> eneros_safety_validator::TrustedTelemetry {
-    let mut ev = TelemetryTrustEvaluator::new(EvaluatorConfig {
-        coverage: RequiredPointCoverage {
-            points: vec![
-                RequiredPoint {
-                    point: 1,
-                    min: 0.0,
-                    max: 1000.0,
-                    max_age_ms: 5000,
-                    unit: eneros_safety_validator::PointUnit::Volt,
-                },
-                RequiredPoint {
-                    point: 2,
-                    min: -1000.0,
-                    max: 1000.0,
-                    max_age_ms: 5000,
-                    unit: eneros_safety_validator::PointUnit::Ampere,
-                },
-                RequiredPoint {
-                    point: 3,
-                    min: 45.0,
-                    max: 55.0,
-                    max_age_ms: 5000,
-                    unit: eneros_safety_validator::PointUnit::Hertz,
-                },
-                RequiredPoint {
-                    point: 4,
-                    min: 0.0,
-                    max: 1.0,
-                    max_age_ms: 5000,
-                    unit: eneros_safety_validator::PointUnit::Ratio,
-                },
-                RequiredPoint {
-                    point: 5,
-                    min: 0.0,
-                    max: 1.0,
-                    max_age_ms: 5000,
-                    unit: eneros_safety_validator::PointUnit::Other,
-                },
-                RequiredPoint {
-                    point: 6,
-                    min: 0.0,
-                    max: 1.0,
-                    max_age_ms: 5000,
-                    unit: eneros_safety_validator::PointUnit::Other,
-                },
-            ],
-        },
-        bindings: StateBindings {
-            voltage: 1,
-            current: 2,
-            frequency: 3,
-            soc: 4,
-        },
-        mapping_version: 1,
-        max_skew_ms: 1000,
-        allowed_sources: vec![1],
-        require_integrity: true,
-        control_horizon_ms: 30_000,
-    });
-    let now = now_ms();
-    let good = |point: u32, value: f64, seq: u64| TelemetrySample {
-        point,
-        value,
-        source: 1,
-        source_epoch: 0,
-        measured_at_ms: now - 50,
-        received_at_ms: now,
-        quality: SampleQuality::Good,
-        sequence: seq,
-        integrity: IntegrityStatus::Verified,
-        mapping_version: 1,
-    };
-    let samples = vec![
-        good(1, 380.0, 1),
-        good(2, 10.0, 1),
-        good(3, 50.0, 1),
-        good(4, 0.6, 1),
-        good(5, 1.0, 1), // grid_up
-        good(6, 0.0, 1), // overcurrent（overtemp 同点别名——装配现状）
-    ];
-    ev.evaluate(&samples, now).expect("trusted telemetry")
 }
 
 fn proposal(power_kw: f64) -> ProposedControlPlan {

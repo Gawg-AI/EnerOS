@@ -198,3 +198,135 @@ pub fn with_fixture_certifier(config: DispatchConfig) -> DispatchConfig {
         ..config
     }
 }
+
+// ============================================================================
+// R16-O（蓝图 75 WP-75.1.7）· trusted_telemetry 夹具单源
+// ============================================================================
+
+use eneros_safety_validator::{
+    EvaluatorConfig, IntegrityStatus, PointUnit, RequiredPoint, RequiredPointCoverage,
+    SampleQuality, StateBindings, TelemetrySample, TelemetryTrustEvaluator,
+};
+
+/// 可信遥测夹具（R16-O 收编：原七抄单源化——audit_chain /
+/// settlement_lock / intent_ingress_chain / dispatch_ingress_chain /
+/// journal_crash_matrix / setpoint_ramp_contract / typed_chain 七份
+/// ~70 行 evaluator 构造逐字同构）。
+///
+/// `units` = 六必需点的单位集：各套件的域覆盖差异**显式传参**，禁止
+/// 「顺手统一」（settlement_lock 点 5/6 = `Other`——走
+/// RequiredPointCoverage 的其他校验路径，行为差异是有意的）。
+/// 时钟差异同理显式化：六套件 now_ms 为常量，setpoint_ramp_contract
+/// 为可变 CLOCK——经 [`trusted_telemetry_with_clock`] 现取传入。
+#[allow(dead_code)] // 跨二进制共享模块：setpoint 套件专用（其余套件常量时钟）
+pub fn trusted_telemetry_with_clock(
+    units: &[PointUnit; 6],
+    now_ms: u64,
+) -> eneros_safety_validator::TrustedTelemetry {
+    let mut ev = TelemetryTrustEvaluator::new(EvaluatorConfig {
+        coverage: RequiredPointCoverage {
+            points: vec![
+                RequiredPoint {
+                    point: 1,
+                    min: 0.0,
+                    max: 1000.0,
+                    max_age_ms: 5000,
+                    unit: units[0],
+                },
+                RequiredPoint {
+                    point: 2,
+                    min: -1000.0,
+                    max: 1000.0,
+                    max_age_ms: 5000,
+                    unit: units[1],
+                },
+                RequiredPoint {
+                    point: 3,
+                    min: 45.0,
+                    max: 55.0,
+                    max_age_ms: 5000,
+                    unit: units[2],
+                },
+                RequiredPoint {
+                    point: 4,
+                    min: 0.0,
+                    max: 1.0,
+                    max_age_ms: 5000,
+                    unit: units[3],
+                },
+                RequiredPoint {
+                    point: 5,
+                    min: 0.0,
+                    max: 1.0,
+                    max_age_ms: 5000,
+                    unit: units[4],
+                },
+                RequiredPoint {
+                    point: 6,
+                    min: 0.0,
+                    max: 1.0,
+                    max_age_ms: 5000,
+                    unit: units[5],
+                },
+            ],
+        },
+        bindings: StateBindings {
+            voltage: 1,
+            current: 2,
+            frequency: 3,
+            soc: 4,
+        },
+        mapping_version: 1,
+        max_skew_ms: 1000,
+        allowed_sources: vec![1],
+        require_integrity: true,
+        control_horizon_ms: 30_000,
+    });
+    let now = now_ms;
+    let good = |point: u32, value: f64, seq: u64| TelemetrySample {
+        point,
+        value,
+        source: 1,
+        source_epoch: 0,
+        measured_at_ms: now - 50,
+        received_at_ms: now,
+        quality: SampleQuality::Good,
+        sequence: seq,
+        integrity: IntegrityStatus::Verified,
+        mapping_version: 1,
+    };
+    let samples = vec![
+        good(1, 380.0, 1),
+        good(2, 10.0, 1),
+        good(3, 50.0, 1),
+        good(4, 0.6, 1),
+        good(5, 1.0, 1), // grid_up
+        good(6, 0.0, 1), // overcurrent（overtemp 同点别名——装配现状）
+    ];
+    ev.evaluate(&samples, now).expect("trusted telemetry")
+}
+
+/// 常量时钟形态（夹具时钟 = 1_700_000_000_000，六套件现行形态）。
+#[allow(dead_code)] // 跨二进制共享模块：settlement_lock/setpoint 套件经单位集形态使用
+pub fn trusted_telemetry_with(units: &[PointUnit; 6]) -> eneros_safety_validator::TrustedTelemetry {
+    trusted_telemetry_with_clock(units, fixture_now_ms())
+}
+
+/// 默认形态（六点全 Ratio）——七套件中六套的现行域覆盖。
+#[allow(dead_code)] // 跨二进制共享模块：六套件默认形态（support_defaults 等未用套件按未用处理）
+pub fn trusted_telemetry() -> eneros_safety_validator::TrustedTelemetry {
+    trusted_telemetry_with(&[
+        PointUnit::Volt,
+        PointUnit::Ampere,
+        PointUnit::Hertz,
+        PointUnit::Ratio,
+        PointUnit::Ratio,
+        PointUnit::Ratio,
+    ])
+}
+
+/// 夹具时钟（与各套件本地 `now_ms` 同值常量——套件身份组仍归各文件）。
+#[allow(dead_code)]
+fn fixture_now_ms() -> u64 {
+    1_700_000_000_000
+}

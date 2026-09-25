@@ -7,6 +7,23 @@
 //! - 首命令无参照放行；同值重确认 Δ=0 放行；时间流逝后斜率达标放行。
 mod support;
 
+/// R16-O：单位集 + **动态时钟**显式传参——本套件 now_ms 是可变 CLOCK，
+/// 遥测有效期随测试时间推进（原夹具在构造点现取 now_ms；七抄收编后
+/// 该差异经 trusted_telemetry_with_clock 显式化，不得折叠成常量）。
+fn trusted_telemetry() -> eneros_safety_validator::TrustedTelemetry {
+    support::trusted_telemetry_with_clock(
+        &[
+            eneros_safety_validator::PointUnit::Volt,
+            eneros_safety_validator::PointUnit::Ampere,
+            eneros_safety_validator::PointUnit::Hertz,
+            eneros_safety_validator::PointUnit::Ratio,
+            eneros_safety_validator::PointUnit::Ratio,
+            eneros_safety_validator::PointUnit::Ratio,
+        ],
+        now_ms(),
+    )
+}
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -23,10 +40,6 @@ use eneros_control_gateway::policy::{CommandClass, Policy, PolicyRule};
 use eneros_control_gateway::safety::{SafetyPoint, SafetyRole};
 use eneros_control_gateway::wire::ControlEnvelope;
 use eneros_dual_brain::{DecisionPath, ProposedControlPlan};
-use eneros_safety_validator::{
-    EvaluatorConfig, IntegrityStatus, RequiredPoint, RequiredPointCoverage, SampleQuality,
-    StateBindings, TelemetrySample, TelemetryTrustEvaluator,
-};
 use eneros_telemetry_model::point_spec::PointSpec;
 use eneros_telemetry_model::unit::PhysicalUnit;
 
@@ -59,90 +72,6 @@ fn build_chain() -> ControlChain {
     let mut chain = ControlChain::from_profile(KEY, &profile);
     let _ = profile.issue_lease(&mut chain, now_ms() / 1000);
     chain
-}
-
-fn trusted_telemetry() -> eneros_safety_validator::TrustedTelemetry {
-    let mut ev = TelemetryTrustEvaluator::new(EvaluatorConfig {
-        coverage: RequiredPointCoverage {
-            points: vec![
-                RequiredPoint {
-                    point: 1,
-                    min: 0.0,
-                    max: 1000.0,
-                    max_age_ms: 5000,
-                    unit: eneros_safety_validator::PointUnit::Volt,
-                },
-                RequiredPoint {
-                    point: 2,
-                    min: -1000.0,
-                    max: 1000.0,
-                    max_age_ms: 5000,
-                    unit: eneros_safety_validator::PointUnit::Ampere,
-                },
-                RequiredPoint {
-                    point: 3,
-                    min: 45.0,
-                    max: 55.0,
-                    max_age_ms: 5000,
-                    unit: eneros_safety_validator::PointUnit::Hertz,
-                },
-                RequiredPoint {
-                    point: 4,
-                    min: 0.0,
-                    max: 1.0,
-                    max_age_ms: 5000,
-                    unit: eneros_safety_validator::PointUnit::Ratio,
-                },
-                RequiredPoint {
-                    point: 5,
-                    min: 0.0,
-                    max: 1.0,
-                    max_age_ms: 5000,
-                    unit: eneros_safety_validator::PointUnit::Other,
-                },
-                RequiredPoint {
-                    point: 6,
-                    min: 0.0,
-                    max: 1.0,
-                    max_age_ms: 5000,
-                    unit: eneros_safety_validator::PointUnit::Other,
-                },
-            ],
-        },
-        bindings: StateBindings {
-            voltage: 1,
-            current: 2,
-            frequency: 3,
-            soc: 4,
-        },
-        mapping_version: 1,
-        max_skew_ms: 1000,
-        allowed_sources: vec![1],
-        require_integrity: true,
-        control_horizon_ms: 30_000,
-    });
-    let now = now_ms();
-    let good = |point: u32, value: f64, seq: u64| TelemetrySample {
-        point,
-        value,
-        source: 1,
-        source_epoch: 0,
-        measured_at_ms: now - 50,
-        received_at_ms: now,
-        quality: SampleQuality::Good,
-        sequence: seq,
-        integrity: IntegrityStatus::Verified,
-        mapping_version: 1,
-    };
-    let samples = vec![
-        good(1, 380.0, 1),
-        good(2, 10.0, 1),
-        good(3, 50.0, 1),
-        good(4, 0.6, 1),
-        good(5, 1.0, 1),
-        good(6, 0.0, 1),
-    ];
-    ev.evaluate(&samples, now).expect("trusted telemetry")
 }
 
 fn proposal_with_id(plan_id: &str, power_kw: f64) -> ProposedControlPlan {

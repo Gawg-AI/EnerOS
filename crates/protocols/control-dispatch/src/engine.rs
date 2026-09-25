@@ -90,6 +90,7 @@ pub(crate) enum CoreIdentity {
 /// `as_str()`，词形逐字节不变（journal 既有记录读回不反解 note，
 /// 纯展示，无兼容面）。golden：`unit_tests::idem_note_word_forms`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)] // Replay 后缀即语义（来源差异在前缀：Intent/Plan/Saga 三入口）
 pub(crate) enum IdemNote {
     /// 协议意图写重放（run_intent 入口）。
     IntentReplay,
