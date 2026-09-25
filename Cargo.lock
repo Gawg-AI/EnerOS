@@ -642,6 +642,7 @@ dependencies = [
 name = "eneros-boot-protocol"
 version = "0.341.0"
 dependencies = [
+ "ed25519-dalek",
  "eneros-ipc-wire",
  "sha2",
 ]

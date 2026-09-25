@@ -3,11 +3,10 @@
 
 extern crate alloc;
 
-use ed25519_dalek::{Signature, VerifyingKey};
 use eneros_boot_protocol::{
     signature::{
         check_signature_domain, BootSignatureProvider, KeyDomain, SignatureAlgorithm,
-        SignatureDomain, SignatureError,
+        SignatureDomain,
     },
     Component, ComponentRole, ManifestSlot, ReleaseManifest, MANIFEST_HEADER_LEN, MANIFEST_MAX_LEN,
 };
@@ -107,39 +106,11 @@ pub fn declared_manifest_len(header: &[u8]) -> Result<usize, LoaderError> {
     Ok(total)
 }
 
-/// WP-37.7：Ed25519 签名提供者——boot manager 唯一验签入口的实现
-/// （36 批准的 boot 签名 provider；SM2 批准后以同 trait 替换，boot
-/// manager 业务不变）。密码学验证 + 摘要/消息一致性比对。
-pub struct Ed25519SignatureProvider {
-    /// 验证公钥（32 字节）。
-    pub public_key: [u8; 32],
-}
-
-impl BootSignatureProvider for Ed25519SignatureProvider {
-    fn verify(
-        &self,
-        domain: &SignatureDomain,
-        message: &[u8],
-        signature: &[u8],
-    ) -> Result<(), SignatureError> {
-        // 摘要/消息一致性：sha256(message) 必须 == domain.payload_digest
-        // （防止"摘要与消息错配"——替换 payload 的密码学侧防线）。
-        let digest: [u8; 32] = Sha256::digest(message).into();
-        if digest != domain.payload_digest {
-            return Err(SignatureError::PayloadDigestMismatch);
-        }
-        let verifying_key =
-            VerifyingKey::from_bytes(&self.public_key).map_err(|_| SignatureError::InvalidKey)?;
-        // ed25519-dalek 2.x：Signature::from_bytes 接受 64 字节数组。
-        let sig_bytes: [u8; 64] = signature
-            .try_into()
-            .map_err(|_| SignatureError::InvalidSignature)?;
-        let sig = Signature::from_bytes(&sig_bytes);
-        verifying_key
-            .verify_strict(message, &sig)
-            .map_err(|_| SignatureError::InvalidSignature)
-    }
-}
+/// WP-37.7：Ed25519 签名提供者——唯一实现自 WP-74.3.1 迁入
+/// `boot-protocol/src/signature.rs`（installer/boot-manager 两 UEFI bin
+/// 共享一份密码学路径）；本 crate 保持原路径可引用（63.1 saga `pub use`
+/// 保路径先例）。
+pub use eneros_boot_protocol::signature::Ed25519SignatureProvider;
 
 pub fn verify_manifest(
     encoded: &[u8],
@@ -165,13 +136,10 @@ pub fn verify_manifest(
         return Err(LoaderError::ImageId);
     }
 
-    let verifying_key =
-        VerifyingKey::from_bytes(&policy.public_key).map_err(|_| LoaderError::PublicKey)?;
     let signed =
         ReleaseManifest::signed_region(encoded).map_err(|_| LoaderError::ManifestFormat)?;
     let signature_bytes =
         ReleaseManifest::signature_region(encoded).map_err(|_| LoaderError::ManifestFormat)?;
-    let signature = Signature::from_bytes(signature_bytes);
 
     // WP-37.7（唯一信任模型收口）：签名域校验先行——算法/签名长度/
     // 密钥域（normal/recovery/factory 分离）/安全版本单调/dev key/
@@ -198,14 +166,14 @@ pub fn verify_manifest(
     .map_err(|_| LoaderError::Signature)?;
     // WP-37.7：验签只经 BootSignatureProvider（唯一入口——UEFI 路径与
     // 其他验证路径共用同一 provider 抽象，禁止各自维护密钥/算法）。
+    // WP-74.3.1：此处曾残留 provider 外的裸 VerifyingKey 直验死码
+    //（结果被丢弃），为「唯一密码学路径」grep 判据退役。
     let provider = Ed25519SignatureProvider {
         public_key: policy.public_key,
     };
     provider
         .verify(&domain, signed, signature_bytes)
         .map_err(|_| LoaderError::Signature)?;
-    let _ = verifying_key;
-    let _ = signature;
 
     validate_components(&manifest, policy)?;
     Ok(manifest)

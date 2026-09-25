@@ -5,8 +5,8 @@ extern crate alloc;
 
 use alloc::vec;
 
-use ed25519_dalek::{Signature, VerifyingKey};
 use eneros_boot_protocol::{InstallManifest, INSTALL_MANIFEST_SIZE};
+use eneros_installer_uefi::{verify_install_manifest, InstallFailure, TrustAnchor};
 use sha2::{Digest, Sha256};
 use uefi::boot::{self, ScopedProtocol, SearchType};
 use uefi::proto::media::block::BlockIO;
@@ -23,47 +23,6 @@ const ISO_MAX_DIRECTORY_SIZE: usize = 64 * 1024;
 struct IsoFile {
     first_lba: u64,
     length: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InstallFailure {
-    SourceNotFound,
-    SourceOpen,
-    SourceRead,
-    ManifestFormat,
-    Platform,
-    KeyId,
-    Rollback,
-    Signature,
-    PayloadDigest,
-    TargetMissing,
-    TargetAmbiguous,
-    TargetGeometry,
-    TargetNotBlank,
-    TargetWrite,
-    TargetReadback,
-}
-
-impl InstallFailure {
-    const fn code(self) -> &'static str {
-        match self {
-            Self::SourceNotFound => "SOURCE_NOT_FOUND",
-            Self::SourceOpen => "SOURCE_OPEN",
-            Self::SourceRead => "SOURCE_READ",
-            Self::ManifestFormat => "INSTALL_MANIFEST",
-            Self::Platform => "PLATFORM",
-            Self::KeyId => "KEY_ID",
-            Self::Rollback => "ROLLBACK",
-            Self::Signature => "SIGNATURE",
-            Self::PayloadDigest => "PAYLOAD_DIGEST",
-            Self::TargetMissing => "TARGET_MISSING",
-            Self::TargetAmbiguous => "TARGET_AMBIGUOUS",
-            Self::TargetGeometry => "TARGET_GEOMETRY",
-            Self::TargetNotBlank => "TARGET_NOT_BLANK",
-            Self::TargetWrite => "TARGET_WRITE",
-            Self::TargetReadback => "TARGET_READBACK",
-        }
-    }
 }
 
 #[entry]
@@ -109,7 +68,15 @@ fn install() -> Result<(u64, [u8; 32]), InstallFailure> {
         if manifest_file.length != INSTALL_MANIFEST_SIZE as u64 {
             return Err(InstallFailure::ManifestFormat);
         }
-        let manifest = verify_install_manifest(&encoded)?;
+        // WP-74.3.1：验签唯一入口 = BootSignatureProvider（lib 层）；
+        // 锚由 build.rs 生成的信任常量构造（生成链不动）。
+        let anchor = TrustAnchor {
+            public_key: TRUSTED_PUBLIC_KEY,
+            key_id: TRUSTED_KEY_ID,
+            platform_id: PLATFORM_ID,
+            minimum_security_version: MINIMUM_SECURITY_VERSION,
+        };
+        let manifest = verify_install_manifest(&encoded, &anchor)?;
         if payload_file.length != manifest.payload_length {
             return Err(InstallFailure::PayloadDigest);
         }
@@ -229,28 +196,6 @@ fn parse_iso_record(record: &[u8], last_lba: u64) -> Result<Option<IsoFile>, Ins
         first_lba,
         length: file_length,
     }))
-}
-
-fn verify_install_manifest(encoded: &[u8]) -> Result<InstallManifest, InstallFailure> {
-    let manifest = InstallManifest::decode(encoded).map_err(|_| InstallFailure::ManifestFormat)?;
-    if manifest.platform_id != PLATFORM_ID {
-        return Err(InstallFailure::Platform);
-    }
-    if manifest.key_id != TRUSTED_KEY_ID {
-        return Err(InstallFailure::KeyId);
-    }
-    if manifest.security_version < MINIMUM_SECURITY_VERSION {
-        return Err(InstallFailure::Rollback);
-    }
-    let key =
-        VerifyingKey::from_bytes(&TRUSTED_PUBLIC_KEY).map_err(|_| InstallFailure::Signature)?;
-    let signature = Signature::from_bytes(&manifest.signature);
-    key.verify_strict(
-        &encoded[..eneros_boot_protocol::INSTALL_MANIFEST_SIGNED_SIZE],
-        &signature,
-    )
-    .map_err(|_| InstallFailure::Signature)?;
-    Ok(manifest)
 }
 
 fn select_blank_target(

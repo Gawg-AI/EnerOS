@@ -10,6 +10,9 @@ description = "Shared fixed-layout EnerOS boot ABI and canonical release manifes
 [dependencies]
 eneros-ipc-wire = { path = "../../abi/ipc-wire" }
 sha2 = { version = "0.10.9", default-features = false }
+# WP-74.3.1：Ed25519SignatureProvider 唯一密码学路径迁入本 crate
+# （boot-manager/installer 两 UEFI bin 共享；无 alloc 亦可编译）。
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["fast", "zeroize"] }
 
 [features]
 default = ["alloc"]

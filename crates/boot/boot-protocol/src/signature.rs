@@ -7,8 +7,12 @@
 //! normal release 分离；所有服务/配置/模型 digest 由同一 ProductManifest
 //! 验证（不能后加载未签 payload）。
 //!
-//! 本模块提供：签名域类型 + 域校验（算法/域分离/版本单调/dev key）+ trait；
-//! 密码学 verify 由 provider 实现（36 crypto-policy 批准）。
+//! 本模块提供：签名域类型、域校验（算法/域分离/版本单调/dev key）、trait
+//! 与 Ed25519 provider 实现（WP-74.3.1 起唯一密码学路径在本 crate，两
+//! UEFI bin 共享）；密码学 verify 由 provider 实现（36 crypto-policy 批准）。
+
+use ed25519_dalek::{Signature, VerifyingKey};
+use sha2::{Digest, Sha256};
 
 /// WP-37.7：签名算法 ID（36 crypto-policy 批准集合；未知算法拒绝）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +145,42 @@ pub trait BootSignatureProvider {
         message: &[u8],
         signature: &[u8],
     ) -> Result<(), SignatureError>;
+}
+
+/// WP-37.7：Ed25519 签名提供者——boot 唯一验签入口的实现（WP-74.3.1
+/// 自 boot-manager 整体迁入：installer/boot-manager 两 UEFI bin 经同一
+/// trait 共享一份密码学路径，禁止各自维护密钥/算法；36 批准的 boot
+/// 签名 provider；SM2 批准后以同 trait 替换，消费方业务不变）。
+/// 密码学验证 + 摘要/消息一致性比对。
+pub struct Ed25519SignatureProvider {
+    /// 验证公钥（32 字节）。
+    pub public_key: [u8; 32],
+}
+
+impl BootSignatureProvider for Ed25519SignatureProvider {
+    fn verify(
+        &self,
+        domain: &SignatureDomain,
+        message: &[u8],
+        signature: &[u8],
+    ) -> Result<(), SignatureError> {
+        // 摘要/消息一致性：sha256(message) 必须 == domain.payload_digest
+        // （防止"摘要与消息错配"——替换 payload 的密码学侧防线）。
+        let digest: [u8; 32] = Sha256::digest(message).into();
+        if digest != domain.payload_digest {
+            return Err(SignatureError::PayloadDigestMismatch);
+        }
+        let verifying_key =
+            VerifyingKey::from_bytes(&self.public_key).map_err(|_| SignatureError::InvalidKey)?;
+        // ed25519-dalek 2.x：Signature::from_bytes 接受 64 字节数组。
+        let sig_bytes: [u8; 64] = signature
+            .try_into()
+            .map_err(|_| SignatureError::InvalidSignature)?;
+        let sig = Signature::from_bytes(&sig_bytes);
+        verifying_key
+            .verify_strict(message, &sig)
+            .map_err(|_| SignatureError::InvalidSignature)
+    }
 }
 
 #[cfg(test)]
