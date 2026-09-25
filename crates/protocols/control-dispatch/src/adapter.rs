@@ -230,16 +230,11 @@ pub fn proposal_to_candidate_unbound(
     p: &ProposedControlPlan,
     catalog_version: u64,
 ) -> Result<CandidatePlan, DispatchError> {
-    // solve_status 门（双保险——上游已 gate；adapter 不放行非成功状态）。
-    let status = match p.schedule.solve_status {
-        eneros_energy_lp_model::result::SolveStatus::Optimal => SolveStatusKind::Optimal,
-        eneros_energy_lp_model::result::SolveStatus::Suboptimal => SolveStatusKind::Suboptimal,
-        _ => {
-            return Err(DispatchError::ProposalInvalid(
-                "solve_status 非成功（adapter 拒绝）".into(),
-            ))
-        }
-    };
+    // solve_status 门（R16-Q，蓝图 75 WP-75.1.3：收编入 solve_status_kind
+    // 单源——原此处内联重写同一 match；plan_id_of 的同型收编先例见
+    // 下文 :259 注释）。双保险语义保持：上游已 gate，adapter 不放行
+    // 非成功状态（错误词形单源自动同源）。
+    let status = solve_status_kind(p)?;
     // 2026-09-24 复查修复：legacy `validate_proposal` 的两道拒绝防线在
     // 本咽喉延续（v1 wire 臂 / ai_worker fallback / EMA 迁移轨共同入口，
     // 输入域宽于上游已滤除的生产 coordinator）。错误词形与 HEAD
@@ -337,6 +332,20 @@ mod tests {
     use eneros_decision_contract::ResourceRegistry;
 
     use super::*;
+
+    /// R16-Q 源扫描守卫（蓝图 75 WP-75.1.3）：solve-status 门单源 =
+    /// `solve_status_kind`——adapter.rs 内 Optimal/Suboptimal 放行
+    /// match 臂至多 1 处（单源函数本臂；bound 形态走函数调用、unbound
+    /// 形态同律）。针运行期拼接（防守卫自咬——doc 不得复现完整针形）。
+    /// 变异验证：unbound 臂回填内联 match ⇒ 本测红（臂计数 2）。
+    #[test]
+    fn solve_status_gate_is_single_sourced() {
+        let src = include_str!("adapter.rs");
+        assert!(
+            src.matches(concat!("SolveStatus::", "Optimal =>")).count() <= 1,
+            "solve-status 门必须经 solve_status_kind 单源（内联 match 回潮）"
+        );
+    }
 
     fn proposal() -> ProposedControlPlan {
         ProposedControlPlan::single_entry(
