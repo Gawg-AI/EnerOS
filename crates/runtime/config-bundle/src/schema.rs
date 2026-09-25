@@ -91,6 +91,9 @@ pub mod logging {
     pub const FIELD_STORAGE_CAPACITY: u8 = 3; // [storage] u32
     pub const FIELD_ROTATION: u8 = 4; // u8（1=drop_oldest；2=reject_new）
     pub const FIELD_MAX_CUSTOM_FIELDS: u8 = 5; // [fields] u32
+                                               // WP-74.3.4（R15-M）：本表与 `logging::LogLevel` 序不同（本表
+                                               // 0=ERROR..4=TRACE，且 TRACE(4) 在 logging 枚举无对位=非双射）；
+                                               // 唯一换算点 = `logging::LogLevel::from_config_level`，禁止手写比较。
     pub const LEVEL_ERROR: u8 = 0;
     pub const LEVEL_WARN: u8 = 1;
     pub const LEVEL_INFO: u8 = 2;

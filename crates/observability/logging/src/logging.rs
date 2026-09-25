@@ -30,6 +30,27 @@ pub enum LogLevel {
     Fatal = 4,
 }
 
+impl LogLevel {
+    /// config-bundle `logging` 束 min_level 码表（`config::LEVEL_*`）→
+    /// 本枚举的**唯一换算点**（蓝图 74 卷三 WP-74.3.4，R15-M）.
+    ///
+    /// **非双射**（如实登记）：config 侧 0=ERROR..4=TRACE（0 最重，序方向
+    /// 与本枚举相反），且 config 的 TRACE(4) 在本枚举无对位（最低档是
+    /// Debug）——按「取最详档」clamp 到 Debug。非法值（>4）→ `None`，
+    /// 调用方 fail-closed 拒配置。禁止在任何消费点手写这两张表的比较
+    /// 或换算（schema.rs 注释与本函数 doc 互指）.
+    pub fn from_config_level(level: u8) -> Option<LogLevel> {
+        match level {
+            0 => Some(LogLevel::Error),
+            1 => Some(LogLevel::Warn),
+            2 => Some(LogLevel::Info),
+            3 => Some(LogLevel::Debug),
+            4 => Some(LogLevel::Debug), // config TRACE：无对位，clamp 最详档
+            _ => None,
+        }
+    }
+}
+
 /// 日志条目（蓝图 §4.1）.
 #[derive(Debug, Clone)]
 pub struct LogEntry {
@@ -326,6 +347,21 @@ mod tests {
         let msg_pos = json.find("\"msg\":\"").unwrap();
         let fields_pos = json.find("\",\"fields\":{").unwrap();
         assert!(msg_pos < fields_pos);
+    }
+
+    /// WP-74.3.4（R15-M）：config min_level 码表换算点冻结锁——双向表 +
+    /// 非双射断言（config TRACE(4)→Debug clamp）+ 非法值 fail-closed None.
+    #[test]
+    fn from_config_level_table_frozen_with_non_bijection() {
+        assert_eq!(LogLevel::from_config_level(0), Some(LogLevel::Error));
+        assert_eq!(LogLevel::from_config_level(1), Some(LogLevel::Warn));
+        assert_eq!(LogLevel::from_config_level(2), Some(LogLevel::Info));
+        assert_eq!(LogLevel::from_config_level(3), Some(LogLevel::Debug));
+        // 非双射：config TRACE(4) 在 logging 枚举无对位 → clamp 最详档。
+        assert_eq!(LogLevel::from_config_level(4), Some(LogLevel::Debug));
+        // 非法值 → None（调用方 fail-closed 拒配置）。
+        assert_eq!(LogLevel::from_config_level(5), None);
+        assert_eq!(LogLevel::from_config_level(255), None);
     }
 
     /// BLD6：builder field/trace/span/agent 链式正确.
