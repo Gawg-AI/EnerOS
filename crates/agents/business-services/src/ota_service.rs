@@ -586,16 +586,25 @@ pub fn handle_ota_ab_command<M: OtaManager>(
                 resp.extend_from_slice(b"ERR:ota-unavailable");
                 return false;
             };
-            let (desc, desc_sig) = match eneros_agent_sdk::ota_wire::parse_check_desc_req(req) {
+            // parse 即 canonical 校验门（decode 强制重编码一致——差分锁
+            // check_desc_reencode_identity_differential）；解出的描述值
+            // 不再消费，仅留签名。
+            let (_desc, desc_sig) = match eneros_agent_sdk::ota_wire::parse_check_desc_req(req) {
                 Ok(v) => v,
                 Err(_) => {
                     resp.extend_from_slice(crate::svc_wire::ERR_LEN);
                     return false;
                 }
             };
-            // CHECK 与 DOWNLOAD 同判据（admit_description 单源；最新水位）。
+            // 描述 canonical 字节直取请求段（与 0x02 同法——parse 已过
+            // 长度门与 canonical 门，切片不越界；避免重编码歧义与
+            // expect panic 面）。CHECK 与 DOWNLOAD 同判据
+            // （admit_description 单源；最新水位）。
+            let raw = &req[5..5 + DESC_SIZE];
+            let mut fixed = [0u8; DESC_SIZE];
+            fixed.copy_from_slice(raw);
             let verdict = match admit_description(
-                &desc.encode().expect("请求内描述已 canonical"),
+                &fixed,
                 &desc_sig,
                 &s.policy,
                 &s.current_version,
@@ -946,6 +955,87 @@ mod tests {
         assert_eq!(
             check_policy(&p4, "1.1.0", "1.0.0", "qemu", "qemu", 2, 1),
             PolicyVerdict::Reject("zero-root-key")
+        );
+    }
+
+    /// WP-75.2.1 差分前提验证：0x01 CHECK 臂的 re-encode 恒等——
+    /// `parse_check_desc_req` 解出的描述重编码必须逐字节等于请求内原始
+    /// 描述段（0x02 直取形态等价性前提）。覆盖字段全域 + 边界：版本串
+    /// 宽 0/满宽 32、sku 满宽、secver/imagelen/generation 极值、usage
+    /// 未登记值。任何样例红 ⇒ WP-75.2.1 中止（不得带不等价直取上线）。
+    /// （结构性根由：`UpdateDescription::decode` 本身强制 canonical
+    /// 重编码一致，非 canonical 字节在 parse 处即被拒。）
+    #[test]
+    fn check_desc_reencode_identity_differential() {
+        use eneros_agent_sdk::ota_wire::{parse_check_desc_req, DESC_SKU_LEN, DESC_SIZE};
+        let sig = [0x11u8; 64]; // 差分不消费签名，占位即可。
+        let mut samples: Vec<UpdateDescription> = Vec::new();
+        // 典型样例。
+        samples.push(desc("1.1.0", [0xAA; 32], 128));
+        // 版本串满宽（32）+ 极值计数字段。
+        let mut d = desc(&"v".repeat(32), [0; 32], u64::MAX);
+        d.baseline_version = "b".repeat(32);
+        d.security_version = u32::MAX;
+        d.policy_generation = u64::MAX;
+        samples.push(d);
+        // 空版本串 + sku 满宽 + 零计数。
+        let mut d = desc("", [0xFF; 32], 0);
+        d.sku = "s".repeat(DESC_SKU_LEN);
+        d.security_version = 0;
+        d.policy_generation = 0;
+        samples.push(d);
+        // 未登记 usage（admit 面拒绝，但 parse/encode 恒等域之内）。
+        let mut d = desc("2.0.0", [0x5A; 32], 4096);
+        d.usage = 0x7F;
+        samples.push(d);
+        for (i, d) in samples.iter().enumerate() {
+            let req = encode_check_desc(d, &sig);
+            let (parsed, _) =
+                parse_check_desc_req(&req).unwrap_or_else(|e| panic!("样例 {i} parse 失败: {e:?}"));
+            assert_eq!(
+                parsed.encode().expect("重编码").as_slice(),
+                &req[5..5 + DESC_SIZE],
+                "样例 {i} re-encode 与请求原始描述段不等——0x01 直取前提证伪"
+            );
+        }
+    }
+
+    /// WP-75.2.1 负例：描述段长度不足 → ERR_LEN 路径（不 panic）。
+    #[test]
+    fn check_desc_short_segment_err_len_no_panic() {
+        let (sk, _) = keypair(0x5A);
+        let mut svc = svc_with(
+            TestOta {
+                active: PartitionSlot::A,
+                activated: false,
+            },
+            &sk,
+        );
+        let img = vec![0xABu8; 32];
+        let hash = sm3_hash(&img);
+        let d = desc("1.1.0", hash, img.len() as u64);
+        let dsig = sign_desc(&sk, &d);
+        let mut req = encode_check_desc(&d, &dsig);
+        req.truncate(req.len() - 1); // 签名尾差 1B → 总长门拒绝。
+        let mut resp = Vec::new();
+        assert!(!handle_ota_ab_command(Some(&mut svc), &req, &mut resp));
+        assert_eq!(resp, crate::svc_wire::ERR_LEN);
+    }
+
+    /// WP-75.2.1 源扫描锁：0x01 CHECK 臂须直取请求内 canonical 描述段
+    /// （与 0x02 同法），re-encode + expect 形态不得回流生产区——差分
+    /// 恒等前提下 re-encode 虽等价，但携带可避免的 panic 面。
+    /// 针经分段拼接 + 仅扫生产区（首个 `mod tests` 之前；测试域的合法
+    /// encode().expect 样例不误伤），防自咬。
+    #[test]
+    fn check_desc_arm_raw_segment_source_guard() {
+        let src = include_str!("ota_service.rs");
+        let prod = src.split("mod tests").next().expect("生产区存在");
+        let needle = concat!("encode", "()", ".expect");
+        let offenders: Vec<&str> = prod.lines().filter(|l| l.contains(needle)).collect();
+        assert!(
+            offenders.is_empty(),
+            "0x01 臂 re-encode+expect 回流（WP-75.2.1 已收编直取）：{offenders:?}"
         );
     }
 
