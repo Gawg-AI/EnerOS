@@ -294,7 +294,7 @@ impl TargetExecutor {
         // ① 启动身份（workspace 版本 + 管理面 epoch 观测）。
         section(
             "identity",
-            &format!("product_version={}", env!("CARGO_PKG_VERSION")),
+            &eneros_business_services::mgmt_relay::format_identity_body(),
             &mut out,
         );
         // ② 服务状态（本服务真实计数 + root 维护态投影）。
