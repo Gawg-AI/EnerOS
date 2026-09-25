@@ -1,4 +1,5 @@
-//! installer-uefi host 可测核心层（WP-74.3.1，蓝图 74 卷三 R15-C）。
+//! installer-uefi host 可测核心层（蓝图 74 卷三 R15-C；manifest 验签面
+//! = WP-74.3.1，ISO 解析面下沉 = WP-74.3.2）。
 //!
 //! UEFI 无关面：安装 manifest 验签（唯一入口 =
 //! [`eneros_boot_protocol::signature::BootSignatureProvider`]——installer
