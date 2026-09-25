@@ -36,12 +36,19 @@ fn dts_reg_expected() -> String {
     )
 }
 
-/// 从文本提取 `n += {k};`（vspace.c 隐函数记账）。
+/// 从文本提取 vspace.c hunk 的 `n += {k};`（复查轮收紧：先锚定 vspace.c
+/// 段再 find——补丁前文合法演化出别的 `n +=` 行时 find-first 会抓错行。
+/// `---`/`+++` 两行各含一次路径锚点，取 **最后** 一段 = `+++` 之后的
+/// hunk 本体）。
 fn patch_n_plus_value() -> u64 {
-    let line = PATCH
+    let vspace_hunk = PATCH
+        .split("64/kernel/vspace.c")
+        .last()
+        .expect("补丁缺少 vspace.c hunk 头");
+    let line = vspace_hunk
         .lines()
         .find(|l| l.contains("n += "))
-        .expect("补丁缺少 n += 行（vspace.c 隐函数记账被移除？）");
+        .expect("补丁 vspace.c hunk 缺少 n += 行（隐函数记账被移除？）");
     let v = line
         .split("n += ")
         .nth(1)
@@ -115,17 +122,19 @@ fn patch_paging_count_matches_window_formula() {
 #[test]
 fn kernel_load_address_consistent_across_build_surface() {
     // 断言 4：内核加载址三源一致——xtask 常量 ↔ 构建脚本 IMAGE_START_ADDR
-    // （出现 ≥1 次且处处同值；common 化后单点在 common，wrapper 不再持字面）。
+    // （复查轮收紧：只认 cmake 旗标形态 `-DIMAGE_START_ADDR=`，注释/散文
+    // 中的提法不再满足锁；出现 ≥1 次且处处同值——common 化后单点在
+    // common，wrapper 不再持字面）。
     let v = kernel_load_address();
-    let expected_arg = format!("IMAGE_START_ADDR={:#x}", v);
+    let expected_arg = format!("-DIMAGE_START_ADDR={:#x}", v);
     let corpus = format!("{BUILD_COMMON}\n{BUILD_C}\n{BUILD_RUST}");
     let hits: Vec<&str> = corpus
         .lines()
-        .filter(|l| l.contains("IMAGE_START_ADDR="))
+        .filter(|l| l.contains("-DIMAGE_START_ADDR="))
         .collect();
     assert!(
         !hits.is_empty(),
-        "构建脚本面无 IMAGE_START_ADDR（对拍面失联）"
+        "构建脚本面无 -DIMAGE_START_ADDR（对拍面失联）"
     );
     for hit in &hits {
         assert!(
@@ -140,14 +149,16 @@ fn kernel_load_address_consistent_across_build_surface() {
 #[test]
 fn init_load_address_literal_retired() {
     // 断言 5：WP-74.2.1 手抄退役回归锁——xtask 侧 0x4200_0000 字面定义
-    // 不得复活，且必须引用 boot-protocol 常量。
+    // 不得复活，且加载址赋值必须消费 boot-protocol 常量（复查轮收紧：
+    // 原断言只锁 use 行出现——import 在场而赋值硬编码字面可假绿；
+    // 现锁消费点本体 `load_address: ENEROS_INIT_BUNDLE_PHYS`）。
     assert!(
         !IMAGE_FACTORY.contains("const INIT_LOAD_ADDRESS"),
         "INIT_LOAD_ADDRESS 手抄复活（bundle 加载址唯一事实源 = boot-protocol）"
     );
     assert!(
-        IMAGE_FACTORY.contains("ENEROS_INIT_BUNDLE_PHYS"),
-        "image_factory.rs 不再引用 ENEROS_INIT_BUNDLE_PHYS（单源断裂）"
+        IMAGE_FACTORY.contains("load_address: ENEROS_INIT_BUNDLE_PHYS"),
+        "bundle load_address 未消费 ENEROS_INIT_BUNDLE_PHYS（单源断裂）"
     );
 }
 
@@ -172,5 +183,52 @@ fn kernel_load_address_consistent_across_rust_surface() {
         kernel_load_address(),
         v,
         "xtask KERNEL_LOAD_ADDRESS 与 boot-manager KERNEL_LOAD_START 漂移"
+    );
+}
+
+#[test]
+fn kernel_load_span_consistent_across_rust_surface() {
+    // 断言 7（复查轮补锁）：内核加载窗跨度互锁——xtask 校验面的
+    // `KERNEL_LOAD_ADDRESS + 8*1024*1024` 手抄跨度 ↔ boot-manager 的
+    // KERNEL_LOAD_END - KERNEL_LOAD_START。跨度漂移时装载校验两面失配。
+    let span_line = IMAGE_FACTORY
+        .lines()
+        .find(|l| l.contains("KERNEL_LOAD_ADDRESS + "))
+        .expect("image_factory.rs 缺少内核加载窗跨度表达式");
+    let span_xtask: u64 = span_line
+        .split("+ ")
+        .nth(1)
+        .and_then(|rest| {
+            rest.split('*')
+                .map(str::trim)
+                .collect::<Vec<_>>()
+                .first()
+                .copied()
+        })
+        .and_then(|s| s.replace('_', "").parse::<u64>().ok())
+        .expect("跨度表达式无法解析出首因子")
+        * 1024
+        * 1024;
+    let bm_start = BOOT_MANAGER
+        .lines()
+        .find(|l| l.contains("pub const KERNEL_LOAD_START"))
+        .and_then(|l| l.split('=').nth(1))
+        .and_then(|r| r.split(';').next())
+        .map(|s| s.trim().replace('_', "").replace("0x", ""))
+        .and_then(|s| u64::from_str_radix(&s, 16).ok())
+        .expect("KERNEL_LOAD_START 解析失败");
+    let bm_end = BOOT_MANAGER
+        .lines()
+        .find(|l| l.contains("pub const KERNEL_LOAD_END"))
+        .and_then(|l| l.split('=').nth(1))
+        .and_then(|r| r.split(';').next())
+        .map(|s| s.trim().replace('_', "").replace("0x", ""))
+        .and_then(|s| u64::from_str_radix(&s, 16).ok())
+        .expect("KERNEL_LOAD_END 解析失败");
+    assert_eq!(
+        span_xtask,
+        bm_end - bm_start,
+        "内核加载窗跨度漂移：xtask {span_xtask:#x} vs boot-manager {:#x}",
+        bm_end - bm_start
     );
 }

@@ -20,8 +20,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@nightly-2026-04-04
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
+          # 复查轮修复：@nightly-2026-04-04 标签在 dtolnay 仓库不存在（零 dated tag，
+          # gh run 33351052897 实证 setup 层死）——改钉 master SHA + toolchain 入参，
+          # 与 rust-toolchain.toml 的 nightly-2026-04-04 保持同源钉版。
+          toolchain: nightly-2026-04-04
           components: rust-src
           targets: aarch64-unknown-none
 

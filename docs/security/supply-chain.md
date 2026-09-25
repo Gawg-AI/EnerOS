@@ -24,8 +24,9 @@
   哈希暂未固化；解压树完整性由受管文件收敛校验覆盖，非全树审计。
 - **QEMU 钉版分面（WP-74.2.6，蓝图 74 卷二）**：seL4 构建面 qemu =
   xpack-qemu-arm 9.2.4-1，bootstrap 第 7 项钉版（tarball sha256
-  fail-closed 校验，哈希取自官方 .sha 边车并与缓存解压树逐字节比对），
-  与两构建脚本 `-DQEMU_BINARY`、sel4-powercut.sh 默认值单点一致；
+  fail-closed 校验，哈希取自官方 .sha 边车并与缓存解压树逐字节比对）；
+  两构建脚本 `-DQEMU_BINARY` 与 sel4-powercut.sh 默认值为**约定同步**
+  （版本同串、路径管道各自解析——复查轮观察项：升版须三处齐改）；
   CI runner / 开发机**系统 qemu** 为另一面（xtask qemu_harness 生产证据
   线所用），版本随 runner/主机，不进 bootstrap 钉版——以 PATH 管道
   改造为前提的全面切换超最小面，登记为边界例外。内核 GICv2 驱动

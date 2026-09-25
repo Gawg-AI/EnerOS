@@ -35,20 +35,30 @@ run_wait_marker() { # <log> <marker> <timeout_s>
   echo "$pid"
 }
 
+# 复查轮 P0 修复：先杀 QEMU 子进程再杀 timeout 包装进程。原顺序
+# `kill -9 $pid` 只杀 timeout——$! 是 timeout 的 PID，QEMU 被孤儿化
+# 继续跑过 ~3s kill 窗口（root_task.c:874-879）自行 COMMIT，断电矩阵
+# 语义失效且孤儿与下一 Run 并发同盘 O_DIRECT。QEMU 是 timeout 的直接
+# 子进程（fork+exec），-P 按父 PID 命中；先杀子（父尚在时才可枚举）
+# 再杀包装进程。
+kill_qemu_tree() { # <timeout_pid>
+  pkill -9 -P "$1" 2>/dev/null || true
+  kill -9 "$1" 2>/dev/null || true
+  wait "$1" 2>/dev/null || true
+}
+
 echo "== Run1: prepare 断电（tx=2 prepare 落盘后 kill -9）"
 rm -f "$DISK"; truncate -s 8M "$DISK"
 pid=$(run_wait_marker "$OUT/run1.log" "ENEROS-POWERCUT-PREPARE tx=2" 35)
 sleep 0.15
-kill -9 "$pid" 2>/dev/null
-wait "$pid" 2>/dev/null
+kill_qemu_tree "$pid"
 grep -q "ENEROS-POWERCUT-PREPARE tx=2" "$OUT/run1.log" \
   && echo "RUN1 prepare-powercut OK" || { echo "RUN1 FAIL"; exit 1; }
 
 echo "== Run2: 重启（回滚验证）+ commit 断电"
 pid=$(run_wait_marker "$OUT/run2.log" "ENEROS-POWERCUT-COMMIT" 45)
 sleep 0.15
-kill -9 "$pid" 2>/dev/null
-wait "$pid" 2>/dev/null
+kill_qemu_tree "$pid"
 grep -q '"test":"tx-rollback-oldvalue","result":"PASS"' "$OUT/run2.log" \
   && echo "RUN2 rollback-oldvalue PASS" || { echo "RUN2 rollback FAIL"; exit 1; }
 grep -q "ENEROS-POWERCUT-COMMIT" "$OUT/run2.log" \

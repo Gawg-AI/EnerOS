@@ -70,8 +70,11 @@ build_libcpio() { # $1 = BUILD 目录
 }
 
 # ---- 补丁面收敛（2026-09-23 审计复核施工，DEF-52-01/02 家族关闭）----
+# 复查轮修复：显式传递 SEL4_CACHE——converge 自行解析
+# SEL4_CACHE:-$HOME/.cache，不传时自定义 CACHE 的调用会构建 /custom 而
+# 收敛 ~/.cache（两树皆有完整 tarball 时静默不收敛）。
 sel4_run_converge() {
-  bash "$ROOT/third_party/sel4-converge-patches.sh"
+  SEL4_CACHE="$CACHE" bash "$ROOT/third_party/sel4-converge-patches.sh"
 }
 
 # ---- 两路径公共 cmake 参数（变体参数由 wrapper 追加在数组之后）----
@@ -91,6 +94,9 @@ CMAKE_COMMON_ARGS=(
   -DKernelPlatform=qemu-arm-virt
   -DKernelSel4ArchAarch64=ON
   -DPLATFORM=qemu-arm-virt
+  # QEMU_GIC_VERSION=3 在 seL4 14.0.0 为惰性变量（平台 config.cmake 零
+  # 消费者，复查轮全树 grep 实证）——驱动选择由平台硬编码 gic_v2 决定；
+  # 保留作未来 seL4 版本消费预留（勿据此推断内核 GIC 版本）。
   -DARM_CPU=cortex-a57 -DQEMU_GIC_VERSION=3
   -DKernelVerificationBuild=OFF -DKernelPrinting=ON
   -DSEL4_SRC="$SEL4_SRC_DIR"

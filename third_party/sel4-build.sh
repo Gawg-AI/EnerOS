@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # EnerOS seL4 构建（实际验证过的参数集）：内核 + libsel4 + elfloader + root task
-# 平台：qemu-arm-virt / aarch64 / GICv3 / cortex-a57 / 4 核
+# 平台：qemu-arm-virt / aarch64 / GICv2（内核平台驱动唯一内置；复查轮订正，
+# 原头注「GICv3」与 seL4 14.0.0 平台现实相悖）/ cortex-a57 / 4 核
 # 证据：QEMU 启动后输出 eneros.sel4.v1 5 项 PASS（sel4-kernel-init/bootinfo-valid/
 #       cap-create/ipc-loopback/root-heartbeat）
 #
