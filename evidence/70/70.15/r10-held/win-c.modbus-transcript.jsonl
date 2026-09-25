@@ -15,15 +15,15 @@
 {"event": "RESPONSE", "conn": 1, "tid": 0}
 {"event": "READ-GROUP", "conn": 1, "tid": 0, "func": "fc03", "addr": "0x100", "count": 10, "values": [4000, 500, 5000, 600, 1000, 0, 0, 120, 5000, 400]}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
-{"event": "WRITE", "conn": 1, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x200", "ts": 1790059805.1482441, "value": 0}
+{"event": "WRITE", "conn": 1, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x200", "ts": 1790355313.411371, "value": 0}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
 {"event": "READ", "conn": 1, "tid": 0, "unit": 1, "func": "fc03", "addr": "0x200", "value": 0}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
 {"event": "READ", "conn": 1, "tid": 0, "unit": 1, "func": "fc03", "addr": "0x200", "value": 0}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
-{"event": "WRITE-FI", "conn": 1, "tid": 0, "func": "fc06", "addr": "0x201", "ts": 1790059805.1944845, "injected": "reject-write-addr"}
+{"event": "WRITE-FI", "conn": 1, "tid": 0, "func": "fc06", "addr": "0x201", "ts": 1790355313.4662652, "injected": "reject-write-addr"}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
-{"event": "WRITE", "conn": 1, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x202", "ts": 1790059805.2352471, "value": 0}
+{"event": "WRITE", "conn": 1, "tid": 0, "unit": 1, "func": "fc06", "addr": "0x202", "ts": 1790355313.5053797, "value": 0}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
 {"event": "READ", "conn": 1, "tid": 0, "unit": 1, "func": "fc03", "addr": "0x202", "value": 0}
 {"event": "RESPONSE", "conn": 1, "tid": 0}
