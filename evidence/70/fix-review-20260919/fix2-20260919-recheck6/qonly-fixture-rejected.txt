@@ -1,0 +1,2 @@
+r10_intent_bind: REJECT line 3: Applied 行缺 dev/pt/val 绑定锚（历史日志不能用于外部归属判据）
+rc=2 (2=拒绝——Q-only 夹具不可再过门)

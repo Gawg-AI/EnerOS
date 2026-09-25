@@ -158,11 +158,15 @@ def _line_terminal_parses(line: str) -> list[tuple[str, str]]:
         # 完整 token：PASS/FAIL，可选**一个**信息性括注（如 r12 的
         # "PASS (review70_* x7)"）——括注外任意尾注（"PASS extra" 等）
         # 仍整体不可判（recheck RR3 扩展 token 拒绝面保持）。
+        # 73 复查对齐：括注前必须恰一个空格（与 xtask push_parse 同构）——
+        # 贴连形 "PASS(x)" 与双空格形属扩展 token，不得受纳（旧 lstrip 宽
+        # 松面使 py↔rust 对同输入判定相反，共享 fixture 锁已覆盖该角落）。
         if status in ("PASS", "FAIL"):
             return status
         for t in ("PASS", "FAIL"):
-            note = status[len(t):].lstrip(" ")
-            if status.startswith(t) and note.startswith("(") and note.endswith(")"):
+            sep = status[len(t):]
+            if status.startswith(t) and sep.startswith(" ") \
+                    and sep[1:].startswith("(") and sep[1:].endswith(")"):
                 return t
         return None
     for marker in _TERMINAL_MARKERS:
@@ -174,7 +178,10 @@ def _line_terminal_parses(line: str) -> list[tuple[str, str]]:
                 out.append((name, t))
             pos = norm.find(marker, pos + 1)
     if ":" in norm:
-        name, _, rest = norm.rpartition(":")
+        # 73 复查对齐：取**首**冒号（= 行首名单 token 的分隔符，与 xtask
+        # split_once 同构）——rpartition 会被括注内冒号带偏（"X: PASS (a:
+        # b)" 解出含空格名而整行不可判，rust 侧却判 PASS）。
+        name, _, rest = norm.partition(":")
         t = tok(rest.strip("= "))
         if name and " " not in name and t:
             out.append((name, t))

@@ -1,0 +1,8 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling eneros-boot-manager-uefi v0.337.0 (/home/ahx/文档/EnerOS/crates/boot/boot-manager-uefi)
+   Compiling eneros-xtask v0.337.0 (/home/ahx/文档/EnerOS/xtask)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 2.07s
+     Running `target/debug/eneros-xtask evidence42 check-current --matrix core-70`
+xtask: FAIL: candidate-index-unavailable: no index under evidence/70/70.15 for commit a72ae68cfd39bf1c13aa3be0f1dd5cdb30ca29ca

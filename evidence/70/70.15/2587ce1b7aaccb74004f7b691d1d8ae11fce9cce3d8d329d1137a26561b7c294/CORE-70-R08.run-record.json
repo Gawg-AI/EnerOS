@@ -1,0 +1,38 @@
+{
+  "schema": "eneros.gate-run-record.v1",
+  "case_id": "CORE-70-R08",
+  "gate_id": "VOL70.7",
+  "command": "tools/run70-vol7-gate.sh（DL=700/DL_T2=420）",
+  "exit_code": 0,
+  "recorded_at": "2026-09-18T19:00:02Z",
+  "ran_artifact_sha256": "9741b820ee25d32e3756c3be6a4f808c5876d8141c8e0933d418e0f31474edcc",
+  "ran_artifact_sha256_source": "evidence/70/70.7/combined.sha256",
+  "raw_log": {
+    "name": "vol7-evidence.log",
+    "bytes": 2896,
+    "sha256": "1580515c72232bb3aba46c27ac1cdee9eefbdd6abd864eab1948a4b9148a57d5",
+    "resident": "handoff-bundle",
+    "note": ".gitignore `*.log`：原始日志随移交包分发，本记录绑定其摘要"
+  },
+  "verdict_lines": [
+    "[✓][R1] 零 PANIC / 零分配失败",
+    "[✓][R2] PRODUCT-READY 达成",
+    "[✓][R3] BOOT 守卫查询（0x0A）",
+    "[✓][R4] BOOT trial 事务提交（bootctrl 双副本+flush）",
+    "[✓][R5] 零 PANIC / 零分配失败",
+    "[✓][R6] PRODUCT-READY 达成",
+    "[✓][R7] boot-evidence slot=B（boot-manager 选择非活动槽）",
+    "[✓][R8] boot_reason=UPDATE_TRIAL（跨重启试启动语义）",
+    "[✓][R9] BOOT-CONFIRM 自适应确认（slot=B → successful）",
+    "[✓][R10] 确认持久化（序列推进）",
+    "VOL70.7-GATE: PASS"
+  ],
+  "verdict": "PASS",
+  "candidate": {
+    "candidate_id": "2587ce1b7aaccb74004f7b691d1d8ae11fce9cce3d8d329d1137a26561b7c294",
+    "source_commit": "9ed12d3ee5b182c81066eabf1ba9a783954c28f0",
+    "dirty_tree_digest": "709e80c88487a2411e1ee4dfb9f22a861492d20c4765150c0c794abd70f8147c",
+    "artifact_sha256": "a1358311ae35c81a74f9e9fe3a196c46437ebf4721edfa5b8e496d4752d6f577",
+    "profile": "qemu-test"
+  }
+}

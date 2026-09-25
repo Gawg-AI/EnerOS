@@ -453,7 +453,9 @@ fn actor() -> AuthenticatedActor {
     }
 }
 
-/// journal key = correlation = plan_id 前 16B（引擎 `correlation_of` 同源）。
+/// journal key = correlation = plan_id 前 16B（独立 oracle：与 adapter
+/// `plan_id_of` 同规则的手写重实现——单源漂移时此处红）。
+/// （2026-09-24 R14-N：原注释指向已清偿退役的引擎 `correlation_of`。）
 fn plan_correlation(plan_id: &str) -> [u8; 16] {
     let mut id = [0u8; 16];
     let b = plan_id.as_bytes();
@@ -501,7 +503,7 @@ fn w1_crash_after_persist_replay_never_delivers_nor_commits() {
     let tel = trusted_telemetry();
     // 同幂等键重放（plan_id 相同 → correlation 相同）。
     let r = engine
-        .submit(&proposal(5.0), &tel, &actor(), 5000)
+        .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor())
         .expect("replay must not hard-fail");
     assert_ne!(
         r.final_state,
@@ -532,7 +534,7 @@ fn w2_post_delivery_journal_failure_is_indeterminate() {
     let mut engine = engine_with(build_chain(), Box::new(ch), Box::new(store));
     let tel = trusted_telemetry();
     let r1 = engine
-        .submit(&proposal(5.0), &tel, &actor(), 5000)
+        .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor())
         .expect("submit");
     assert_ne!(
         r1.final_state,
@@ -549,7 +551,7 @@ fn w2_post_delivery_journal_failure_is_indeterminate() {
         Box::new(durable_store(Rc::clone(&media))),
     );
     let r2 = engine2
-        .submit(&proposal(5.0), &tel, &actor(), 5000)
+        .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor())
         .expect("replay");
     assert_ne!(r2.final_state, DispatchState::Committed, "{r2:?}");
     assert_eq!(*delivered.borrow(), 1, "重启重放不得再次投递");
@@ -596,7 +598,7 @@ fn w3_crash_after_ack_before_readback_never_commits() {
     );
     let tel = trusted_telemetry();
     let r = engine
-        .submit(&proposal(5.0), &tel, &actor(), 5000)
+        .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor())
         .expect("replay");
     assert_ne!(
         r.final_state,
@@ -623,12 +625,12 @@ fn r4_indeterminate_replay_stays_indeterminate() {
     );
     let tel = trusted_telemetry();
     let r1 = engine
-        .submit(&proposal(5.0), &tel, &actor(), 5000)
+        .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor())
         .expect("submit");
     assert_eq!(r1.final_state, DispatchState::Indeterminate);
     // 同 key 重放（同进程，链缓存命中 Authorized）。
     let r2 = engine
-        .submit(&proposal(5.0), &tel, &actor(), 5000)
+        .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor())
         .expect("replay");
     assert_eq!(
         r2.final_state,
@@ -653,12 +655,20 @@ fn r5_same_key_different_digest_is_conflict() {
     );
     let tel = trusted_telemetry();
     let r1 = engine
-        .submit(&proposal_with_id("plan-A", 5.0), &tel, &actor(), 5000)
+        .submit_typed(
+            &support::legacy_candidate(&proposal_with_id("plan-A", 5.0)),
+            &tel,
+            &actor(),
+        )
         .expect("first");
     let _ = r1;
     let before = *delivered.borrow();
     // 同 plan_id（同幂等键）不同功率 → 冲突：拒绝且零投递。
-    let r2 = engine.submit(&proposal_with_id("plan-A", 60.0), &tel, &actor(), 5000);
+    let r2 = engine.submit_typed(
+        &support::legacy_candidate(&proposal_with_id("plan-A", 60.0)),
+        &tel,
+        &actor(),
+    );
     assert!(r2.is_err(), "同 key 不同 digest 必须拒绝：{r2:?}");
     assert_eq!(*delivered.borrow(), before, "冲突命令必须零投递");
 }
@@ -678,11 +688,11 @@ fn r6_dryrun_never_commits_even_on_replay() {
         Box::new(InMemoryIntentStore::new(64)),
     );
     let tel = trusted_telemetry();
-    let r1 = engine.submit(&proposal(5.0), &tel, &actor(), 5000);
+    let r1 = engine.submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor());
     assert!(r1.is_err(), "DryRun 义务必须拦截执行");
     assert_eq!(*delivered.borrow(), 0, "DryRun 零投递");
     // 重放（链缓存命中）：仍不得 Committed/投递。
-    let r2 = engine.submit(&proposal(5.0), &tel, &actor(), 5000);
+    let r2 = engine.submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor());
     assert!(
         r2.is_err(),
         "DryRun 重放不得升级为 Committed：{:?}",
@@ -712,7 +722,7 @@ fn r7_channel_protocol_error_after_deliver_is_indeterminate() {
     );
     let tel = trusted_telemetry();
     let r1 = engine
-        .submit(&proposal(5.0), &tel, &actor(), 5000)
+        .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor())
         .expect("投递后通道错误不得表现为前置 Err（会误导为未投递）");
     assert_eq!(
         r1.final_state,
@@ -728,7 +738,7 @@ fn r7_channel_protocol_error_after_deliver_is_indeterminate() {
         Box::new(durable_store(Rc::clone(&media))),
     );
     let r2 = engine2
-        .submit(&proposal(5.0), &tel, &actor(), 5000)
+        .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor())
         .expect("replay");
     assert_ne!(r2.final_state, DispatchState::Committed, "{r2:?}");
     assert_eq!(
@@ -754,12 +764,12 @@ fn property_replay_100x_single_side_effect() {
     );
     let tel = trusted_telemetry();
     let r1 = engine
-        .submit(&proposal(5.0), &tel, &actor(), 5000)
+        .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor())
         .expect("first");
     assert_eq!(r1.final_state, DispatchState::Committed);
     for i in 0..100 {
         let r = engine
-            .submit(&proposal(5.0), &tel, &actor(), 5000)
+            .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor())
             .expect("replay must succeed");
         assert_eq!(r.final_state, DispatchState::Committed, "replay {i}: {r:?}");
     }

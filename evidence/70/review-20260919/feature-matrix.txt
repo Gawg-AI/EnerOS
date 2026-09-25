@@ -1,0 +1,973 @@
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.11s
+     Running `target/debug/eneros-xtask qa feature-matrix`
+FEATURE-MATRIX: cargo test -p eneros-iec61850-goose --features net
+   Compiling eneros-iec61850-goose v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/iec61850-goose)
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.46s
+     Running unittests src/lib.rs (target/debug/deps/eneros_iec61850_goose-a2e0c4076cc34beb)
+
+running 57 tests
+test dataset::tests::test_ds1_new_empty_dataset ... ok
+test dataset::tests::test_ds3_set_overwrites_existing_path ... ok
+test dataset::tests::test_ds4_get_hit ... ok
+test dataset::tests::test_ds2_set_appends_new_path ... ok
+test dataset::tests::test_ds5_get_miss_returns_none ... ok
+test dataset::tests::test_ds6_multi_variants_clone_eq ... ok
+test goose_rx::tests::test_ether_type_offset_plain_vlan_short ... ok
+test goose_rx::tests::test_conf_rev_decode_and_pdu_fields ... ok
+test goose_rx::tests::test_lb31_loopback_value_consistent ... ok
+test goose_rx::tests::test_lb32_multi_entry_order_preserved ... ok
+test goose_rx::tests::test_lb33_callback_invoked ... ok
+test goose_rx::tests::test_lb34_frame_loss_injection ... ok
+test goose_rx::tests::test_lb35_loopback_under_4ms ... ok
+test goose_rx::tests::test_lb36_retransmit_sq_increasing ... ok
+test goose_rx::tests::test_reference_frames_decode ... ok
+test goose_rx::tests::test_rx19_valid_frame_decode ... ok
+test goose_rx::tests::test_rx20_appid_mismatch_dropped ... ok
+test goose_rx::tests::test_rx21_dst_mac_mismatch_dropped ... ok
+test goose_rx::tests::test_rx22_st_jump_detected ... ok
+test goose_rx::tests::test_rx23_duplicate_frame ... ok
+test goose_rx::tests::test_rx24_non_goose_ethertype ... ok
+test goose_rx::tests::test_rx25_truncated_frame ... ok
+test goose_rx::tests::test_rx26_bool_decode ... ok
+test goose_rx::tests::test_rx27_int32_decode ... ok
+test goose_rx::tests::test_rx29_timestamp_extract ... ok
+test goose_rx::tests::test_rx28_float_decode ... ok
+test goose_rx::tests::test_rx30_unknown_tag_skipped ... ok
+test goose_rx::tests::test_rx81_single_byte_long_form_length ... ok
+test goose_rx::tests::test_vlan_bad_length_or_ethertype_rejected ... ok
+test goose_rx::tests::test_vlan_tagged_frame_decode_equivalent_to_plain ... ok
+test goose_tx::tests::test_tx10_timestamp_8_bytes ... ok
+test goose_tx::tests::test_tx11_st_num_encoding ... ok
+test goose_tx::tests::test_tx12_sq_num_encoding ... ok
+test goose_tx::tests::test_tx13_all_data_has_length ... ok
+test goose_tx::tests::test_tx14_unified_data_tags ... ok
+test goose_tx::tests::test_tx15_update_value_state ... ok
+test goose_tx::tests::test_tx16_publish_increments_sq_num ... ok
+test goose_tx::tests::test_tx17_retransmit_timing ... ok
+test goose_tx::tests::test_tx18_full_frame_tlv_walk ... ok
+test goose_tx::tests::test_tx7_ethernet_header ... ok
+test goose_tx::tests::test_tx8_gocb_ref_encoding ... ok
+test goose_tx::tests::test_tx9_time_allowed_to_live ... ok
+test goose_tx::vlan_tx_tests::publish_inserts_8021q_tag_when_vlan_id_configured ... ok
+test goose_tx::vlan_tx_tests::publish_no_tag_when_vlan_id_absent ... ok
+test plugin::required_keys_face_lock::start_required_keys_locked_to_leaf_table ... ok
+test plugin::tests::conf_rev_mismatch_counts_and_degrades ... ok
+test plugin::tests::parse_mac_formats ... ok
+test plugin::tests::r64_ref_lock_goose ... ok
+test plugin::tests::r64_validate_config_accepts_vlan_id ... ok
+test plugin::tests::start_consumes_configured_values ... ok
+test plugin::tests::start_filters_by_configured_app_id ... ok
+test plugin::tests::start_poll_stop_lifecycle ... ok
+test plugin::tests::start_rejects_unsupported_transport ... ok
+test plugin::tests::test_39_replayed_frame_idempotent_no_double_report ... ok
+test plugin::tests::test_39_st_num_rewind_detected_and_degraded ... ok
+test plugin::tests::validate_config_positive_and_unknown_key_rejected ... ok
+test plugin::tests::validate_config_ranges_and_required_keys ... ok
+
+test result: ok. 57 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests eneros_iec61850_goose
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+FEATURE-MATRIX: cargo test -p eneros-iec61850-sv --features net
+   Compiling eneros-iec61850-sv v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/iec61850-sv)
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.38s
+     Running unittests src/lib.rs (target/debug/deps/eneros_iec61850_sv-9f14af3181b96ce1)
+
+running 37 tests
+test plugin::required_keys_face_lock::start_required_keys_locked_to_leaf_table ... ok
+test plugin::tests::start_poll_stop_lifecycle ... ok
+test plugin::tests::poll_wires_sample_counter_continuity ... ok
+test plugin::tests::start_rejects_unsupported_transport ... ok
+test plugin::tests::start_consumes_configured_app_id ... ok
+test plugin::tests::r64_ref_lock_sv ... ok
+test plugin::tests::test_39_smp_cnt_rewind_detected_as_jump ... ok
+test plugin::tests::validate_config_positive_and_unknown_key_rejected ... ok
+test plugin::tests::test_39_duplicate_sample_idempotent ... ok
+test plugin::tests::validate_config_ranges_and_required_keys ... ok
+test sv_buffer::tests::rb1_new_creates_empty_buffer ... ok
+test sv_buffer::tests::rb2_push_under_capacity_appends ... ok
+test sv_buffer::tests::rb3_push_at_capacity_overwrites_oldest ... ok
+test sv_buffer::tests::rb4_drain_returns_all_and_empties ... ok
+test sv_buffer::tests::rb5_len_and_is_empty_across_transitions ... ok
+test sv_buffer::tests::rb6_order_preserved_after_multiple_overflows ... ok
+test sv_rx::tests::test_rx10_non_sv_ethertype_dropped ... ok
+test sv_rx::tests::test_rx11_smp_jump_detected ... ok
+test sv_rx::tests::test_rx12_duplicate_sample ... ok
+test sv_rx::tests::test_rx13_truncated_frame ... ok
+test sv_rx::tests::test_rx14_smp_cnt_tag_decode ... ok
+test sv_rx::tests::test_rx15_timestamp_tag_decode ... ok
+test sv_rx::tests::test_rx16_channels_tag_decode ... ok
+test sv_rx::tests::test_rx17_callback_invoked ... ok
+test sv_rx::tests::test_rx18_take_samples_drains_buffer ... ok
+test sv_rx::tests::test_rx7_valid_frame_decode ... ok
+test sv_rx::tests::test_rx8_appid_mismatch_dropped ... ok
+test sv_rx::tests::test_rx9_dst_mac_mismatch_dropped ... ok
+test sv_rx::tests::test_vlan_bad_ethertype_or_appid_still_dropped ... ok
+test sv_rx::tests::test_vlan_tagged_frame_decode_equivalent_to_plain ... ok
+test tests::mock_l2_clear_tx_empties_record ... ok
+test tests::mock_l2_inject_recv_error_once ... ok
+test tests::mock_l2_inject_send_error_once ... ok
+test tests::mock_l2_loopback_delivers_sent_frame ... ok
+test tests::mock_l2_recv_empty_returns_zero ... ok
+test tests::mock_l2_recv_pops_preloaded_frame ... ok
+test tests::mock_l2_send_records_tx ... ok
+
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests eneros_iec61850_sv
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+FEATURE-MATRIX: cargo test -p eneros-iec61850-mms --features net
+   Compiling eneros-iec61850-mms v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/iec61850-mms)
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.41s
+     Running unittests src/lib.rs (target/debug/deps/eneros_iec61850_mms-3d45460d28aed988)
+
+running 46 tests
+test acse::tests::test_ac21_aarq_encoding ... ok
+test acse::tests::test_ac26_cotp_cc_parse ... ok
+test ber_decode::tests::test_bd11_boolean_decode ... ok
+test acse::tests::test_ac24_aare_malformed ... ok
+test ber_decode::tests::test_bd13_float32_decode ... ok
+test acse::tests::test_ac22_aare_accepted ... ok
+test acse::tests::test_ac25_cotp_cr_structure ... ok
+test ber_decode::tests::test_bd12_integer_multi_byte ... ok
+test acse::tests::test_ac23_aare_rejected ... ok
+test ber_decode::tests::test_bd14_float64_decode ... ok
+test ber_decode::tests::test_bd15_unknown_tag_yields_none ... ok
+test ber_decode::tests::test_bd16_truncated_input ... ok
+test ber_decode::tests::test_bd17_long_form_length_parse ... ok
+test ber_decode::tests::test_bd18_write_success ... ok
+test ber_decode::tests::test_bd19_write_failed ... ok
+test ber_decode::tests::test_bd20_illegal_top_tag ... ok
+test ber_encode::tests::test_be10_write_float64_value ... ok
+test ber_encode::tests::test_be1_read_request_top_tags ... ok
+test ber_encode::tests::test_be2_invoke_id_encoding ... ok
+test ber_encode::tests::test_be3_domain_item_visible_strings ... ok
+test ber_encode::tests::test_be4_single_var_list_length_bytes ... ok
+test ber_encode::tests::test_be5_multi_var_list_length_is_byte_sum ... ok
+test ber_encode::tests::test_be6_long_form_length ... ok
+test ber_encode::tests::test_be7_write_request_tag ... ok
+test ber_encode::tests::test_be8_write_bool_value ... ok
+test ber_encode::tests::test_be9_write_int32_value ... ok
+test mms_client::tests::test_mc27_new_initial_idle ... ok
+test mms_client::tests::test_mc28_connect_success_state ... ok
+test mms_client::tests::test_mc29_send_sequence_cr_before_aarq ... ok
+test mms_client::tests::test_mc30_retry_third_attempt_succeeds ... ok
+test mms_client::tests::test_mc31_all_attempts_timeout ... ok
+test mms_client::tests::test_mc32_read_mock_loop ... ok
+test mms_client::tests::test_mc33_read_write_not_connected ... ok
+test mms_client::tests::test_mc34_write_success_and_failed ... ok
+test mms_client::tests::test_mc35_disconnect_to_idle ... ok
+test mms_client::tests::test_mc36_recv_error_then_reconnect ... ok
+test mms_client::tests::test_mc38_error_pdu_code_mapping ... ok
+test mms_client::tests::test_mc37_read_100_points_perf ... ok
+test plugin::required_keys_face_lock::start_required_keys_locked_to_leaf_table ... ok
+test plugin::tests::r64_ref_lock_mms ... ok
+test plugin::tests::start_association_refused_protocol_init ... ok
+test plugin::tests::start_consumes_configured_peer_and_ap_title ... ok
+test plugin::tests::start_poll_stop_lifecycle ... ok
+test plugin::tests::start_rejects_unsupported_transport ... ok
+test plugin::tests::validate_config_peer_and_ranges ... ok
+test plugin::tests::validate_config_positive_and_unknown_key_rejected ... ok
+
+test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/mms_interop.rs (target/debug/deps/mms_interop-5c5a834a699acceb)
+
+running 1 test
+test arc007_mms_independent_peer_interop ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests eneros_iec61850_mms
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+FEATURE-MATRIX: cargo test -p eneros-iec104-master --features net
+   Compiling eneros-iec104-master v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/iec104-master)
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.58s
+     Running unittests src/lib.rs (target/debug/deps/eneros_iec104_master-053e60598b7ef6e1)
+
+running 78 tests
+test config::tests::test_copy_eq ... ok
+test adapter::tests::iec104_adapter_passes_shared_contract ... ok
+test config::tests::test_default_values ... ok
+test config::tests::test_modify ... ok
+test connection::tests::test_new_initial_state ... ok
+test connection::tests::test_next_recv_seq_increment ... ok
+test connection::tests::test_next_send_seq_increment ... ok
+test connection::tests::test_send_seq_wraparound ... ok
+test connection::tests::test_recv_seq_wraparound ... ok
+test connection::tests::test_touch ... ok
+test device::tests::test_conn_state_eq ... ok
+test device::tests::test_remote_device_eq ... ok
+test device::tests::test_remote_device_new ... ok
+test error::tests::test_clone ... ok
+test error::tests::test_eq ... ok
+test error::tests::test_from_iec104_error ... ok
+test master::tests::test_i_frame_triggers_s_frame_ack ... ok
+test master::tests::test_k_window_limits_unacked_i_frames ... ok
+test master::tests::test_latest_value_keeps_time_tag_and_iv ... ok
+test master::tests::test_m_st_m_bo_latest_value ... ok
+test master::tests::test_out_of_order_and_replayed_i_frames_rejected ... ok
+test master::tests::test_s_frame_carries_post_increment_rs ... ok
+test master::tests::test_send_setpoint_normalized_and_float ... ok
+test master::tests::test_t1_timeout_drops_startdt_pending_and_reconnect ... ok
+test master::tests::test_t2_timeout_triggers_late_ack ... ok
+test master::tests::test_testfr_act_replies_testfr_con ... ok
+test master::tests::test_time_tag_from_ms_31_days ... ok
+test master::tests::test_time_tag_from_ms_epoch ... ok
+test master::tests::test_time_tag_from_ms_full_date ... ok
+test master::tests::test_time_tag_from_ms_millis ... ok
+test master::tests::test_time_tag_from_ms_one_day ... ok
+test master::tests::test_time_tag_from_ms_one_hour ... ok
+test master::tests::test_time_tag_from_ms_one_minute ... ok
+test master::tests::test_time_tag_from_ms_one_second ... ok
+test master::tests::test_time_tag_roundtrip_to_unix_nanos ... ok
+test mock::tests::test_advance_time ... ok
+test mock::tests::test_close_removes_connection ... ok
+test mock::tests::test_connect_returns_incrementing_ids ... ok
+test mock::tests::test_default ... ok
+test mock::tests::test_new_is_empty ... ok
+test mock::tests::test_push_rx_and_recv ... ok
+test mock::tests::test_recv_empty_returns_none ... ok
+test mock::tests::test_send_records_tx_frames ... ok
+test mock::tests::test_recv_multiple_frames ... ok
+test mock::tests::test_set_time ... ok
+test plugin::required_keys_face_lock::start_required_keys_locked_to_leaf_table ... ok
+test plugin::tests::r64_ref_lock_iec104_master ... ok
+test plugin::tests::start_consumes_configured_peer_and_timers ... ok
+test plugin::tests::start_poll_stop_lifecycle ... ok
+test plugin::tests::stream_transport_assembles_partial_apdu ... ok
+test plugin::tests::validate_config_requires_peer ... ok
+test poll::tests::test_add_task_and_due ... ok
+test poll::tests::test_default ... ok
+test poll::tests::test_due_tasks_empty_scheduler ... ok
+test poll::tests::test_due_tasks_multiple ... ok
+test poll::tests::test_new_is_empty ... ok
+test poll::tests::test_remove_task ... ok
+test poll::tests::test_update_next ... ok
+test poll::tests::test_update_next_nonexistent ... ok
+test real::tests::real_transport_constructs_as_trait_object ... ok
+test tests::test_not_connected_error ... ok
+test tests::test_state_error_when_not_connected ... ok
+test tests::test_t10_state_machine_transitions ... ok
+test tests::test_t1_connect_and_startdt_handshake ... ok
+test tests::test_t2_interrogation_send_and_receive ... ok
+test tests::test_t3_single_command ... ok
+test tests::test_t4_double_command ... ok
+test tests::test_t5_clock_sync_and_timetag ... ok
+test real::tests::connect_unreachable_fails_closed ... ok
+test tests::test_t6_multi_device_polling ... ok
+test tests::test_t7_t3_timeout_testfr ... ok
+test tests::test_t8_sequence_wraparound ... ok
+test tests::test_t9_poll_triggers_interrogation ... ok
+test tests::test_testfr_con_handling ... ok
+test tests::test_trait_object_compatibility ... ok
+test transport::tests::test_stats_clone_eq ... ok
+test transport::tests::test_stats_default_all_zero ... ok
+test transport::tests::test_stats_mutation ... ok
+
+test result: ok. 78 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/iec104_e5_host.rs (target/debug/deps/iec104_e5_host-a02eeca6c685db6c)
+
+running 2 tests
+test e5_host_reconnect_after_peer_close ... ok
+test e5_host_interop_adapter_data_plane_over_real_tcp ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s
+
+     Running tests/iec104_interop.rs (target/debug/deps/iec104_interop-64ad7303b5433c13)
+
+running 1 test
+test arc007_iec104_independent_peer_interop ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/loopback.rs (target/debug/deps/loopback-3b66176182816b10)
+
+running 1 test
+test loopback_interrogation_telemetry ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+   Doc-tests eneros_iec104_master
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+FEATURE-MATRIX: cargo test -p eneros-iec104-slave --features net
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (target/debug/deps/eneros_iec104_slave-218bcb7cb2485d3e)
+
+running 106 tests
+test apdu::tests::test_decode_empty ... ok
+test apdu::tests::test_decode_length_mismatch ... ok
+test apdu::tests::test_decode_invalid_u_format_byte ... ok
+test apdu::tests::test_decode_wrong_start_byte ... ok
+test apdu::tests::test_decode_too_short ... ok
+test apdu::tests::test_encode_rejects_oversized_asdu ... ok
+test apdu::tests::test_i_format_encode_bit0_zero ... ok
+test apdu::tests::test_i_format_seq_zero ... ok
+test apdu::tests::test_s_format_decode ... ok
+test apdu::tests::test_s_format_encode ... ok
+test apdu::tests::test_i_format_roundtrip ... ok
+test apdu::tests::test_s_format_roundtrip_various ... ok
+test apdu::tests::test_sequence_wraparound_to_zero ... ok
+test apdu::tests::test_sequence_wraparound_32767 ... ok
+test apdu::tests::test_u_format_all_roundtrip ... ok
+test apdu::tests::test_u_format_startdt_act ... ok
+test apdu::tests::test_u_format_startdt_con ... ok
+test apdu::tests::test_u_format_stopdt_act ... ok
+test apdu::tests::test_u_format_stopdt_con ... ok
+test apdu::tests::test_u_format_testfr_act ... ok
+test apdu::tests::test_u_format_testfr_con ... ok
+test config::tests::test_clone_eq ... ok
+test config::tests::test_default_values ... ok
+test config::tests::test_field_access_and_modify ... ok
+test config::tests::test_t2_less_than_t1 ... ok
+test error::tests::test_clone ... ok
+test error::tests::test_display_all_variants ... ok
+test error::tests::test_eq ... ok
+test mock::tests::test_accept_conn_and_accept ... ok
+test mock::tests::test_clear ... ok
+test mock::tests::test_close ... ok
+test mock::tests::test_default ... ok
+test mock::tests::test_multiple_conns_distinct_ids ... ok
+test mock::tests::test_new_is_empty ... ok
+test mock::tests::test_now_ms ... ok
+test mock::tests::test_push_rx_and_recv ... ok
+test mock::tests::test_recv_empty_returns_zero ... ok
+test mock::tests::test_send_records_tx_frames ... ok
+test mock::tests::test_tx_frames_for ... ok
+test point::tests::test_default ... ok
+test point::tests::test_execute_double_command_on ... ok
+test point::tests::test_execute_double_command_select_no_change ... ok
+test point::tests::test_execute_single_command_off ... ok
+test point::tests::test_execute_single_command_select_no_change ... ok
+test point::tests::test_get_all_points_empty ... ok
+test point::tests::test_execute_single_command_on ... ok
+test point::tests::test_get_all_points_sorted ... ok
+test point::tests::test_get_quality_default_good ... ok
+test point::tests::test_get_value_not_found ... ok
+test point::tests::test_set_get_quality ... ok
+test point::tests::test_set_get_value ... ok
+test point::tests::test_trait_object ... ok
+test slave::tests::test_accept_connection ... ok
+test slave::tests::test_clock_sync_applies_time_tag ... ok
+test slave::tests::test_clock_sync_confirm ... ok
+test slave::tests::test_clock_sync_denied_without_policy ... ok
+test slave::tests::test_clock_sync_iv_ignored ... ok
+test slave::tests::test_config_access ... ok
+test slave::tests::test_double_command_denied_without_authorization ... ok
+test slave::tests::test_double_command_direct_execute_rejected ... ok
+test slave::tests::test_double_command_executes_when_authorized ... ok
+test slave::tests::test_initial_state_idle ... ok
+test slave::tests::test_interrogation_flow ... ok
+test slave::tests::test_interrogation_termination_cot_10 ... ok
+test slave::tests::test_k_window_full_blocks_send ... ok
+test slave::tests::test_k_window_released_by_s_frame ... ok
+test slave::tests::test_multiple_polls_accumulate ... ok
+test slave::tests::test_no_testfr_when_not_active ... ok
+test slave::tests::test_poll_no_connection ... ok
+test slave::tests::test_recv_error_closes_connection ... ok
+test slave::tests::test_rx_reassembler_glued_frames ... ok
+test slave::tests::test_rx_reassembler_half_frame_accumulates ... ok
+test slave::tests::test_sbo_direct_execute_rejected ... ok
+test slave::tests::test_sbo_execute_mismatch_rejected ... ok
+test slave::tests::test_sco_dco_defaults ... ok
+test slave::tests::test_send_apdu_without_connection_errors ... ok
+test slave::tests::test_send_i_format_with_connection_ok ... ok
+test slave::tests::test_send_i_format_without_connection_errors ... ok
+test slave::tests::test_sequence_replay_rejected ... ok
+test slave::tests::test_sequence_wraparound ... ok
+test slave::tests::test_single_command_denied_without_authorization ... ok
+test slave::tests::test_single_command_denied_wrong_value ... ok
+test slave::tests::test_single_command_executes_when_authorized ... ok
+test slave::tests::test_startdt_act_to_con ... ok
+test slave::tests::test_stats_increment ... ok
+test slave::tests::test_stopdt_act_to_con ... ok
+test slave::tests::test_t1_retry_bounded_then_close ... ok
+test slave::tests::test_t1_timeout_retries_u_frame ... ok
+test slave::tests::test_t2_timeout_forces_s_frame ... ok
+test slave::tests::test_t3_timeout_testfr ... ok
+test slave::tests::test_testfr_act_to_con ... ok
+test slave::tests::test_trait_object_compatibility ... ok
+test slave::tests::test_w_threshold_s_frame ... ok
+test slave::tests::test_wp534_silent_connection_slot_reclaimed_after_idle_timeout ... ok
+test tests::test_apdu_end_to_end ... ok
+test tests::test_clock_sync_confirm ... ok
+test tests::test_double_command_execute_and_confirm ... ok
+test tests::test_interrogation_full_flow ... ok
+test tests::test_sequence_management ... ok
+test tests::test_sequence_wraparound_e2e ... ok
+test tests::test_single_command_execute_and_confirm ... ok
+test tests::test_startdt_handshake ... ok
+test tests::test_trait_object_compatibility ... ok
+test transport::tests::test_stats_clone_eq ... ok
+test transport::tests::test_stats_default_all_zero ... ok
+test transport::tests::test_stats_mutation ... ok
+
+test result: ok. 106 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/loopback.rs (target/debug/deps/loopback-f425c3b59014418e)
+
+running 1 test
+test loopback_startdt_roundtrip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests eneros_iec104_slave
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+FEATURE-MATRIX: cargo test -p eneros-modbus-tcp --features net
+   Compiling eneros-modbus-rtu v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/modbus-rtu)
+   Compiling eneros-modbus-tcp v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/modbus-tcp)
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.56s
+     Running unittests src/lib.rs (target/debug/deps/eneros_modbus_tcp-2774054842ee02a8)
+
+running 74 tests
+test adapter::tests::connection_reused_same_device ... ok
+test adapter::tests::write_raw_not_started_and_unsupported_func_fail_closed ... ok
+test adapter::tests::write_raw_supports_fc16_single_word ... ok
+test adapter::tests::write_raw_sends_fc06_with_inverse_raw ... ok
+test adapter::tests::modbus_tcp_adapter_passes_shared_contract ... ok
+test device::tests::test_clone ... ok
+test device::tests::test_default_port_constant ... ok
+test device::tests::test_eq_and_copy ... ok
+test device::tests::test_max_unit_id ... ok
+test device::tests::test_new_custom_port ... ok
+test device::tests::test_new_default_port_502 ... ok
+test device::tests::test_zero_unit_id ... ok
+test error::tests::test_display_modbus_variant ... ok
+test error::tests::test_display_all_variants ... ok
+test error::tests::test_eq ... ok
+test error::tests::test_from_modbus_error ... ok
+test master::tests::test_39_duplicate_txn_response_idempotent_discard ... ok
+test master::tests::test_39_glued_burst_both_frames_processed ... ok
+test master::tests::test_39_send_failure_fails_closed_no_silent_drop ... ok
+test master::tests::test_build_frame_content ... ok
+test master::tests::test_build_pdu_content ... ok
+test master::tests::test_connect_increments_reconnect_count ... ok
+test master::tests::test_exception_response ... ok
+test master::tests::test_parse_response_frame_too_short ... ok
+test master::tests::test_parse_response_invalid_protocol_id ... ok
+test master::tests::test_poll_devices_success ... ok
+test master::tests::test_poll_devices_with_error ... ok
+test master::tests::test_read_holding_registers_invalid_quantity ... ok
+test master::tests::test_read_holding_registers_single_reg ... ok
+test master::tests::test_read_holding_registers_success ... ok
+test master::tests::test_sent_frame_structure ... ok
+test master::tests::test_stats_comprehensive ... ok
+test master::tests::test_timeout_retry_exhausted ... ok
+test master::tests::test_transaction_mismatch ... ok
+test master::tests::test_txn_id_initial_zero ... ok
+test master::tests::test_txn_id_wraparound ... ok
+test master::tests::test_write_multiple_registers_invalid_quantity ... ok
+test master::tests::test_write_multiple_registers_success ... ok
+test master::tests::test_write_multiple_sent_frame ... ok
+test master::tests::test_write_single_register_success ... ok
+test mbap::tests::test_decode_exactly_seven_bytes ... ok
+test mbap::tests::test_decode_extra_bytes_ignored ... ok
+test mbap::tests::test_decode_frame_too_short ... ok
+test mbap::tests::test_decode_invalid_protocol_id ... ok
+test mbap::tests::test_encode_max_values ... ok
+test mbap::tests::test_encode_roundtrip ... ok
+test mbap::tests::test_mbap_rejects_oversized_pdu ... ok
+test mbap::tests::test_new_data_len_zero ... ok
+test mbap::tests::test_new_sets_protocol_id_zero ... ok
+test mbap::tests::test_stream_bad_protocol_id_resync ... ok
+test mbap::tests::test_stream_half_packet_reassembled ... ok
+test mbap::tests::test_stream_multi_frame_glued ... ok
+test mbap::tests::test_stream_partial_then_glued_remainder ... ok
+test mbap::tests::test_stream_single_frame ... ok
+test plugin::required_keys_face_lock::start_required_keys_locked_to_leaf_table ... ok
+test plugin::tests::r64_ref_lock_modbus_tcp ... ok
+test plugin::tests::read_point_reads_holding_register_real ... ok
+test plugin::tests::read_point_rejects_non_modbus_mapping_and_coils ... ok
+test plugin::tests::start_consumes_configured_peer ... ok
+test plugin::tests::start_consumes_point_registry_and_counts_routed ... ok
+test plugin::tests::start_poll_stop_lifecycle ... ok
+test plugin::tests::start_rejects_unsupported_transport ... ok
+test plugin::tests::validate_config_requires_parseable_peer ... ok
+test tests::test_exception_response_integration ... ok
+test tests::test_master_read_holding_registers_integration ... ok
+test tests::test_master_write_single_register_integration ... ok
+test tests::test_mbap_roundtrip_integration ... ok
+test tests::test_poll_devices_integration ... ok
+test tests::test_timeout_retry_integration ... ok
+test tests::test_transaction_mismatch_integration ... ok
+test tests::test_txn_id_wraparound_integration ... ok
+test transport::tests::test_clone_eq ... ok
+test transport::tests::test_default_all_zero ... ok
+test transport::tests::test_manual_mutation ... ok
+
+test result: ok. 74 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/loopback.rs (target/debug/deps/loopback-3a272de955d47ab9)
+
+running 1 test
+test loopback_read_holding_registers_roundtrip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests eneros_modbus_tcp
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+FEATURE-MATRIX: cargo test -p eneros-mqtt --features net
+   Compiling eneros-mqtt v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/mqtt)
+warning: unused import: `eneros_net::tcpip::Ipv4Addr`
+  --> crates/protocols/mqtt/src/real.rs:26:5
+   |
+26 | use eneros_net::tcpip::Ipv4Addr;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `SocketSet`
+  --> crates/protocols/mqtt/src/real.rs:28:43
+   |
+28 | use eneros_net::tcpip::{NetworkInterface, SocketSet, TcpSocket};
+   |                                           ^^^^^^^^^
+
+warning: fields `host` and `port` are never read
+  --> crates/protocols/mqtt/src/real.rs:74:5
+   |
+68 | pub struct NetTcpTransport<D: NetDevice> {
+   |            --------------- fields in this struct
+...
+74 |     host: String,
+   |     ^^^^
+75 |     /// 目标端口。
+76 |     port: u16,
+   |     ^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eneros-mqtt` (lib) generated 3 warnings (run `cargo fix --lib -p eneros-mqtt` to apply 2 suggestions)
+warning: `eneros-mqtt` (lib test) generated 3 warnings (3 duplicates)
+    Finished `test` profile [optimized + debuginfo] target(s) in 1.39s
+     Running unittests src/lib.rs (target/debug/deps/eneros_mqtt-a388a4ce0c4b41ed)
+
+running 92 tests
+test client::gap_closure_tests::wp1_connack_garbage_resets_disconnected ... ok
+test client::gap_closure_tests::b2_golden_frame_utf8_multibyte_username ... ok
+test client::gap_closure_tests::wp1_connect_unreachable_leaves_disconnected ... ok
+test client::gap_closure_tests::wp1_connack_return_code_nonzero_disconnects ... ok
+test client::gap_closure_tests::wp1_halfopen_ping_timeout_marks_reconnecting ... ok
+test client::gap_closure_tests::wp1_connack_timeout_resets_disconnected ... ok
+test client::gap_closure_tests::wp1_unexpected_packet_disconnects ... ok
+test client::gap_closure_tests::wp3_golden_frame_with_credentials ... ok
+test client::gap_closure_tests::wp1_oversized_will_encode_fails_and_disconnects ... ok
+test client::gap_closure_tests::wp3_none_credentials_frame_byte_unchanged ... ok
+test client::gap_closure_tests::wp3_oversized_credentials_rejected_at_seam ... ok
+test client::keepalive_tests::keepalive_poll_sends_pingreq_after_keep_alive_interval ... ok
+test client::gap_closure_tests::wp3_wire_layer_rejects_oversized_username_as_backstop ... ok
+test client::tests::clean_session_flag_controls_state_retention ... ok
+test client::tests::inbound_qos0_publish_needs_no_ack ... ok
+test client::tests::inbound_qos1_publish_gets_puback ... ok
+test client::tests::inbound_qos2_full_handshake ... ok
+test client::tests::session_present_captured_from_connack ... ok
+test client::tests::subscribe_dedup_keeps_list_constant_across_reconnects ... ok
+test client::tests::test_39_garbage_byte_burst_rejected_without_panic ... ok
+test client::tests::test_39_qos1_burst_all_acked_and_missing_ack_not_silently_dropped ... ok
+test client::tests::test_allocate_packet_id_wraps ... ok
+test client::tests::test_parse_broker ... ok
+test client::tests::test_qos1_timeout_retransmits_dup ... ok
+test packet::tests::test_connack_decode ... ok
+test packet::tests::test_connect_encode_first_byte ... ok
+test packet::tests::test_pingreq_pingresp_roundtrip ... ok
+test packet::tests::test_publish_qos0_roundtrip ... ok
+test packet::tests::test_publish_qos1_roundtrip ... ok
+test packet::tests::test_remaining_length_encode_decode ... ok
+test packet::tests::test_subscribe_encode_type_byte ... ok
+test plugin::required_keys_face_lock::start_required_keys_locked_to_leaf_table ... ok
+test plugin::tests::ai_inbox_bounded_drops_new_and_counts ... ok
+test plugin::tests::ai_response_routed_to_inbox_and_control_still_parsed ... ok
+test plugin::tests::b2_empty_strings_treated_as_absent ... ok
+test plugin::tests::b2_known_keys_reference_lock ... ok
+test plugin::tests::b2_pair_accepted_and_injected_at_start ... ok
+test plugin::tests::b2_password_without_username_rejected ... ok
+test plugin::tests::b2_username_only_accepted ... ok
+test plugin::tests::connect_backoff_bounds_retry_rate ... ok
+test plugin::tests::downlink_bad_payloads_counted_and_ignored ... ok
+test plugin::tests::downlink_intent_survives_wire_roundtrip ... ok
+test plugin::tests::downlink_set_parses_to_write_intent ... ok
+test plugin::tests::disconnect_reconnect_cycle_recovers_publishing ... ok
+test plugin::tests::enqueue_ai_publish_classifies_and_publishes ... ok
+test plugin::tests::enqueue_telemetry_publish_validates_and_counts ... ok
+test plugin::tests::is_connected_reflects_transport_state ... ok
+test plugin::tests::handshake_error_detail_clears_on_successful_reconnect ... ok
+test plugin::tests::mgmt_request_inbox_and_response_outbox ... ok
+test plugin::tests::outbox_expired_entries_dropped_not_replayed ... ok
+test plugin::tests::recovery_generation_and_ready_semantics ... ok
+test plugin::tests::start_consumes_configured_broker ... ok
+test plugin::tests::start_poll_stop_lifecycle ... ok
+test plugin::tests::validate_config_accepts_ai_topics_rejects_unknown ... ok
+test plugin::tests::validate_config_accepts_telemetry_topic ... ok
+test plugin::tests::validate_config_rejects_oversized_broker ... ok
+test plugin::tests::validate_config_rejects_unknown_and_empty_broker ... ok
+test qos_store::tests::test_decode_invalid_rejected ... ok
+test qos_store::tests::test_encode_decode_roundtrip ... ok
+test qos_store::tests::test_fs_store_missing_file_empty ... ok
+test qos_store::tests::test_fs_store_overwrite_same_id ... ok
+test qos_store::tests::test_fs_store_roundtrip ... ok
+test qos_store::tests::test_hex_payload_with_utf8_topic ... ok
+test qos_store::tests::test_in_memory_store_overwrite ... ok
+test qos_store::tests::test_in_memory_store_roundtrip ... ok
+test real::tests::plain_channel_allowed_only_with_explicit_policy ... ok
+test real::tests::plain_channel_rejected_under_release_policy ... ok
+test tests::test_qos0_not_persisted ... ok
+test tests::test_qos1_persisted_until_puback ... ok
+test tests::test_qos1_saved_before_ack_and_restore ... ok
+test tests::test_t10_subscribe_encode ... ok
+test tests::test_t11_pingreq_pingresp_roundtrip ... ok
+test tests::test_t12_client_connect_and_publish_qos0 ... ok
+test tests::test_t13_client_subscribe ... ok
+test tests::test_t14_client_publish_qos1_wait_puback ... ok
+test tests::test_t15_mark_disconnected_is_honest_disconnected_state ... ok
+test tests::test_t1_qos_enum_values ... ok
+test tests::test_t2_last_will_construction ... ok
+test tests::test_t3_topic_filter_exact_match ... ok
+test tests::test_t4_topic_filter_single_wildcard ... ok
+test tests::test_t5_topic_filter_multi_wildcard ... ok
+test tests::test_t6_connect_encode ... ok
+test tests::test_t7_connack_decode ... ok
+test tests::test_t8_publish_qos0_roundtrip ... ok
+test tests::test_t9_publish_qos1_roundtrip ... ok
+test topic::tests::test_exact_match ... ok
+test topic::tests::test_multi_level_wildcard ... ok
+test topic::tests::test_root_hash ... ok
+test topic::tests::test_single_level_in_middle ... ok
+test topic::tests::test_single_level_wildcard ... ok
+test transport::tests::test_mock_transport_close ... ok
+test transport::tests::test_mock_transport_send_recv ... ok
+
+test result: ok. 92 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests eneros_mqtt
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+FEATURE-MATRIX: cargo test -p eneros-config-bundle --features compile
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (target/debug/deps/eneros_config_bundle-43638a18e8e0260f)
+
+running 70 tests
+test points::tests::decode_full_payload_frame ... ok
+test points::tests::decode_rejects_duplicate_point_id ... ok
+test points::tests::consumer_apply_propagates_generation ... ok
+test points::tests::decode_goose_sv_subscription_no_addr ... ok
+test ai_peer::tests::learn_enabled_gate_semantics ... ok
+test ai_peer::tests::plan_params_optional_roundtrip_and_range ... ok
+test ai_peer::tests::missing_field_rejected ... ok
+test ai_peer::tests::degrade_lease_fields_validated ... ok
+test points::tests::decode_rejects_unknown_protocol_tag_and_bad_addr ... ok
+test ai_peer::tests::roundtrip_all_fields_required ... ok
+test ai_peer::tests::unknown_field_id_rejected ... ok
+test ai_peer::tests::out_of_range_values_rejected_at_decode ... ok
+test points::tests::decode_rejects_truncated ... ok
+test protocol::tests::b2_mqtt_known_keys_reference_lock ... ok
+test protocol::tests::config_ids_are_subset_of_leaf_namespace ... ok
+test points::tests::decode_positive_roundtrip ... ok
+test protocol::tests::decode_rejects_truncated_and_trailing ... ok
+test protocol::tests::d_rtu_known_keys_reference_lock ... ok
+test protocol::tests::encode_decode_roundtrip_all_fields ... ok
+test points::tests::v1_bundle_falls_back_to_unknown_identity ... ok
+test protocol::tests::encode_rejects_oversized ... ok
+test protocol::tests::known_keys_cover_all_protocol_ids ... ok
+test protocol::tests::protocol_kv_consumer_apply_roundtrip_and_noop ... ok
+test protocol::tests::protocol_kv_consumer_rejects_garbage_payload ... ok
+test protocol::tests::r64_ref_lock_cj188_compile_face_stays_none ... ok
+test protocol::tests::r64_ref_lock_dlt645 ... ok
+test protocol::tests::r64_ref_lock_gbt27930 ... ok
+test protocol::tests::r64_ref_lock_goose ... ok
+test protocol::tests::r64_ref_lock_iec101 ... ok
+test protocol::tests::r64_ref_lock_iec103 ... ok
+test protocol::tests::r64_ref_lock_iec104 ... ok
+test protocol::tests::r64_ref_lock_mms ... ok
+test protocol::tests::r64_ref_lock_modbus_tcp ... ok
+test protocol::tests::r64_ref_lock_sv ... ok
+test protocol::tests::required_keys_delegation_behavior_table ... ok
+test schema::time_gate::tests::time_gate_four_verdicts ... ok
+test protocol::tests::r64_mqtt_optional_keys_now_compiles ... ok
+test protocol::tests::r64_goose_vlan_id_now_compiles ... ok
+test points::tests::unknown_unit_name_rejected ... ok
+test points::tests::v2_identity_and_sources_roundtrip ... ok
+test toml_compile::catalog_compile_tests::rejects_duplicate_point_id ... ok
+test toml_compile::catalog_compile_tests::rejects_point_unknown_asset ... ok
+test toml_compile::catalog_compile_tests::rejects_control_without_readback ... ok
+test toml_compile::catalog_compile_tests::rejects_tombstone_of_alive_asset ... ok
+test toml_compile::catalog_compile_tests::good_catalog_compiles_and_roundtrips ... ok
+test toml_compile::catalog_compile_tests::rejects_switch_edge_without_observation_point ... ok
+test toml_compile::catalog_compile_tests::rejects_dimension_mismatched_conversion ... ok
+test toml_compile::catalog_compile_tests::rejects_feedback_slots_incomplete ... ok
+test toml_compile::catalog_compile_tests::rejects_unknown_unit_name ... ok
+test toml_compile::protocol_config_v46_tests::protocol_compile_accepts_known_keys ... ok
+test toml_compile::catalog_compile_tests::rejects_zero_generation ... ok
+test toml_compile::protocol_config_v46_tests::protocol_compile_rejects_unknown_key ... ok
+test toml_compile::protocol_config_v46_tests::unknown_protocol_id_rejected ... ok
+test toml_compile::security_tests::security_compile_decode_roundtrip ... ok
+test toml_compile::injected_secret_manifest_tests::secret_bearing_covers_every_injected_config ... ok
+test toml_compile::catalog_compile_tests::rejects_island_and_self_loop ... ok
+test toml_compile::security_tests::security_missing_injection_fails_closed ... ok
+test toml_compile::protocol_config_v46_tests::protocol_compile_rejects_missing_required ... ok
+test toml_compile::security_tests::security_toml_plaintext_attempt_rejected ... ok
+test toml_compile::security_tests::security_zero_key_rejected ... ok
+test toml_compile::tests::points_negative_duplicate_point_id ... ok
+test toml_compile::tests::points_negative_bad_numbers_and_enums ... ok
+test toml_compile::tests::points_negative_unknown_field ... ok
+test toml_compile::tests::points_negative_zero_scale ... ok
+test toml_compile::injected_secret_manifest_tests::injected_key_material_is_present_in_payload ... ok
+test toml_compile::tests::points_positive_compile_decode_roundtrip ... ok
+test toml_compile::catalog_compile_tests::production_catalog_payload_fits_single_paged_delivery ... ok
+test toml_compile::catalog_compile_tests::rejects_catalog_payload_over_limit ... ok
+test toml_compile::catalog_compile_tests::rejects_oversized_field_not_truncated ... ok
+test toml_compile::catalog_compile_tests::rejects_too_many_nameplates ... ok
+
+test result: ok. 70 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/bundle.rs (target/debug/deps/bundle-51ffb4639607d40f)
+
+running 18 tests
+test config_generation_orders ... ok
+test negative_unknown_enum_rejected ... ok
+test positive_repo_configs_compile_and_decode ... ok
+test negative_unknown_toml_key_rejected ... ok
+test negative_unknown_field_decoded ... ok
+test negative_duplicate_field_decoded ... ok
+test negative_zero_secret_compile_rejected ... ok
+test negative_signature_mandatory_false_rejected ... ok
+test negative_ota_missing_key_and_zero_key ... ok
+test negative_tampered_payload_detected ... ok
+test negative_wrong_manifest_digest ... ok
+test wire_roundtrip_after_power_loss ... ok
+test schema_mismatch_rejected ... ok
+test negative_bad_signature_rejected ... ok
+test positive_sign_verify_roundtrip ... ok
+test registry_unconsumed_and_missing_entry ... ok
+test registry_apply_two_phase_and_keep_old_on_failure ... ok
+test xtask_flow_sign_then_verify_repo_configs ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+   Doc-tests eneros_config_bundle
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+FEATURE-MATRIX: cargo test -p eneros-tls --features embedded
+   Compiling eneros-protocol-abstract v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/protocol-abstract)
+   Compiling eneros-tls v0.337.0 (/home/ahx/文档/EnerOS/crates/security/tls)
+warning: unused import: `DefaultCipherSuite`
+  --> crates/security/tls/src/factory.rs:28:23
+   |
+28 | use crate::embedded::{DefaultCipherSuite, EmbeddedTlsStream, PkiProvider, VerifyRole};
+   |                       ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `TransportHandle`
+  --> crates/security/tls/src/factory.rs:25:61
+   |
+25 | use eneros_protocol_abstract::transport::{TransportFactory, TransportHandle, TransportSpec};
+   |                                                             ^^^^^^^^^^^^^^^
+
+warning: variable does not need to be mutable
+   --> crates/security/tls/src/factory.rs:124:13
+    |
+124 |         let mut read_buf: &'static mut [u8] = Box::leak(vec![0u8; 16640].into_boxed_slice());
+    |             ----^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> crates/security/tls/src/factory.rs:125:13
+    |
+125 |         let mut write_buf: &'static mut [u8] = Box::leak(vec![0u8; 4096].into_boxed_slice());
+    |             ----^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: function `unwrap_octet_string` is never used
+  --> crates/security/tls/src/embedded.rs:66:4
+   |
+66 | fn unwrap_octet_string(der: &[u8]) -> Option<&[u8]> {
+   |    ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `tlv_len_bytes` is never used
+   --> crates/security/tls/src/embedded.rs:101:4
+    |
+101 | fn tlv_len_bytes(der: &[u8]) -> Option<usize> {
+    |    ^^^^^^^^^^^^^
+
+warning: creating a mutable reference to mutable static
+   --> crates/security/tls/src/target_factory.rs:442:48
+    |
+442 |     let read_buf: &'static mut [u8] = unsafe { &mut TLS_READ_BUF };
+    |                                                ^^^^^^^^^^^^^^^^^ mutable reference to mutable static
+    |
+    = note: mutable references to mutable statics are dangerous; it's undefined behavior if any other pointer to the static is used or if any other reference is created for the static while the mutable reference lives
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/static-mut-references.html>
+    = note: `#[warn(static_mut_refs)]` (part of `#[warn(rust_2024_compatibility)]`) on by default
+help: use `&raw mut` instead to create a raw pointer
+    |
+442 |     let read_buf: &'static mut [u8] = unsafe { &raw mut TLS_READ_BUF };
+    |                                                 +++
+
+warning: creating a mutable reference to mutable static
+   --> crates/security/tls/src/target_factory.rs:443:49
+    |
+443 |     let write_buf: &'static mut [u8] = unsafe { &mut TLS_WRITE_BUF };
+    |                                                 ^^^^^^^^^^^^^^^^^^ mutable reference to mutable static
+    |
+    = note: mutable references to mutable statics are dangerous; it's undefined behavior if any other pointer to the static is used or if any other reference is created for the static while the mutable reference lives
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/static-mut-references.html>
+help: use `&raw mut` instead to create a raw pointer
+    |
+443 |     let write_buf: &'static mut [u8] = unsafe { &raw mut TLS_WRITE_BUF };
+    |                                                  +++
+
+warning: unused import: `TestIdentity`
+   --> crates/security/tls/src/embedded.rs:689:47
+    |
+689 |     use crate::tests_support::{make_identity, TestIdentity};
+    |                                               ^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `DefaultCipherSuite`
+  --> crates/security/tls/src/factory.rs:28:23
+   |
+28 | use crate::embedded::{DefaultCipherSuite, EmbeddedTlsStream, PkiProvider, VerifyRole};
+   |                       ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `eneros_crypto::pki::parser::to_der`
+   --> crates/security/tls/src/target_factory.rs:910:13
+    |
+910 |         use eneros_crypto::pki::parser::to_der;
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `eneros-tls` (lib) generated 8 warnings (run `cargo fix --lib -p eneros-tls` to apply 3 suggestions)
+warning: unused variable: `ca_dn4`
+   --> crates/security/tls/src/target_factory.rs:658:13
+    |
+658 |         let ca_dn4 = eneros_crypto::pki::x509::DistinguishedName::new("eneros-ca");
+    |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_ca_dn4`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `cn` is never read
+  --> crates/security/tls/src/tests_support.rs:22:16
+   |
+18 | pub(crate) struct TestIdentity {
+   |                   ------------ field in this struct
+...
+22 |     pub(crate) cn: String,
+   |                ^^
+
+warning: unused `Result` that must be used
+   --> crates/security/tls/src/target_factory.rs:992:13
+    |
+992 | /             cert_ref
+993 | |                 .entries
+994 | |                 .push(embedded_tls::blocking::CertificateEntryRef::X509(
+995 | |                     &client_der,
+996 | |                 ));
+    | |__________________^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+    = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+992 |             let _ = cert_ref
+    |             +++++++
+
+warning: `eneros-tls` (lib test) generated 13 warnings (7 duplicates) (run `cargo fix --lib -p eneros-tls --tests` to apply 4 suggestions)
+    Finished `test` profile [optimized + debuginfo] target(s) in 1.19s
+     Running unittests src/lib.rs (target/debug/deps/eneros_tls-bc7a2abae2e37e34)
+
+running 19 tests
+test embedded::san_tlv_debug_probe ... ok
+test target_factory::tests::probe_gate_openssl_material ... ignored
+test factory::tests::factory_policy_denied_when_tls_not_allowed ... ok
+test embedded::tests::test_sec1_private_key_parser ... ok
+test target_factory::tests::session_io_clean_timeout_continues_but_record_stall_terminates ... ok
+test embedded::san_tests::san_dns_extraction_roundtrip ... ok
+test embedded::tests::test_client_rejects_forged_cert ... ok
+test factory::tests::factory_rejects_wrong_hostname ... ok
+test embedded::tests::test_client_rejects_wrong_cn ... ok
+test embedded::tests::test_mtls_client_handshake_roundtrip ... ok
+test factory::tests::factory_handshake_roundtrip_and_peer_identity ... ok
+test target_factory::tests::buffer_guard_released_after_close ... ok
+test target_factory::tests::probe_verify_chain_bridge ... ok
+test factory::tests::factory_san_matching_semantics ... ok
+test target_factory::tests::factory_open_handshake_and_roundtrip ... ok
+test target_factory::tests::factory_open_bridges_root_from_leaf_only_chain ... ok
+test target_factory::tests::peer_death_terminates_session_and_reconnect_recovers ... ok
+test target_factory::tests::factory_open_rejects_wrong_name ... ok
+test target_factory::tests::reconnect_retries_after_failed_attempt_until_broker_recovers ... ok
+
+test result: ok. 18 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/anomaly.rs (target/debug/deps/anomaly-2da34b981274dead)
+
+running 6 tests
+test test_anomaly_wrong_san_rejected ... ok
+test test_anomaly_untrusted_self_signed_rejected ... ok
+test test_anomaly_expired_server_cert_rejected ... ok
+test test_anomaly_mtls_client_cert_missing_rejected ... ok
+test test_positive_mtls_with_valid_client_cert ... ok
+test test_positive_valid_server_cert ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/tls_handshake.rs (target/debug/deps/tls_handshake-4a2d5f60755b2e7e)
+
+running 2 tests
+test tls13_handshake_and_echo_roundtrip ... ok
+test tls13_mtls_handshake ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests eneros_tls
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+{
+  "schema": "eneros.qa-gate.v1",
+  "qa_id": "feature-matrix",
+  "result": "PASS",
+  "summary": {
+    "matrix_size": "9",
+    "purpose": "R-64.c feature-gate discipline (blueprint 66 WP-66.4.1)",
+    "workspace_crates_scanned": "168"
+  },
+  "violations": []
+}

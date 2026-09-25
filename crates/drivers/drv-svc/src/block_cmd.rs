@@ -1,14 +1,16 @@
 //! 块设备命令面（蓝图 39 WP-39.12：svc-storage 的真实命令集）。
 //!
 //! 信封 payload 有界（PAYLOAD_CAP=461，68.3 扩容）——本命令面承载
-//! lba 寻址的定长读/写（含历史 52B 小载荷语义，上限放宽不改变旧调用
-//! 方行为）；整块数据通路（共享 DMA 窗口 + 设备句柄移交）随蓝图 40 的
+//! **字节偏移**寻址的定长读/写（含历史 52B 小载荷语义，上限放宽不改变
+//! 旧调用方行为；wire 字段历史名 `lba`，语义 = `offset_bytes`——单位
+//! 契约见 [`BlockBackend`]；boot 面扇区语义只在 [`InstallBackend`]）；
+//! 整块数据通路（共享 DMA 窗口 + 设备句柄移交）随蓝图 40 的
 //! EIPC 域接通。命令以 `payload[0]` 子操作码编码：
 //!
 //! | 子操作码 | 请求 payload | 响应 payload |
 //! |---|---|---|
-//! | `BLK_CMD_READ` | lba(8) + count(4) | data(≤[`BLK_READ_MAX`]) |
-//! | `BLK_CMD_WRITE` | lba(8) + data(≤[`BLK_WRITE_MAX`]) | — |
+//! | `BLK_CMD_READ` | offset(8, 字节) + count(4) | data(≤[`BLK_READ_MAX`]) |
+//! | `BLK_CMD_WRITE` | offset(8, 字节) + data(≤[`BLK_WRITE_MAX`]) | — |
 //! | `BLK_CMD_FLUSH` | — | — |
 //! | `BLK_CMD_HEALTH` | — | block_count(8) + block_size(4) + health(1) |
 //!
@@ -72,9 +74,10 @@ pub const BLK_WRITE_MAX: usize = super::runtime::PAYLOAD_CAP - 9;
 /// **单位契约（73 批A C9）**：本 trait 的 `offset_bytes` = **字节偏移**
 /// ——数据面语义，与 2/3 实现（VirtioBlkBackend/RamBackend）及 39 命令
 /// 面一致。boot 面（512B 扇区 LBA）一律走 [`InstallBackend::read_sectors`]
-/// / [`InstallBackend::write_sectors`]——继承同名方法承载两种单位的
-/// 歧义到此为止（BootSlotBackend 的本 trait impl 仅因 supertrait 约束
-/// 保留，见其 doc）。
+/// / [`InstallBackend::write_sectors`]——同名方法不承载两种单位
+///（[`InstallBackend`] 已不带本 trait 约束：boot 面实现不再被迫提供
+/// 数据面保留体，BootSlotBackend 塞进 [`StorageService::attach`] 的
+/// 静默 ×512 陷阱从「约定不发生」变「编译不可表示」）。
 pub trait BlockBackend {
     /// 读 `buf.len()` 字节到 `offset_bytes` 起（越界 → Err）。
     fn read(&mut self, offset_bytes: u64, buf: &mut [u8]) -> Result<(), ()>;
@@ -90,8 +93,8 @@ pub trait BlockBackend {
 ///
 /// | 子码 | 请求 payload | 响应 payload |
 /// |---|---|---|
-/// | `BLK_BOOT_READ` | lba(8) + count(4) | data(≤[`BLK_READ_MAX`]) |
-/// | `BLK_BOOT_INSTALL_WRITE` | lba(8) + data(≤[`BLK_WRITE_MAX`]) | — |
+/// | `BLK_BOOT_READ` | lba(8, 扇区) + count(4, 字节) | data(≤[`BLK_READ_MAX`]) |
+/// | `BLK_BOOT_INSTALL_WRITE` | lba(8, 扇区) + data(≤[`BLK_WRITE_MAX`], 字节) | — |
 /// | `BLK_BOOT_FLUSH` | — | — |
 /// | `BLK_BOOT_GUARD` | — | inact_start(8) + inact_lbas(8) + bc_start(8) + bc_lbas(8) + 保留(8, 恒零) |
 ///
@@ -269,14 +272,16 @@ pub fn handle_block_cmd(
                 resp.status = ST_INVALID;
                 return;
             }
-            let lba = u64::from_le_bytes(req.payload[1..9].try_into().unwrap());
+            // wire 字段历史名 lba，数据面语义 = 字节偏移（73 批A C9 单位
+            // 契约；与 BlockBackend::read 形参同名对齐）。
+            let offset_bytes = u64::from_le_bytes(req.payload[1..9].try_into().unwrap());
             let count = u32::from_le_bytes(req.payload[9..13].try_into().unwrap()) as usize;
             if count == 0 || count > BLK_READ_MAX {
                 resp.status = ST_INVALID;
                 return;
             }
             let mut buf = [0u8; BLK_READ_MAX];
-            match backend.read(lba, &mut buf[..count]) {
+            match backend.read(offset_bytes, &mut buf[..count]) {
                 Ok(()) => {
                     resp.status = ST_OK;
                     resp.payload[..count].copy_from_slice(&buf[..count]);
@@ -292,13 +297,13 @@ pub fn handle_block_cmd(
                 resp.status = ST_INVALID;
                 return;
             }
-            let lba = u64::from_le_bytes(req.payload[1..9].try_into().unwrap());
+            let offset_bytes = u64::from_le_bytes(req.payload[1..9].try_into().unwrap());
             let data_len = (req.payload_len - 9) as usize;
             if data_len == 0 || data_len > BLK_WRITE_MAX {
                 resp.status = ST_INVALID;
                 return;
             }
-            match backend.write(lba, &req.payload[9..9 + data_len]) {
+            match backend.write(offset_bytes, &req.payload[9..9 + data_len]) {
                 Ok(()) => {
                     resp.status = ST_OK;
                 }
@@ -327,7 +332,14 @@ pub fn handle_block_cmd(
 
 /// 70.7（WP-70.7.2）：启动盘受限安装面（读全域 + 写守卫范围强制）。
 /// 宿主测试以 mock 实现；target 实现 = `blk_backend::BootSlotBackend`。
-pub trait InstallBackend: BlockBackend {
+///
+/// **不带 [`BlockBackend`] 约束**（2026-09-24 单位契约收口）：经
+/// `dyn InstallBackend` 实际消费的数据面方法只有 `flush`——supertrait
+/// 只为它强加了整张数据面 interface，迫使每个安装面实现写一套同名
+/// 异单位保留体（数据面 `read`=字节 / 保留体 `read`=扇区，塞进
+/// [`StorageService::attach`] 即静默 ×512）。现 `flush` 为本 trait
+/// 自有方法，双 trait 互不隶属；boot 面与数据面的分派槽位互不可达。
+pub trait InstallBackend {
     /// 安装区间（具名承载；单位 = 512B 扇区 LBA / 扇区数）。字段语义：
     /// `inactive_start_lba`/`inactive_lbas` = 非运行 BOOT 槽（可写安装
     /// 目标，身份缺失时 0/0 = 写面关闭）；`bootctrl_start_lba`/
@@ -349,6 +361,12 @@ pub trait InstallBackend: BlockBackend {
     /// 解析、本 boot 内冻结）。None = 身份缺失/无效 ⇒ 确认面拒绝、安装
     /// 写面已由空区间整体关闭。
     fn running_identity(&self) -> Option<crate::boot_guard::RunningIdentity>;
+
+    /// 安装面 flush（事务持久化承诺：bootctrl 双副本写后必须落设备——
+    /// `BootInstall` 四事务的提交点）。原经 supertrait 借用数据面
+    /// `BlockBackend::flush`；supertrait 拆除后为本 trait 自有方法，
+    /// 语义不变（生产实现仍下沉同一驱动 FLUSH 路径）。
+    fn flush(&mut self) -> Result<(), ()>;
 
     /// 安装写范围守卫（WP-70.7.2 核心不变量：非活动槽 ∪ BOOTCTRL 之外
     /// 零写）。**单位契约**：`lba` = 512B 扇区；`len_bytes` = 写入字节数
@@ -635,23 +653,9 @@ mod tests {
     }
 
     /// 启动盘安装面测试替身（`install_ranges` 与生产同源 = boot_disk 介质图）。
+    /// supertrait 拆除后只实现 [`InstallBackend`]——数据面保留体不复存在。
     struct InstallFace {
         ram: RamBackend,
-    }
-
-    impl BlockBackend for InstallFace {
-        fn read(&mut self, offset_bytes: u64, buf: &mut [u8]) -> Result<(), ()> {
-            self.ram.read(offset_bytes, buf)
-        }
-        fn write(&mut self, offset_bytes: u64, data: &[u8]) -> Result<(), ()> {
-            self.ram.write(offset_bytes, data)
-        }
-        fn flush(&mut self) -> Result<(), ()> {
-            self.ram.flush()
-        }
-        fn health(&self) -> (u64, u32, u8) {
-            self.ram.health()
-        }
     }
 
     impl InstallBackend for InstallFace {
@@ -667,15 +671,20 @@ mod tests {
             }
         }
 
-        /// boot 面单位（扇区 LBA）——扇区→字节换算在此（RamBackend 是
-        /// 字节平面；73 批A C9 后测试替身与生产同单位口径）。
+        /// boot 面单位（扇区 LBA）——扇区→字节换算单源 =
+        /// `boot_guard::sector_byte_offset`（RamBackend 是字节平面；73 批A
+        /// C9 后测试替身与生产同单位口径）。
         fn read_sectors(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
-            let off = lba.checked_mul(512).ok_or(())?;
+            let off = crate::boot_guard::sector_byte_offset(lba).ok_or(())?;
             self.ram.read(off, buf)
         }
         fn write_sectors(&mut self, lba: u64, data: &[u8]) -> Result<(), ()> {
-            let off = lba.checked_mul(512).ok_or(())?;
+            let off = crate::boot_guard::sector_byte_offset(lba).ok_or(())?;
             self.ram.write(off, data)
+        }
+
+        fn flush(&mut self) -> Result<(), ()> {
+            self.ram.flush()
         }
 
         /// F70-02：测试替身 = A 槽运行身份（与 install_ranges 的非活动=B
@@ -699,11 +708,11 @@ mod tests {
     fn boot_read_rejects_zero_and_over_cap_count_instead_of_truncating() {
         // 容量按扇区平面计（read_sectors/write_sectors ×512 → 字节）：
         // 40000 扇区 ≈ 20.5MB，覆盖 BOOTCTRL 基址 18432（73 批A C9 后
-        // 测试替身与生产同单位口径）。
-        let mut service: StorageService<InstallFace> = StorageService::new();
-        service.attach(InstallFace {
-            ram: RamBackend::new(40000 * 512),
-        });
+        // 测试替身与生产同单位口径）。数据面槽位用 RamBackend 占位
+        //（本测只走 boot 子码——supertrait 拆除后 InstallFace 不再可
+        // 兼任数据面后端，双面装配各自诚实）。
+        let mut service: StorageService<RamBackend> = StorageService::new();
+        service.attach(RamBackend::new(64));
         service.attach_install(std::boxed::Box::new(InstallFace {
             ram: RamBackend::new(40000 * 512),
         }));
@@ -757,7 +766,7 @@ mod tests {
     /// 具名化（P1）前后必须原样绿，wire 冻结由此执行。
     #[test]
     fn blk_boot_guard_response_bytes_golden() {
-        let mut service: StorageService<InstallFace> = StorageService::new();
+        let mut service: StorageService<RamBackend> = StorageService::new();
         service.attach_install(std::boxed::Box::new(InstallFace {
             ram: RamBackend::new(1024),
         }));
@@ -797,6 +806,40 @@ mod tests {
                 !src.contains(needle.as_str()),
                 "{name}: install_ranges 不得回归裸四元组签名（73 批A S1：字段名进类型）"
             );
+        }
+    }
+
+    /// 2026-09-24 单位契约收口（supertrait 拆除）防回归锁：三个具名文件
+    /// 不得再现（a）`InstallBackend` 的数据面 trait 约束；（b）任何 boot 面
+    /// 类型的「数据面保留体」impl——同名 read/write 双单位陷阱（run15
+    /// 实弹：扇区值直传数据面 /512 错块）从「约定不发生」变「编译不可
+    /// 表示」，本锁把「不再可表示」本身钉住。禁令针在运行时拼装（源码
+    /// 字面不含完整串——include 自身不会自匹配）。
+    #[test]
+    fn install_backend_supertrait_and_retention_bodies_regression_lock() {
+        let supertrait_needle: std::string::String =
+            ["InstallBackend", ": Block", "Backend"].concat();
+        let retention_needles: [std::string::String; 3] = [
+            ["BlockBackend for Boot", "SlotBackend"].concat(),
+            ["BlockBackend for Install", "Face"].concat(),
+            ["BlockBackend for Mock", "Face"].concat(),
+        ];
+        let files: [(&str, &str); 3] = [
+            ("block_cmd.rs", include_str!("block_cmd.rs")),
+            ("blk_backend.rs", include_str!("blk_backend.rs")),
+            ("boot_install.rs", include_str!("boot_install.rs")),
+        ];
+        for (name, src) in files {
+            assert!(
+                !src.contains(supertrait_needle.as_str()),
+                "{name}: InstallBackend 不得回归数据面 trait 约束（2026-09-24 拆除）"
+            );
+            for needle in &retention_needles {
+                assert!(
+                    !src.contains(needle.as_str()),
+                    "{name}: 不得再现 boot 面类型的数据面保留体 impl（同名双单位陷阱）"
+                );
+            }
         }
     }
 }

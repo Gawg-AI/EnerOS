@@ -1,0 +1,42 @@
+{
+  "schema": "eneros.gate-run-record.v1",
+  "case_id": "CORE-70-R05",
+  "gate_id": "VOL70.4",
+  "command": "tools/run70-vol4-gate.sh（DL=1200）",
+  "exit_code": 0,
+  "recorded_at": "2026-09-20T02:35:48Z",
+  "ran_artifact_sha256": "6e44ade688c80f7c7fa24c60de07a30dd2de24c562cbae1d92ea98c1a19d2b69",
+  "ran_artifact_sha256_source": "evidence/70/70.4/image.sha256",
+  "raw_log": {
+    "name": "vol4.log",
+    "bytes": 3560,
+    "sha256": "6abb438cc56db09363e61aea9fdeedb9a65a692fd840779663fda51415469e57",
+    "resident": "handoff-bundle",
+    "note": ".gitignore `*.log`：原始日志随移交包分发，本记录绑定其摘要"
+  },
+  "verdict_lines": [
+    "[✓][R1] 零 PANIC / 零分配失败",
+    "[✓][R2] 段1 used=true（11）",
+    "[✓][R3] 锚1 后目标侧新连接 CONNACK=3",
+    "[✓][R3] 锚1 后新订阅 SUBSCRIBE=5",
+    "[✓][R3] 锚1 后授权控制进展 Committed=9",
+    "[✓][R3] 锚1 后设备采集回读 modbus ACQ=579",
+    "[✓][R5] LEASE-ARMED（长断链武装可观测）",
+    "[✓][R5] 锚2 后 MQTT 面重连 CONNACK=1",
+    "[✓][R5] 锚2 后订阅恢复 SUBSCRIBE=1",
+    "[✓][R5] 锚2 后降级态持续可观测 used=false（1907）",
+    "[✓][R5] DEGRADE-OBS 武装观测行=1915（uses 倒计时=退出路径可见）",
+    "[✓][R6] 服务编队 READY（无服务静默死亡）",
+    "[✓][R6] 尾部控制进展（末轮在日志 99% 处，总 1553681 行）",
+    "[✓][R6] 尾部设备回读（尾 3 万行 ACQ=34）",
+    "=== VOL70.4 GATE: PASS ==="
+  ],
+  "verdict": "PASS",
+  "candidate": {
+    "candidate_id": "1c53b872613fa7fa5e9846ed7befbb31ba4372b230c9c75b4e6f968891cda493",
+    "source_commit": "a65f00aeac23bc4e7ef3c29146b942cb834d895f",
+    "dirty_tree_digest": "b0a415b37494a90e39aa8ae99c3bfbcc2b49d6a4cec3f93f691eeeb6cfb1f097",
+    "artifact_sha256": "d1ae153eeb21b021d6257ca1229fe2e87be250c40057fbd976bb3f5683a7012c",
+    "profile": "qemu-test"
+  }
+}

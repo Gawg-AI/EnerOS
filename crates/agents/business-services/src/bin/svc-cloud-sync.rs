@@ -100,14 +100,14 @@ impl eneros_control_services::ControlServiceHandler for CloudHandler {
     fn handle(&mut self, req: &[u8], resp: &mut alloc::vec::Vec<u8>, _now_ms: u64) -> bool {
         use eneros_business_services::cloud_sync::*;
         const MAGIC: &[u8; 4] = b"CLD1";
-        if req.len() < 5 || &req[..4] != MAGIC {
-            resp.extend_from_slice(b"ERR:proto");
+        if eneros_business_services::svc_wire::parse_envelope(MAGIC, req).is_none() {
+            resp.extend_from_slice(eneros_business_services::svc_wire::ERR_PROTO);
             return false;
         }
         match req[4] {
             0x01 => {
                 if req.len() < 5 + 56 {
-                    resp.extend_from_slice(b"ERR:len");
+                    resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
                     return false;
                 }
                 let p = &req[5..];
@@ -117,7 +117,7 @@ impl eneros_control_services::ControlServiceHandler for CloudHandler {
                 hash.copy_from_slice(&p[21..53]);
                 let plen = u16::from_le_bytes(p[53..55].try_into().unwrap()) as usize;
                 if 5 + 55 + plen > req.len() {
-                    resp.extend_from_slice(b"ERR:len");
+                    resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
                     return false;
                 }
                 let item = UploadItem {
@@ -141,7 +141,7 @@ impl eneros_control_services::ControlServiceHandler for CloudHandler {
             }
             0x02 => {
                 if req.len() != 9 {
-                    resp.extend_from_slice(b"ERR:len");
+                    resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
                     return false;
                 }
                 let batch = u32::from_le_bytes(req[5..9].try_into().unwrap()) as usize;
@@ -169,7 +169,7 @@ impl eneros_control_services::ControlServiceHandler for CloudHandler {
                 }
             },
             _ => {
-                resp.extend_from_slice(b"ERR:cmd");
+                resp.extend_from_slice(eneros_business_services::svc_wire::ERR_CMD);
                 false
             }
         }

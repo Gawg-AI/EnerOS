@@ -1,0 +1,44 @@
+{
+  "schema": "eneros.gate-run-record.v1",
+  "case_id": "CORE-70-R08",
+  "gate_id": "VOL70.7",
+  "command": "tools/run70-vol7-gate.sh（DL=700/DL_T2=420）",
+  "exit_code": 0,
+  "recorded_at": "2026-09-20T02:33:39Z",
+  "ran_artifact_sha256": "345e2b85f42bc19d8305eb28999217be000010cb13b12424ac3a43f17c8748ae",
+  "ran_artifact_sha256_source": "evidence/70/70.7/combined.sha256",
+  "raw_log": {
+    "name": "vol7.log",
+    "bytes": 4722,
+    "sha256": "fd8a5cc9daa8815fee4f8980c97a9cdf9a5b2996bd2d5e00eeb0540cb75bffc7",
+    "resident": "handoff-bundle",
+    "note": ".gitignore `*.log`：原始日志随移交包分发，本记录绑定其摘要"
+  },
+  "verdict_lines": [
+    "[✓][R1] 零 PANIC / 零分配失败",
+    "[✓][R2] PRODUCT-READY 达成",
+    "[✓][R3] BOOT 守卫查询（0x0A）",
+    "[✓][R4] BOOT trial 事务提交（bootctrl 双副本+flush）",
+    "[✓][R5] 零 PANIC / 零分配失败",
+    "[✓][R6] PRODUCT-READY 达成",
+    "[✓][R7] boot-evidence slot=B（boot-manager 选择非活动槽）",
+    "[✓][R8] boot_reason=UPDATE_TRIAL（跨重启试启动语义）",
+    "[✓][R9] BOOT-CONFIRM 自适应确认（slot=B → successful；最后一次试启的运行槽确认必须成功 = S1 红转绿）",
+    "[✓][R10] 确认持久化（序列推进）",
+    "[✓][R11] BOOT-IDENTITY slot=B（capsule→root 只读身份页→svc-storage 守卫贯通）",
+    "[✓][R12] 安装面非运行槽=BOOT_A（守卫按本次运行槽派生，非 select()）",
+    "[✓][R13] 零 PANIC / 零分配失败",
+    "[✓][R14] boot-evidence slot=B（确认后不误回退——successful B 仍被选）",
+    "[✓][R15] BOOT-IDENTITY slot=B（再启后身份页仍贯通）",
+    "[✓][R16] 同盘再启载荷身份不变（manifest_sha256 一致）",
+    "VOL70.7-GATE: PASS"
+  ],
+  "verdict": "PASS",
+  "candidate": {
+    "candidate_id": "1c53b872613fa7fa5e9846ed7befbb31ba4372b230c9c75b4e6f968891cda493",
+    "source_commit": "a65f00aeac23bc4e7ef3c29146b942cb834d895f",
+    "dirty_tree_digest": "b0a415b37494a90e39aa8ae99c3bfbcc2b49d6a4cec3f93f691eeeb6cfb1f097",
+    "artifact_sha256": "d1ae153eeb21b021d6257ca1229fe2e87be250c40057fbd976bb3f5683a7012c",
+    "profile": "qemu-test"
+  }
+}

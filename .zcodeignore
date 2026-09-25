@@ -1,0 +1,216 @@
+# ============================================================
+# EnerOS / Power Native Agent OS — .gitignore
+# 依据：开发管理记忆.md §三 垃圾文件与缓存治理
+# ============================================================
+
+# ===== 蓝图文档（仅本地保留，不入库）=====
+# 政策依据 5aed380（2026-08-29 GitHub 收口）：蓝图 84 份 md 与 docs/delivery 属过程产物，
+# 由本文件末尾「本地保留」块的 `蓝图/` 整目录唯一排除（原先此处的 !蓝图/*.md 已失效并删除）。
+# 该目录不受 git 保护，盘外副本见 ~/文档/eneros-local-backups/（同目录 README 有刷新脚本）。
+# ===== Rust / Cargo 构建产物 =====
+target/
+target-test-*/
+ci/target-check/
+**/*.rs.bk
+*.rs.bk
+rustc-ice-*.txt
+
+# ===== seL4 构建产物 =====
+build/
+sel4-build/
+sel4_kernel/
+seL4/
+
+# ===== 二进制镜像 / 编译产物 =====
+*.elf
+*.bin
+*.img
+*.hex
+*.map
+*.lst
+
+# ===== 设备树二进制（源文件 .dts/.dtsi 入仓） =====
+*.dtb
+# WP-44 Exit：root-task driver_probe 测试 include_bytes! 此夹具（克隆构建
+# 必需）；违例 .gitignore 强制跟踪（小型确定性测试输入）。
+!crates/hal/board/tests/fixtures/qemu-virt.dtb
+
+# ===== QEMU 产物 =====
+qemu-output/
+*.qcow2
+*.img.qcow2
+qemu-serial.log
+
+# ===== 模型文件（用 Git LFS 或外部存储） =====
+*.gguf
+*.ggml
+models/*.bin
+*.onnx
+*.pt
+*.pth
+*.safetensors
+
+# ===== IDE 缓存 =====
+.idea/
+.vscode/
+.trae/cache/
+.trae/documents/
+.trae/index/
+.trae/tmp/
+*.code-workspace
+.project
+.classpath
+.settings/
+
+# ===== 编辑器临时文件 =====
+*.swp
+*.swo
+*~
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# ===== 操作系统垃圾 =====
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# ===== 密钥 / 凭证 / 敏感文件 =====
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cert
+secrets/
+.env
+.env.*
+!.env.example
+*.pem.bak
+id_rsa
+id_rsa.pub
+known_hosts
+
+# ===== 日志 =====
+*.log
+logs/
+log/
+
+# ===== 测试覆盖率 / 性能分析产物 =====
+tarpaulin-report.html
+tarpaulin-report.json
+coverage/
+*.lcov
+*.profdata
+*.profraw
+perf.data
+perf.data.*
+*.perf
+
+# ===== Python 缓存（工具脚本用） =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# ===== Node.js（若用文档工具） =====
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ===== Cargo.lock 策略 =====
+# 本项目是二进制 crate，Cargo.lock 需入仓
+# （如需忽略库 crate 的 lock，在子目录单独配置）
+
+# ===== 本地开发配置（不入仓） =====
+configs/local/
+configs/*.local.toml
+configs/*.local.json
+Makefile.local
+
+# ===== WSL / 虚拟机产物 =====
+*.vhdx
+*.vmdk
+*.vdi
+
+# ===== 调试产物 =====
+core
+core.*
+*.core
+dump.*
+gdb-output.txt
+
+# ===== 本地分析/临时产物（不入仓） =====
+.clippy-*.txt
+.codebuddy/
+.redox-research/
+.qoderignore
+
+# ===== 第三方源码仓库（本地获取，不入仓） =====
+third_party/highs-*/
+third_party/llama.cpp/
+
+# WP-44.5：临时产物与归档
+archive/scratch-*/
+*.rar
+
+# 47（WP-47.3 私钥出仓）：本地密钥目录（永不入库；生成见 tools/gen-local-keys.sh）
+product/security/keys-local/
+product/tls/
+product/station/
+
+# 介质不入库纪律：evidence 下 QEMU 磁盘镜像等 raw 介质留在本地不入仓
+# （GitHub 单文件 100MiB 硬限；128MiB evidence/37 镜像已从未推送历史剥离，2026-08-29）
+evidence/**/*.raw
+# 61 复查 fixverify：注入逐请求 transcript 达介质级体量（四份共 ~130MB）——
+# manifest + CHECKSUMS.sha256 入库可校验，transcript 本地保留（2026-08-30）
+evidence/61/phase0-fixverify/*.modbus.transcript.jsonl
+
+# 过程产物与本地工具数据：本地保留，不上传（2026-08-29 GitHub 收口，677 文件已从历史剥离）
+.reasonix/
+.trae/
+蓝图/
+docs/delivery/
+archive/
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+bower_components/
+jspm_packages/
+site-packages/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）

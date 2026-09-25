@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-bd0f1f9025ac",
+  "run_id": "run-18d6e6fb205c9230",
+  "nonce": "18d6e6fb205c9714",
+  "test_id": "CORE-70-R05",
+  "scope": "INTEROP",
+  "started_at": "2026-09-20T02:37:48Z",
+  "ended_at": "2026-09-20T02:37:48Z",
+  "source_commit": "a65f00aeac23bc4e7ef3c29146b942cb834d895f",
+  "dirty_tree_digest": "b5639fd032405b2680bdc44d8f0bd31fdbf72b134bcb21a13d3a9ea93b7e8e23",
+  "product_manifest_digest": "3c086bef5ddd90fb7c97a40e62bdb05c82d06e3dab1224f3bf4a6848a4661513",
+  "profile_digest": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6",
+  "artifact_sha256": "d1ae153eeb21b021d6257ca1229fe2e87be250c40057fbd976bb3f5683a7012c",
+  "toolchain_digest": "b0e2970b5185a2a1cc5bc01ca66815684f1bbf57def3ada089f295bd6e009e1b",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol4-gate.sh（DL=1200）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "2134357992c9016b7a5916d80edb20ee062269d3f9484a035a523039ee179cc4"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-test/product-manifest.normalized.json",
+      "sha256": "3c086bef5ddd90fb7c97a40e62bdb05c82d06e3dab1224f3bf4a6848a4661513"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-test.json",
+      "sha256": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "broker/peer 故障恢复：锚1 后目标侧新连接+新订阅、锚2 后 MQTT 面重连+订阅恢复、READY+尾部控制进展+尾部设备回读；段1 used=true/ARMED/提交链"
+  },
+  "positive_results": [
+    {
+      "id": "recovery",
+      "status": "PASS",
+      "detail": "R1 零 PANIC ✓；R3 锚1 后 CONNACK=2/SUBSCRIBE=2 ✓；R5 锚2 后重连 CONNACK=1/订阅恢复 ✓；R6 编队 READY+尾部控制进展(末轮 97%)+尾部回读 ACQ=44 ✓；串口 dispatch=Committed=94"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "synth",
+      "status": "FAIL",
+      "detail": "R2 段1 used=true 缺失、R5 LEASE-ARMED 缺失——真机制面=提案链激活条件未满足（AI worker TickPolicy/快照/lease armed 前置；见 REG-70.15-R09R10-GATE-DESIGN 前置调查）；附：判据器 r1=0 锚缺陷（REG-70.15-VOL4-R3-ANCHOR-ZERO）"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/100f32478852f65ca3e102f33989b7c685d73b97296b7fe0ca63cda103f4a1e8/CORE-70-R05.0d961a0ecc89fbd6.run-record.json",
+      "sha256": "0d961a0ecc89fbd665826d7e281acc9d432825ffb88527b4b1d315651c32b393"
+    }
+  ],
+  "signer": "dev",
+  "signature": "c672f26503580878c3a02aab98f777e24eac632b94c9e84db990b445bf736f050c835479a4c147668bfd32fd2b1e06949b6247ded3c8203d33f4eaa9d0f01a06"
+}

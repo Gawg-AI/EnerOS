@@ -1,0 +1,9 @@
+[selftest] PASS 正例：全部 intent 获外部写+读回证明
+[selftest] PASS 正例：绑定写按资产分布
+[selftest] PASS RR2：Q-only 事务不得证明 P（proven=0）
+[selftest] PASS RR2：Q-only 绑定写计数为 0
+[selftest] PASS 混入他计划事务不借用
+[selftest] PASS 写前读不证明
+[selftest] PASS 同一读至多证明一个 intent
+[selftest] PASS 历史形态（无绑定锚）拒绝 exit 2
+[selftest] all PASS

@@ -1,0 +1,4 @@
+r10_plan_accounting.py: rc=0, stdout=12 0 12 0 0 12 12, stderr=
+r10_readback_oracle.py: rc=0, stdout=12, stderr=
+r10_write_spread.py: rc=0, stdout=4 21 4 21 4 21, stderr=
+Parent A4b evaluates Q-only verified=12 >= P unique Applied=12, so it passes despite P readback=1.0 versus Q external value=99.

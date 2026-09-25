@@ -18,6 +18,9 @@
 # ============================================================
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# 73 批C：判据器自举——门先验自己的判据器，再用它（S4，同 vol5/r10-held）。
+python3 "$ROOT/tools/criterion.py" --selftest >/dev/null || {
+  echo "criterion.py selftest FAIL"; exit 9; }
 cd "$ROOT"
 source tools/gate-env.sh
 
@@ -174,7 +177,9 @@ cp "$S" "$EVROOT/t1.qemu-serial.log" 2>/dev/null || true
 
 # ---------- 窗T-1 判据 ----------
 say "=== 段2 判据（窗T-1）==="
-check R1 "零 PANIC / 零分配失败" bash -c "! grep -aqcE 'PANIC|memory allocation of' '$EVROOT/t1.qemu-serial.log'"
+python3 "$ROOT/tools/criterion.py" check PANIC-SCAN \
+  --echo-ok "[✓][R1] 零 PANIC / 零分配失败" --echo-fail "[✗][R1] 零 PANIC / 零分配失败" \
+  "$EVROOT/t1.qemu-serial.log" || FAIL=1
 check R2 "PRODUCT-READY 达成" bash -c "grep -aq 'PRODUCT-READY: true' '$EVROOT/t1.qemu-serial.log'"
 check R3 "BOOT 守卫查询（0x0A）" bash -c "grep -aq 'BOOT-GUARD: inactive_lba=' '$EVROOT/t1.qemu-serial.log'"
 check R4 "BOOT trial 事务提交（bootctrl 双副本+flush）" bash -c "grep -aq 'BOOT-TRIAL: tx committed seq=' '$EVROOT/t1.qemu-serial.log'"
@@ -226,7 +231,9 @@ cp "$S2" "$EVROOT/t2.qemu-serial.log" 2>/dev/null || true
 
 # ---------- 窗T-2 判据 ----------
 say "=== 段3 判据（窗T-2）==="
-check R5 "零 PANIC / 零分配失败" bash -c "! grep -aqcE 'PANIC|memory allocation of' '$EVROOT/t2.qemu-serial.log'"
+python3 "$ROOT/tools/criterion.py" check PANIC-SCAN \
+  --echo-ok "[✓][R5] 零 PANIC / 零分配失败" --echo-fail "[✗][R5] 零 PANIC / 零分配失败" \
+  "$EVROOT/t2.qemu-serial.log" || FAIL=1
 check R6 "PRODUCT-READY 达成" bash -c "grep -aq 'PRODUCT-READY: true' '$EVROOT/t2.qemu-serial.log'"
 check R7 "boot-evidence slot=B（boot-manager 选择非活动槽）" bash -c "grep -aq '\"schema\":\"eneros.boot-evidence.v1\",\"result\":\"PASS\",\"slot\":\"B\"' '$EVROOT/t2.qemu-serial.log'"
 check R8 "boot_reason=UPDATE_TRIAL（跨重启试启动语义）" bash -c "grep -aq 'UPDATE_TRIAL' '$EVROOT/t2.qemu-serial.log'"
@@ -267,7 +274,9 @@ cp "$S3" "$EVROOT/t3.qemu-serial.log" 2>/dev/null || true
 
 # ---------- 窗T-3 判据（B07）----------
 say "=== 段4 判据（窗T-3）==="
-check R13 "零 PANIC / 零分配失败" bash -c "! grep -aqcE 'PANIC|memory allocation of' '$EVROOT/t3.qemu-serial.log'"
+python3 "$ROOT/tools/criterion.py" check PANIC-SCAN \
+  --echo-ok "[✓][R13] 零 PANIC / 零分配失败" --echo-fail "[✗][R13] 零 PANIC / 零分配失败" \
+  "$EVROOT/t3.qemu-serial.log" || FAIL=1
 check R14 "boot-evidence slot=B（确认后不误回退——successful B 仍被选）" bash -c "grep -aq '\"schema\":\"eneros.boot-evidence.v1\",\"result\":\"PASS\",\"slot\":\"B\"' '$EVROOT/t3.qemu-serial.log'"
 check R15 "BOOT-IDENTITY slot=B（再启后身份页仍贯通）" bash -c "grep -aq '\[svc-storage\] BOOT-IDENTITY: slot=B' '$EVROOT/t3.qemu-serial.log'"
 # 实际载荷身份不变：T-2 与 T-3 的 boot-evidence manifest_sha256 相同。

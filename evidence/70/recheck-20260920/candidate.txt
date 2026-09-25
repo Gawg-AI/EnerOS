@@ -1,0 +1,10 @@
+   Compiling eneros-xtask v0.0.0 (/tmp/eneros70-candidate-recheck-oc4e_hdj/xtask)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.27s
+     Running unittests src/main.rs (/tmp/eneros70-review-isolated/xtask/target/debug/deps/eneros_xtask-7f10f876a7b98e70)
+
+running 2 tests
+test evidence_chain::tests::recheck70_malformed_pass_token_is_not_terminal_pass ... ok
+test evidence_chain::tests::recheck70_subgate_cannot_prove_parent_required_case ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 202 filtered out; finished in 0.04s
+

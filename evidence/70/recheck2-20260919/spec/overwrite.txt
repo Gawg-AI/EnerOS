@@ -1,0 +1,1 @@
+write(1), overwrite(9), read(1): proven=1 (expected 0 due to overwritten ambiguous effect)

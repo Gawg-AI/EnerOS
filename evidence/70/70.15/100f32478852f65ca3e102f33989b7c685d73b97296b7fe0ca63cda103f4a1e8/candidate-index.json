@@ -1,0 +1,107 @@
+{
+  "schema": "eneros.candidate-evidence.v1",
+  "matrix_id": "core-70",
+  "candidate_id": "100f32478852f65ca3e102f33989b7c685d73b97296b7fe0ca63cda103f4a1e8",
+  "source_commit": "a65f00aeac23bc4e7ef3c29146b942cb834d895f",
+  "dirty_tree_digest": "b5639fd032405b2680bdc44d8f0bd31fdbf72b134bcb21a13d3a9ea93b7e8e23",
+  "toolchain_digest": "b0e2970b5185a2a1cc5bc01ca66815684f1bbf57def3ada089f295bd6e009e1b",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "artifacts": [
+    {
+      "name": "qemu-test",
+      "profile": "qemu-test",
+      "path": "target/eneros/artifacts/qemu-test/eneros-qemu-test.raw",
+      "sha256": "d1ae153eeb21b021d6257ca1229fe2e87be250c40057fbd976bb3f5683a7012c"
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "CORE-70-R01",
+      "artifact": "qemu-test",
+      "envelope": "evidence/70/70.15/100f32478852f65ca3e102f33989b7c685d73b97296b7fe0ca63cda103f4a1e8/CORE-70-R01.c086a864022a3e94.envelope.json",
+      "envelope_sha256": "ef2ba9655a30ee4203c207c43756589cf316ea8512c94ee66128ad6c381639e5",
+      "detail": "VOL70.1 // L2",
+      "tested_sha256": "93cb6acb4adee58626b7cd329b3a7d00a6948bee527a6a43773c3bd5940ab076"
+    },
+    {
+      "case_id": "CORE-70-R02",
+      "artifact": "qemu-test",
+      "envelope": "evidence/70/70.15/100f32478852f65ca3e102f33989b7c685d73b97296b7fe0ca63cda103f4a1e8/CORE-70-R02.088f155842084219.envelope.json",
+      "envelope_sha256": "27f5eff439e401e8df190f35e7cb6955fb9bf697cc24516e3cc0bef0083adb0a",
+      "detail": "VOL70.2 // L2",
+      "tested_sha256": "ab0449fb43f6f7502002248a43198cfd07370f2f47172283ce475d3e25854460"
+    },
+    {
+      "case_id": "CORE-70-R03",
+      "artifact": "qemu-test",
+      "envelope": "evidence/70/70.15/100f32478852f65ca3e102f33989b7c685d73b97296b7fe0ca63cda103f4a1e8/CORE-70-R03.8de1b818636fc9a5.envelope.json",
+      "envelope_sha256": "f8564e6e5e21477faedf1afb157458b179c096d4b32166001d719e975c48c2f6",
+      "detail": "VOL70.2-R03 // L2",
+      "tested_sha256": "c8eb74db9e87f6cbf18b3e9f231f74c5ed2345426081b0e42af7b6a819352214"
+    },
+    {
+      "case_id": "CORE-70-R04",
+      "artifact": "qemu-test",
+      "envelope": "evidence/70/70.15/100f32478852f65ca3e102f33989b7c685d73b97296b7fe0ca63cda103f4a1e8/CORE-70-R04.0cedc8d09a912c98.envelope.json",
+      "envelope_sha256": "4d8c00e46f1d729039ae2cc79870396ce2516de9245b5c8ac30518933fd9f34b",
+      "detail": "VOL70.3 // L2",
+      "tested_sha256": "afc1154e5122325cc8bd04225098dff4fa0252a9c0f4d04c146bb977f06293f7"
+    },
+    {
+      "case_id": "CORE-70-R05",
+      "artifact": "qemu-test",
+      "envelope": "evidence/70/70.15/100f32478852f65ca3e102f33989b7c685d73b97296b7fe0ca63cda103f4a1e8/CORE-70-R05.0d961a0ecc89fbd6.envelope.json",
+      "envelope_sha256": "3de51b960eeae308ce799dc5da691e1a9dfeafde375681ed78c45aa58979f155",
+      "detail": "VOL70.4 // INTEROP",
+      "tested_sha256": "6e44ade688c80f7c7fa24c60de07a30dd2de24c562cbae1d92ea98c1a19d2b69"
+    },
+    {
+      "case_id": "CORE-70-R06",
+      "artifact": "qemu-test",
+      "envelope": "evidence/70/70.15/100f32478852f65ca3e102f33989b7c685d73b97296b7fe0ca63cda103f4a1e8/CORE-70-R06.839414907b799595.envelope.json",
+      "envelope_sha256": "6c6dfc06658b067a45b921793276384299c06c916c023b85bc5a89b33a1a826f",
+      "detail": "VOL70.5 // L3",
+      "tested_sha256": "8e7aeeac4efd131aa7023c75d151f54e3aaf60211f84fea1e7238a790afce46e"
+    },
+    {
+      "case_id": "CORE-70-R07",
+      "artifact": "qemu-test",
+      "envelope": "evidence/70/70.15/100f32478852f65ca3e102f33989b7c685d73b97296b7fe0ca63cda103f4a1e8/CORE-70-R07.05e3c84a1237a672.envelope.json",
+      "envelope_sha256": "d8556dfd3fe0f5141ad8a0a54da114e1e5fb824162a107e1025b930675952c45",
+      "detail": "VOL70.6 // L2",
+      "tested_sha256": "eb092ee6b6034ed212f8eeb02091b7e6eb13470bba98d091fd2ecef7df64be14"
+    },
+    {
+      "case_id": "CORE-70-R08",
+      "artifact": "qemu-test",
+      "envelope": "evidence/70/70.15/100f32478852f65ca3e102f33989b7c685d73b97296b7fe0ca63cda103f4a1e8/CORE-70-R08.a4437036d1f09230.envelope.json",
+      "envelope_sha256": "17bbaca8de24cf6a1e09e57c59463ac8977790bfc534b5628631ff7f5c6cd6e0",
+      "detail": "VOL70.7 // L3",
+      "tested_sha256": "345e2b85f42bc19d8305eb28999217be000010cb13b12424ac3a43f17c8748ae"
+    },
+    {
+      "case_id": "CORE-70-R09",
+      "artifact": "qemu-test",
+      "envelope": "evidence/70/70.15/100f32478852f65ca3e102f33989b7c685d73b97296b7fe0ca63cda103f4a1e8/CORE-70-R09.d4695c6734bfa124.envelope.json",
+      "envelope_sha256": "126d420ba49c7bb3a613874d441db55e5b51ab759af4adb3491334b585d0131f",
+      "detail": "VOL70.89 // L3",
+      "tested_sha256": "b47e8848459f0ec0fad711ccfbbda3866264648f12cea9296acee1b2498b8b0f"
+    },
+    {
+      "case_id": "CORE-70-R12",
+      "artifact": "qemu-test",
+      "envelope": "evidence/70/70.15/100f32478852f65ca3e102f33989b7c685d73b97296b7fe0ca63cda103f4a1e8/CORE-70-R12.52f210109056fdc6.envelope.json",
+      "envelope_sha256": "4c1ba258c5e534cee8ec94bfe2c2fac9e472614a7a3446d92465f3960272721f",
+      "detail": "evidence42-candidate-check // GATE",
+      "tested_sha256": "345e2b85f42bc19d8305eb28999217be000010cb13b12424ac3a43f17c8748ae"
+    }
+  ],
+  "blocked": [
+    {
+      "case_id": "CORE-70-R11",
+      "blocker": "EXT-70-HW",
+      "reason": "实板/HIL 未到货（72h 浸泡需真实硬件）——外部依赖 BLOCKED"
+    }
+  ],
+  "exemptions": []
+}

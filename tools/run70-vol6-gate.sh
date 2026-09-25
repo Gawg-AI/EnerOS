@@ -22,6 +22,9 @@
 # ============================================================
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# 73 批C：判据器自举——门先验自己的判据器，再用它（S4，同 vol5/r10-held）。
+python3 "$ROOT/tools/criterion.py" --selftest >/dev/null || {
+  echo "criterion.py selftest FAIL"; exit 9; }
 cd "$ROOT"
 source tools/gate-env.sh
 
@@ -184,7 +187,9 @@ cp "$S" "$EVROOT/t1.qemu-serial.log" 2>/dev/null || true
 
 # ---------- 窗T-1 判据 ----------
 say "=== 段2 判据（窗T-1）==="
-check R1 "零 PANIC / 零分配失败" bash -c "! grep -aqcE 'PANIC|memory allocation of' '$EVROOT/t1.qemu-serial.log'"
+python3 "$ROOT/tools/criterion.py" check PANIC-SCAN \
+  --echo-ok "[✓][R1] 零 PANIC / 零分配失败" --echo-fail "[✗][R1] 零 PANIC / 零分配失败" \
+  "$EVROOT/t1.qemu-serial.log" || FAIL=1
 check R2 "PRODUCT-READY 达成" bash -c "grep -aq 'PRODUCT-READY: true' '$EVROOT/t1.qemu-serial.log'"
 check R3 "config-get 载荷取回（gen=1）" bash -c "grep -aq 'MGT1: rid=10 config-get -> Completed config-get:control-write:gen=1' '$EVROOT/t1.qemu-serial.log'"
 check R5 "维护进入实效（root 词形）" bash -c "grep -aq 'MGMT-MAINT: entered' '$EVROOT/t1.qemu-serial.log'"
@@ -244,7 +249,9 @@ cp "$S2" "$EVROOT/t2.qemu-serial.log" 2>/dev/null || true
 check R23 "窗T-2 冷启动 PRODUCT-READY" bash -c "grep -aq 'PRODUCT-READY: true' '$EVROOT/t2.qemu-serial.log'"
 check R24 "盘上配置冷启动恢复（CONFIG-DISK active gen=2）" bash -c "grep -aq 'CONFIG-DISK active gen=2' '$EVROOT/t2.qemu-serial.log'"
 check R25 "操作账本跨重启恢复（MGMT-OPS ledger restored）" bash -c "grep -aq 'MGMT-OPS ledger restored' '$EVROOT/t2.qemu-serial.log'"
-check R26 "窗T-2 零 PANIC" bash -c "! grep -aqcE 'PANIC|memory allocation of' '$EVROOT/t2.qemu-serial.log'"
+python3 "$ROOT/tools/criterion.py" check PANIC-SCAN \
+  --echo-ok "[✓][R26] 窗T-2 零 PANIC" --echo-fail "[✗][R26] 窗T-2 零 PANIC" \
+  "$EVROOT/t2.qemu-serial.log" || FAIL=1
 
 # ============================================================
 # F70-03（M04 目标面）：坏账本 ⇒ 副作用写面拒绝（fail-closed）。
@@ -288,7 +295,10 @@ check R28 "副作用面 fail-closed（ops-store-corrupt 拒绝词形）" bash -c
 # 探针启动前置（restart_done：需 T-1 的受控重启世代）在冷启动窗恒假，
 # 探针不发 MGT1 请求。该拒绝路径由 host M04 锁（m04_storage_unavailable_
 # rejects_side_effects_only）+ R28 的存储侧拒绝词形共同覆盖。
-check R30 "窗T-3 零 PANIC（只读诊断继续）" bash -c "! grep -aqcE 'PANIC|memory allocation of' '$EVROOT/t3.qemu-serial.log'"
+python3 "$ROOT/tools/criterion.py" check PANIC-SCAN \
+  --echo-ok "[✓][R30] 窗T-3 零 PANIC（只读诊断继续）" \
+  --echo-fail "[✗][R30] 窗T-3 零 PANIC（只读诊断继续）" \
+  "$EVROOT/t3.qemu-serial.log" || FAIL=1
 
 # ============================================================
 say "=== 段5：恢复基线束 ==="

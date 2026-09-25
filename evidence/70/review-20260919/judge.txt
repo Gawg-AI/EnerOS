@@ -1,0 +1,17 @@
+[selftest] tsdb-checkpoint-success: PASS
+[selftest] tsdb-checkpoint-attempt-not-success: PASS
+[selftest] tsdb-checkpoint-failed: PASS
+[selftest] tsdb-dropped-after-checkpoint: PASS
+[selftest] tsdb-open-interleaved-pass: PASS
+[selftest] tsdb-open-missing-not-borrowed: PASS
+[selftest] healthy-pass: PASS
+[selftest] alloc-panic-fail: PASS
+[selftest] tail-dead-fail: PASS
+[selftest] late-collapse-fail: PASS
+[selftest] missing-log-fail: PASS
+[selftest] insufficient-samples-fail: PASS
+[selftest] sparse-commits-fail: PASS
+[selftest] dense-commits-pass: PASS
+[selftest] tail-commits-stop-fail: PASS
+[selftest] workload-shift-pass: PASS
+=== SELFTEST: PASS ===

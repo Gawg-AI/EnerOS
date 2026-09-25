@@ -268,13 +268,24 @@ impl<S: Solver> AgentRuntime for EnergyAgent<S> {
                 // 绑定输入遥测摘要（provenance——dispatch 校验用）。
                 plan.input_digest = Some(telemetry.provenance_digest);
                 self.tick_count += 1;
-                // 4. 提交给唯一 ControlDispatch（WP-40.6）。
+                // 4. 提交给唯一 ControlDispatch（WP-40.6；2026-09-24 C2
+                // 收口：迁移轨经 unbound adapter 构造 typed 候选——绑定由
+                // 引擎编译期解析，目录版本 1 与测试夹具同源；构造失败按
+                // 前置失败记账（零投递））。
                 let actor = AuthenticatedActor {
                     kind: ActorKind::Ai,
                     service: [0u8; 16],
                     session_epoch: 0,
                 };
-                match self.dispatch.submit(&plan, &telemetry, &actor, 0) {
+                let submission =
+                    eneros_control_dispatch::adapter::proposal_to_candidate_unbound(&plan, 1)
+                        .and_then(|cand| {
+                            // R14-A：投递标签/超时已退役为引擎内部自派生
+                            // （原实参 plan.target_device/0 仅被测试 double
+                            // 丢弃，无可观测消费）。
+                            self.dispatch.submit_typed(&cand, &telemetry, &actor)
+                        });
+                match submission {
                     Ok(receipt) if receipt.final_state.is_committed() => {
                         // 5. 观测相（WP-40.12）：learning 只消费 Committed——
                         // 用受信任观测覆写实际值字段；预测值保留算偏差。

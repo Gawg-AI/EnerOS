@@ -406,7 +406,9 @@ fn unreachable_delivery_settles_failed_and_never_retries() {
     let mut h = engine_unreachable();
     let tel = trusted_telemetry();
 
-    let r = h.engine.submit(&proposal(5.0), &tel, &actor(), 5_000);
+    let r = h
+        .engine
+        .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor());
     assert!(
         matches!(r, Err(DispatchError::DeliveryUnreachable)),
         "Unreachable 必须返回 DeliveryUnreachable：{r:?}"
@@ -437,19 +439,16 @@ fn unreachable_delivery_settles_failed_and_never_retries() {
     // 零新投递。
     let r2 = h
         .engine
-        .submit(&proposal(5.0), &tel, &actor(), 5_000)
+        .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor())
         .expect("journal 命中返回原结果不 hard-fail");
     assert_eq!(r2.final_state, DispatchState::Failed, "{r2:?}");
     assert_eq!(*h.attempts.borrow(), 1, "重放零投递");
 }
 
-/// R13-B：saga executor 投递上下文夹具（单源常量构造——与生产
-/// held_engine 驱动路径同一标签/超时）。
+/// R13-B：saga executor 投递上下文夹具（R14-A 起经 Default 与生产
+/// held_engine 驱动路径同一标签/超时——单源构造点在 saga_exec）。
 fn test_delivery() -> eneros_control_dispatch::engine::DeliveryContext {
-    eneros_control_dispatch::engine::DeliveryContext {
-        target_label: String::from(eneros_control_dispatch::engine::STATION_PLAN_TARGET_LABEL),
-        settle_timeout_ms: eneros_control_dispatch::engine::HELD_DELIVERY_SETTLE_MS,
-    }
+    eneros_control_dispatch::engine::DeliveryContext::default()
 }
 
 /// WP-62.1.2 夹具：合法 CandidatePlan（input_digest [0x65;32] ≠ model/
@@ -604,7 +603,9 @@ fn saga_executor_binds_plan_wire_sha_not_input_digest() {
 fn unreachable_delivery_appends_exactly_one_persisted_record() {
     let mut h = engine_unreachable();
     let tel = trusted_telemetry();
-    let _ = h.engine.submit(&proposal(5.0), &tel, &actor(), 5_000);
+    let _ = h
+        .engine
+        .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor());
     let appends = h.appends.borrow();
     assert_eq!(appends.len(), 1, "{appends:?}");
     assert_eq!(appends[0].power_kw, 5.0);
@@ -633,7 +634,7 @@ fn applied_write_order_durable_ack_failure_never_confirms_journal() {
     ));
     let tel = trusted_telemetry();
     let ok_receipt = ok_engine
-        .submit(&proposal(5.0), &tel, &actor(), 5_000)
+        .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor())
         .expect("ack 成功路径必须 Ok");
     assert_eq!(
         ok_receipt.final_state,
@@ -651,7 +652,7 @@ fn applied_write_order_durable_ack_failure_never_confirms_journal() {
         Box::new(AppliedChannel),
     ));
     let r = engine
-        .submit(&proposal(5.0), &tel, &actor(), 5_000)
+        .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor())
         .expect("Applied 失败路径返回 Ok(receipt)（Indeterminate 对账，不 hard-fail）");
     // 不伪造成功：终态 Indeterminate（AppliedDurableFailed → journal
     // TransportAcked→Indeterminate），绝无 Committed。
@@ -668,7 +669,7 @@ fn applied_write_order_durable_ack_failure_never_confirms_journal() {
     // 同 key 重放：journal 未到 AppliedConfirmed → 原终态 Indeterminate，
     // 零重投（幂等真值未被破坏）。
     let r2 = engine
-        .submit(&proposal(5.0), &tel, &actor(), 5_000)
+        .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor())
         .expect("重放返回原终态不 hard-fail");
     assert_eq!(
         r2.final_state,

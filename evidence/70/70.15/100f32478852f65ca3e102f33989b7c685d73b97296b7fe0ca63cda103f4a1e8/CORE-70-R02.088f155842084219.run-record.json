@@ -1,0 +1,28 @@
+{
+  "schema": "eneros.gate-run-record.v1",
+  "case_id": "CORE-70-R02",
+  "gate_id": "VOL70.2",
+  "command": "tools/run70-vol2-gate.sh（SEED_DL=420/REUSE_DL=1200）",
+  "exit_code": 0,
+  "recorded_at": "2026-09-20T02:37:45Z",
+  "ran_artifact_sha256": "ab0449fb43f6f7502002248a43198cfd07370f2f47172283ce475d3e25854460",
+  "ran_artifact_sha256_source": "evidence/70/70.2/image.sha256",
+  "raw_log": {
+    "name": "vol2.log",
+    "bytes": 2299,
+    "sha256": "aeccd972546ec67cbaca863b6ae9738c04711b8a92b3ca1db37ed620bc0bd0bc",
+    "resident": "handoff-bundle",
+    "note": ".gitignore `*.log`：原始日志随移交包分发，本记录绑定其摘要"
+  },
+  "verdict_lines": [
+    "=== VOL70.2 QEMU WINDOW: PASS ==="
+  ],
+  "verdict": "PASS",
+  "candidate": {
+    "candidate_id": "100f32478852f65ca3e102f33989b7c685d73b97296b7fe0ca63cda103f4a1e8",
+    "source_commit": "a65f00aeac23bc4e7ef3c29146b942cb834d895f",
+    "dirty_tree_digest": "b5639fd032405b2680bdc44d8f0bd31fdbf72b134bcb21a13d3a9ea93b7e8e23",
+    "artifact_sha256": "d1ae153eeb21b021d6257ca1229fe2e87be250c40057fbd976bb3f5683a7012c",
+    "profile": "qemu-test"
+  }
+}

@@ -221,8 +221,19 @@ pub fn install_write_allowed(ranges: &InstallRanges, lba: u64, count: u64) -> bo
     in_inactive || in_bootctrl
 }
 
-/// BOOTCTRL 双副本读取辅助：分区基址 + 副本偏移（0 / 4096）。
-pub const BOOTCTRL_COPY_OFFSETS: [u64; 2] = [0, BOOT_CONTROL_RECORD_SIZE as u64];
+/// BOOTCTRL 双副本间距（副本 0 → 副本 1 的 **512B 扇区数**；=
+/// [`BOOT_CONTROL_RECORD_SIZE`] / 512 = 8）。布局单源：blk_backend /
+/// boot_install 的 `bc_lba + 副本间距` 一律引用本常量（2026-09-24 单位
+/// 契约收口——此前 `+ 8` 字面 5 处 + 零消费的字节版 OFFSETS 并存）。
+pub const BOOTCTRL_COPY_STRIDE_LBAS: u64 = BOOT_CONTROL_RECORD_SIZE as u64 / 512;
+
+/// 扇区 LBA → 字节偏移（boot 面 → 数据面换算**单源**；溢出 → None）。
+/// `InstallBackend` 实现的 `read_sectors`/`write_sectors` 一律经此换算
+/// 后落字节平面后端——换算点散布曾致 run15 实弹（扇区值直传数据面，
+/// /512 错块读回 GPT 垃圾）。
+pub fn sector_byte_offset(lba: u64) -> Option<u64> {
+    lba.checked_mul(512)
+}
 
 /// 从只读身份页解析本次运行身份（F70-02 生产入口）。
 ///

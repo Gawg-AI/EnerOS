@@ -576,8 +576,8 @@ pub fn handle_ota_ab_command<M: OtaManager>(
     req: &[u8],
     resp: &mut Vec<u8>,
 ) -> bool {
-    if req.len() < 5 || &req[..4] != b"OTA1" {
-        resp.extend_from_slice(b"ERR:proto");
+    if crate::svc_wire::parse_envelope(b"OTA1", req).is_none() {
+        resp.extend_from_slice(crate::svc_wire::ERR_PROTO);
         return false;
     }
     match req[4] {
@@ -589,7 +589,7 @@ pub fn handle_ota_ab_command<M: OtaManager>(
             let (desc, desc_sig) = match eneros_agent_sdk::ota_wire::parse_check_desc_req(req) {
                 Ok(v) => v,
                 Err(_) => {
-                    resp.extend_from_slice(b"ERR:len");
+                    resp.extend_from_slice(crate::svc_wire::ERR_LEN);
                     return false;
                 }
             };
@@ -623,7 +623,7 @@ pub fn handle_ota_ab_command<M: OtaManager>(
                         (fixed, parsed.desc_sig, parsed.image_sig, parsed.image)
                     }
                     Err(_) => {
-                        resp.extend_from_slice(b"ERR:len");
+                        resp.extend_from_slice(crate::svc_wire::ERR_LEN);
                         return false;
                     }
                 };
@@ -653,7 +653,7 @@ pub fn handle_ota_ab_command<M: OtaManager>(
         }
         0x03 => {
             if req.len() != 5 + 33 {
-                resp.extend_from_slice(b"ERR:len");
+                resp.extend_from_slice(crate::svc_wire::ERR_LEN);
                 return false;
             }
             let slot = if req[5] == 0 {
@@ -728,7 +728,7 @@ pub fn handle_ota_ab_command<M: OtaManager>(
             }
         }
         _ => {
-            resp.extend_from_slice(b"ERR:cmd");
+            resp.extend_from_slice(crate::svc_wire::ERR_CMD);
             false
         }
     }

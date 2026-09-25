@@ -200,11 +200,18 @@ if [ "$ACCT" != "ERR" ] && [ "$ACCT" != "NONE" ]; then
   I=$(echo "$ACCT" | awk '{print $1}'); SK=$(echo "$ACCT" | awk '{print $2}')
   A=$(echo "$ACCT" | awk '{print $3}'); BK=$(echo "$ACCT" | awk '{print $4}'); F=$(echo "$ACCT" | awk '{print $5}')
   UNIQ=$(echo "$ACCT" | awk '{print $6}'); RBS=$(echo "$ACCT" | awk '{print $7}')
-  [ "$((I + SK))" -eq 12 ] && echo "[✓][A2] 计划守恒 intents=$I skipped=$SK（I+S=12）"     || { echo "[✗][A2] I+S=$((I + SK))≠12"; FAIL=1; }
+  # 73 批C：A2/A3/A4a/A4c/A7 是**观测回声**，不是二次判定。守恒谓词
+  # （I+S=12 ∧ A+Bk+F=I ∧ Committed ∧ A=I ∧ uniq=I ∧ rbs≥1）唯一执行面是
+  # r10_plan_accounting.passes()，其退出码即裁决；本分支只在 select() 通过
+  # 后进入，故旧重算臂（`[ "$((I+SK))" -eq 12 ]` 等）结构不可达——谁削弱
+  # select() 这里照样全 ✓，"bash 独立判一遍"是假象。逐臂覆盖改由
+  # plan_accounting selftest 的 A07 证伪表承担（A4a 的 I≥1 由 uniq==I
+  # 臂蕴含，见 A07b）。与 A3 同口径：只回声。
+  echo "[✓][A2] 计划守恒 intents=$I skipped=$SK（I+S=12）"
   echo "[✓][A3] HELD-PLAN-DONE Committed（applied=$A blocked=$BK failed=$F）"
-  [ "$UNIQ" -ge "$I" ] && [ "$I" -ge 1 ] && echo "[✓][A4a] 唯一 intent Applied ×$UNIQ ≥ intents=$I"     || { echo "[✗][A4a] 唯一 Applied ×$UNIQ < intents=$I"; FAIL=1; }
-  [ "$RBS" -ge 1 ] && echo "[✓][A4c] Applied 带独立 readback=Some（×$RBS 行）"     || { echo "[✗][A4c] 零 readback=Some（实际回读未上浮 Saga）"; FAIL=1; }
-  [ "$((A + BK + F))" -eq "$I" ] && echo "[✓][A7] 终态守恒 A+Bk+F == intents"     || { echo "[✗][A7] A+Bk+F ≠ intents"; FAIL=1; }
+  echo "[✓][A4a] 唯一 intent Applied ×$UNIQ ≥ intents=$I"
+  echo "[✓][A4c] Applied 带独立 readback=Some（×$RBS 行）"
+  echo "[✓][A7] 终态守恒 A+Bk+F == intents"
 else
   echo "[✗][A2/A3/A7] 无满足守恒的完整计划（需 intents+skipped=12 ∧ 全 Applied ∧ Committed）：$ACCT"
   FAIL=1; UNIQ=0
@@ -253,8 +260,12 @@ else
     && echo "[✓][A5b] 多时段发放（绑定写时刻跨度 ${SPREAD}s ≥ 公式下界 ${SPREAD_MIN}s = 3×step_${STEP_S}s×80%）" \
     || { echo "[✗][A5b] 非合并计划绑定写跨度 ${SPREAD:-0}s < ${SPREAD_MIN}s（非分步发放）"; FAIL=1; }
 fi
-PANICS=$(grep -ac "PANIC\|alloc.*failed\|ALLOC-FAIL" "$SA" || true); PANICS=${PANICS:-0}
-[ "$PANICS" -eq 0 ] && echo "[✓][A6] 零 PANIC/零分配失败" || { echo "[✗][A6] PANIC=$PANICS"; FAIL=1; }
+# 73 批C：A6 判据登记化（PANIC-SCAN 单源）。旧第三词表
+# `alloc.*failed|ALLOC-FAIL` 中 ALLOC-FAIL 全仓零 emitter（幻影 token），
+# 而真实形 `memory allocation of` 登记册已覆盖——收编后归档重放 0 翻转。
+python3 "$ROOT/tools/criterion.py" check PANIC-SCAN \
+  --echo-ok "[✓][A6] 零 PANIC/零分配失败" --echo-fail "[✗][A6] PANIC={count}" \
+  "$SA" || FAIL=1
 
 # ============ 段B：重启续接窗（脏断电）======================================
 echo "=== 段B：重启续接窗 ==="
@@ -398,8 +409,12 @@ NAP=$(grep -ac "HELD-COMMAND .*state=Applied" "$SC" || true); NAP=${NAP:-0}
 NFT=$(grep -ac "HELD-COMMAND .*state=\(Failed\|Blocked\|ManualIntervention\)" "$SC" || true); NFT=${NFT:-0}
 [ "$NAP" -ge 1 ] && [ "$NFT" -ge 1 ] && echo "[✓][C3] 混合终态（Applied ×$NAP / 非完成 ×$NFT）" \
   || { echo "[✗][C3] 混合终态缺失（Applied ×$NAP / 非完成 ×$NFT）"; FAIL=1; }
-PANICS=$(grep -ac "PANIC\|alloc.*failed\|ALLOC-FAIL" "$SC" || true); PANICS=${PANICS:-0}
-[ "$PANICS" -eq 0 ] && echo "[✓][C4] 零 PANIC" || { echo "[✗][C4] PANIC=$PANICS"; FAIL=1; }
+# 73 批C：C4 判据登记化（同 A6；本门 段B/B5 早已走登记册，段A/段C 滞留
+# 裸 grep 即"同一门三种口径"）。缺串口 = 红（旧 `grep … || true` 在文件
+# 缺失时计 0 而恒绿，与 B4 同类的缺输入假面）。
+python3 "$ROOT/tools/criterion.py" check PANIC-SCAN \
+  --echo-ok "[✓][C4] 零 PANIC" --echo-fail "[✗][C4] PANIC={count}" \
+  "$SC" || FAIL=1
 
 # ---- 收尾：恢复 mqtt 配置 + 归档 -------------------------------------------
 if [ -f "$RUN/protocol-mqtt.toml.bak" ]; then

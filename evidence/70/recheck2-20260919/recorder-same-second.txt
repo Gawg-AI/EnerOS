@@ -1,0 +1,12 @@
+[candidate-evidence] case=CORE-70-R01 status=PASS candidate=569d29f1cff4…
+[candidate-evidence] run-record → evidence/70/70.15/569d29f1cff4bf3b8fd80e476d2efc0c45cfb69f2db5c052dac327c325c4cdcc/CORE-70-R01.8ab8e07cfcc20a80.run-record.json
+[candidate-evidence] envelope   → evidence/70/70.15/569d29f1cff4bf3b8fd80e476d2efc0c45cfb69f2db5c052dac327c325c4cdcc/CORE-70-R01.8ab8e07cfcc20a80.envelope.json
+[candidate-evidence] index      → evidence/70/70.15/569d29f1cff4bf3b8fd80e476d2efc0c45cfb69f2db5c052dac327c325c4cdcc/candidate-index.json
+index_unchanged= True
+success_envelope_unchanged= False
+index_envelope_digest_matches= False
+Traceback (most recent call last):
+  File "/tmp/eneros70-recheck2-recorder-same-second.py", line 27, in <module>
+    assert env.read_bytes()==env_before,'Same-second retry and index failure overwrote previously indexed successful envelope'
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Same-second retry and index failure overwrote previously indexed successful envelope

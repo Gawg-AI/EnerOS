@@ -197,8 +197,8 @@ impl eneros_control_services::ControlServiceHandler for ConfigHandler {
     fn handle(&mut self, req: &[u8], resp: &mut alloc::vec::Vec<u8>, _now_ms: u64) -> bool {
         use eneros_business_services::config_service::*;
         // 协议：magic(4) ‖ cmd(1) ‖ arg。
-        if req.len() < 5 || &req[..4] != PROTO_MAGIC {
-            resp.extend_from_slice(b"ERR:proto");
+        if eneros_business_services::svc_wire::parse_envelope(PROTO_MAGIC, req).is_none() {
+            resp.extend_from_slice(eneros_business_services::svc_wire::ERR_PROTO);
             return false;
         }
         let cmd = req[4];
@@ -208,7 +208,7 @@ impl eneros_control_services::ControlServiceHandler for ConfigHandler {
             CMD_STAGE_PART => {
                 // arg = seq(1) ‖ total(1) ‖ bytes。
                 if arg.len() < 2 {
-                    resp.extend_from_slice(b"ERR:len");
+                    resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
                     return false;
                 }
                 if self.staging.received() == 0 && arg[0] != 1 {

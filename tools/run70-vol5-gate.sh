@@ -214,8 +214,11 @@ S="$DIR/qemu-serial.log"; BT="$DIR/broker-transcript.jsonl"
 [ -f "$S" ] || { echo "serial log missing"; exit 7; }
 
 echo "=== 窗A 判据扫描 ==="
-PANICS=$(grep -aci "PANIC\|memory allocation of" "$S" || true)
-[ "$PANICS" -eq 0 ] && echo "[✓][R7] 零 PANIC / 零分配失败" || { echo "[✗][R7] PANIC=$PANICS"; FAIL=1; }
+# 73 批C：R7 判据登记化（PANIC-SCAN 单源；本文件此前 窗B 已登记化而 R7
+# 仍留 -i 宽面——同一门内两种口径即登记册宣称"退役"与实际不符处）。
+python3 "$ROOT/tools/criterion.py" check PANIC-SCAN \
+  --echo-ok "[✓][R7] 零 PANIC / 零分配失败" --echo-fail "[✗][R7] PANIC={count}" \
+  "$S" || FAIL=1
 
 n=$(grep -ac "ENEROS stage=identity-capsule " "$S" || true); n=${n:-0}
 [ "$n" -ge 1 ] && echo "[✓][R1] identity-capsule 写入（$n）" || { echo "[✗][R1] capsule 词形缺失"; FAIL=1; }

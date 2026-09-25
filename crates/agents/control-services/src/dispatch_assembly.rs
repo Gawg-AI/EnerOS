@@ -421,32 +421,15 @@ impl eneros_control_dispatch::DeliveryChannel for EipcMasterChannel {
         timeout_ms: u64,
     ) -> Result<f64, eneros_control_dispatch::ChannelError> {
         use eneros_control_dispatch::ChannelError;
-        use eneros_drv_svc::runtime::{wire, DriverRequest, OP_EXECUTE, ST_OK};
         self.correlation = self.correlation.wrapping_add(1);
-        let mut req = DriverRequest::new(self.correlation, OP_EXECUTE);
-        let payload = eneros_protocol_abstract::write::encode_master_read_payload(device, point);
-        req.payload[..payload.len()].copy_from_slice(&payload);
-        req.payload_len = payload.len() as u16;
+        // codec 半边单源（C3 收口）：请求装配/应答判据全部 host 可测
+        //（dispatch_wire），本处只剩 IPC 拨号。
+        let raw = crate::dispatch_wire::readback_request(self.correlation, device, point);
         let bytes = self
             .client
-            .drv_call(
-                &wire::encode_request(&req),
-                timeout_ms.max(1).saturating_mul(1_000_000),
-            )
+            .drv_call(&raw, timeout_ms.max(1).saturating_mul(1_000_000))
             .map_err(|e| ChannelError::Protocol(alloc::format!("readback:{e:?}")))?;
-        let resp = wire::decode_response_padded(&bytes).ok_or(ChannelError::BadResponse)?;
-        if resp.status != ST_OK || resp.payload_len != 8 {
-            return Err(ChannelError::BadResponse);
-        }
-        let value = f64::from_le_bytes(
-            resp.payload[..8]
-                .try_into()
-                .map_err(|_| ChannelError::BadResponse)?,
-        );
-        if !value.is_finite() {
-            return Err(ChannelError::BadResponse);
-        }
-        Ok(value)
+        crate::dispatch_wire::readback_value(&bytes).map_err(|()| ChannelError::BadResponse)
     }
 
     fn deliver(
@@ -455,30 +438,27 @@ impl eneros_control_dispatch::DeliveryChannel for EipcMasterChannel {
         payload: &[u8],
         timeout_ms: u64,
     ) -> Result<alloc::vec::Vec<u8>, eneros_control_dispatch::ChannelError> {
-        use alloc::{format, string::String};
-
         use eneros_control_dispatch::ChannelError;
-        // 解码 ControlEnvelope V2（271B；61 v0.314.25——无外层 power）。
-        let ce = eneros_control_gateway::wire::ControlEnvelope::decode(payload)
-            .map_err(|e| ChannelError::Protocol(format!("env:{e:?}")))?;
-        if !ce.verify_payload_digest() {
-            return Err(ChannelError::Protocol(String::from("payload-digest")));
-        }
-        let env = eneros_control_gateway::envelope::CommandEnvelope::decode(&ce.envelope)
-            .map_err(|e| ChannelError::Protocol(format!("inner:{e:?}")))?;
-        // 装配 drv-svc 写请求：OP_EXECUTE + V2 载荷（55B——typed value +
-        // 语义摘要，writer 侧重算比对；codec 单源 = protocol_abstract::write）。
-        use eneros_drv_svc::runtime::{wire, DriverRequest, OP_EXECUTE};
-        self.correlation = self.correlation.wrapping_add(1);
-        let mut req = DriverRequest::new(self.correlation, OP_EXECUTE);
-        let pld = eneros_protocol_abstract::write::encode_master_write_payload_v2(
-            env.device_id,
-            env.point_id,
-            env.value,
-        );
-        req.payload[..pld.len()].copy_from_slice(&pld);
-        req.payload_len = pld.len() as u16;
-        let raw = wire::encode_request(&req);
+        // codec 半边单源（C3 收口）：信封解码 + digest 复验 + 内层解码 +
+        // V2 载荷装配与判据全部 host 可测（dispatch_wire）；本处只剩
+        // IPC 拨号与证据词映射（词形逐字不变）。correlation 候选先算、
+        // 解码全过后才提交（2026-09-24 复查修复：HEAD 语义——前置失败
+        // 不消耗序号，避免对账 correlation 相对 HEAD 漂移）。
+        let correlation = self.correlation.wrapping_add(1);
+        let raw = crate::dispatch_wire::master_write_request(correlation, payload).map_err(
+            |e| match e {
+                crate::dispatch_wire::MasterWriteRequestError::Envelope(s) => {
+                    ChannelError::Protocol(s)
+                }
+                crate::dispatch_wire::MasterWriteRequestError::PayloadDigest => {
+                    ChannelError::Protocol(alloc::string::String::from("payload-digest"))
+                }
+                crate::dispatch_wire::MasterWriteRequestError::Inner(s) => {
+                    ChannelError::Protocol(s)
+                }
+            },
+        )?;
+        self.correlation = correlation;
         let timeout_ns = if timeout_ms == 0 {
             5_000_000_000u64
         } else {
@@ -489,18 +469,14 @@ impl eneros_control_dispatch::DeliveryChannel for EipcMasterChannel {
             .drv_call(&raw, timeout_ns)
             .map_err(|e| match e {
                 eneros_agent_sdk::AgentError::Timeout => ChannelError::Timeout,
-                _ => ChannelError::Protocol(format!("drv:{e:?}")),
+                _ => ChannelError::Protocol(alloc::format!("drv:{e:?}")),
             })?;
-        // 容差解码单源 = wire::decode_response_padded（QEMU 4B/word 尾部
-        // padding 坑，SPEC-B WP-B.2 收编）。
-        let resp = wire::decode_response_padded(&resp_bytes).ok_or(ChannelError::BadResponse)?;
-        if resp.status != eneros_drv_svc::runtime::ST_OK {
-            return Err(ChannelError::Rejected);
-        }
-        if resp.payload_len != 2 {
-            return Err(ChannelError::BadResponse);
-        }
-        Ok(resp.payload[..2].to_vec())
+        crate::dispatch_wire::master_write_outcome(&resp_bytes)
+            .map_err(|e| match e {
+                crate::dispatch_wire::MasterOutcomeError::Rejected => ChannelError::Rejected,
+                crate::dispatch_wire::MasterOutcomeError::BadResponse => ChannelError::BadResponse,
+            })
+            .map(|two| two.to_vec())
     }
 }
 
@@ -1672,11 +1648,12 @@ struct TelemetrySnapRetainer {
 #[cfg(all(target_os = "none", feature = "sel4"))]
 impl eneros_control_dispatch::HeldInputRetainer for TelemetrySnapRetainer {
     fn hold(&mut self, snapshot_id: [u8; 16]) -> bool {
-        let mut req = alloc::vec::Vec::with_capacity(17);
-        req.push(eneros_agent_sdk::tel_wire::TEL_REQ_SNAP_HOLD);
-        req.extend_from_slice(&snapshot_id);
+        // codec 半边单源（C3 收口）：17B 编码与应答判真 host 可测
+        //（dispatch_wire，与 telemetry::handle_request 双面锁）；本处
+        // 只剩 IPC 拨号与证据行打印。
+        let req = crate::dispatch_wire::snap_hold_request(snapshot_id);
         match self.endpoint.call("svc-telemetry", &req) {
-            Ok(resp) if resp.first() == Some(&eneros_agent_sdk::tel_wire::TEL_RESP_OK) => true,
+            Ok(resp) if crate::dispatch_wire::snap_resp_ok(&resp) => true,
             Ok(resp) => {
                 eneros_runtime::println!(
                     "[svc-control-dispatch] SNAP-HOLD-REJECT resp={:02x?}",
@@ -1691,12 +1668,10 @@ impl eneros_control_dispatch::HeldInputRetainer for TelemetrySnapRetainer {
         }
     }
     fn release(&mut self, snapshot_id: [u8; 16]) -> bool {
-        let mut req = alloc::vec::Vec::with_capacity(17);
-        req.push(eneros_agent_sdk::tel_wire::TEL_REQ_SNAP_RELEASE);
-        req.extend_from_slice(&snapshot_id);
+        let req = crate::dispatch_wire::snap_release_request(snapshot_id);
         self.endpoint
             .call("svc-telemetry", &req)
-            .map(|resp| resp.first() == Some(&eneros_agent_sdk::tel_wire::TEL_RESP_OK))
+            .map(|resp| crate::dispatch_wire::snap_resp_ok(&resp))
             .unwrap_or(false)
     }
 }

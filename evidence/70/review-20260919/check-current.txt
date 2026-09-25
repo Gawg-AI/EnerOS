@@ -1,0 +1,15 @@
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.09s
+     Running `target/debug/eneros-xtask evidence42 check-current --matrix core-70`
+CASE CORE-70-R01 PASS scope=L2 env=evidence/70/70.15/2587ce1b7aaccb74004f7b691d1d8ae11fce9cce3d8d329d1137a26561b7c294/CORE-70-R01.envelope.json
+CASE CORE-70-R02 PASS scope=L2 env=evidence/70/70.15/2587ce1b7aaccb74004f7b691d1d8ae11fce9cce3d8d329d1137a26561b7c294/CORE-70-R02.envelope.json
+CASE CORE-70-R03 PASS scope=L2 env=evidence/70/70.15/2587ce1b7aaccb74004f7b691d1d8ae11fce9cce3d8d329d1137a26561b7c294/CORE-70-R03.envelope.json
+CASE CORE-70-R04 PASS scope=L2 env=evidence/70/70.15/2587ce1b7aaccb74004f7b691d1d8ae11fce9cce3d8d329d1137a26561b7c294/CORE-70-R04.envelope.json
+CASE CORE-70-R05 PASS scope=INTEROP env=evidence/70/70.15/2587ce1b7aaccb74004f7b691d1d8ae11fce9cce3d8d329d1137a26561b7c294/CORE-70-R05.envelope.json
+CASE CORE-70-R06 PASS scope=L3 env=evidence/70/70.15/2587ce1b7aaccb74004f7b691d1d8ae11fce9cce3d8d329d1137a26561b7c294/CORE-70-R06.envelope.json
+CASE CORE-70-R07 PASS scope=L2 env=evidence/70/70.15/2587ce1b7aaccb74004f7b691d1d8ae11fce9cce3d8d329d1137a26561b7c294/CORE-70-R07.envelope.json
+CASE CORE-70-R08 PASS scope=L3 env=evidence/70/70.15/2587ce1b7aaccb74004f7b691d1d8ae11fce9cce3d8d329d1137a26561b7c294/CORE-70-R08.envelope.json
+CASE CORE-70-R09 PASS scope=L3 env=evidence/70/70.15/2587ce1b7aaccb74004f7b691d1d8ae11fce9cce3d8d329d1137a26561b7c294/CORE-70-R09.envelope.json
+CASE CORE-70-R10 PASS scope=L3 env=evidence/70/70.15/2587ce1b7aaccb74004f7b691d1d8ae11fce9cce3d8d329d1137a26561b7c294/CORE-70-R10.envelope.json
+CASE CORE-70-R11 BLOCKED blocker=EXT-70-HW
+CASE CORE-70-R12 PASS scope=GATE env=evidence/70/70.15/2587ce1b7aaccb74004f7b691d1d8ae11fce9cce3d8d329d1137a26561b7c294/CORE-70-R12.envelope.json
+xtask: FAIL: check-current BLOCKED: candidate 60f19d0ac88d50588f135d8423f09451a7cf9cf8119af605eca4b95b232e2e45 has externally blocked required cases

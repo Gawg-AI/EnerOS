@@ -1,0 +1,18 @@
+{
+  "kind": "BLUEPRINT_DOCUMENT_VALIDATION_ONLY",
+  "product_readiness_asserted": false,
+  "status": "PASS",
+  "documents": 36,
+  "planned_versions": 21,
+  "work_packages_including_subpackage": 104,
+  "wp_reference_titles_in_execution_records": 33,
+  "markdown_links": 361,
+  "source_line_links": 221,
+  "source_snapshot_files": 101,
+  "source_snapshot_mode": "historical-baseline+drift(warn)",
+  "source_drift_files": 53,
+  "errors": [],
+  "warnings": [
+    "源码锚点快照（立卷时点历史基线）与当前树漂移 53 个文件: .github/workflows/ci.yml, README.md, crates/agents/agent-sdk/src/block_io.rs, crates/agents/agent-sdk/src/chunked.rs, crates/agents/agent-sdk/src/eipc_grants.rs, crates/agents/business-services/build.rs, crates/agents/business-services/src/bin/svc-config.rs, crates/agents/business-services/src/bin/svc-mgmt.rs…——快照身份=立卷时点，不代表当前实现一致或已验收；严格比对历史身份用 --check-source；维护当前实现锚点须另立显式快照，不得刷新历史 sha"
+  ]
+}

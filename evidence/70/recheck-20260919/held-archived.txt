@@ -1,0 +1,31 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+warning: use of deprecated method `sha2::digest::generic_array::GenericArray::<T, N>::as_slice`: please upgrade to generic-array 1.x
+   --> /home/ahx/文档/EnerOS/crates/agents/snapshot-service/src/wire.rs:270:25
+    |
+270 |         if h.finalize().as_slice() != payload_sha {
+    |                         ^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: `eneros-snapshot-service` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running repro.rs (/tmp/eneros70-spec-recheck/target/debug/deps/repro-325a02254a9e36eb)
+
+running 1 test
+actual failure: IntentPersistFailed("held storage: write-failed")
+
+thread 'recheck_h02_real_persist_failure_preserves_existing_pin' (928204) panicked at repro.rs:1872:5:
+H02: actual write failure must not unpin first live plan
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test recheck_h02_real_persist_failure_preserves_existing_pin ... FAILED
+
+failures:
+
+failures:
+    recheck_h02_real_persist_failure_preserves_existing_pin
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--test repro`

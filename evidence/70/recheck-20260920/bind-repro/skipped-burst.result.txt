@@ -1,0 +1,4 @@
+skipped-burst: rc=0
+stdout=6 6 6
+2 0 2 0 2 0
+stderr=

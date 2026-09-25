@@ -18,6 +18,9 @@
 set -uo pipefail
 source "$(dirname "$0")/gate-env.sh"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# 73 批C：判据器自举——门先验自己的判据器，再用它（S4，同 vol5/r10-held）。
+python3 "$ROOT/tools/criterion.py" --selftest >/dev/null || {
+  echo "criterion.py selftest FAIL"; exit 9; }
 cd "$ROOT"
 EVROOT="$ROOT/evidence/70/70.2/powercut"
 RUN="$ROOT/target/evidence70-r03"
@@ -172,10 +175,12 @@ POINTS=$(echo "$OPEN_LINE" | grep -o "points=[0-9]*" | grep -o "[0-9]*$")
 [ -n "$POINTS" ] && [ "$POINTS" -gt 0 ] || { echo "[✗][R1] 旧点数=$POINTS（数据丢失）"; FAIL=1; }
 
 # R2 全窗零 PANIC / 零分配失败（seed 外三段全文件，无豁免）。
-PANICS=$(cat "$D1/qemu-serial.log" "$D2/qemu-serial.log" "$S3" \
-  | grep -aci "PANIC\|memory allocation of" || true)
-[ "$PANICS" -eq 0 ] && echo "[✓][R2] 脏断电各窗零 PANIC" \
-  || { echo "[✗][R2] PANIC=$PANICS"; FAIL=1; }
+# 73 批C：判据登记化（PANIC-SCAN 单源，三段一次传入=全文件域并集）。
+# 旧 -i 宽面 + `cat 缺失文件 || true` 会把"日志缺失"折成 0 计数恒绿；
+# 登记路径缺任一输入即红（与 B4/A6/C4 同一缺输入纪律）。
+python3 "$ROOT/tools/criterion.py" check PANIC-SCAN \
+  --echo-ok "[✓][R2] 脏断电各窗零 PANIC" --echo-fail "[✗][R2] PANIC={count}" \
+  "$D1/qemu-serial.log" "$D2/qemu-serial.log" "$S3" || FAIL=1
 
 # R3 控制链恢复进展（rounds 增长 + 遥测受理恢复）。
 ROUNDS=$(grep -ac "CONTROL-CHAIN: round=" "$S3" || true)

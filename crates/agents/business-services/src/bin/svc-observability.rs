@@ -251,8 +251,8 @@ impl eneros_control_services::ControlServiceHandler for ObsHandler {
 
         use eneros_business_services::observability::*;
         const MAGIC: &[u8; 4] = b"OBS1";
-        if req.len() < 5 || &req[..4] != MAGIC {
-            resp.extend_from_slice(b"ERR:proto");
+        if eneros_business_services::svc_wire::parse_envelope(MAGIC, req).is_none() {
+            resp.extend_from_slice(eneros_business_services::svc_wire::ERR_PROTO);
             return false;
         }
         match req[4] {
@@ -262,7 +262,7 @@ impl eneros_control_services::ControlServiceHandler for ObsHandler {
                 let frame = match eneros_agent_sdk::obs_wire::parse_enqueue_req(req) {
                     Ok(f) => f,
                     Err(_) => {
-                        resp.extend_from_slice(b"ERR:len");
+                        resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
                         return false;
                     }
                 };
@@ -305,7 +305,7 @@ impl eneros_control_services::ControlServiceHandler for ObsHandler {
             }
             0x02 => {
                 if req.len() != 9 {
-                    resp.extend_from_slice(b"ERR:len");
+                    resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
                     return false;
                 }
                 let batch = u32::from_le_bytes(req[5..9].try_into().unwrap()) as usize;
@@ -332,7 +332,7 @@ impl eneros_control_services::ControlServiceHandler for ObsHandler {
                 true
             }
             _ => {
-                resp.extend_from_slice(b"ERR:cmd");
+                resp.extend_from_slice(eneros_business_services::svc_wire::ERR_CMD);
                 false
             }
         }

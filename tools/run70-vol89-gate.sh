@@ -28,6 +28,9 @@
 # ============================================================
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# 73 批C：判据器自举——门先验自己的判据器，再用它（S4，同 vol5/r10-held）。
+python3 "$ROOT/tools/criterion.py" --selftest >/dev/null || {
+  echo "criterion.py selftest FAIL"; exit 9; }
 cd "$ROOT"
 source "$(dirname "$0")/gate-env.sh"
 EVROOT="$ROOT/evidence/70/70.89"
@@ -192,9 +195,11 @@ N2=$(grep -ac "PEER-REQ-V2 .* assets=3 " "$D"/peer-s1-healthy.log 2>/dev/null ||
 [ "$N2" -ge 1 ] && echo "[✓][R10] 三资源请求（assets=3 ×$N2）" \
   || { echo "[✗][R10] assets=3 ×$N2——三资源计划证据缺失（目录手术未生效）"; FAIL=1; }
 # R7 全窗零 PANIC（判据器 G1 同口径）
-PANICS=$(grep -aci "PANIC\|memory allocation of" "$S" || true)
-[ "$PANICS" -eq 0 ] && echo "[✓][R7] 全窗零 PANIC" \
-  || { echo "[✗][R7] PANIC=$PANICS"; FAIL=1; }
+# 73 批C：判据登记化——"同口径"此前只是注释，G1 与本行是两套独立实现且
+# 都漏检本仓自定义 panic 形；现两者同读 gate-criteria.toml PANIC-SCAN。
+python3 "$ROOT/tools/criterion.py" check PANIC-SCAN \
+  --echo-ok "[✓][R7] 全窗零 PANIC" --echo-fail "[✗][R7] PANIC={count}" \
+  "$S" || FAIL=1
 
 if [ "$FAIL" -eq 0 ]; then
   echo "VOL70.89-GATE: PASS"

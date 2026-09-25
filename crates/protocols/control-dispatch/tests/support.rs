@@ -111,6 +111,23 @@ pub fn test_config_legacy(seed: TestConfigSeed) -> DispatchConfig {
     with_fixture_certifier(legacy_rail(test_config(seed)))
 }
 
+/// C2 迁移轨构造器（2026-09-24）：legacy facade `engine.submit(proposal)`
+/// 退役后，LegacyMigration 轨测试以本函数把夹具 proposal 转 typed 候选，
+/// 再走 `submit_typed`。身份 = 派生伪快照（unbound adapter 单源）、
+/// 目录版本 1（与旧 `run` 内联的 catalog 常量同值）；绑定全零——编译期
+/// 经 ResourceRegistry 解析（与 v1 wire 臂/stub 后端同型）。
+/// Required 轨用它会被 `admit_trusted_input` 拒绝——那正是 typed_chain
+/// 差分锁（Required 拒无身份候选）的意图，勿在此补偿。
+// （跨二进制共享模块：未迁移套件（audit/intent_ingress/support_defaults）
+// 不使用本 helper，各二进制独立编译时按未用处理。）
+#[allow(dead_code)]
+pub fn legacy_candidate(
+    plan: &eneros_dual_brain::decision::ProposedControlPlan,
+) -> eneros_decision_contract::CandidatePlan {
+    eneros_control_dispatch::adapter::proposal_to_candidate_unbound(plan, 1)
+        .expect("legacy cand（夹具 solve_status=Optimal、ttl≥1——构造期恒过）")
+}
+
 /// 测试轨可信输入策略（**显式声明**）：迁移/差分轨允许旧派生身份。
 /// 生产装配（control-services `dispatch_assembly`）走 `Required`。
 pub fn legacy_rail(config: DispatchConfig) -> DispatchConfig {

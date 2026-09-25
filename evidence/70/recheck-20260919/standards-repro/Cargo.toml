@@ -1,0 +1,11 @@
+[package]
+name = "eneros70-standards-repro"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+eneros-drv-svc = {path = "/home/ahx/文档/EnerOS/crates/drivers/drv-svc"}
+eneros-boot-protocol = {path = "/home/ahx/文档/EnerOS/crates/boot/boot-protocol"}
+eneros-ota-ab = {path = "/home/ahx/文档/EnerOS/crates/security/ota-ab"}
+eneros-business-services = {path = "/home/ahx/文档/EnerOS/crates/agents/business-services"}
+
+[workspace]

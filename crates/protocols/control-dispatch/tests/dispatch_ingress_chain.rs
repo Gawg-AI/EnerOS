@@ -353,7 +353,7 @@ fn normal_chain_commits_with_readback() {
     let mut engine = engine_with(Box::new(channel), DecisionGate::new(100, 1000.0, 3_600_000));
     let tel = trusted_telemetry();
     let receipt = engine
-        .submit(&proposal(5.0), &tel, &actor(), 5000)
+        .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor())
         .expect("submit");
     assert_eq!(
         receipt.final_state,
@@ -402,7 +402,7 @@ fn delivery_timeout_is_indeterminate() {
     let mut engine = engine_with(Box::new(channel), DecisionGate::new(100, 1000.0, 3_600_000));
     let tel = trusted_telemetry();
     let receipt = engine
-        .submit(&proposal(5.0), &tel, &actor(), 5000)
+        .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor())
         .expect("submit");
     assert_eq!(receipt.final_state, DispatchState::Indeterminate);
     assert!(receipt.committed_at_ms.is_none());
@@ -432,7 +432,7 @@ fn delivery_unreachable_is_err_zero_delivery() {
     let mut engine = engine_with(Box::new(channel), DecisionGate::new(100, 1000.0, 3_600_000));
     let tel = trusted_telemetry();
     let err = engine
-        .submit(&proposal(5.0), &tel, &actor(), 5000)
+        .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor())
         .expect_err("unreachable");
     assert!(matches!(err, DispatchError::DeliveryUnreachable));
     assert_eq!(engine.committed_count(), 0);
@@ -456,7 +456,7 @@ fn budget_exceeded_is_err_zero_delivery() {
     let delivered = delivered_obs;
     let tel = trusted_telemetry();
     let err = engine
-        .submit(&proposal(5.0), &tel, &actor(), 5000)
+        .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor())
         .expect_err("budget");
     assert!(matches!(err, DispatchError::BudgetExceeded(_)));
     assert_eq!(*delivered.borrow(), 0, "预算拒绝必须零投递");
@@ -486,7 +486,7 @@ fn expired_telemetry_is_err() {
     let mut tel = trusted_telemetry();
     tel.valid_until_ms = now_ms() - 1; // 已过控制时域
     let err = engine
-        .submit(&proposal(5.0), &tel, &actor(), 5000)
+        .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor())
         .expect_err("stale");
     assert!(matches!(err, DispatchError::TelemetryExpired));
     assert_eq!(*delivered.borrow(), 0);
@@ -510,7 +510,11 @@ fn proposal_out_of_range_is_err() {
     let delivered = delivered_obs;
     let tel = trusted_telemetry();
     let err = engine
-        .submit(&proposal(9999.0), &tel, &actor(), 5000)
+        .submit_typed(
+            &support::legacy_candidate(&proposal(9999.0)),
+            &tel,
+            &actor(),
+        )
         .expect_err("power limit");
     assert!(matches!(err, DispatchError::ProposalInvalid(_)));
     assert_eq!(*delivered.borrow(), 0);
@@ -534,7 +538,7 @@ fn tampered_payload_fails_closed() {
     let mut engine = engine_with(Box::new(channel), DecisionGate::new(100, 1000.0, 3_600_000));
     let tel = trusted_telemetry();
     let receipt = engine
-        .submit(&proposal(5.0), &tel, &actor(), 5000)
+        .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor())
         .expect("submit");
     assert_eq!(receipt.final_state, DispatchState::Failed, "{:?}", receipt);
     assert!(receipt
@@ -563,12 +567,12 @@ fn idempotent_retransmit_does_not_rewrite() {
     let delivered = delivered_obs;
     let tel = trusted_telemetry();
     let r1 = engine
-        .submit(&proposal(5.0), &tel, &actor(), 5000)
+        .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor())
         .expect("first");
     assert_eq!(r1.final_state, DispatchState::Committed);
     // 同 proposal（plan_id 同 → correlation 同 → idempotency key 同）。
     let r2 = engine
-        .submit(&proposal(5.0), &tel, &actor(), 5000)
+        .submit_typed(&support::legacy_candidate(&proposal(5.0)), &tel, &actor())
         .expect("second");
     assert_eq!(
         r2.final_state,

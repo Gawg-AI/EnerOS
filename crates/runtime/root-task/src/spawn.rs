@@ -2143,6 +2143,65 @@ struct ConfiguredService {
     uart_handover: Option<UartHandover>,
 }
 
+/// R14-D：连续 DMA 池装配两趟纪律单源——先 `alloc_contiguous_pages`
+/// 取连续物理 untyped（first-fit），再逐帧 cap alloc + retype，末逐页
+/// 1:1 映射（41 virtio 超时根因的两趟纪律）。原 configure_service 内
+/// storage/boot/net 三处 ~50 行同构拷贝（2026-09-24 收编）。
+///
+/// 失败按阶段区分由调用方保留各自串口词形（字节不变）：`Alloc` = 池
+/// untyped 不足；`Build` = retype 或映射失败（收编前两态同走 map-FAILED
+/// 打印——retype 失败原本也落 "map FAILED" 词形，此处保持同型）。
+/// 失败路径的已建能力/映射不回收（与收编前一致）。
+#[cfg(target_os = "none")]
+enum DmaPoolFail {
+    Alloc,
+    Build,
+}
+
+#[cfg(target_os = "none")]
+fn map_contiguous_dma_pool(
+    ctx: &mut SpawnCtx,
+    vspace: u64,
+    types: &ObjectTypeTable,
+    rights: &RightsTable,
+    pages: usize,
+) -> Result<u64, DmaPoolFail> {
+    let (untyped, _byte_off, phys_base) = ctx
+        .untyped
+        .alloc_contiguous_pages(pages)
+        .ok_or(DmaPoolFail::Alloc)?;
+    let mut dma_frames: Vec<u64> = Vec::new();
+    for _k in 0..pages {
+        let frame = ctx.caps.alloc(1).ok_or(DmaPoolFail::Build)?;
+        retype(
+            untyped,
+            types.arm_frame,
+            OBJ_BITS_SMALL_PAGE,
+            1,
+            ctx.root_cnode,
+            frame,
+            0,
+            frame,
+        )
+        .map_err(|_| DmaPoolFail::Build)?;
+        dma_frames.push(frame);
+    }
+    // 1:1 映射（虚拟 = 物理）。
+    let perm = VmPermissions::RW_NX;
+    for (k, frame) in dma_frames.into_iter().enumerate() {
+        map_frame_with_pagetables(
+            ctx,
+            vspace,
+            frame,
+            phys_base + (k as u64) * (1u64 << OBJ_BITS_SMALL_PAGE),
+            perm.cap_rights(rights),
+            perm.vm_attributes(),
+        )
+        .map_err(|_| DmaPoolFail::Build)?;
+    }
+    Ok(phys_base)
+}
+
 /// 配置单个服务（阶段一）：对象 retype / ASID / 页表 / 页映射与拷贝 /
 /// CSpace mint / 寄存器 / 优先级。
 ///
@@ -2411,57 +2470,9 @@ fn configure_service(
         //    各自独立连续分配（first-fit；物理位置互不要求）。启动池基址
         //    经 initial_registers **X7** 直传 svc-storage；失败 → 打印 +
         //    降级（无后端显式 Unavailable，不阻断其他服务）。
-        if let Some((untyped, _byte_off, phys_base)) =
-            ctx.untyped.alloc_contiguous_pages(STORAGE_DMA_PAGES)
-        {
-            let mut dma_ok = true;
-            // 先连续 retype 全部帧，再逐页映射（41 virtio 超时根因两趟纪律）。
-            let mut dma_frames: Vec<u64> = Vec::new();
-            for _k in 0..STORAGE_DMA_PAGES {
-                let frame = match ctx.caps.alloc(1) {
-                    Some(f) => f,
-                    None => {
-                        dma_ok = false;
-                        break;
-                    }
-                };
-                if retype(
-                    untyped,
-                    types.arm_frame,
-                    OBJ_BITS_SMALL_PAGE,
-                    1,
-                    ctx.root_cnode,
-                    frame,
-                    0,
-                    frame,
-                )
-                .is_err()
-                {
-                    dma_ok = false;
-                    break;
-                }
-                dma_frames.push(frame);
-            }
-            if dma_ok {
-                // 1:1 映射数据池。
-                let perm = VmPermissions::RW_NX;
-                for (k, frame) in dma_frames.into_iter().enumerate() {
-                    if map_frame_with_pagetables(
-                        ctx,
-                        vspace,
-                        frame,
-                        phys_base + (k as u64) * (1u64 << OBJ_BITS_SMALL_PAGE),
-                        perm.cap_rights(rights),
-                        perm.vm_attributes(),
-                    )
-                    .is_err()
-                    {
-                        dma_ok = false;
-                        break;
-                    }
-                }
-            }
-            if dma_ok {
+        // R14-D：数据池与启动池两趟纪律经 map_contiguous_dma_pool 单源。
+        match map_contiguous_dma_pool(ctx, vspace, types, rights, STORAGE_DMA_PAGES) {
+            Ok(phys_base) => {
                 crate::println!(
                     "[eneros-root-task] STORAGE-HANDOVER: dma vaddr=0x{:x} phys=0x{:x} pages={} (1:1)",
                     phys_base,
@@ -2470,87 +2481,50 @@ fn configure_service(
                 );
                 let mmio_vaddr = STORAGE_MMIO_VADDR + STORAGE_MMIO_SLOT * STORAGE_MMIO_SLOT_STRIDE;
                 // 70.7：启动盘池独立分配（任意物理位置——X7 传基址）。
-                let mut boot_dma_vaddr: Option<u64> = None;
-                if let Some((untyped_b, _off_b, boot_phys_base)) = ctx
-                    .untyped
-                    .alloc_contiguous_pages(eneros_handover_abi::SVC_BOOT_DMA_PAGES)
-                {
-                    let mut boot_ok = true;
-                    let mut boot_frames: Vec<u64> = Vec::new();
-                    for _k in 0..eneros_handover_abi::SVC_BOOT_DMA_PAGES {
-                        let frame = match ctx.caps.alloc(1) {
-                            Some(f) => f,
-                            None => {
-                                boot_ok = false;
-                                break;
-                            }
-                        };
-                        if retype(
-                            untyped_b,
-                            types.arm_frame,
-                            OBJ_BITS_SMALL_PAGE,
-                            1,
-                            ctx.root_cnode,
-                            frame,
-                            0,
-                            frame,
-                        )
-                        .is_err()
-                        {
-                            boot_ok = false;
-                            break;
-                        }
-                        boot_frames.push(frame);
-                    }
-                    if boot_ok {
-                        let perm = VmPermissions::RW_NX;
-                        for (k, frame) in boot_frames.into_iter().enumerate() {
-                            if map_frame_with_pagetables(
-                                ctx,
-                                vspace,
-                                frame,
-                                boot_phys_base + (k as u64) * (1u64 << OBJ_BITS_SMALL_PAGE),
-                                perm.cap_rights(rights),
-                                perm.vm_attributes(),
-                            )
-                            .is_err()
-                            {
-                                boot_ok = false;
-                                break;
-                            }
-                        }
-                    }
-                    if boot_ok {
-                        boot_dma_vaddr = Some(boot_phys_base);
+                let boot_dma_vaddr = match map_contiguous_dma_pool(
+                    ctx,
+                    vspace,
+                    types,
+                    rights,
+                    eneros_handover_abi::SVC_BOOT_DMA_PAGES,
+                ) {
+                    Ok(boot_phys_base) => {
                         crate::println!(
                             "[eneros-root-task] BOOT-STORAGE-HANDOVER: dma vaddr=0x{boot_phys_base:x} (1:1) pages={}",
                             eneros_handover_abi::SVC_BOOT_DMA_PAGES
                         );
-                    } else {
+                        Some(boot_phys_base)
+                    }
+                    Err(DmaPoolFail::Alloc) => {
+                        crate::println!(
+                            "[eneros-root-task] BOOT-STORAGE-HANDOVER: alloc FAILED —— 启动后端不可用"
+                        );
+                        None
+                    }
+                    Err(DmaPoolFail::Build) => {
                         crate::println!(
                             "[eneros-root-task] BOOT-STORAGE-HANDOVER: map FAILED —— 启动后端不可用"
                         );
+                        None
                     }
-                } else {
-                    crate::println!(
-                        "[eneros-root-task] BOOT-STORAGE-HANDOVER: alloc FAILED —— 启动后端不可用"
-                    );
-                }
+                };
                 storage_handover = Some(StorageHandover {
                     mmio_vaddr,
                     dma_vaddr: phys_base, // 1:1（虚拟 = 物理）
                     dma_phys: phys_base,
                     boot_dma_vaddr,
                 });
-            } else {
+            }
+            Err(DmaPoolFail::Build) => {
                 crate::println!(
                     "[eneros-root-task] STORAGE-HANDOVER: dma map FAILED —— storage 无后端（显式 Unavailable）"
                 );
             }
-        } else {
-            crate::println!(
-                "[eneros-root-task] STORAGE-HANDOVER: dma pool alloc FAILED —— storage 无后端（显式 Unavailable）"
-            );
+            Err(DmaPoolFail::Alloc) => {
+                crate::println!(
+                    "[eneros-root-task] STORAGE-HANDOVER: dma pool alloc FAILED —— storage 无后端（显式 Unavailable）"
+                );
+            }
         }
     }
     // 43（L2 协议互操作面）+ 46（WP-46.2 句柄移交 ×6）：协议服务设备
@@ -2664,56 +2638,9 @@ fn configure_service(
                 );
             }
         }
-        // b) DMA 池（9 页连续物理帧，1:1 映射；同 svc-storage 两趟法）。
-        if let Some((untyped, _byte_off, phys_base)) =
-            ctx.untyped.alloc_contiguous_pages(NET_DMA_PAGES)
-        {
-            let mut dma_ok = true;
-            let mut dma_frames: Vec<u64> = Vec::new();
-            for _k in 0..NET_DMA_PAGES {
-                let frame = match ctx.caps.alloc(1) {
-                    Some(f) => f,
-                    None => {
-                        dma_ok = false;
-                        break;
-                    }
-                };
-                if retype(
-                    untyped,
-                    types.arm_frame,
-                    OBJ_BITS_SMALL_PAGE,
-                    1,
-                    ctx.root_cnode,
-                    frame,
-                    0,
-                    frame,
-                )
-                .is_err()
-                {
-                    dma_ok = false;
-                    break;
-                }
-                dma_frames.push(frame);
-            }
-            if dma_ok {
-                let perm = VmPermissions::RW_NX;
-                for (k, frame) in dma_frames.into_iter().enumerate() {
-                    if map_frame_with_pagetables(
-                        ctx,
-                        vspace,
-                        frame,
-                        phys_base + (k as u64) * (1u64 << OBJ_BITS_SMALL_PAGE),
-                        perm.cap_rights(rights),
-                        perm.vm_attributes(),
-                    )
-                    .is_err()
-                    {
-                        dma_ok = false;
-                        break;
-                    }
-                }
-            }
-            if dma_ok {
+        // b) DMA 池（9 页连续物理帧，1:1 映射；R14-D 两趟纪律单源）。
+        match map_contiguous_dma_pool(ctx, vspace, types, rights, NET_DMA_PAGES) {
+            Ok(phys_base) => {
                 crate::println!(
                     "[eneros-root-task] NET-HANDOVER {}: dma vaddr=0x{:x} phys=0x{:x} pages={} (1:1)",
                     svc.name,
@@ -2730,17 +2657,19 @@ fn configure_service(
                     dma_vaddr: phys_base,
                     dma_phys: phys_base,
                 });
-            } else {
+            }
+            Err(DmaPoolFail::Build) => {
                 crate::println!(
                     "[eneros-root-task] NET-HANDOVER {}: dma map FAILED —— 无传输（显式 Unavailable）",
                     svc.name
                 );
             }
-        } else {
-            crate::println!(
-                "[eneros-root-task] NET-HANDOVER {}: dma pool alloc FAILED —— 无传输（显式 Unavailable）",
-                svc.name
-            );
+            Err(DmaPoolFail::Alloc) => {
+                crate::println!(
+                    "[eneros-root-task] NET-HANDOVER {}: dma pool alloc FAILED —— 无传输（显式 Unavailable）",
+                    svc.name
+                );
+            }
         }
     }
 

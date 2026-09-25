@@ -89,7 +89,7 @@ mod file;
 pub use error::FsError;
 pub use file::File;
 pub use fs_trait::{FileSystem, MockFileSystem};
-pub use lfs::{BlockDeviceStorage, Lfs, LfsConfig};
+pub use lfs::{mount_or_format, BlockDeviceStorage, Lfs, LfsConfig};
 pub use types::{DirEntry, DiskUsage, FileMode, FileStat, OpenFlags, SeekFrom};
 // Re-export wear-leveling types.
 pub use wear::{

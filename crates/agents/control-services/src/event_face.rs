@@ -722,18 +722,11 @@ fn open_snap_volume<C: EipcSend + Clone + 'static>(
     );
     let base_4k = base_block_512 / 8;
     let blocks_4k = (region_blocks_512 / 8).min(64);
-    let scope =
-        RegionScope::new(CachedBlocks::<4, _>::new(face.clone()), base_4k, blocks_4k).ok()?;
-    match Lfs::mount(alloc::boxed::Box::new(scope)) {
-        Ok(fs) => Some(fs),
-        Err(eneros_fs::FsError::BadSuperBlock) => {
-            // 首次上电：显式格式化一次（fresh face；仅让渡区段内）。
-            let scope2 =
-                RegionScope::new(CachedBlocks::<4, _>::new(face), base_4k, blocks_4k).ok()?;
-            Lfs::format(alloc::boxed::Box::new(scope2)).ok()
-        }
-        Err(_) => None,
-    }
+    // mount-or-format 单源（2026-09-24 收口 C13）：缓存深度 4（区段直映射
+    // 读缓存——本面快照读为主）与区段几何显式传入。
+    eneros_fs::mount_or_format(|| {
+        RegionScope::new(CachedBlocks::<4, _>::new(face.clone()), base_4k, blocks_4k).ok()
+    })
 }
 
 /// 扫描快照目录：可名记 .snap 数（目录不存在 = 0）。

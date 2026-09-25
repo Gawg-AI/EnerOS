@@ -13,6 +13,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use eneros_control_dispatch::dispatch::{AuthenticatedActor, DispatchReceipt, DispatchState};
+use eneros_control_dispatch::evidence;
 use eneros_control_dispatch::ControlDispatch;
 #[cfg(test)]
 use eneros_control_dispatch::DeliveryChannel;
@@ -21,11 +22,14 @@ use crate::telemetry::decode_trusted;
 
 /// 蓝图 61 v0.314.35：proposal → CandidatePlan（resource_catalog_version
 /// 由调用方注入——planner 输入与 Registry 同代；[08] §4.8 门）。
+/// C2 收口（2026-09-24）：绑定全零（未绑定迁移形态）——asset/device/
+/// point/unit 由 dispatch 编译期经 ResourceRegistry 解析；位置实参四元组
+/// 随 legacy facade 入口退役。
 pub fn candidate_from_proposal(
     plan: &eneros_dual_brain::decision::ProposedControlPlan,
     catalog_version: u64,
 ) -> Result<eneros_decision_contract::CandidatePlan, alloc::string::String> {
-    eneros_control_dispatch::adapter::proposal_to_candidate(plan, (0, 0, 0, 0), 0, catalog_version)
+    eneros_control_dispatch::adapter::proposal_to_candidate_unbound(plan, catalog_version)
         .map_err(|e| alloc::format!("{e:?}"))
 }
 
@@ -175,33 +179,30 @@ pub fn handle_submit(engine: &mut dyn ControlDispatch, req: &[u8]) -> Vec<u8> {
         service: [0u8; 16],
         session_epoch: 0,
     };
-    // R13-B：typed/trusted 两入口共用的逐投递清算超时（与持有/恢复路径
-    // 同一单源 HELD_DELIVERY_SETTLE_MS）。
-    let deadline_ms = eneros_control_dispatch::engine::HELD_DELIVERY_SETTLE_MS;
+    // R14-A：typed/trusted 入口的投递标签/清算超时改由引擎内部自派生
+    // （原此处经单源常量传参——生产从未传过第二值，形参随 trait 收窄
+    // 退役）；intent 入口仍显式传超时（下方绑定）。
     // 单读判别：唯一入口 = `CAND` magic（CandidatePlan V1）。
     if plan_len >= 4 && &body[0..4] == b"CAND" {
         let Ok(cand) = eneros_decision_contract::CandidatePlan::decode_v1(&body[..plan_len]) else {
             return err_receipt("bad candidate");
         };
-        return match engine.submit_typed(
-            &cand,
-            eneros_control_dispatch::engine::STATION_PLAN_TARGET_LABEL,
-            &telemetry,
-            &actor,
-            deadline_ms,
-        ) {
+        return match engine.submit_typed(&cand, &telemetry, &actor) {
             Ok(receipt) => {
                 if !receipt.final_state.is_committed() {
                     eneros_runtime::println!(
-                        "[svc-control-dispatch] TYPED state={:?} note={:?}",
-                        receipt.final_state,
-                        receipt.note
+                        "{}",
+                        evidence::receipt_state_note(
+                            evidence::WORD_TYPED,
+                            receipt.final_state,
+                            &receipt.note
+                        )
                     );
                 }
                 encode_receipt(&receipt)
             }
             Err(e) => {
-                eneros_runtime::println!("[svc-control-dispatch] TYPED-ERR {e:?}");
+                eneros_runtime::println!("{}", evidence::submit_err(evidence::WORD_TYPED, &e));
                 err_receipt(&format!("{e:?}"))
             }
         };
@@ -246,26 +247,22 @@ pub fn handle_submit_trusted(engine: &mut dyn ControlDispatch, body: &[u8]) -> V
     let Some(telemetry) = decode_trusted(input.telemetry()) else {
         return err_receipt("bad trusted telemetry payload");
     };
-    match engine.submit_trusted(
-        &cand,
-        &input,
-        eneros_control_dispatch::engine::STATION_PLAN_TARGET_LABEL,
-        &telemetry,
-        &actor,
-        eneros_control_dispatch::engine::HELD_DELIVERY_SETTLE_MS,
-    ) {
+    match engine.submit_trusted(&cand, &input, &telemetry, &actor) {
         Ok(receipt) => {
             if !receipt.final_state.is_committed() {
                 eneros_runtime::println!(
-                    "[svc-control-dispatch] TRUSTED state={:?} note={:?}",
-                    receipt.final_state,
-                    receipt.note
+                    "{}",
+                    evidence::receipt_state_note(
+                        evidence::WORD_TRUSTED,
+                        receipt.final_state,
+                        &receipt.note
+                    )
                 );
             }
             encode_receipt(&receipt)
         }
         Err(e) => {
-            eneros_runtime::println!("[svc-control-dispatch] TRUSTED-ERR {e:?}");
+            eneros_runtime::println!("{}", evidence::submit_err(evidence::WORD_TRUSTED, &e));
             err_receipt(&format!("{e:?}"))
         }
     }
@@ -331,14 +328,17 @@ pub fn handle_submit_intent(
     match engine.submit_intent(&intent, tel, &actor, deadline_ms) {
         Ok(receipt) => {
             eneros_runtime::println!(
-                "[svc-control-dispatch] INTENT state={:?} note={:?}",
-                receipt.final_state,
-                receipt.note
+                "{}",
+                evidence::receipt_state_note(
+                    evidence::WORD_INTENT,
+                    receipt.final_state,
+                    &receipt.note
+                )
             );
             encode_receipt(&receipt)
         }
         Err(e) => {
-            eneros_runtime::println!("[svc-control-dispatch] INTENT-ERR {e:?}");
+            eneros_runtime::println!("{}", evidence::submit_err(evidence::WORD_INTENT, &e));
             err_receipt(&format!("{e:?}"))
         }
     }
@@ -440,7 +440,7 @@ mod tests {
                 None,
             );
             Ok(crate::ai_worker::encode_candidate_payload(
-                &crate::ai_worker::proposal_to_candidate_unbound(&plan).expect("stub cand"),
+                &crate::ai_worker::proposal_to_candidate_unbound(&plan, 0).expect("stub cand"),
             ))
         }
     }
@@ -876,27 +876,62 @@ mod tests {
         );
     }
 
-    /// WP-69.4.1：主路词形字面锁（Z2）。`TYPED`/`TYPED-ERR` 两条串口词形
-    /// 逐字节冻结（探针经分段拼接构造，防自匹配）；已退役的
-    /// `SUBMIT …`/`SUBMIT-ERR` 词形复现即红（词形退役不可逆）。
+    /// WP-69.4.1：主路词形锁（Z2；C7 收口后锁**表**）。提交回执族
+    /// （TYPED/TRUSTED/INTENT ± ERR 六形）词形唯一事实源 =
+    /// `eneros_control_dispatch::evidence` 表——调用点零字面，正臂为表
+    /// golden 等值（重构搬动调用点不再打翻锁；词形漂移必发生在表且必红）；
+    /// 负臂两道：已退役 `SUBMIT …`/`SUBMIT-ERR` 词形复现即红（词形退役
+    /// 不可逆）+ 调用点手抄格式片段回流即红（防词形双源）。
     #[test]
     fn t22_typed_word_form_literal_lock() {
+        use eneros_control_dispatch::DispatchError;
+        // 正臂：表 golden（与 QEMU 门 grep 的词形逐字节一致）。
+        assert_eq!(
+            evidence::receipt_state_note(evidence::WORD_TYPED, DispatchState::Failed, &None),
+            concat!("[svc-control-dispatch] ", "TYPED state=Failed note=None")
+        );
+        assert_eq!(
+            evidence::submit_err(evidence::WORD_TYPED, &DispatchError::DeliveryTimeout),
+            concat!("[svc-control-dispatch] ", "TYPED-ERR DeliveryTimeout")
+        );
+        assert_eq!(
+            evidence::receipt_state_note(
+                evidence::WORD_TRUSTED,
+                DispatchState::Indeterminate,
+                &None
+            ),
+            concat!(
+                "[svc-control-dispatch] ",
+                "TRUSTED state=Indeterminate note=None"
+            )
+        );
+        assert_eq!(
+            evidence::submit_err(evidence::WORD_TRUSTED, &DispatchError::DeliveryUnreachable),
+            concat!("[svc-control-dispatch] ", "TRUSTED-ERR DeliveryUnreachable")
+        );
+        assert_eq!(
+            evidence::receipt_state_note(evidence::WORD_INTENT, DispatchState::Rejected, &None),
+            concat!("[svc-control-dispatch] ", "INTENT state=Rejected note=None")
+        );
+        assert_eq!(
+            evidence::submit_err(evidence::WORD_INTENT, &DispatchError::DeliveryTimeout),
+            concat!("[svc-control-dispatch] ", "INTENT-ERR DeliveryTimeout")
+        );
+        // 负臂①：已退役词形复现即红（源扫描——禁词在任何重构形态下都不合法）。
         let src = include_str!("dispatch_service.rs");
-        let typed = concat!("[svc-control-dispatch] ", "TYPED state={:?} note={:?}");
-        let typed_err = concat!("[svc-control-dispatch] ", "TYPED-ERR {e:?}");
-        assert!(
-            src.contains(typed),
-            "TYPED 词形漂移（Z2 主路词形逐字节冻结）"
-        );
-        assert!(
-            src.contains(typed_err),
-            "TYPED-ERR 词形漂移（Z2 主路词形逐字节冻结）"
-        );
         let submit = concat!("[svc-control-dispatch] ", "SUBMIT state");
         let submit_err = concat!("[svc-control-dispatch] ", "SUBMIT-ERR");
         assert!(
             !src.contains(submit) && !src.contains(submit_err),
             "已退役词形 SUBMIT/SUBMIT-ERR 复现（v0.329.0 随旧读臂退役）"
+        );
+        // 负臂②：调用点不得手抄格式片段（应引 evidence 表——防词形双源）。
+        // 针经分段拼接构造（防自咬：golden 用具体值，不含格式片段）。
+        let state_fmt: String = ["state=", "{", ":?}"].concat();
+        let err_fmt: String = ["-ERR {", "e:?}"].concat();
+        assert!(
+            !src.contains(&state_fmt) && !src.contains(&err_fmt),
+            "提交回执族词形手抄回流（应引 evidence::receipt_state_note/submit_err）"
         );
     }
 
@@ -996,32 +1031,26 @@ mod tests {
         let resp = handle_submit_intent(&mut engine, &req, Some(&tel));
         assert_eq!(resp[0], DISP_ERR);
     }
-    /// R13-B 源文本守卫（双向锁）：本服务三个提交入口（typed/trusted/
-    /// intent）的投递标签与清算超时必须经 control-dispatch 单源常量；
-    /// 手抄投递标签字面（同下方断言的反向词形）或裸清算超时数字回流
-    /// 即红。变异验证：回退任一调用点为字面 ⇒ 负臂红；删常量引用 ⇒
-    /// 正臂红。
+    // （2026-09-24 R14-A 退役）原 R13-B 源文本守卫
+    // `dispatch_service_delivery_uses_shared_constants`：typed/trusted
+    // 入口的标签/超时形参随 trait 收窄退役，typed/trusted 已无常量引用
+    // 点。intent 入口仍显式传超时——复查轮恢复窄守卫（仅锁本文件裸
+    // 超时字面；标签字面检查随 typed/trusted 退役一并撤销）。
+    /// intent 入口清算超时须引单源常量；裸字面回流即红（针经字符数组
+    /// 构造——防自咬，断言文本不得包含连续手抄字面，R13-B 同技法）。
     #[test]
-    fn dispatch_service_delivery_uses_shared_constants() {
+    fn intent_delivery_deadline_uses_shared_constant() {
         let src = include_str!("dispatch_service.rs");
         assert!(
-            src.contains("engine::STATION_PLAN_TARGET_LABEL"),
-            "投递标签须引用单源常量（R13-B）"
-        );
-        assert!(
             src.contains("engine::HELD_DELIVERY_SETTLE_MS"),
-            "清算超时须引用单源常量（R13-B）"
+            "intent 逐意图清算超时须引用单源常量（R13-B/R14 复查轮）"
         );
+        // 针经字符数组构造（防自咬）。
+        let hand_a: String = ['5', '_', '0', '0', '0'].iter().collect();
+        let hand_b: String = ['5', '0', '0', '0'].iter().collect();
         assert!(
-            !src.contains("\"pcs\""),
-            "手抄投递标签字面回归（应引 STATION_PLAN_TARGET_LABEL）"
-        );
-        // 针经字符数组构造（防自咬：断言文本不得包含连续的手抄字面）。
-        let hand_settle_a: String = ['5', '_', '0', '0', '0'].iter().collect();
-        let hand_settle_b: String = ['5', '0', '0', '0'].iter().collect();
-        assert!(
-            !src.contains(&hand_settle_a) && !src.contains(&hand_settle_b),
-            "手抄清算超时字面回归（应引 HELD_DELIVERY_SETTLE_MS）"
+            !src.contains(&hand_a) && !src.contains(&hand_b),
+            "intent 清算超时手抄字面回归（应引 HELD_DELIVERY_SETTLE_MS）"
         );
     }
 }

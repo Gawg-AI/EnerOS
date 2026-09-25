@@ -1,0 +1,47 @@
+[vol7-gate] === 段0：清理 ===
+[vol7-gate] === 段1：双镜像构建（A=0.336.0 epoch E / B=0.337.0 epoch E+3600）===
+[vol7-gate] EPOCH_A=1755523200 EPOCH_B=1755526800
+=== sel4-build-rust 重链接（stamp=e3058027e088）===
+=== image raw qemu-test ===
+=== image raw qemu-test（缓存命中，跳过）===
+[vol7-gate] COMBINED 就绪（BOOT_A=A 载荷 / BOOT_B=B 载荷）
+[vol7-gate] === 段2：窗T-1 安装事务实弹（探针直驱）===
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.09s
+     Running `target/debug/eneros-xtask run qemu-test --image '/home/ahx/文档/EnerOS/target/evidence70-vol7/eneros-combined.raw' --vars-template '/home/ahx/文档/EnerOS/target/evidence61/template.fd' --expect PASS --evidence-dir '/home/ahx/文档/EnerOS/target/evidence70-vol7/t1' --data-disk '/home/ahx/文档/EnerOS/target/evidence70-vol7/data-disk.raw' --net-mode present --net-user --net-protocols present --reset-bootctrl --qmp-shutdown --ready-marker probe-complete --qmp-deadline-secs 700`
+QEMU profile=qemu-prod bootctrl reset before_sha256=5cb048f13eeb7baad81a7ceafdb7e390544ab6867fd00f588b2b4d2867a48e5b after_sha256=5cb048f13eeb7baad81a7ceafdb7e390544ab6867fd00f588b2b4d2867a48e5b
+QEMU profile=qemu-prod result=PASS expected=PASS image_initial_sha256=5cb048f13eeb7baad81a7ceafdb7e390544ab6867fd00f588b2b4d2867a48e5b image_final_sha256=fa52b886d0f487c705420fc6541ceff49ef7272b51d78feeb9ea01c884172e3a
+[vol7-gate] === 段2 判据（窗T-1）===
+[✓][R1] 零 PANIC / 零分配失败
+[✓][R2] PRODUCT-READY 达成
+[✓][R3] BOOT 守卫查询（0x0A）
+[✓][R4] BOOT trial 事务提交（bootctrl 双副本+flush）
+[vol7-gate] === 段2.5：B07 最后一次试启形态构造（prepare-attempt ×2：tries 3→1）===
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.12s
+     Running `target/debug/eneros-xtask bootctrl-prepare-attempt --image '/home/ahx/文档/EnerOS/target/evidence70-vol7/eneros-combined.raw' --times 2`
+BOOTCTRL-PREPARE-ATTEMPT times=2 seq=2->4 slot_b_tries=3->1
+[vol7-gate] === 段3：窗T-2 同盘重启进入新载荷（最后一次试启 + 正确确认）===
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.09s
+     Running `target/debug/eneros-xtask run qemu-test --image '/home/ahx/文档/EnerOS/target/evidence70-vol7/eneros-combined.raw' --vars-template '/home/ahx/文档/EnerOS/target/evidence70-vol7/t1/AAVMF_VARS.run.fd' --expect PASS --evidence-dir '/home/ahx/文档/EnerOS/target/evidence70-vol7/t2' --data-disk '/home/ahx/文档/EnerOS/target/evidence70-vol7/data-disk.raw' --net-mode present --net-user --net-protocols present --qmp-shutdown --ready-marker probe-complete --qmp-deadline-secs 420`
+QEMU profile=qemu-prod result=PASS expected=PASS image_initial_sha256=89609c574e31c4f48f298302fb7ed6224f29b9f1a7a045e5b142c15153bf7f43 image_final_sha256=485c60a9faac596d14d7f72e17f91d6af6b899f8ff8cc00af15ead58ab73dd4d
+[vol7-gate] === 段3 判据（窗T-2）===
+[✓][R5] 零 PANIC / 零分配失败
+[✓][R6] PRODUCT-READY 达成
+[✓][R7] boot-evidence slot=B（boot-manager 选择非活动槽）
+[✓][R8] boot_reason=UPDATE_TRIAL（跨重启试启动语义）
+[✓][R9] BOOT-CONFIRM 自适应确认（slot=B → successful；最后一次试启的运行槽确认必须成功 = S1 红转绿）
+[✓][R10] 确认持久化（序列推进）
+[✓][R11] BOOT-IDENTITY slot=B（capsule→root 只读身份页→svc-storage 守卫贯通）
+[✓][R12] 安装面非运行槽=BOOT_A（守卫按本次运行槽派生，非 select()）
+[vol7-gate] === 段4：窗T-3 确认后同盘再启（不误回退；B07 收口）===
+   Compiling eneros-boot-manager-uefi v0.337.0 (/home/ahx/文档/EnerOS/crates/boot/boot-manager-uefi)
+   Compiling eneros-xtask v0.337.0 (/home/ahx/文档/EnerOS/xtask)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 2.31s
+     Running `target/debug/eneros-xtask run qemu-test --image '/home/ahx/文档/EnerOS/target/evidence70-vol7/eneros-combined.raw' --vars-template '/home/ahx/文档/EnerOS/target/evidence70-vol7/t2/AAVMF_VARS.run.fd' --expect PASS --evidence-dir '/home/ahx/文档/EnerOS/target/evidence70-vol7/t3' --data-disk '/home/ahx/文档/EnerOS/target/evidence70-vol7/data-disk.raw' --net-mode present --net-user --net-protocols present --qmp-shutdown --ready-marker probe-complete --qmp-deadline-secs 420`
+QEMU profile=qemu-prod result=PASS expected=PASS image_initial_sha256=485c60a9faac596d14d7f72e17f91d6af6b899f8ff8cc00af15ead58ab73dd4d image_final_sha256=1f3e2b74b23097c059ca228e76ff3f38cb944dc51456ad54ad01195a54fefc87
+[vol7-gate] === 段4 判据（窗T-3）===
+[✓][R13] 零 PANIC / 零分配失败
+[✓][R14] boot-evidence slot=B（确认后不误回退——successful B 仍被选）
+[✓][R15] BOOT-IDENTITY slot=B（再启后身份页仍贯通）
+[✓][R16] 同盘再启载荷身份不变（manifest_sha256 一致）
+VOL70.7-GATE: PASS
+rc=0

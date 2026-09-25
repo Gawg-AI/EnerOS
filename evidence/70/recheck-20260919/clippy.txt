@@ -1,0 +1,3 @@
+   Compiling eneros-business-services v0.337.0 (/home/ahx/文档/EnerOS/crates/agents/business-services)
+   Compiling eneros-root-task v0.337.0 (/home/ahx/文档/EnerOS/crates/runtime/root-task)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1.93s

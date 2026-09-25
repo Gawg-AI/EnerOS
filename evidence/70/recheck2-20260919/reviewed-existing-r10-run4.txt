@@ -1,0 +1,29 @@
+=== sel4-build-rust 重链接（stamp=bdb922e239b8）===
+=== image raw qemu-test ===
+66e8713e8913c079fd67e15b8f1042f5cc7a093651cd07ca34c06bc07bf88b88  /home/ahx/文档/EnerOS/target/eneros/artifacts/qemu-test/eneros-qemu-test.raw
+=== 段A：健康多时段窗（480s）===
+MODBUS47-SLAVE-READY listening=5502
+[✓][A1] v2 请求 assets=3 steps=4（×56）
+[✗][A2/A3/A7] 无满足守恒的完整计划（需 intents+skipped=12 ∧ 全 Applied ∧ Committed）：ERR
+[✗][A4b] 外部读回归属不足（rc=2 proven=0/total=0 uniq=0）
+[✗][A5a] 三资产绑定写入缺失（0x200×0 / 0x201×0 / 0x202×0）
+[✗][A5b] 非合并计划绑定写跨度 0s <10s（非分步发放）
+[✓][A6] 零 PANIC/零分配失败
+=== 段B：重启续接窗 ===
+MODBUS47-SLAVE-READY listening=5502
+[段B] kill -9 QEMU（脏断电）
+[✓][B0] kill 前持有+已确认（PLAN-HELD ×1 / Applied ×1）
+[✓][B1] 重启 HELD-STORE-OPEN OK（×1）
+[✗][B2] 零未发步取消
+[✗][B3] 前缀保留失败（ok=0 bad=1）
+0
+BAD 9b, ef, 6a, 5d, 29, 60, 46, 88, 62, 4f, 5b, c2, ae, 1d, 45, 83 absent
+[✓][B4] 重启窗 FC06 ×5 ≤ journal 确认执行 ×5（写可归属；对账只读）
+[✓][B5] 零 PANIC
+=== 段C：部分失败窗（0x201 拒写）===
+MODBUS47-SLAVE-READY listening=5502
+[✓][C1] PLAN-HELD（×1）
+[✓][C2] 部分失败注入生效（0x200 写 ×3 / 0x201 拒 ×1）
+[✓][C3] 混合终态（Applied ×1 / 非完成 ×3）
+[✓][C4] 零 PANIC
+=== R10-HELD-GATE: FAIL ===

@@ -34,6 +34,19 @@ PANIC / 分配失败在本裁决器下一律 FAIL，无进程名/文件名豁免
 import json
 import re
 import sys
+from pathlib import Path
+
+# 73 批C：PANIC 词表单源=tools/gate-criteria.toml 的 PANIC-SCAN 条目——
+# 本裁决器曾是"第四方言"（硬编码裸子串、且与登记册同样漏检本仓自定义
+# panic 出口），收编后与 bash 门、criterion.py 共用一份词表。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import criterion as _crit  # noqa: E402
+
+#: G2 分配失败子集（仅作诊断分行——G1/G2 同为零容忍，分区不影响裁决）。
+_ALLOC_TOKENS = frozenset({"memory allocation of"})
+_PANIC_NONE_OF = list(_crit.get_criterion("PANIC-SCAN")["none_of"])
+_PANIC_TOKENS = [t for t in _PANIC_NONE_OF if t not in _ALLOC_TOKENS]
+_ALLOC_TOKEN_LIST = [t for t in _PANIC_NONE_OF if t in _ALLOC_TOKENS]
 
 
 #: 架构的决策节奏**上界**参考值（s）：冻结快照的构建批窗决定"多久可能有
@@ -112,8 +125,10 @@ def judge(path, min_rounds, transcripts, window_secs=None, cadence_max_s=None):
     def find(pat):
         return [i for i, ln in enumerate(lines) if pat in ln]
 
-    def find_all(pat):
-        return [i for i, ln in enumerate(all_lines) if pat in ln]
+    def find_tok(patterns):
+        """登记词表的锚定命中行索引（扫描域=全文件；语义经 criterion 单源）。"""
+        return [i for i, ln in enumerate(all_lines)
+                if any(_crit.match_count(ln, p) for p in patterns)]
 
     # G1/G2：零豁免失败判据。
     #
@@ -124,8 +139,10 @@ def judge(path, min_rounds, transcripts, window_secs=None, cadence_max_s=None):
     # PRODUCT-READY 之前 + 其后 600 条健康 round ⇒ 旧实现 G1/G2 双 PASS。
     # 卡面 17 §4.3 与 REG-70.1-GATE-NO-ALLOC-EXEMPTION 的口径是"任何 PANIC
     # 一律 FAIL，无文件名/进程名豁免"——时间位置同样不是豁免理由。
-    panic_idx = find_all("PANIC: panicked at")
-    alloc_idx = find_all("memory allocation of")
+    # 73 批C：词表改从登记册取（本裁决器原为"第四方言"，且与登记册同样
+    # 漏检 `PANIC #N at` / `PANIC reboot #` / `[PANIC]` 三个真实出口）。
+    panic_idx = find_tok(_PANIC_TOKENS)
+    alloc_idx = find_tok(_ALLOC_TOKEN_LIST)
     pre_note = ""
     if ready_at:
         pre = (sum(1 for i in panic_idx if i < ready_at)

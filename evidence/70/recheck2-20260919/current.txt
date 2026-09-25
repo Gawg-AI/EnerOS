@@ -1,0 +1,3 @@
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.10s
+     Running `target/debug/eneros-xtask evidence42 check-current --matrix core-70`
+xtask: FAIL: candidate-index-unavailable: no index under evidence/70/70.15 for commit 9ed12d3ee5b182c81066eabf1ba9a783954c28f0

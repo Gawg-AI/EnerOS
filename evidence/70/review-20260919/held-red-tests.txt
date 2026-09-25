@@ -1,0 +1,35 @@
+warning: use of deprecated method `sha2::digest::generic_array::GenericArray::<T, N>::as_slice`: please upgrade to generic-array 1.x
+   --> /home/ahx/文档/EnerOS/crates/agents/snapshot-service/src/wire.rs:270:25
+    |
+270 |         if h.finalize().as_slice() != payload_sha {
+    |                         ^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: `eneros-snapshot-service` (lib) generated 1 warning
+   Compiling eneros70-spec-repro v0.1.0 (/home/ahx/文档/EnerOS/evidence/70/review-20260919/held-repro)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.86s
+     Running repro.rs (target/debug/deps/repro-325a02254a9e36eb)
+
+running 2 tests
+
+thread 'review_capacity_rejection_unpins_live_plans' (1533659) panicked at repro.rs:1837:5:
+active plans lost their input pin when third plan was rejected
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test review_capacity_rejection_unpins_live_plans ... FAILED
+
+thread 'review_release_failure_is_not_retried_on_idle_ticks' (1533660) panicked at repro.rs:1855:2:
+assertion `left == right` failed: failed release must retry on following tick
+  left: 1
+ right: 2
+test review_release_failure_is_not_retried_on_idle_ticks ... FAILED
+
+failures:
+
+failures:
+    review_capacity_rejection_unpins_live_plans
+    review_release_failure_is_not_retried_on_idle_ticks
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--test repro`

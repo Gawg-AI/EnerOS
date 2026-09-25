@@ -41,6 +41,9 @@ pub mod catalog_spec_source;
 // 以 closure seam 注入）；EIPC 通道/引擎装配限目标构建（cfg(none) 项级门）。
 pub mod dispatch_assembly;
 pub mod dispatch_service;
+/// C3（2026-09-24）：控制链出站/钉面 wire 的 codec 半边（host 可测纯
+/// 函数）——cfg(none) 通道只留 IPC 拨号，字节映射全部在此单源。
+pub mod dispatch_wire;
 pub mod energy_agent_service;
 // SPEC-SERIES-2026-08-27/E（WP-E.3）：有界学习闭环（svc-ai-worker 宿主）。
 pub mod learn;

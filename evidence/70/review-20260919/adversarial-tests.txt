@@ -1,0 +1,24 @@
+   Compiling eneros-xtask v0.0.0 (/tmp/eneros70-candidate-review-woh3t5wj/xtask)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.85s
+     Running unittests src/main.rs (/tmp/eneros70-review-isolated/xtask/target/debug/deps/eneros_xtask-dc1a42ec1a69bfb3)
+
+running 2 tests
+
+thread 'evidence_chain::tests::review70_reject_failed_run_record_under_pass_envelope' (1534606) panicked at src/evidence_chain.rs:6962:9:
+Failed run-record was accepted: ["CASE CORE-70-R01 PASS scope=L2 env=evidence/70/70.15/dda18a0e21ae47c53b4309434cbc02ae8bf764fa83a6defbb719431242722aa7/CORE-70-R01.json"]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test evidence_chain::tests::review70_reject_failed_run_record_under_pass_envelope ... FAILED
+
+thread 'evidence_chain::tests::review70_reject_reused_signed_envelope_for_different_case' (1534607) panicked at src/evidence_chain.rs:6938:9:
+Reused R01 signed envelope for R02 was accepted: ["CASE CORE-70-R01 PASS scope=L2 env=evidence/70/70.15/dda18a0e21ae47c53b4309434cbc02ae8bf764fa83a6defbb719431242722aa7/CORE-70-R01.json", "CASE CORE-70-R02 PASS scope=L2 env=evidence/70/70.15/dda18a0e21ae47c53b4309434cbc02ae8bf764fa83a6defbb719431242722aa7/CORE-70-R01.json"]
+test evidence_chain::tests::review70_reject_reused_signed_envelope_for_different_case ... FAILED
+
+failures:
+
+failures:
+    evidence_chain::tests::review70_reject_failed_run_record_under_pass_envelope
+    evidence_chain::tests::review70_reject_reused_signed_envelope_for_different_case
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 194 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `--bin eneros-xtask`

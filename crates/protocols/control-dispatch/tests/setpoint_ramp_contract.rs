@@ -372,7 +372,11 @@ fn first_command_has_no_baseline_and_commits() {
     let (mut engine, delivered) = engine_with();
     let tel = trusted_telemetry();
     let r = engine
-        .submit(&proposal_with_id("plan-A", 5.0), &tel, &actor(), 5000)
+        .submit_typed(
+            &support::legacy_candidate(&proposal_with_id("plan-A", 5.0)),
+            &tel,
+            &actor(),
+        )
         .expect("首命令无爬坡参照 → 放行");
     assert_eq!(r.final_state, DispatchState::Committed);
     assert_eq!(*delivered.borrow(), 1);
@@ -384,11 +388,19 @@ fn ramp_violation_rejected_zero_delivery() {
     let (mut engine, delivered) = engine_with();
     let tel = trusted_telemetry();
     let _ = engine
-        .submit(&proposal_with_id("plan-A", 5.0), &tel, &actor(), 5000)
+        .submit_typed(
+            &support::legacy_candidate(&proposal_with_id("plan-A", 5.0)),
+            &tel,
+            &actor(),
+        )
         .expect("基线 5 kW Committed");
     let before = *delivered.borrow();
     // 同拍 5→200：|Δ|=195 kW，dt 下限 1s → 195 kW/s ≫ 3.33 kW/s 合同限。
-    let r = engine.submit(&proposal_with_id("plan-B", 200.0), &tel, &actor(), 5000);
+    let r = engine.submit_typed(
+        &support::legacy_candidate(&proposal_with_id("plan-B", 200.0)),
+        &tel,
+        &actor(),
+    );
     assert!(
         matches!(
             &r,
@@ -406,11 +418,19 @@ fn same_setpoint_delta_zero_recommits() {
     let (mut engine, delivered) = engine_with();
     let tel = trusted_telemetry();
     let _ = engine
-        .submit(&proposal_with_id("plan-A", 5.0), &tel, &actor(), 5000)
+        .submit_typed(
+            &support::legacy_candidate(&proposal_with_id("plan-A", 5.0)),
+            &tel,
+            &actor(),
+        )
         .expect("基线 5 kW Committed");
     // 不同 key、同值：Δ=0 → 爬坡检查通过（E4 周期性同值 setpoint 场景）。
     let r = engine
-        .submit(&proposal_with_id("plan-B", 5.0), &tel, &actor(), 5000)
+        .submit_typed(
+            &support::legacy_candidate(&proposal_with_id("plan-B", 5.0)),
+            &tel,
+            &actor(),
+        )
         .expect("同值重确认 Δ=0 放行");
     assert_eq!(r.final_state, DispatchState::Committed);
     assert_eq!(*delivered.borrow(), 2);
@@ -422,14 +442,22 @@ fn ramp_ok_after_real_time_passes() {
     let (mut engine, delivered) = engine_with();
     let tel = trusted_telemetry();
     let _ = engine
-        .submit(&proposal_with_id("plan-A", 5.0), &tel, &actor(), 5000)
+        .submit_typed(
+            &support::legacy_candidate(&proposal_with_id("plan-A", 5.0)),
+            &tel,
+            &actor(),
+        )
         .expect("基线 5 kW Committed");
     // 真实时钟前进 59 s（< lease/intent TTL）：15 kW / 59 s ≈ 0.254 kW/s
     // < 3.33 kW/s 合同限 → 放行。遥测按新时刻重建（新鲜度判据独立）。
     CLOCK.fetch_add(59_000, Ordering::Relaxed);
     let tel = trusted_telemetry();
     let r = engine
-        .submit(&proposal_with_id("plan-B", 20.0), &tel, &actor(), 5000)
+        .submit_typed(
+            &support::legacy_candidate(&proposal_with_id("plan-B", 20.0)),
+            &tel,
+            &actor(),
+        )
         .expect("时间流逝后斜率达标放行");
     assert_eq!(r.final_state, DispatchState::Committed);
     assert_eq!(*delivered.borrow(), 2);

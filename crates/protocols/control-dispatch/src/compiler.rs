@@ -573,3 +573,23 @@ pub fn plan_command_correlation(
 pub fn is_legacy_single_command_plan(plan: &eneros_decision_contract::CandidatePlan) -> bool {
     plan.step_ns() == 0 && plan.assignments().len() == 1
 }
+
+/// R14-B：journal 身份对单源——(correlation, semantic digest) 是幂等
+/// 真值的身份契约，两值必须同点派生（原 run_typed 未决普查/重放判定
+/// 两处手写配对、恢复路径 correlation/digest 拆两函数分算，任何一处
+/// 公式漂移即 replay 检测静默失效——2026-09-24 收编）。correlation-only
+/// / digest-only 站点仍直用两原子（[`plan_command_correlation`] /
+/// `semantic_command_digest`），免白付第二次 SHA-256。
+pub fn intent_journal_identity(
+    plan_id: &PlanId,
+    intent: &eneros_decision_contract::CommandIntent,
+    legacy_single: bool,
+) -> ([u8; 16], [u8; 32]) {
+    let correlation = plan_command_correlation(plan_id, intent.intent_id(), legacy_single);
+    let digest = eneros_protocol_abstract::write::semantic_command_digest(
+        u32::from(intent.device_id()),
+        intent.point_id(),
+        eneros_telemetry_model::command::CommandValue::ActivePowerKw(intent.power_kw()),
+    );
+    (correlation, digest)
+}

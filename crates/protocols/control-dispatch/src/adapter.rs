@@ -3,8 +3,10 @@
 //!
 //! 边界纪律：proposal（旧形态）在 dispatch 边界经本 adapter 进入
 //! CandidatePlan——链内（validate/authorize/persist/deliver）只消费
-//! typed 产物，不再读裸 proposal 字段。facade reader 保留至 .32 删除
-//! （[17] .28/.32 行）。
+//! typed 产物，不再读裸 proposal 字段。2026-09-24 C2 收口：legacy
+//! facade 入口（`engine::run`/trait `submit`）与位置实参四元组绑定退役，
+//! 本模块只余**未绑定迁移形态**（v1 wire 臂/stub 后端）与**绑定形态**
+//! （生产可信输入入口）。
 
 use alloc::vec;
 
@@ -212,16 +214,20 @@ fn plan_id_of(p: &ProposedControlPlan) -> Result<PlanId, DispatchError> {
     PlanId::new(id_bytes).map_err(|_| DispatchError::ProposalInvalid("plan_id 派生零 ID".into()))
 }
 
-/// proposal → CandidatePlan（**迁移形态**；蓝图 70.8 WP-70.8.4 之后
-/// **不具新控制资格**）。
+/// proposal → CandidatePlan（**未绑定迁移形态**；v1 wire 臂与 stub 决策
+/// 后端的构造器）。
 ///
-/// 保留理由：历史 wire/测试夹具的读入兼容与差分对照。生产控制入口一律
-/// 走 [`proposal_to_candidate_bound`]；引擎在 `TrustedInputPolicy::Required`
-/// 下拒绝本形态产物（身份为派生伪快照）。
-pub fn proposal_to_candidate(
+/// 2026-09-24 C2 收口：legacy `engine::run`（facade submit 臂）退役，本
+/// adapter 的**位置实参四元组** `(asset, device, point, unit)` 随之退役
+///——迁移期唯一的真绑定消费者就是 run（routes[0] 注入）；剩余调用方
+/// （v1 wire 臂 / stub 后端 / 测试）全部以全零绑定进入，asset/device/
+/// point/unit 由 dispatch 编译期经 ResourceRegistry 解析
+/// （`resolve_unbound_assets` + compiler 绑定查找）。身份仍为迁移形态
+/// （input_digest/plan_id 派生伪快照、objective_digest 全零）——引擎在
+/// `TrustedInputPolicy::Required` 下拒绝本形态产物；`LegacyMigration` 轨
+/// 放行（typed_chain 差分锁的负例正是该语义）。
+pub fn proposal_to_candidate_unbound(
     p: &ProposedControlPlan,
-    asset_binding: (u64, u16, u32, u16),
-    unit_code: u16,
     catalog_version: u64,
 ) -> Result<CandidatePlan, DispatchError> {
     // solve_status 门（双保险——上游已 gate；adapter 不放行非成功状态）。
@@ -234,13 +240,23 @@ pub fn proposal_to_candidate(
             ))
         }
     };
-    // plan_id → PlanId（correlation 同派生）。
-    let mut id_bytes = [0u8; 16];
-    let pb = p.plan_id.as_bytes();
-    let n = core::cmp::min(16, pb.len());
-    id_bytes[..n].copy_from_slice(&pb[..n]);
-    let plan_id = PlanId::new(id_bytes)
-        .map_err(|_| DispatchError::ProposalInvalid("plan_id 派生零 ID".into()))?;
+    // 2026-09-24 复查修复：legacy `validate_proposal` 的两道拒绝防线在
+    // 本咽喉延续（v1 wire 臂 / ai_worker fallback / EMA 迁移轨共同入口，
+    // 输入域宽于上游已滤除的生产 coordinator）。错误词形与 HEAD
+    // validate_proposal 逐字一致。power_kw 非有限/超上限由下游既有防线
+    // 承担（compiler `!value.is_finite()` → ValueOutOfRange；引擎逐意图
+    // max_power_kw 检查），不在此重复。
+    if p.ttl_secs == 0 {
+        return Err(DispatchError::ProposalInvalid(
+            "ttl_secs 为 0（防零有效期）".into(),
+        ));
+    }
+    if p.schedule.schedule.is_empty() {
+        return Err(DispatchError::ProposalInvalid("空调度不可投递".into()));
+    }
+    // plan_id → PlanId（R14-N：收编入 plan_id_of 单源——原此处内联重写
+    // 同 6 行派生，UTF-8 前 16B 零填充共两份）。
+    let plan_id = plan_id_of(p)?;
     // input_digest → SnapshotId（前 16B = 真实 provenance 绑定；迁移期
     // None（测试/旧后端）→ plan_id 派生伪快照身份——确定性、可复算）。
     let digest = p.input_digest.unwrap_or_else(|| {
@@ -252,7 +268,6 @@ pub fn proposal_to_candidate(
     });
     let mut sid = [0u8; 16];
     sid.copy_from_slice(&digest[..16]);
-    let (asset_id, device_id, point_id, _) = asset_binding;
     // 蓝图 65 WP-65.2：命名字段 Parts 构造（builder 退役）——objective_
     // value/ttl 槽位在字段名上自证（槽位断言见 dispatch 集成测试）。
     CandidatePlan::from_parts(CandidatePlanParts {
@@ -271,25 +286,17 @@ pub fn proposal_to_candidate(
         model_digest: p.model_digest.unwrap_or([0u8; 32]),
         input_digest: digest,
         assignments: vec![Assignment {
-            asset_id,
-            device_id,
-            point_id,
+            asset_id: 0,
+            device_id: 0,
+            point_id: 0,
             power_kw: p.power_kw,
-            unit_code,
+            unit_code: 0,
             step_index: 1,
         }],
         issued_at_ms: p.issued_at_ms,
         ttl_ms: u64::from(p.ttl_secs.max(1)) * 1000,
     })
     .map_err(|e| DispatchError::ProposalInvalid(alloc::format!("candidate: {e:?}")))
-}
-
-/// 后端侧转换（资源绑定未定形态——assignment 全零，绑定由 dispatch
-/// 编译期经 ResourceRegistry 完成；[06] §3.3 命令意图绑定语义）。
-pub fn proposal_to_candidate_unbound(
-    p: &ProposedControlPlan,
-) -> Result<CandidatePlan, DispatchError> {
-    proposal_to_candidate(p, (0, 0, 0, 0), 0, 0)
 }
 /// dispatch profile 背书的资源注册表只读视图（[06] §3.3 CommandBatch
 /// 构造参数；.35 卷 resource-registry 落地后生产装配注入 PlannerView，
@@ -347,7 +354,7 @@ mod tests {
     #[test]
     fn adapter_preserves_identity_and_status() {
         let p = proposal();
-        let c = proposal_to_candidate(&p, (1, 1, 10, 6), 6, 1).unwrap();
+        let c = proposal_to_candidate_unbound(&p, 1).unwrap();
         // 身份：PlanId = correlation 同派生。
         let mut expected_id = [0u8; 16];
         expected_id[..6].copy_from_slice(b"heur-1");
@@ -356,10 +363,12 @@ mod tests {
         assert_eq!(c.snapshot_id().0, [0xABu8; 16]);
         // status 保留。
         assert_eq!(c.solver_status(), SolveStatusKind::Suboptimal);
-        // 分配保留功率与绑定。
+        // 分配保留功率；绑定全零（C2 收口——asset/device/point/unit 由
+        // dispatch 编译期经 ResourceRegistry 解析，不再经位置实参注入）。
         assert_eq!(c.assignments().len(), 1);
         assert_eq!(c.assignments()[0].power_kw, -50.0);
-        assert_eq!(c.assignments()[0].point_id, 10);
+        assert_eq!(c.assignments()[0].asset_id, 0, "未绑定形态");
+        assert_eq!(c.resource_catalog_version(), 1, "目录版本透传");
         // ttl 保留（60s → 60000ms）。
         assert_eq!(c.ttl_ms(), 60_000);
     }
@@ -368,7 +377,35 @@ mod tests {
     fn adapter_rejects_non_success_status() {
         let mut p = proposal();
         p.schedule.solve_status = eneros_energy_lp_model::result::SolveStatus::Timeout;
-        assert!(proposal_to_candidate(&p, (1, 1, 10, 6), 6, 1).is_err());
+        assert!(proposal_to_candidate_unbound(&p, 1).is_err());
+    }
+
+    /// C2 复查修复（2026-09-24）：legacy `validate_proposal` 随 facade 退役，
+    /// 但其两道**拒绝**防线（ttl_secs=0 / 空调度）在 adapter 侧必须延续
+    ///——`proposal_to_candidate_unbound` 是 v1 wire 臂/ai_worker fallback/
+    /// EMA 迁移轨的共同咽喉，输入域宽于上游已滤除的生产 coordinator。
+    /// 旧实现把 ttl=0 经 `max(1)` 静默收编为 1s、空调度计划照常进链——
+    /// 均为 HEAD 语义收缩。错误词形与 HEAD validate_proposal 逐字一致。
+    #[test]
+    fn adapter_rejects_zero_ttl_and_empty_schedule() {
+        // ttl_secs = 0 → 拒绝（防零有效期；不得静默收编为 1s）。
+        let mut p = proposal();
+        p.ttl_secs = 0;
+        assert_eq!(
+            proposal_to_candidate_unbound(&p, 1),
+            Err(DispatchError::ProposalInvalid(alloc::string::String::from(
+                "ttl_secs 为 0（防零有效期）"
+            )))
+        );
+        // 空调度 → 拒绝（空调度不可投递）。
+        let mut p = proposal();
+        p.schedule.schedule = alloc::vec::Vec::new();
+        assert_eq!(
+            proposal_to_candidate_unbound(&p, 1),
+            Err(DispatchError::ProposalInvalid(alloc::string::String::from(
+                "空调度不可投递"
+            )))
+        );
     }
 
     #[test]

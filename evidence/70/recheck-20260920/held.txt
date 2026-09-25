@@ -1,0 +1,45 @@
+   Compiling eneros-drv-svc v0.337.0 (/home/ahx/文档/EnerOS/crates/drivers/drv-svc)
+warning: use of deprecated method `sha2::digest::generic_array::GenericArray::<T, N>::as_slice`: please upgrade to generic-array 1.x
+   --> /home/ahx/文档/EnerOS/crates/agents/snapshot-service/src/wire.rs:270:25
+    |
+270 |         if h.finalize().as_slice() != payload_sha {
+    |                         ^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: `eneros-snapshot-service` (lib) generated 1 warning
+   Compiling eneros-agent-sdk v0.337.0 (/home/ahx/文档/EnerOS/crates/agents/agent-sdk)
+   Compiling eneros-agent v0.337.0 (/home/ahx/文档/EnerOS/crates/agents/agent)
+   Compiling eneros-control-dispatch v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/control-dispatch)
+   Compiling eneros-device-agent v0.337.0 (/home/ahx/文档/EnerOS/crates/agents/device-agent)
+   Compiling eneros70-spec-repro v0.1.0 (/home/ahx/文档/EnerOS/evidence/70/recheck-20260919/held-repro)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.72s
+     Running repro.rs (/tmp/eneros70-spec-recheck/target/debug/deps/repro-325a02254a9e36eb)
+
+running 22 tests
+test higher_priority_intent_cannot_write_over_unknown_plan_effect ... ok
+test append_failure_terminates_journal_and_resubmission_not_arbiter_locked ... ok
+test multi_asset_unknown_stops_batch_and_is_not_reported_committed ... ok
+test irreversible_plan_requires_manual_approval_before_any_delivery ... ok
+test facade_and_typed_share_identity ... ok
+test typed_entry_rejects_expired_plan ... ok
+test held_admission_fails_closed_when_retention_refuses ... ok
+test restart_pending_journal_blocks_a_new_command_key ... ok
+test typed_entry_commits ... ok
+test trusted_input_admission_accepts_same_generation_candidate ... ok
+test trusted_input_admission_rejects_mismatch_family ... ok
+test typed_multi_step_plan_delivers_due_commands_per_tick ... ok
+test review_capacity_rejection_unpins_live_plans ... ok
+actual failure: IntentPersistFailed("held storage: write-failed")
+test held_input_repin_after_restart ... ok
+test recheck_h02_real_persist_failure_preserves_existing_pin ... ok
+test review_release_failure_is_not_retried_on_idle_ticks ... ok
+test held_plan_pins_input_and_releases_on_completion ... ok
+test durable_plan_readback_settles_unknown_journal_before_next_step ... ok
+test held_plan_horizon_beyond_control_window_rejected ... ok
+test applied_commands_carry_independent_readback_not_setpoint ... ok
+test durable_plan_submitted_once_runs_four_steps_and_restart_cancels_unsent ... ok
+test held_plan_100_torn_write_points_never_resend_or_lose_confirmed_prefix ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s
+

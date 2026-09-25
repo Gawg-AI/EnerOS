@@ -1,0 +1,16 @@
+[candidate-evidence] case=CORE-70-R01 status=PASS candidate=569d29f1cff4…
+[candidate-evidence] run-record → evidence/70/70.15/569d29f1cff4bf3b8fd80e476d2efc0c45cfb69f2db5c052dac327c325c4cdcc/CORE-70-R01.run-record.json
+[candidate-evidence] envelope   → evidence/70/70.15/569d29f1cff4bf3b8fd80e476d2efc0c45cfb69f2db5c052dac327c325c4cdcc/CORE-70-R01.envelope.json
+[candidate-evidence] index      → evidence/70/70.15/569d29f1cff4bf3b8fd80e476d2efc0c45cfb69f2db5c052dac327c325c4cdcc/candidate-index.json
+[candidate-evidence] case=CORE-70-R01 status=FAIL candidate=569d29f1cff4…
+[candidate-evidence] run-record → evidence/70/70.15/569d29f1cff4bf3b8fd80e476d2efc0c45cfb69f2db5c052dac327c325c4cdcc/CORE-70-R01.run-record.json
+[candidate-evidence] envelope   → evidence/70/70.15/569d29f1cff4bf3b8fd80e476d2efc0c45cfb69f2db5c052dac327c325c4cdcc/CORE-70-R01.envelope.json
+[candidate-evidence] index      → 未变更（失败证据不注册成功条目）
+index_unchanged= True
+success_envelope_unchanged= False
+index_envelope_digest_matches= False
+Traceback (most recent call last):
+  File "/tmp/eneros70-recheck-recorder.py", line 19, in <module>
+    assert env.read_bytes()==env_before,'Failed retry overwrote previously indexed successful envelope'
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Failed retry overwrote previously indexed successful envelope

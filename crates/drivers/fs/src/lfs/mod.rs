@@ -14,8 +14,10 @@
 
 pub mod config;
 pub mod filesystem;
+pub mod mount;
 pub mod storage_adapter;
 
 pub use config::LfsConfig;
 pub use filesystem::Lfs;
+pub use mount::mount_or_format;
 pub use storage_adapter::BlockDeviceStorage;

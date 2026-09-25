@@ -1,0 +1,9 @@
+same-value-Q-only: rc=0
+stdout=12 12 12
+4 21 4 21 4 21
+stderr=
+skipped-burst: rc=0
+stdout=6 6 6
+2 0 2 0 2 0
+stderr=
+A5b predicate for skipped-burst: SK=6 > 0, BW=6 <= I=6 -> PASS despite every asset span=0

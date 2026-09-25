@@ -1,0 +1,29 @@
+{
+  "schema": "eneros.gate-run-record.v1",
+  "case_id": "CORE-70-R12",
+  "gate_id": "evidence42-candidate-check",
+  "command": "cargo test -p eneros-xtask evidence_chain::（候选判定库红测）",
+  "exit_code": 0,
+  "recorded_at": "2026-09-18T19:00:07Z",
+  "ran_artifact_sha256": "9741b820ee25d32e3756c3be6a4f808c5876d8141c8e0933d418e0f31474edcc",
+  "ran_artifact_sha256_source": "evidence/70/70.7/combined.sha256",
+  "raw_log": {
+    "name": "checker-red-tests5.log",
+    "bytes": 2767,
+    "sha256": "0a27049560eae07a145df25d32982dfef4058f10fb20d1537f50f126a3f9ac95",
+    "resident": "handoff-bundle",
+    "note": ".gitignore `*.log`：原始日志随移交包分发，本记录绑定其摘要"
+  },
+  "verdict_lines": [
+    "test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 165 filtered out; finished in 0.04s",
+    "candidate-check red tests: PASS"
+  ],
+  "verdict": "PASS",
+  "candidate": {
+    "candidate_id": "2587ce1b7aaccb74004f7b691d1d8ae11fce9cce3d8d329d1137a26561b7c294",
+    "source_commit": "9ed12d3ee5b182c81066eabf1ba9a783954c28f0",
+    "dirty_tree_digest": "709e80c88487a2411e1ee4dfb9f22a861492d20c4765150c0c794abd70f8147c",
+    "artifact_sha256": "a1358311ae35c81a74f9e9fe3a196c46437ebf4721edfa5b8e496d4752d6f577",
+    "profile": "qemu-test"
+  }
+}

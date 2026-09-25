@@ -19,6 +19,7 @@
 //! 拒绝 = ST_INVALID + payload 携 word 文本（`no-pending-trial` 等）。
 
 use crate::block_cmd::InstallBackend;
+use crate::boot_guard::BOOTCTRL_COPY_STRIDE_LBAS;
 
 extern crate alloc;
 use eneros_boot_protocol::boot_control::BOOT_CONTROL_RECORD_SIZE;
@@ -62,7 +63,7 @@ impl<'a> BootInstall<'a> {
             .map_err(|_| "read0")?;
         let d0 = BootControl::decode(&rec[..]);
         self.face
-            .read_sectors(bc_lba + 8, &mut rec[..])
+            .read_sectors(bc_lba + BOOTCTRL_COPY_STRIDE_LBAS, &mut rec[..])
             .map_err(|_| "read1")?;
         let d1 = BootControl::decode(&rec[..]);
         match (d0, d1) {
@@ -157,9 +158,15 @@ impl<'a> BootInstall<'a> {
         next.encode_into(&mut rec).map_err(|_| "encode")?;
         // 写序：高序列副本先写（掉电后 resolve 仍取新块）；再写低副本。
         let (first, second) = if high_copy == 0 {
-            ((bc_lba, &rec[..]), (bc_lba + 8, &rec[..]))
+            (
+                (bc_lba, &rec[..]),
+                (bc_lba + BOOTCTRL_COPY_STRIDE_LBAS, &rec[..]),
+            )
         } else {
-            ((bc_lba + 8, &rec[..]), (bc_lba, &rec[..]))
+            (
+                (bc_lba + BOOTCTRL_COPY_STRIDE_LBAS, &rec[..]),
+                (bc_lba, &rec[..]),
+            )
         };
         // 70.14 插桩：事务三步各自可见（阻塞点定位：write0 / write1 / flush）。
         #[cfg(target_os = "none")]
@@ -253,7 +260,7 @@ impl<'a> BootInstall<'a> {
             .write_sectors(bc_lba, &rec[..])
             .map_err(|_| "write0")?;
         self.face
-            .write_sectors(bc_lba + 8, &rec[..])
+            .write_sectors(bc_lba + BOOTCTRL_COPY_STRIDE_LBAS, &rec[..])
             .map_err(|_| "write1")?;
         self.face.flush().map_err(|_| "flush")?;
         Ok(next.sequence)
@@ -304,7 +311,7 @@ impl<'a> BootInstall<'a> {
             .write_sectors(bc_lba, &rec[..])
             .map_err(|_| "write0")?;
         self.face
-            .write_sectors(bc_lba + 8, &rec[..])
+            .write_sectors(bc_lba + BOOTCTRL_COPY_STRIDE_LBAS, &rec[..])
             .map_err(|_| "write1")?;
         self.face.flush().map_err(|_| "flush")?;
         Ok(next.sequence)
@@ -367,6 +374,7 @@ mod boot_install_tests {
     use eneros_boot_protocol::{BootControl, BootSlot};
 
     use super::*;
+    use crate::boot_guard::BOOTCTRL_START_LBA;
 
     /// mock boot 面：内存介质（BOOTCTRL 分区在真实 qemu-v1 lba 起）。
     struct MockFace {
@@ -403,25 +411,9 @@ mod boot_install_tests {
             }
         }
         fn seed_bootctrl(&mut self, rec: &[u8; BOOT_CONTROL_RECORD_SIZE], copy: usize) {
-            let off = (18432 + copy * 8) * LBA;
+            let off =
+                ((BOOTCTRL_START_LBA + copy as u64 * BOOTCTRL_COPY_STRIDE_LBAS) as usize) * LBA;
             self.media[off..off + BOOT_CONTROL_RECORD_SIZE].copy_from_slice(rec);
-        }
-    }
-
-    impl crate::block_cmd::BlockBackend for MockFace {
-        /// supertrait 约束保留体（73 批A C9）——一律走 read_sectors。
-        fn read(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
-            InstallBackend::read_sectors(self, lba, buf)
-        }
-        /// supertrait 约束保留体（同上）——一律走 write_sectors。
-        fn write(&mut self, lba: u64, data: &[u8]) -> Result<(), ()> {
-            InstallBackend::write_sectors(self, lba, data)
-        }
-        fn flush(&mut self) -> Result<(), ()> {
-            Ok(())
-        }
-        fn health(&self) -> (u64, u32, u8) {
-            (0, 512, 0)
         }
     }
 
@@ -440,7 +432,7 @@ mod boot_install_tests {
                 eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
             );
             let rec0 = bc_lba as usize * LBA;
-            let rec1 = (bc_lba + 8) as usize * LBA;
+            let rec1 = (bc_lba + BOOTCTRL_COPY_STRIDE_LBAS) as usize * LBA;
             let guard = crate::boot_guard::BootWriteGuard::resolve_with_running(
                 &self.media[rec0..rec0 + BOOT_CONTROL_RECORD_SIZE],
                 &self.media[rec1..rec1 + BOOT_CONTROL_RECORD_SIZE],
@@ -462,9 +454,10 @@ mod boot_install_tests {
             out
         }
 
-        /// boot 面读取（512B 扇区 LBA 单位——内存介质直寻址）。
+        /// boot 面读取（512B 扇区 LBA 单位——内存介质直寻址；换算单源 =
+        /// `boot_guard::sector_byte_offset`）。
         fn read_sectors(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
-            let off = lba as usize * LBA;
+            let off = crate::boot_guard::sector_byte_offset(lba).ok_or(())? as usize;
             let end = off + buf.len();
             if end > self.media.len() {
                 return Err(());
@@ -475,13 +468,18 @@ mod boot_install_tests {
 
         /// boot 面写入（512B 扇区 LBA 单位）。
         fn write_sectors(&mut self, lba: u64, data: &[u8]) -> Result<(), ()> {
-            let off = lba as usize * LBA;
+            let off = crate::boot_guard::sector_byte_offset(lba).ok_or(())? as usize;
             let end = off + data.len();
             if end > self.media.len() {
                 return Err(());
             }
             self.media[off..end].copy_from_slice(data);
             self.writes += 1;
+            Ok(())
+        }
+
+        /// mock flush：内存介质无写缓存，事务持久化承诺天然成立。
+        fn flush(&mut self) -> Result<(), ()> {
             Ok(())
         }
 

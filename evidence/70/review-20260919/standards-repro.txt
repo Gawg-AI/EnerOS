@@ -1,0 +1,5 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running `/tmp/eneros70-standards-repro/target/debug/eneros70-standards-repro`
+last trial: booting=A, guard.active_is_a=false, running_slot_write_allowed=true
+last trial confirmation=Err("confirm-slot-not-selected")
+different action same id+arg: enter=Completed, exit=Completed, executed_count=1, exit_detail=op=1 replay: effect happened

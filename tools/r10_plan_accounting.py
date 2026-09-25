@@ -141,6 +141,23 @@ def account(pid, compiled, done, applied_ids, readback_ids):
     }
 
 
+def passes(row):
+    """验收线（唯一执行面）。
+
+    消费方（run70-r10-held.sh 段A 的 A2/A3/A4a/A4c/A7）只是本谓词的**观测
+    回声**，不得重算——重算在 select 已通过的分支里结构不可达，等于摆设。
+    七元组每臂各自必要，selftest 有逐臂证伪表。
+    """
+    return (
+        row["intents"] + row["skipped"] == TARGET_ASSIGNMENTS
+        and row["applied"] + row["blocked"] + row["failed"] == row["intents"]
+        and row["state"] == "Committed"
+        and row["applied"] == row["intents"]
+        and row["uniq"] == row["intents"]
+        and row["rbs"] >= 1
+    )
+
+
 def select(lines):
     """选定满足验收线的计划：返回 (完整 plan id, 七元组) 或 None（证据
     不全/无满足计划）。选择谓词与 main 的通过线同源（recheck RR2：
@@ -150,14 +167,7 @@ def select(lines):
         row = account(pid, compiled, done, applied_ids, readback_ids)
         if row is None:
             continue
-        if (
-            row["intents"] + row["skipped"] == TARGET_ASSIGNMENTS
-            and row["applied"] + row["blocked"] + row["failed"] == row["intents"]
-            and row["state"] == "Committed"
-            and row["applied"] == row["intents"]
-            and row["uniq"] == row["intents"]
-            and row["rbs"] >= 1
-        ):
+        if passes(row):
             return pid, row
     return None
 
@@ -386,6 +396,37 @@ def selftest():
     )
     rc, out, err = run(log_a06e)
     check("A06e 未归属 Applied 行拒绝", rc == 2, f"rc={rc} err={err!r}")
+
+    # A07（73 批C）：通过线的**逐臂证伪表**。run70-r10-held 段A 原先在
+    # bash 里重算 I+S=12 / uniq≥I / rbs≥1 / A+Bk+F=I——那些臂位于
+    # select 已通过的分支内，结构不可达（等于摆设）。本表是各臂唯一的
+    # 独立覆盖：任一臂失效即红。
+    def row(**kw):
+        base = dict(intents=6, skipped=6, applied=6, blocked=0, failed=0,
+                    state="Committed", uniq=6, rbs=1)
+        base.update(kw)
+        return base
+
+    check("A07 基线七元组通过", passes(row()))
+    for arm, bad in {
+        "I+S==12": row(skipped=5),
+        "A+Bk+F==I": row(blocked=1),
+        "state==Committed": row(state="Partial"),
+        "A==I": row(applied=5, failed=1),
+        "uniq==I": row(uniq=5),
+        "rbs>=1": row(rbs=0),
+    }.items():
+        check(f"A07 臂必要：破坏 {arm} 即拒", not passes(bad), f"{arm} 破坏仍通过=该臂失效")
+
+    # A07b：intents=0 的计划必须被拒（可构造形态，非合成七元组）——
+    # Applied+readback 令 uniq=1 撞 uniq==intents 臂。旧 bash A4a 的
+    # "I>=1" 由此臂**蕴含**，不是独立判据。
+    log_a07 = "\n".join(
+        [compiled(A, 0, 12), heldline(A), cmd(A, ids[0]), doneline(A, 0, 0, 0)]
+    )
+    rc, out, err = run(log_a07)
+    check("A07b intents=0 带 Applied 读回 → uniq 臂拒绝",
+          rc == 1 and out == "NONE", f"rc={rc} out={out!r} err={err!r}")
 
     if failures:
         print(f"[selftest] {len(failures)} FAILED")

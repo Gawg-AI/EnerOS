@@ -1,0 +1,20 @@
+warning: use of deprecated method `sha2::digest::generic_array::GenericArray::<T, N>::as_slice`: please upgrade to generic-array 1.x
+   --> /home/ahx/文档/EnerOS/crates/agents/snapshot-service/src/wire.rs:270:25
+    |
+270 |         if h.finalize().as_slice() != payload_sha {
+    |                         ^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: `eneros-snapshot-service` (lib) generated 1 warning
+   Compiling eneros-control-dispatch v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/control-dispatch)
+   Compiling eneros70-spec-repro v0.1.0 (/tmp/eneros70-recheck2-spec)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.20s
+     Running repro.rs (target/debug/deps/repro-325a02254a9e36eb)
+
+running 1 test
+actual failure: IntentPersistFailed("held storage: write-failed")
+test recheck_h02_real_persist_failure_preserves_existing_pin ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.00s
+

@@ -1,23 +1,28 @@
 //! 蓝图 61 v0.314.28：typed 产物链集成测试（[06] §3.6）。
 //!
-//! - facade（submit(proposal)）与 typed 入口（submit_typed(CandidatePlan)）
-//!   在参考闭环的值与证据一致——同一 proposal 两路径 correlation/幂等键
-//!   逐字节相同（跨路径幂等 = 身份一致的强证明）；
+//! 2026-09-24 C2 收口后本套件全部走 typed 入口（facade `submit(proposal)`
+//! 已退役；LegacyMigration 轨夹具经 `support::legacy_candidate` 构造
+//! 派生身份候选）：
+//! - typed 入口（submit_typed(CandidatePlan)）参考闭环的值与证据
+//!   （同计划重提交命中同一幂等记录）；
 //! - typed 入口拒绝过期计划；
 //! - `submit_typed` 走过渡认证证书 + CommandIntent/CommandBatch
-//!   （profile 资源视图 scope 校验在批构造内）。
+//!   （profile 资源视图 scope 校验在批构造内）；
+//! - Required 策略下无身份/跨代候选整批拒绝（差分负例族，
+//!   `trusted_input_admission_rejects_mismatch_family`——不受本收口
+//!   影响，全程 typed 入口）。
 mod support;
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use eneros_control_dispatch::adapter::proposal_to_candidate;
+use eneros_control_dispatch::adapter::proposal_to_candidate_unbound;
 use eneros_control_dispatch::intent::{
     InMemoryIntentStore, IntentRecord, IntentStore, IntentStoreError,
 };
 use eneros_control_dispatch::{
     AuthenticatedActor, ControlDispatch, DeliveryChannel, DispatchConfig, DispatchEngine,
-    DispatchError, DispatchReceipt,
+    DispatchError,
 };
 use eneros_control_gateway::chain::ControlChain;
 use eneros_control_gateway::envelope::ActorKind;
@@ -313,34 +318,15 @@ fn actor() -> AuthenticatedActor {
     }
 }
 
-/// facade 与 typed 入口在参考闭环值/证据一致：同一 proposal 两路径
-/// correlation/幂等键逐字节相同——typed 提交命中 facade 的幂等记录
-/// （零重复投递），强证明两链共享身份。
-#[test]
-fn facade_and_typed_share_identity() {
-    let (ingress, devices) = device_side();
-    let delivered = Rc::new(RefCell::new(0u64));
-    let channel = CountingChannel {
-        ingress,
-        devices,
-        delivered: delivered.clone(),
-    };
-    let mut engine = engine_with(Box::new(channel));
-
-    let p = proposal(50.0);
-    // 第一条：facade 路径（旧 proposal 形态）。
-    let r1: DispatchReceipt = engine
-        .submit(&p, &trusted_telemetry(), &actor(), 5_000)
-        .expect("facade submit");
-    // 第二条：typed 路径（同一 proposal 的 CandidatePlan——adapter 相同
-    // 派生）→ 命中同一幂等记录，不重复投递。
-    let c = proposal_to_candidate(&p, (1, 1, 10, 6), 6, 1).expect("adapter");
-    let r2 = engine
-        .submit_typed(&c, "pcs", &trusted_telemetry(), &actor(), 5_000)
-        .expect("typed submit");
-    assert_eq!(r1.final_state, r2.final_state);
-    assert_eq!(*delivered.borrow(), 1, "跨路径幂等：一次投递");
-}
+// （2026-09-24 C2 收口退役）原 `facade_and_typed_share_identity`：
+// facade 与 typed 入口的跨路径幂等差分（同一 proposal 两路径
+// correlation/幂等键逐字节相同）。facade 入口（`engine::run`）退役后
+// 两路径合一，该测试退化为同路径自比——差分对象消失，测试随退役面
+// 一并删除。单路径幂等（同计划重提交命中同一幂等记录）由
+// journal_crash_matrix 的 idempotent 系列承担；「Required 拒无身份
+// 候选」的差分负例见
+// `trusted_input_admission_rejects_mismatch_family`（①无身份臂——
+// 全程 submit_typed/submit_trusted，不受本收口影响）。
 
 /// typed 入口独立可用：CandidatePlan → Committed（一次投递 + 读回）。
 #[test]
@@ -355,7 +341,7 @@ fn typed_entry_commits() {
     let mut engine = engine_with(Box::new(channel));
 
     let p = proposal(-40.0);
-    let c = proposal_to_candidate(&p, (1, 1, 10, 6), 6, 1).expect("adapter");
+    let c = proposal_to_candidate_unbound(&p, 1).expect("adapter");
     // 槽位断言（蓝图 65 WP-65.2.4：adapter 侧 objective_value/ttl 槽位
     // ——源值在命名字段上对照；issued/ttl 同型相邻位互换在此不可通过）。
     assert_eq!(
@@ -375,7 +361,7 @@ fn typed_entry_commits() {
     );
     assert_ne!(c.issued_at_ms(), c.ttl_ms(), "issued/ttl 分立");
     let r = engine
-        .submit_typed(&c, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_typed(&c, &trusted_telemetry(), &actor())
         .expect("typed submit");
     assert!(r.final_state.is_committed());
     assert_eq!(*delivered.borrow(), 1);
@@ -393,7 +379,7 @@ fn typed_entry_rejects_expired_plan() {
     let mut engine = engine_with(Box::new(channel));
 
     let p = proposal(50.0);
-    let mut c = proposal_to_candidate(&p, (1, 1, 10, 6), 6, 1).expect("adapter");
+    let mut c = proposal_to_candidate_unbound(&p, 1).expect("adapter");
     // 过期：issued_at 远早于 now 且 ttl 短——直接经 wire 往返改写不可行
     // （构造器校验 ttl>0），用早期 issued_at 重造（命名字段逐槽位从
     // getter 取值——字段名自证不换位）。
@@ -420,7 +406,7 @@ fn typed_entry_rejects_expired_plan() {
     )
     .expect("expired plan constructible");
     let err = engine
-        .submit_typed(&expired, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_typed(&expired, &trusted_telemetry(), &actor())
         .unwrap_err();
     assert!(matches!(err, DispatchError::ProposalInvalid(_)));
     let _ = &mut c; // 保持变量使用
@@ -531,7 +517,7 @@ fn typed_multi_step_plan_delivers_due_commands_per_tick() {
 
     // 第 1 拍（t=base）：步 1 到期投递；步 2 未到期跳过。
     let r1 = engine
-        .submit_typed(&plan, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_typed(&plan, &trusted_telemetry(), &actor())
         .expect("第 1 拍提交");
     assert!(r1.final_state.is_committed());
     assert_eq!(*delivered.borrow(), 1, "步 2 未到期不投递");
@@ -539,7 +525,7 @@ fn typed_multi_step_plan_delivers_due_commands_per_tick() {
     // 第 2 拍（t=base+10s）：步 1 幂等命中（零投递），步 2 到期投递。
     TICK_MS.fetch_add(10_000, std::sync::atomic::Ordering::Relaxed);
     let r2 = engine
-        .submit_typed(&plan, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_typed(&plan, &trusted_telemetry(), &actor())
         .expect("第 2 拍提交");
     assert!(
         r2.final_state.is_committed(),
@@ -551,7 +537,7 @@ fn typed_multi_step_plan_delivers_due_commands_per_tick() {
 
     // 第 3 拍（时钟不动）：两步全部幂等命中——零新投递。
     let r3 = engine
-        .submit_typed(&plan, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_typed(&plan, &trusted_telemetry(), &actor())
         .expect("第 3 拍提交");
     assert!(r3.final_state.is_committed());
     assert_eq!(
@@ -630,10 +616,10 @@ fn append_failure_terminates_journal_and_resubmission_not_arbiter_locked() {
     });
 
     let p = proposal(50.0);
-    let c = proposal_to_candidate(&p, (1, 1, 10, 6), 6, 1).expect("adapter");
+    let c = proposal_to_candidate_unbound(&p, 1).expect("adapter");
     // 第一拍：落盘失败 → 零投递 Err（journal 记录终局 Failed）。
     let e1 = engine
-        .submit_typed(&c, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_typed(&c, &trusted_telemetry(), &actor())
         .unwrap_err();
     assert!(
         matches!(e1, DispatchError::IntentPersistFailed(_)),
@@ -644,7 +630,7 @@ fn append_failure_terminates_journal_and_resubmission_not_arbiter_locked() {
     // Failed（零投递；重放不复活失败命令），而不是 ProposalInvalid
     // 「merge-in-solver」锁死。
     let r2 = engine
-        .submit_typed(&c, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_typed(&c, &trusted_telemetry(), &actor())
         .expect("同源续跑放行（不得锁死）");
     assert_eq!(
         r2.final_state,
@@ -729,7 +715,7 @@ fn trusted_input_admission_accepts_same_generation_candidate() {
     let plan = bound_plan([0x33; 16], 1, now_ms());
     let input = eneros_agent_sdk::snap_input_wire::TrustedInput::new(facts, [0u8; 144]);
     let r = engine
-        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
         .expect("同代候选必须准入");
     assert!(r.final_state.is_committed());
 }
@@ -769,7 +755,7 @@ fn trusted_input_admission_rejects_mismatch_family() {
     let mut e = engine_required();
     let plan = bound_plan([0x33; 16], 1, now_ms());
     let err = e
-        .submit_typed(&plan, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_typed(&plan, &trusted_telemetry(), &actor())
         .expect_err("缺可信输入必须拒绝");
     assert!(
         matches!(err, DispatchError::ProposalInvalid(ref m) if m.contains("缺可信输入身份")),
@@ -783,7 +769,7 @@ fn trusted_input_admission_rejects_mismatch_family() {
         [0u8; 144],
     );
     let err = e
-        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
         .expect_err("跨代快照必须拒绝");
     assert!(
         matches!(err, DispatchError::ProposalInvalid(ref m) if m.contains("不同代")),
@@ -797,7 +783,7 @@ fn trusted_input_admission_rejects_mismatch_family() {
         [0u8; 144],
     );
     let err = e
-        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
         .expect_err("跨目录版本必须拒绝");
     assert!(
         matches!(err, DispatchError::ProposalInvalid(ref m) if m.contains("目录版本")),
@@ -811,7 +797,7 @@ fn trusted_input_admission_rejects_mismatch_family() {
         [0u8; 144],
     );
     let err = e
-        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
         .expect_err("时域不符必须拒绝");
     assert!(
         matches!(err, DispatchError::ProposalInvalid(ref m) if m.contains("时域起点")),
@@ -846,14 +832,7 @@ fn trusted_input_admission_rejects_mismatch_family() {
         eneros_decision_contract::CandidatePlan::from_parts(parts).expect("篡改摘要计划可构造")
     };
     let err = e
-        .submit_trusted(
-            &tampered,
-            &good(),
-            "pcs",
-            &trusted_telemetry(),
-            &actor(),
-            5_000,
-        )
+        .submit_trusted(&tampered, &good(), &trusted_telemetry(), &actor())
         .expect_err("摘要篡改必须拒绝");
     assert!(
         matches!(err, DispatchError::ProposalInvalid(ref m) if m.contains("目标摘要")),
@@ -867,7 +846,7 @@ fn trusted_input_admission_rejects_mismatch_family() {
     facts.completeness = eneros_agent_sdk::snap_input_wire::INCOMPLETE;
     let input = eneros_agent_sdk::snap_input_wire::TrustedInput::new(facts, [0u8; 144]);
     let err = e
-        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
         .expect_err("不完整快照必须拒绝");
     assert!(
         matches!(err, DispatchError::ProposalInvalid(ref m) if m.contains("不完整")),
@@ -998,7 +977,7 @@ fn multi_asset_unknown_stops_batch_and_is_not_reported_committed() {
     })
     .unwrap();
     let receipt = engine
-        .submit_typed(&plan, "pcs", &trusted_telemetry(), &actor(), 5000)
+        .submit_typed(&plan, &trusted_telemetry(), &actor())
         .unwrap();
     assert_eq!(
         receipt.final_state,
@@ -1008,7 +987,7 @@ fn multi_asset_unknown_stops_batch_and_is_not_reported_committed() {
     assert_eq!(*count.borrow(), 1, "未知后必须阻断批内后继");
     assert_eq!(engine.committed_count(), 0);
     let replay = engine
-        .submit_typed(&plan, "pcs", &trusted_telemetry(), &actor(), 5000)
+        .submit_typed(&plan, &trusted_telemetry(), &actor())
         .unwrap();
     assert_eq!(replay.final_state, DispatchState::Indeterminate);
     assert_eq!(
@@ -1038,7 +1017,11 @@ fn irreversible_plan_requires_manual_approval_before_any_delivery() {
     });
     config.contracts = Box::new(support::test_contract_view(1, 0));
     let mut engine = DispatchEngine::new(config);
-    let result = engine.submit(&proposal(5.0), &trusted_telemetry(), &actor(), 5_000);
+    let result = engine.submit_typed(
+        &support::legacy_candidate(&proposal(5.0)),
+        &trusted_telemetry(),
+        &actor(),
+    );
     assert!(
         matches!(result, Err(DispatchError::NotAuthorized(ref why)) if why.contains("manual approval")),
         "irreversible plan result: {result:?}"
@@ -1063,7 +1046,11 @@ fn higher_priority_intent_cannot_write_over_unknown_plan_effect() {
     let delivered = Rc::new(RefCell::new(0));
     let mut engine = engine_with(Box::new(UnknownChannel(delivered.clone())));
     let first = engine
-        .submit(&proposal(5.0), &trusted_telemetry(), &actor(), 5_000)
+        .submit_typed(
+            &support::legacy_candidate(&proposal(5.0)),
+            &trusted_telemetry(),
+            &actor(),
+        )
         .unwrap();
     assert_eq!(
         first.final_state,
@@ -1128,7 +1115,11 @@ fn restart_pending_journal_blocks_a_new_command_key() {
             delivered: delivered.clone(),
         }),
     }));
-    let result = engine.submit(&proposal(10.0), &trusted_telemetry(), &actor(), 5_000);
+    let result = engine.submit_typed(
+        &support::legacy_candidate(&proposal(10.0)),
+        &trusted_telemetry(),
+        &actor(),
+    );
     assert!(
         result.is_err(),
         "new plan must wait for recovered unknown: {result:?}"
@@ -1339,7 +1330,7 @@ fn durable_plan_submitted_once_runs_four_steps_and_restart_cancels_unsent() {
         let delivered = Rc::new(RefCell::new(0));
         let mut engine = held_fixture(media.clone(), delivered.clone());
         let receipt = engine
-            .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+            .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
             .unwrap();
         assert_eq!(
             receipt.final_state,
@@ -1416,14 +1407,7 @@ fn held_plan_horizon_beyond_control_window_rejected() {
     let delivered = Rc::new(RefCell::new(0));
     let mut engine = held_fixture(media, delivered.clone());
     let err = engine
-        .submit_trusted(
-            &over,
-            &input_over,
-            "pcs",
-            &trusted_telemetry(),
-            &actor(),
-            5_000,
-        )
+        .submit_trusted(&over, &input_over, &trusted_telemetry(), &actor())
         .expect_err("时域越过控制窗必须拒绝");
     assert!(
         format!("{err:?}").contains("held horizon exceeds trusted telemetry"),
@@ -1443,14 +1427,7 @@ fn held_plan_horizon_beyond_control_window_rejected() {
     let delivered2 = Rc::new(RefCell::new(0));
     let mut engine2 = held_fixture(media2, delivered2.clone());
     let receipt = engine2
-        .submit_trusted(
-            &edge,
-            &input_edge,
-            "pcs",
-            &trusted_telemetry(),
-            &actor(),
-            5_000,
-        )
+        .submit_trusted(&edge, &input_edge, &trusted_telemetry(), &actor())
         .expect("时域末 == 有效期必须受理（≤）");
     assert_eq!(
         receipt.final_state,
@@ -1489,7 +1466,7 @@ fn durable_plan_readback_settles_unknown_journal_before_next_step() {
     let mut engine = held_fixture_fault(media, delivered.clone(), true);
     let (plan, input) = held_candidate();
     engine
-        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
         .unwrap();
     assert_eq!(*delivered.borrow(), 1);
     assert!(
@@ -1522,7 +1499,7 @@ fn applied_commands_carry_independent_readback_not_setpoint() {
     let mut engine = held_fixture(media, delivered.clone());
     let (plan, input) = held_candidate();
     engine
-        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
         .unwrap();
     for step in 1..=3u32 {
         HELD_CLOCK.with(|clock| clock.set(now_ms() + u64::from(step) * 5_000));
@@ -1590,7 +1567,7 @@ fn held_plan_pins_input_and_releases_on_completion() {
     let (plan, input) = held_candidate();
     let expected_id = input.facts().snapshot_id;
     engine
-        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
         .expect("钉面在位 ⇒ 准入");
     assert_eq!(log.borrow().held, vec![expected_id], "准入即钉");
     for step in 1..=3u64 {
@@ -1623,7 +1600,7 @@ fn held_admission_fails_closed_when_retention_refuses() {
     engine.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
     let (plan, input) = held_candidate();
     let err = engine
-        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
         .expect_err("钉面拒收 ⇒ 准入必须 fail-closed");
     assert!(
         format!("{err:?}").contains("input retention unavailable"),
@@ -1650,7 +1627,7 @@ fn held_input_repin_after_restart() {
         let mut engine = held_fixture(media.clone(), delivered.clone());
         // 装配顺序变体：install 先于 set_input_retainer（生产装配序）。
         engine
-            .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+            .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
             .unwrap();
     }
     log.borrow_mut().held.clear(); // 模拟掉电：RAM 钉集丢失
@@ -1694,26 +1671,22 @@ fn h01_capacity_rejection_keeps_live_plans_pinned() {
     engine.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
     let (plan, input) = held_candidate();
     engine
-        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
         .unwrap();
     engine
         .submit_trusted(
             &renamed_plan(&plan, 0x73),
             &input,
-            "pcs",
             &trusted_telemetry(),
             &actor(),
-            5_000,
         )
         .unwrap();
     let error = engine
         .submit_trusted(
             &renamed_plan(&plan, 0x74),
             &input,
-            "pcs",
             &trusted_telemetry(),
             &actor(),
-            5_000,
         )
         .unwrap_err();
     assert!(format!("{error:?}").contains("capacity full"), "{error:?}");
@@ -1786,7 +1759,7 @@ fn h02_real_persist_failure_preserves_existing_pin() {
     engine.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
     let (plan, input) = held_candidate();
     engine
-        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
         .unwrap();
     let sid = input.facts().snapshot_id;
     // 武装介质写失败：第二份（同快照、不同计划）的持久提交真实失败。
@@ -1795,10 +1768,8 @@ fn h02_real_persist_failure_preserves_existing_pin() {
         .submit_trusted(
             &renamed_plan(&plan, 0x99),
             &input,
-            "pcs",
             &trusted_telemetry(),
             &actor(),
-            5_000,
         )
         .unwrap_err();
     let text = format!("{error:?}");
@@ -1839,17 +1810,15 @@ fn h02_capacity_rollback_keeps_owners() {
     engine.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
     let (plan, input) = held_candidate();
     engine
-        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
         .unwrap();
     let sid = input.facts().snapshot_id;
     let err = engine
         .submit_trusted(
             &renamed_plan(&plan, 0x99),
             &input,
-            "pcs",
             &trusted_telemetry(),
             &actor(),
-            5_000,
         )
         .err();
     // 容量面或持久面拒绝均可——关键断言在钉集：
@@ -1882,10 +1851,10 @@ fn h03_shared_snapshot_released_only_after_last_plan_finishes() {
     let sid = input.facts().snapshot_id;
     let plan2 = renamed_plan(&plan, 0x55);
     engine
-        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
         .unwrap();
     engine
-        .submit_trusted(&plan2, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_trusted(&plan2, &input, &trusted_telemetry(), &actor())
         .unwrap();
     // 推进：每 tick 一份计划。第一份完成后，第二份仍在途 ⇒ 保留。
     for step in 1..=4u64 {
@@ -1934,7 +1903,7 @@ fn h04_release_failure_retries_on_idle_ticks() {
     engine.set_input_retainer(Box::new(FailingRelease(count.clone())));
     let (plan, input) = held_candidate();
     engine
-        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
         .unwrap();
     for step in 1..=3u64 {
         HELD_CLOCK.with(|clock| clock.set(now_ms() + step * 5_000));
@@ -1998,7 +1967,7 @@ fn h05_release_reply_lost_converges_idempotently() {
     let (plan, input) = held_candidate();
     let sid = input.facts().snapshot_id;
     engine
-        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
         .unwrap();
     for step in 1..=3u64 {
         HELD_CLOCK.with(|clock| clock.set(now_ms() + step * 5_000));
@@ -2051,11 +2020,11 @@ fn h06_reheld_snapshot_releases_each_round() {
     let sid = input.facts().snapshot_id;
     // 第一轮：提交→完成→释放。
     engine
-        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
         .unwrap();
     // 重复提交同计划：幂等回执，不产生新引用/新钉。
     engine
-        .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
         .unwrap();
     for step in 1..=3u64 {
         HELD_CLOCK.with(|clock| clock.set(now_ms() + step * 5_000));
@@ -2076,7 +2045,7 @@ fn h06_reheld_snapshot_releases_each_round() {
     log.borrow_mut().released.clear();
     let plan2 = renamed_plan(&plan, 0x66);
     engine
-        .submit_trusted(&plan2, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+        .submit_trusted(&plan2, &input, &trusted_telemetry(), &actor())
         .unwrap();
     for step in 4..=7u64 {
         HELD_CLOCK.with(|clock| clock.set(now_ms() + step * 5_000));
@@ -2108,16 +2077,14 @@ fn h08_restart_rebuilds_shared_pins_without_resend() {
         let mut engine = held_fixture(media.clone(), delivered.clone());
         engine.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
         engine
-            .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+            .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
             .unwrap();
         engine
             .submit_trusted(
                 &renamed_plan(&plan, 0x77),
                 &input,
-                "pcs",
                 &trusted_telemetry(),
                 &actor(),
-                5_000,
             )
             .unwrap();
     }
@@ -2222,7 +2189,7 @@ fn held_plan_100_torn_write_points_never_resend_or_lose_confirmed_prefix() {
         );
         let (plan, input) = held_candidate();
         engine
-            .submit_trusted(&plan, &input, "pcs", &trusted_telemetry(), &actor(), 5_000)
+            .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
             .unwrap();
         assert_eq!(*delivered.borrow(), 1);
         assert_eq!(actual.get(), 1.0);

@@ -1,11 +1,21 @@
-//! Engine integration for the durable plan owner. This is a child of engine so
-//! it can reuse the unique command chain without exposing mutable internals.
+//! Engine integration for the durable plan owner. Reuses the unique command
+//! chain through engine's crate-visible face without exposing mutable
+//! internals. C1 转正（2026-09-24）：crate 级真模块（lib.rs 声明）——原
+//! `#[path]` 暗挂 + `use super::*` 全吸 engine 私有命名空间；现 engine
+//! 公开面经 `crate::engine::*` glob，依赖类型显式 import。
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use eneros_agent_sdk::snap_input_wire::TrustedInput;
 use eneros_decision_contract::{CandidatePlan, CommandBatch, CommandIntent};
+use eneros_safety_validator::TrustedTelemetry;
 
-use super::*;
+use crate::dispatch::{AuthenticatedActor, DispatchError, DispatchReceipt, DispatchState};
+use crate::engine::*;
 use crate::held_plan::{DurablePlans, HeldPlan};
+use crate::journal::{ExecutionStatus, JournalHit};
 use crate::saga::{BatchState, DriveReport};
+use crate::saga::{CmdOutcome, ReconcileOutcome, SagaExecutor};
 
 /// ADR-0054:29–30：**持有期间保留证书引用的冻结输入与事件**的装配面。
 ///
@@ -325,7 +335,7 @@ impl DispatchEngine {
             let report = if allowed && !earlier_failed {
                 let telemetry = telemetry.ok_or(DispatchError::TelemetryExpired)?;
                 // R13-B：投递标签/清算超时单源（计划级 DeliveryContext，
-                // 每批一次构造——与收拢前每批一次字面 String 构造等价）。
+                // 每批一次构造；R14-A 起经 Default 收敛到 saga_exec 单点）。
                 let mut executor = EngineSagaExecutor::new(
                     self,
                     telemetry,
@@ -337,16 +347,17 @@ impl DispatchEngine {
                         ttl_ms: plan.plan.ttl_ms(),
                         legacy_single: crate::compiler::is_legacy_single_command_plan(&plan.plan),
                     },
-                    crate::engine::DeliveryContext {
-                        target_label: alloc::string::String::from(
-                            crate::engine::STATION_PLAN_TARGET_LABEL,
-                        ),
-                        settle_timeout_ms: crate::engine::HELD_DELIVERY_SETTLE_MS,
-                    },
+                    crate::engine::DeliveryContext::default(),
                 );
                 saga.drive(&mut executor, now)
             } else {
-                saga.drive(&mut ReadOnlyRecovery { engine: self }, now)
+                saga.drive(
+                    &mut ReadOnlyRecovery {
+                        engine: self,
+                        legacy_single: crate::compiler::is_legacy_single_command_plan(&plan.plan),
+                    },
+                    now,
+                )
             }
             .map_err(DispatchError::IntentPersistFailed)?;
             eneros_runtime::println!(
@@ -549,6 +560,10 @@ impl DispatchEngine {
 }
 struct ReadOnlyRecovery<'a> {
     engine: &'a mut DispatchEngine,
+    /// R14-B：与投递路径同一派生事实（is_legacy_single_command_plan），
+    /// 原 false 硬编码依赖「held 计划均多命令」的准入不变式而无断言——
+    /// 不变式变化时此处会静默派生错键，改为构造点随计划派生。
+    legacy_single: bool,
 }
 impl SagaExecutor for ReadOnlyRecovery<'_> {
     fn applied_durable(
@@ -556,10 +571,10 @@ impl SagaExecutor for ReadOnlyRecovery<'_> {
         intent: &CommandIntent,
         readback: Option<f64>,
     ) -> Result<(), String> {
-        let correlation =
-            crate::compiler::plan_command_correlation(intent.plan_id(), intent.intent_id(), false);
+        let (correlation, digest) =
+            crate::compiler::intent_journal_identity(intent.plan_id(), intent, self.legacy_single);
         self.engine
-            .settle_saga_applied(intent, correlation, readback)
+            .settle_saga_applied(intent, correlation, digest, readback)
     }
 
     fn execute(&mut self, _: &CommandIntent, _: u32) -> CmdOutcome {
@@ -581,17 +596,16 @@ impl SagaExecutor for ReadOnlyRecovery<'_> {
 impl DispatchEngine {
     /// The caller has durably recorded two independent reads as Applied in the
     /// held Saga. Update the original intent before releasing its journal lock.
+    /// R14-B：身份对 (correlation, digest) 由调用方经
+    /// `compiler::intent_journal_identity` 同点派生后整对传入——本函数
+    /// 不再自行补算 digest（原对内两半分处两函数，漂移不可见）。
     pub(super) fn settle_saga_applied(
         &mut self,
         intent: &CommandIntent,
         correlation: [u8; 16],
+        digest: [u8; 32],
         readback: Option<f64>,
     ) -> Result<(), String> {
-        let digest = eneros_protocol_abstract::write::semantic_command_digest(
-            u32::from(intent.device_id()),
-            intent.point_id(),
-            CommandValue::ActivePowerKw(intent.power_kw()),
-        );
         let record = match self.journal.lookup(&correlation, &digest) {
             None => return Ok(()),
             Some(JournalHit::Conflict) => {

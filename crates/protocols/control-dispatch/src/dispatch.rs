@@ -1,9 +1,13 @@
 //! 蓝图 40 WP-40.6：`ControlDispatch` 深接口与 12 态状态机。
 //!
-//! 唯一控制写出口：`submit(proposal, telemetry, actor, deadline)` 经
-//! validate → authorize → persist → deliver → ACK → readback → audit 全链，
-//! 返回带 [`DispatchState`] 的 [`DispatchReceipt`]——调用方（svc-energy-agent）
-//! 只以 `final_state == Committed` 作为成功判据（learning 门控）。
+//! 唯一控制写出口（2026-09-24 C2 收口后）：typed 入口
+//! `submit_typed(CandidatePlan)` / `submit_trusted(CandidatePlan +
+//! TrustedInput)`（生产）与 `submit_intent(PointWriteIntent)`（协议
+//! 入站）——经 validate → authorize → persist → deliver → ACK →
+//! readback → audit 全链，返回带 [`DispatchState`] 的 [`DispatchReceipt`]
+//! ——调用方（svc-energy-agent）只以 `final_state == Committed` 作为
+//! 成功判据（learning 门控）。旧 facade 入口 `submit(&ProposedControlPlan)`
+//! 已退役（迁移轨经 `adapter::proposal_to_candidate_unbound` 转 typed）。
 //!
 //! [`DispatchState`] 定义与码表单源（蓝图 63 WP-63.1.1）：
 //! 蓝图 62 之前，12 态码表在三个面各自手写逐臂重复（回执 wire encode/
@@ -18,7 +22,6 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use eneros_control_gateway::envelope::ActorKind;
-use eneros_dual_brain::ProposedControlPlan;
 use eneros_safety_validator::TrustedTelemetry;
 
 /// 认证调用方（WP-40.6 步骤 3：actor/capability/lease/fencing）。
@@ -109,22 +112,13 @@ pub trait ControlDispatch {
         Ok(Vec::new())
     }
 
-    /// 提交提议计划。
-    ///
-    /// `deadline_ms` = 端到端截止（相对 now 的毫秒预算；超时 → 明确错误，
-    /// 不猜成功）。任何前置失败 → `Err`（零投递）；投递后结果 →
-    /// `Ok(receipt)`（`final_state` 决定成功/失败/不确定）。
-    fn submit(
-        &mut self,
-        proposal: &ProposedControlPlan,
-        telemetry: &TrustedTelemetry,
-        actor: &AuthenticatedActor,
-        deadline_ms: u64,
-    ) -> Result<DispatchReceipt, DispatchError>;
+    // （2026-09-24 C2 收口退役）原 `fn submit(&ProposedControlPlan, …)`
+    // legacy facade 臂。生产与测试一律走 [`submit_typed`](Self::submit_typed)
+    // （迁移轨经 `adapter::proposal_to_candidate_unbound` 构造 typed 候选）。
 
     /// 47（WP-47.1 协议入站写）：提交协议写意图（唯一协议→授权链入口）。
     ///
-    /// 与 [`submit`](Self::submit) 同一 12 态链：意图校验（设备/点/值域）→
+    /// 与 [`submit_typed`](Self::submit_typed) 同一 12 态链：意图校验（设备/点/值域）→
     /// 序号重放门 → actor/租约/策略/安全授权（ControlChain 九步链，含
     /// SBO）→ rate 预算 → durable intent → 投递 → ACK/独立 readback →
     /// Committed/Failed/Indeterminate。任何前置失败 → `Err`（零投递）。
@@ -139,13 +133,16 @@ pub trait ControlDispatch {
     /// 蓝图 61 v0.314.29：typed 提交（CandidatePlan V1——决策 wire 唯一
     /// 形态）。内部经过渡认证证书 + CommandIntent/CommandBatch 进入同一
     /// 12 步链；执行仍只经 Gateway AuthorizedCommand。
+    ///
+    /// 投递标签/清算超时由引擎内部单源自派生（R14-A：原 `target_device`
+    /// / `deadline_ms` 形参是幻影参数——生产从未传过第二值，2026-09-24
+    /// 随 trait 收窄退役，与 [`submit_intent`](Self::submit_intent) 的
+    /// 标签内派生惯例对齐）。
     fn submit_typed(
         &mut self,
         plan: &eneros_decision_contract::CandidatePlan,
-        target_device: &str,
         telemetry: &TrustedTelemetry,
         actor: &AuthenticatedActor,
-        deadline_ms: u64,
     ) -> Result<DispatchReceipt, DispatchError>;
 
     /// 本 dispatch 绑定的默认资产（未绑定分配 `asset_id == 0` 的解析
@@ -156,15 +153,14 @@ pub trait ControlDispatch {
 
     /// 蓝图 70.8 WP-70.8.4：**带可信输入身份**的 typed 提交（生产唯一
     /// 入口）。引擎在入口验证候选与可信输入同代（快照/目录/时域/摘要），
-    /// 不匹配即整批拒绝（零投递，绝不改写身份使其通过）。
+    /// 不匹配即整批拒绝（零投递，绝不改写身份使其通过）。投递标签/清算
+    /// 超时同 [`submit_typed`](Self::submit_typed)：引擎内部自派生（R14-A）。
     fn submit_trusted(
         &mut self,
         plan: &eneros_decision_contract::CandidatePlan,
         trusted: &eneros_agent_sdk::snap_input_wire::TrustedInput,
-        target_device: &str,
         telemetry: &TrustedTelemetry,
         actor: &AuthenticatedActor,
-        deadline_ms: u64,
     ) -> Result<DispatchReceipt, DispatchError>;
 }
 

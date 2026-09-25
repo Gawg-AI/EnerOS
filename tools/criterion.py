@@ -18,9 +18,11 @@
 
 边界（C3 全 token/锚定的实现语义）：
   左边界——命中起点前是行首或非 [A-Za-z0-9_:-] 字符（"BOOT-…"、"X…"
-  粘连不命中）；右边界——命中终点后是行尾或非 [A-Za-z0-9_:] 字符
-  （"OKAY"、"gen=X" 之外的粘连不命中）；**尾缀 '=' 例外**：key 形
-  pattern（"OTA-CONFIG gen=" / "ACQ point="）右边界开放（值为后续字符）。
+  粘连不命中）；右边界——**pattern 以词字符结尾时**，命中终点后是行尾
+  或非 [A-Za-z0-9_:] 字符（"OKAY"、"gen=X" 之外的粘连不命中）；pattern
+  以分隔符结尾时右边界开放（该分隔符本身即边界）：key 形
+  （"OTA-CONFIG gen=" / "ACQ point="）值为后续字符，词形 "PANIC #"
+  受纳 "PANIC #1 at …"（73 批C：本仓 panic 出口的非标准形）。
   大小写敏感默认（登记条目可显式 case_sensitive；当前全部 true）。
 """
 
@@ -55,10 +57,19 @@ def get_criterion(cid: str) -> dict:
     raise SystemExit(f"criterion.py: 未登记的判据 id '{cid}'（{REGISTRY}）")
 
 
-def _match_count(line: str, pattern: str) -> int:
-    """单行的全 token 命中计数（左/右边界锚定；尾缀 '=' 右开放）。"""
+def match_count(line: str, pattern: str) -> int:
+    """单行的全 token 命中计数（左边界恒锚定；右边界按尾字符性质决定）。
+
+    公开面：run70_gate_judge.py 等消费方经此复用**同一**锚定语义，
+    不再自带第二套匹配规则。
+
+    右边界只在 pattern **以词字符结尾**时施加：以分隔符结尾的 pattern
+    （key 形 `"…gen="`、词形 `"PANIC #"`）自身已经带边界，再要求后随
+    非词字符会把 `"PANIC #1 at …"` 这类真实 panic 判成不命中（73 批C
+    归档重放实证）。尾字符非词 ⇒ 右开放，粘连防护仍由左边界承担。
+    """
     rx = f"(?<![{_LEFT_CLASS}])" + re.escape(pattern)
-    if not pattern.endswith("="):
+    if pattern[-1:].isalnum() or pattern[-1:] == "_":
         rx += f"(?![{_RIGHT_CLASS}])"
     return len(re.findall(rx, line))
 
@@ -69,7 +80,7 @@ def count_in_file(path: str, patterns: list[str], case_sensitive: bool = True) -
         for raw in fh:
             line = raw if case_sensitive else raw.lower()
             for pat in patterns:
-                total += _match_count(line, pat if case_sensitive else pat.lower())
+                total += match_count(line, pat if case_sensitive else pat.lower())
     return total
 
 
@@ -258,6 +269,103 @@ class SelfTest(unittest.TestCase):
             fh.write("PRODUCT-READY not yet\nPANIC: panicked at boot\n...600 healthy lines\n")
         code, _ = run_check("PANIC-SCAN", [p])
         self.assertEqual(code, 1, "启动段（READY 之前）PANIC 必须计入——全文件域")
+
+    def test_panic_scan_hash_form_emitters_red(self):
+        """本仓每个 panic 出口词形都必须被 PANIC-SCAN 词表覆盖。
+
+        73 批C 归档重放实证（125 份 qemu-serial 日志）：旧词表只认 Rust
+        标准形 `PANIC: panicked at`，漏掉本仓自定义出口 ⇒ 真 panic 判绿
+        （evidence/70/70.12/probe-window.qemu-serial.log 物证）。裸子串
+        方言偶然兜住它们，锚定词表反而漏检——收编前必须先补词表。
+        fixture 每行对应一个真实 emitter（注释在 toml PANIC-SCAN 段）。
+        """
+        entry = get_criterion("PANIC-SCAN")
+        tokens = list(entry["none_of"])
+        # (fixture 行号, 该行的 emitter 形, 必须命中它的 token)
+        forms = [
+            (1, "root-task panic.rs:269 WDT unmapped", "PANIC #"),
+            (2, "services panic.rs:50 supervisor restart", "PANIC #"),
+            (3, "root-task panic.rs:257 arming watchdog reset", "PANIC reboot #"),
+            (4, "runtime/hello main.rs:68 用户态组件 panic", "[PANIC]"),
+        ]
+        lines = (FALSE_GREEN / "panic-hash-form.log").read_text().splitlines()
+        for idx, label, token in forms:
+            self.assertIn(token, tokens, f"词表缺 token {token!r}（{label}）")
+            hits = count_in_file(str(FALSE_GREEN / "panic-hash-form.log"), [token])
+            self.assertGreaterEqual(hits, 1, f"未命中 emitter 形：{label}")
+        code, msg = run_check("PANIC-SCAN", [str(FALSE_GREEN / "panic-hash-form.log")])
+        self.assertEqual(code, 1, f"四行真 panic 必须整体 ✗（得到 {msg!r}）")
+
+    def test_standard_panic_form_still_covered(self):
+        """补词表后标准形不得回归（`PANIC: panicked at` 仍恰计一次）。"""
+        self.assertEqual(
+            count_in_file(self.good, ["PANIC: panicked at"]), 0,
+            "健康窗不应出现 panic 形",
+        )
+        p = str(Path(self.tmp.name, "std-panic.log"))
+        with open(p, "w") as fh:
+            fh.write("[svc-telemetry] PANIC: panicked at src/x.rs:1:1\n")
+        code, _ = run_check("PANIC-SCAN", [p])
+        self.assertEqual(code, 1, "标准 panic 形必须 ✗")
+
+    def test_live_gates_do_not_bare_grep_panic(self):
+        """判据垄断守卫：活体 run70 门不得再自带裸 PANIC grep 方言。
+
+        登记册 PANIC-SCAN 是零-PANIC 判据的唯一执行面；本守卫把"退役"从
+        注释宣称变成可执行事实（73 批B 只对 窗B/B5 兑现，A6/C4/R7/vol7
+        仍是裸 grep——文档与码不符即红）。run69 系已被 70 系取代且无任何
+        调用方，不在守卫面内。
+        """
+        banned = [
+            'grep -aci "PANIC',   # vol5 R7 旧 -i 宽面
+            'grep -ac "PANIC\\|',  # r10-held A6/C4 第三词表
+            "grep -aqcE 'PANIC",  # vol7 R1/R5/R13
+            "! grep -aqcE 'PANIC",
+        ]
+        targets = []
+        for path in sorted((ROOT / "tools").glob("run70-*.sh")):
+            # 判据面 = 会打出门 verdict 行的脚本；纯人工诊断转储（无
+            # `[✓][` 回声）不构成判据，不在守卫面内。
+            if "[✓][" in path.read_text(errors="replace"):
+                targets.append(path)
+        names = {p.name for p in targets}
+        # 守卫面必须由"出门即有 verdict 回声"这条规则决定，不能退回按文件名
+        # glob——`run70-vol*-gate.sh` 曾漏掉下面两个真实判据脚本（本守卫的
+        # 第一版就是这么漏的）。
+        for required in ("run70-r03-powercut.sh", "run70-r10-held.sh"):
+            self.assertIn(required, names, f"守卫面漏掉判据脚本 {required}")
+        offenders = []
+        for path in targets:
+            if not path.is_file():
+                continue
+            text = path.read_text(errors="replace")
+            for needle in banned:
+                if needle in text:
+                    offenders.append(f"{path.name}: {needle}")
+        self.assertEqual(offenders, [], "裸 PANIC grep 方言仍在活体门：\n  " + "\n  ".join(offenders))
+
+        # 结构化裁决器同样不得自带第二套词表（它曾是"第四方言"）。
+        judge = (ROOT / "tools" / "run70_gate_judge.py").read_text(errors="replace")
+        for needle in ('find_all("PANIC', 'find_all("memory allocation'):
+            self.assertNotIn(needle, judge, f"judge.py 自带硬编码 PANIC 词表：{needle}")
+        self.assertIn(
+            "get_criterion(\"PANIC-SCAN\")", judge,
+            "judge.py 的 G1/G2 必须读登记册 PANIC-SCAN（词表单源）",
+        )
+
+    def test_boundary_open_only_for_non_word_tail(self):
+        """右边界推广到"以分隔符结尾"后，粘连/错形仍必须不命中。"""
+        p = str(Path(self.tmp.name, "hash-glue.log"))
+        with open(p, "w") as fh:
+            fh.write(
+                "SP-PANIC #1 glued left\n"      # 左边界 '-' 在类内 ⇒ 不命中
+                "PANIC: panicked at ok\n"        # 标准形不是 "# " 形
+                "PANICX #1 not the token\n"
+            )
+        self.assertEqual(count_in_file(p, ["PANIC #"]), 0, "左粘连/变形不得命中")
+        with open(p, "a") as fh:
+            fh.write("[svc-x] PANIC #3 at src/panic.rs:1 — suspending\n")
+        self.assertEqual(count_in_file(p, ["PANIC #"]), 1, "真 # 形命中恰一次")
 
     def test_count_only_b4(self):
         p = str(Path(self.tmp.name, "b4.log"))

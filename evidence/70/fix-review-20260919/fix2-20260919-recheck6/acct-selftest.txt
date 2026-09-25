@@ -1,0 +1,14 @@
+[selftest] PASS A01 完整正例通过
+[selftest] PASS A02 跨计划借数被拒
+[selftest] PASS A02b 各自独立计算（B 过、A 的 uniq=0 不借 B）
+[selftest] PASS A03 前缀碰撞分账 + 重复打印不加数
+[selftest] PASS A04 读回跨计划不补数（A 的 rbs=0 拒绝，B 通过）
+[selftest] PASS A04b 零读回计划拒绝
+[selftest] PASS A05 读回按 intent 去重
+[selftest] PASS A06a 终态守恒矛盾拒绝
+[selftest] PASS A06b 截断（无 DONE）拒绝
+[selftest] PASS A06c 编译行矛盾 exit 2
+[selftest] PASS A06d 4B 前缀历史形态拒绝
+[selftest] PASS A06e 未归属 Applied 行拒绝
+[selftest] all PASS
+acct rc=0

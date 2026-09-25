@@ -1,0 +1,4 @@
+same-value-Q-only: rc=0
+stdout=12 12 12
+4 21 4 21 4 21
+stderr=

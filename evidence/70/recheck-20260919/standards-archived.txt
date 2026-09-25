@@ -1,0 +1,12 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling eneros-business-services v0.337.0 (/home/ahx/文档/EnerOS/crates/agents/business-services)
+   Compiling eneros70-standards-repro v0.1.0 (/home/ahx/文档/EnerOS/evidence/70/recheck-20260919/standards-repro)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.78s
+     Running `/tmp/eneros70-standards-repro/target/debug/eneros70-standards-repro`
+S1 last-attempt protection+confirmation: fixed
+S1 missing-identity raw BOOTCTRL write allowed=true
+S2 sync terminal-failure first=Failed replay=Completed query=Completed durable=Running pending=true persist_calls=2
+S2 async observation first=Accepted query=Completed durable=Running pending=false persist_calls=1
+S3 different action same-id: fixed, executed=1

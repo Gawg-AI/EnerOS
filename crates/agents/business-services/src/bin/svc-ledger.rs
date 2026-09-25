@@ -143,15 +143,15 @@ impl eneros_control_services::ControlServiceHandler for LedgerHandler {
         use eneros_business_services::ledger::*;
         use eneros_market_types::MilliYuan;
         const MAGIC: &[u8; 4] = b"LDG1";
-        if req.len() < 5 || &req[..4] != MAGIC {
-            resp.extend_from_slice(b"ERR:proto");
+        if eneros_business_services::svc_wire::parse_envelope(MAGIC, req).is_none() {
+            resp.extend_from_slice(eneros_business_services::svc_wire::ERR_PROTO);
             return false;
         }
         match req[4] {
             0x01 => {
                 // POST：tx(8) debit(4) credit(4) amount(8) time(8) receipt(32)
                 if req.len() != 5 + 64 {
-                    resp.extend_from_slice(b"ERR:len");
+                    resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
                     return false;
                 }
                 let p = &req[5..];
@@ -183,7 +183,7 @@ impl eneros_control_services::ControlServiceHandler for LedgerHandler {
             }
             0x02 => {
                 if req.len() != 9 {
-                    resp.extend_from_slice(b"ERR:len");
+                    resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
                     return false;
                 }
                 let account = AccountId(u32::from_le_bytes(req[5..9].try_into().unwrap()));
@@ -198,7 +198,7 @@ impl eneros_control_services::ControlServiceHandler for LedgerHandler {
                 true
             }
             _ => {
-                resp.extend_from_slice(b"ERR:cmd");
+                resp.extend_from_slice(eneros_business_services::svc_wire::ERR_CMD);
                 false
             }
         }

@@ -1,0 +1,8 @@
+[ok] positive-写后同址同值读: verified=2 expect=2
+[ok] 红例-读全部在写前（旧门误放行形）: verified=0 expect=0
+[ok] 红例-旧读值不匹配: verified=0 expect=0
+[ok] 红例-错误顺序（值对但读在写前）: verified=0 expect=0
+[ok] 红例-错误设备（同值读在另一地址）: verified=0 expect=0
+[ok] 红例-同一读不得重复用于两写: verified=1 expect=1
+[ok] 交错多值（各自写后读，互不借用）: verified=3 expect=3
+SELFTEST PASS: 7/7

@@ -1,0 +1,17 @@
+PLAN-COMPILED batches=2 intents=12 skipped=0
+PLAN-HELD plan=[0x01]
+HELD-PLAN-DONE plan=[0x01] batches=2 applied=12 blocked=0 failed=0 state=Committed
+PLAN-COMPILED batches=2 intents=12 skipped=0
+PLAN-HELD plan=[0x02]
+HELD-COMMAND intent=[0x20] state=Applied readback=Some(1)
+HELD-COMMAND intent=[0x21] state=Applied readback=Some(1)
+HELD-COMMAND intent=[0x22] state=Applied readback=Some(1)
+HELD-COMMAND intent=[0x23] state=Applied readback=Some(1)
+HELD-COMMAND intent=[0x24] state=Applied readback=Some(1)
+HELD-COMMAND intent=[0x25] state=Applied readback=Some(1)
+HELD-COMMAND intent=[0x26] state=Applied readback=Some(1)
+HELD-COMMAND intent=[0x27] state=Applied readback=Some(1)
+HELD-COMMAND intent=[0x28] state=Applied readback=Some(1)
+HELD-COMMAND intent=[0x29] state=Applied readback=Some(1)
+HELD-COMMAND intent=[0x2a] state=Applied readback=Some(1)
+HELD-COMMAND intent=[0x2b] state=Applied readback=Some(1)

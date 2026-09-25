@@ -23,6 +23,9 @@ pub mod cloud_sync;
 pub mod config_service;
 pub mod ledger;
 pub mod market;
+/// R14-E（2026-09-24）：控制服务 bin 族信封单源（magic‖cmd‖payload +
+/// ERR 词形；bin 族手抄收编，wire 字节零变化）。
+pub mod svc_wire;
 
 /// 蓝图 61 v0.314.31（[07] §3.4）：市场事实接入 adapter——经认证信封
 /// （SM3 摘要 + SM2 验签）走同一 IngestionModule 合同；修订/过期纪律。

@@ -41,7 +41,6 @@ use eneros_control_gateway::{ChainDenyReason, ControlProfile};
 use eneros_dual_brain::audit::{DecisionAudit, ExecOutcome, SafetyOutcome};
 use eneros_dual_brain::chain_sink::deny_reason_str;
 use eneros_dual_brain::gate::{DecisionGate, GateDecision};
-use eneros_dual_brain::ProposedControlPlan;
 use eneros_protocol_abstract::write::PointWriteIntent;
 use eneros_safety_validator::state::SystemState;
 use eneros_safety_validator::TrustedTelemetry;
@@ -55,13 +54,18 @@ use crate::dispatch::{
 use crate::feedback::TrustedFeedbackBuilder;
 use crate::intent::{IntentRecord, IntentStore};
 use crate::journal::{ExecutionJournal, ExecutionStatus, IdempotencyRecord, JournalHit};
+use crate::saga::ReconcileOutcome;
+use crate::saga_exec::intent_window_estimate;
+use crate::settle::{
+    settle, ExecutionCtx, SettleOp, SettleReceipt, SettleStage, SettleTrigger, Settlement,
+};
 
 /// 47（WP-47.1）：协议写意图 TTL（秒；信封过期窗，无意图自带 TTL）。
 pub const INTENT_TTL_SECS: u64 = 60;
 
 /// WP-54.2 合核：两入口的身份派生差异（枚举而非闭包——派生必须发生在
 /// actor 门之后，见 [`DispatchEngine::execute_core`]）。
-enum CoreIdentity {
+pub(crate) enum CoreIdentity {
     /// 协议写意图：command_id = correlation = (protocol, seq) 派生；
     /// 不占引擎自增序列（跨重启由链幂等键兜底）。
     Intent {
@@ -82,24 +86,24 @@ enum CoreIdentity {
 
 /// WP-54.2 合核入参：入口完成纯计算（校验/值域/target/digest），副作用序
 /// 由 [`DispatchEngine::execute_core`] 独占。
-struct CoreCommand {
+pub(crate) struct CoreCommand {
     /// 身份派生方式。
-    identity: CoreIdentity,
+    pub(crate) identity: CoreIdentity,
     /// 信封 TTL（秒）：意图=INTENT_TTL_SECS；计划=proposal.ttl_secs.max(1)。
-    ttl_secs: u64,
+    pub(crate) ttl_secs: u64,
     /// 功率载荷（kW，正=放电/合）。
-    power_kw: f64,
+    pub(crate) power_kw: f64,
     /// durable 记录目标设备串。
-    target_device: String,
+    pub(crate) target_device: String,
     /// durable 记录输入摘要（意图写恒 None）。
-    input_digest: Option<[u8; 32]>,
+    pub(crate) input_digest: Option<[u8; 32]>,
     /// None=意图写（无能量语义，仅速率）；Some(kWh)=AI 计划能量预算。
-    energy_kwh: Option<f64>,
+    pub(crate) energy_kwh: Option<f64>,
     /// IdempotentHit 回执文案（两入口注记不同）。
-    idem_note: String,
+    pub(crate) idem_note: String,
     /// 蓝图 61 v0.314.29：CandidatePlan wire SHA-256（typed 链 durable
     /// 绑定；意图写 None）。
-    plan_sha: Option<[u8; 32]>,
+    pub(crate) plan_sha: Option<[u8; 32]>,
 }
 
 /// 调度窗口（小时）——能量预算估算（与 dual-brain 同系数）。
@@ -288,9 +292,9 @@ pub struct DispatchEngine {
     /// WP-5.1：编译器策略。
     compiler_policy: crate::compiler::CompilerPolicy,
     /// WP-5.3：唯一生产 CommandArbiter（[10] §4.7：全仓唯一）。
-    arbiter: crate::arbiter::CommandArbiter,
+    pub(crate) arbiter: crate::arbiter::CommandArbiter,
     /// WP-5.3：资源控制模式。
-    control_mode: crate::arbiter::ControlMode,
+    pub(crate) control_mode: crate::arbiter::ControlMode,
     key: Vec<u8>,
     /// 蓝图 70 R10：per-asset 执行路由表（routes[0] = 默认路由 = 装配
     /// issuer；其后为 extra_routes）。信封签发/链复验/SBO/爬坡基线全部
@@ -315,19 +319,19 @@ pub struct DispatchEngine {
     control_audit: Option<Box<dyn eneros_audit::AuditLogger>>,
     /// durable intent 存储（观测：find/pending 对账；经 `find_intent`/
     /// `pending_intents` 只读暴露——写只经 settle/push_stage 编排点）。
-    intent_log: Box<dyn IntentStore>,
+    pub(crate) intent_log: Box<dyn IntentStore>,
     delivery: Box<dyn DeliveryChannel>,
     /// 61 v0.314.24：执行 journal（执行状态与幂等真值唯一持有者）。
     /// 启动时从 intent store 未决记录播种 Reconciling——旧版/崩溃遗留的
     /// 非终态记录永不以 Committed 复活。
-    journal: ExecutionJournal,
+    pub(crate) journal: ExecutionJournal,
     feedback_builder: TrustedFeedbackBuilder,
-    now_fn: fn() -> u64,
+    pub(crate) now_fn: fn() -> u64,
     /// 蓝图 70.8 WP-70.8.4：可信输入准入策略。
     trusted_input: TrustedInputPolicy,
     /// 蓝图 70.9：独立认证来源与验方 key 环。
-    certifier: alloc::boxed::Box<dyn crate::certify::CertificateSource + 'static>,
-    certifier_ring: eneros_certifier::proof::CertifierKeyRing,
+    pub(crate) certifier: alloc::boxed::Box<dyn crate::certify::CertificateSource + 'static>,
+    pub(crate) certifier_ring: eneros_certifier::proof::CertifierKeyRing,
     seq: u64,
     /// 已提交（Committed）次数（观测/审计；经 `committed_count` 只读）。
     committed_count: u64,
@@ -345,561 +349,20 @@ pub struct DispatchEngine {
     /// 复查 FIX（61 §3.4）：每 (device,point) 最近 AppliedConfirmed
     /// setpoint（值, 确认时刻 ms）——单点爬坡检查的参照基线。仅内存
     /// （重启后无参照 = 首命令放行；跨重启的爬坡基线归对账/点表）。
-    last_confirmed: BTreeMap<(u32, u32), (f64, u64)>,
-    held_plans: Option<crate::held_plan::DurablePlans>,
-    held_store_unavailable: bool,
+    pub(crate) last_confirmed: BTreeMap<(u32, u32), (f64, u64)>,
+    /// C1 转正：原 held_engine 子模块直访——pub(crate) 显式化。
+    pub(crate) held_plans: Option<crate::held_plan::DurablePlans>,
+    pub(crate) held_store_unavailable: bool,
     /// ADR-0054:29–30：持有输入保留面（None = 未装配——host 测试或
     /// fail-closed 装配由调用方以 NoRetention 显式承担）。
-    input_retainer: Option<alloc::boxed::Box<dyn held_engine::HeldInputRetainer>>,
+    /// C1 转正：原 held_engine 子模块直访——pub(crate) 显式化（访问者
+    /// 限 crate 内持有面）。
+    pub(crate) input_retainer: Option<alloc::boxed::Box<dyn crate::held_engine::HeldInputRetainer>>,
     /// Deepening-v1 §A：钉住账目（持有代次、已释放事实、待重试队列、
     /// 终态行一次性标记、钉面失败计数）收拢为深 module——原六处四种
     /// 淘汰惯用法单点化，F70-04 代次安全由注释维系升级为结构维系。
     /// 存活引用计数仍归 engine（事实源 = 持久计划，R-A2）。
-    holds: hold_registry::HoldRegistry,
-}
-
-// ==========================================================================
-// 62 v0.315.0 WP-62.1.3（S3）：结算决策表。
-//
-// 每条命令的结局（journal 状态转移 + durable intent 状态 + 回执形态 +
-// audit 文案）由纯函数 [`settle`] 单点决定；[`SettleDispatch::settle_command`]
-// 是结算路径上 `journal.transition` / `intent_log.update_state` / `audit`
-// 的唯一编排点（stage 推进另经 [`SettleDispatch::push_stage`]）。
-// 文案经 [`AuditText`] 惰性渲染，串口/audit 词形逐字节不变（audit_chain
-// 与 45–47/61 冻结证据链依赖）。写序不变量（61 v0.314.24：Applied =
-// durable 终态 ack 先行，成功后才 journal AppliedConfirmed）由表内
-// `durable` 序表达，表级单测 `settle_table_*` 锁定。
-// ==========================================================================
-
-/// 结算触发事件（execute_core 前置拒绝 + deliver_and_settle 全部分类臂）。
-///
-/// 新增一个触发（如假想 OutcomeCode）的成本 = 本枚举一臂 + `settle`
-/// 表一行 + 表测试一用例 + 流程分类点一行——不动任何既有臂。
-#[derive(Debug)]
-enum SettleTrigger {
-    /// 电气护栏拒绝（步骤 4.5，授权后零投递）。
-    SafetyReject { reason: String },
-    /// 速率预算拒绝（步骤 5；现状无 audit——保持）。
-    BudgetRate,
-    /// 能量预算拒绝（步骤 5；现状无 audit——保持）。
-    BudgetEnergy,
-    /// durable intent append 失败（步骤 6，零投递终局）。
-    IntentAppendFailed { err: String },
-    /// journal Authorized→Persisted 推进失败（步骤 6.5）。
-    JournalPersistFailed { err: String },
-    /// 投递 Ok 但 journal Persisted→Sent 推进失败（步骤 7）。
-    SentAdvanceFailed { err: String },
-    /// 投递 Ok 但 durable mark-sent 失败（步骤 7）。
-    MarkDeliveredFailed,
-    /// 投递超时（写可能已发生）。
-    DeliveryTimeout,
-    /// 通道不可达（可证明未投递 → 终局 Failed）。
-    DeliveryUnreachable,
-    /// 投递通用错误（写可能已发生）。
-    DeliveryError { err: String },
-    /// 回执帧解码失败（写已发生、结果未知）。
-    ResponseDecodeFailed { err: String },
-    /// ACK 已解码但 journal Sent→TransportAcked 推进失败。
-    AckAdvanceFailed { err: String },
-    /// 对端 Applied（两相成功，见 [`Settlement`] 写序）。
-    Applied,
-    /// Applied 但 durable 终态落盘失败（嵌套触发）。
-    AppliedDurableFailed,
-    /// Applied 但 journal AppliedConfirmed 推进失败（嵌套触发）。
-    AppliedAdvanceFailed { err: String },
-    /// 对端幂等命中（本进程不持原结果，绝不升级 Committed）。
-    PeerIdempotentHit,
-    /// 对端 dry-run（未写设备）。
-    PeerDryRun,
-    /// 对端拒绝。
-    PeerDenied { class: u8 },
-    /// 写可能已发生但读回不可用。
-    ReadbackUnavailable,
-    /// ACK 成功但读回不匹配。
-    ReadbackMismatch,
-    /// 对端执行失败。
-    PeerFailed,
-}
-
-/// 单笔 durable 写（结算表行内元素）。
-#[derive(Debug, PartialEq, Eq)]
-enum SettleOp {
-    /// journal 转移（Applied 行的 journal 写携带 sm3(回执) 摘要——
-    /// 由 `settle_command` 的 Applied 分支供给；其余行摘要恒 None）。
-    Journal {
-        from: ExecutionStatus,
-        to: ExecutionStatus,
-    },
-    /// durable intent 状态推进。
-    Intent { state: DispatchState },
-}
-
-/// audit 文案（惰性渲染：states 调试串在编排点按终态拼接）。
-#[derive(Debug)]
-enum AuditText {
-    /// 预格式文案（含动态 err/class 内容，不含 states）。
-    Formatted(String),
-    /// `states={states:?};{suffix}`（suffix 形如 `note=…`/`safety-reject=…`）。
-    StatesSuffix(String),
-    /// `states={states:?}`（Applied 成功终审）。
-    States,
-}
-
-impl AuditText {
-    fn render(&self, states: &[DispatchState]) -> String {
-        match self {
-            AuditText::Formatted(s) => s.clone(),
-            AuditText::StatesSuffix(suffix) => alloc::format!("states={states:?};{suffix}"),
-            AuditText::States => alloc::format!("states={states:?}"),
-        }
-    }
-}
-
-/// 回执形态（结算表第四元）。
-#[derive(Debug, Clone)]
-enum SettleReceipt {
-    /// 成功收尾（调用侧做记账/爬坡基线/计数后回 Committed 回执）。
-    Committed,
-    /// Ok 回执 + 终态（Rejected/Failed）。
-    Terminal {
-        final_state: DispatchState,
-        note: String,
-    },
-    /// Ok 回执 + Indeterminate（对账，不猜成败）。
-    Indeterminate { note: String },
-    /// `Err(DeliveryUnreachable)`。
-    Unreachable,
-    /// `Err(SafetyRejected)`。
-    SafetyReject { reason: String },
-    /// `Err(BudgetExceeded)`。
-    BudgetExceeded { kind: &'static str },
-    /// `Err(IntentPersistFailed)`。
-    IntentPersistFailed { err: String },
-}
-
-/// 结算结局（触发 → 四元组：durable 写序 + audit + 回执形态）。
-#[derive(Debug)]
-struct Settlement {
-    /// durable 写序（按序执行）。Applied 行 = `[Intent(Committed),
-    /// Journal(TransportAcked→AppliedConfirmed)]`——durable 终态 ack
-    /// 先行（61 v0.314.24 写序不变量的表内表达）。
-    durable: Vec<SettleOp>,
-    /// audit（None = 该触发现状不写 audit——rate/energy 预算拒绝）。
-    audit: Option<(ExecOutcome, SafetyOutcome, AuditText)>,
-    receipt: SettleReceipt,
-}
-
-/// 结算决策表（纯函数）：触发事件 → 结局。
-///
-/// 表级单测（`unit_tests::settle_table_*`）逐触发断言四元组与
-/// 文案逐字节词形；新增触发事件只需本 match 加一臂。
-fn settle(trigger: &SettleTrigger, states: &[DispatchState]) -> Settlement {
-    let failed_pass = (ExecOutcome::Failed, SafetyOutcome::Passed);
-    let _ = states; // 文案经 AuditText 惰性渲染；签名保留 states 语义位
-    let (durable, audit, receipt) = match trigger {
-        SettleTrigger::SafetyReject { reason } => (
-            alloc::vec![SettleOp::Journal {
-                from: ExecutionStatus::Authorized,
-                to: ExecutionStatus::Failed,
-            }],
-            Some((
-                ExecOutcome::Failed,
-                SafetyOutcome::Blocked,
-                AuditText::StatesSuffix(alloc::format!("safety-reject={reason}")),
-            )),
-            SettleReceipt::SafetyReject {
-                reason: reason.clone(),
-            },
-        ),
-        SettleTrigger::BudgetRate => (
-            alloc::vec![SettleOp::Journal {
-                from: ExecutionStatus::Authorized,
-                to: ExecutionStatus::Failed,
-            }],
-            None,
-            SettleReceipt::BudgetExceeded { kind: "rate" },
-        ),
-        SettleTrigger::BudgetEnergy => (
-            alloc::vec![SettleOp::Journal {
-                from: ExecutionStatus::Authorized,
-                to: ExecutionStatus::Failed,
-            }],
-            None,
-            SettleReceipt::BudgetExceeded { kind: "energy" },
-        ),
-        SettleTrigger::IntentAppendFailed { err } => (
-            alloc::vec![SettleOp::Journal {
-                from: ExecutionStatus::Authorized,
-                to: ExecutionStatus::Failed,
-            }],
-            Some((
-                failed_pass.0,
-                failed_pass.1,
-                AuditText::Formatted(alloc::format!(
-                    "intent persist failed: {err}（零投递，终局 Failed）"
-                )),
-            )),
-            SettleReceipt::IntentPersistFailed { err: err.clone() },
-        ),
-        SettleTrigger::JournalPersistFailed { err } => (
-            alloc::vec![],
-            Some((
-                failed_pass.0,
-                failed_pass.1,
-                AuditText::Formatted(alloc::format!(
-                    "execution-journal Authorized→Persisted failed: {err}"
-                )),
-            )),
-            SettleReceipt::IntentPersistFailed {
-                err: alloc::format!("execution-journal Authorized→Persisted failed: {err}"),
-            },
-        ),
-        SettleTrigger::SentAdvanceFailed { err } => (
-            alloc::vec![SettleOp::Intent {
-                state: DispatchState::Indeterminate,
-            }],
-            Some((
-                failed_pass.0,
-                failed_pass.1,
-                AuditText::Formatted(alloc::format!(
-                    "delivery-ok 但 journal Sent 推进失败 {err}——对账"
-                )),
-            )),
-            SettleReceipt::Indeterminate {
-                note: alloc::format!("delivery-ok 但 journal Sent 推进失败 {err}——对账"),
-            },
-        ),
-        SettleTrigger::MarkDeliveredFailed => (
-            alloc::vec![],
-            Some((
-                failed_pass.0,
-                failed_pass.1,
-                AuditText::Formatted(String::from("delivery-ok 但 durable mark-sent 失败——对账")),
-            )),
-            SettleReceipt::Indeterminate {
-                note: String::from("delivery-ok 但 durable mark-sent 失败——对账"),
-            },
-        ),
-        SettleTrigger::DeliveryTimeout => (
-            alloc::vec![
-                SettleOp::Journal {
-                    from: ExecutionStatus::Persisted,
-                    to: ExecutionStatus::Indeterminate,
-                },
-                SettleOp::Intent {
-                    state: DispatchState::Indeterminate,
-                },
-            ],
-            Some((
-                failed_pass.0,
-                failed_pass.1,
-                AuditText::Formatted(String::from(
-                    "delivery-timeout → Indeterminate（先读回/查询状态，不盲重试）",
-                )),
-            )),
-            SettleReceipt::Indeterminate {
-                note: String::from("delivery-timeout：写可能已发生，需对账"),
-            },
-        ),
-        SettleTrigger::DeliveryUnreachable => (
-            alloc::vec![
-                SettleOp::Journal {
-                    from: ExecutionStatus::Persisted,
-                    to: ExecutionStatus::Failed,
-                },
-                SettleOp::Intent {
-                    state: DispatchState::Failed,
-                },
-            ],
-            Some((
-                failed_pass.0,
-                failed_pass.1,
-                AuditText::Formatted(String::from("delivery-unreachable")),
-            )),
-            SettleReceipt::Unreachable,
-        ),
-        SettleTrigger::DeliveryError { err } => (
-            alloc::vec![
-                SettleOp::Journal {
-                    from: ExecutionStatus::Persisted,
-                    to: ExecutionStatus::Indeterminate,
-                },
-                SettleOp::Intent {
-                    state: DispatchState::Indeterminate,
-                },
-            ],
-            Some((
-                failed_pass.0,
-                failed_pass.1,
-                AuditText::Formatted(alloc::format!(
-                    "delivery: {err} → Indeterminate（写可能已发生，对账）"
-                )),
-            )),
-            SettleReceipt::Indeterminate {
-                note: alloc::format!("delivery-error {err}：物理结果未知，需对账"),
-            },
-        ),
-        SettleTrigger::ResponseDecodeFailed { err } => (
-            alloc::vec![
-                SettleOp::Journal {
-                    from: ExecutionStatus::Sent,
-                    to: ExecutionStatus::Indeterminate,
-                },
-                SettleOp::Intent {
-                    state: DispatchState::Indeterminate,
-                },
-            ],
-            Some((
-                failed_pass.0,
-                failed_pass.1,
-                AuditText::Formatted(alloc::format!(
-                    "response-decode: {err} → Indeterminate（对账）"
-                )),
-            )),
-            SettleReceipt::Indeterminate {
-                note: String::from("response-decode-failed：物理结果未知，需对账"),
-            },
-        ),
-        SettleTrigger::AckAdvanceFailed { err } => (
-            alloc::vec![SettleOp::Intent {
-                state: DispatchState::Indeterminate,
-            }],
-            Some((
-                failed_pass.0,
-                failed_pass.1,
-                AuditText::Formatted(alloc::format!(
-                    "ack-decoded 但 journal TransportAcked 推进失败 {err}——对账"
-                )),
-            )),
-            SettleReceipt::Indeterminate {
-                note: alloc::format!("ack-decoded 但 journal TransportAcked 推进失败 {err}——对账"),
-            },
-        ),
-        SettleTrigger::Applied => (
-            // 写序不变量：durable 终态 ack 先行，成功后才
-            // AppliedConfirmed → 外部 Committed（61 v0.314.24）。
-            alloc::vec![
-                SettleOp::Intent {
-                    state: DispatchState::Committed,
-                },
-                SettleOp::Journal {
-                    from: ExecutionStatus::TransportAcked,
-                    to: ExecutionStatus::AppliedConfirmed,
-                },
-            ],
-            Some((
-                ExecOutcome::Succeeded,
-                SafetyOutcome::Passed,
-                AuditText::States,
-            )),
-            SettleReceipt::Committed,
-        ),
-        SettleTrigger::AppliedDurableFailed => (
-            alloc::vec![SettleOp::Journal {
-                from: ExecutionStatus::TransportAcked,
-                to: ExecutionStatus::Indeterminate,
-            }],
-            Some((
-                failed_pass.0,
-                failed_pass.1,
-                AuditText::Formatted(String::from(
-                    "applied-confirmed 但 durable 终态落盘失败——对账（不伪造成功）",
-                )),
-            )),
-            SettleReceipt::Indeterminate {
-                note: String::from("applied-confirmed 但 durable 终态落盘失败——对账（不伪造成功）"),
-            },
-        ),
-        SettleTrigger::AppliedAdvanceFailed { err } => (
-            alloc::vec![],
-            Some((
-                failed_pass.0,
-                failed_pass.1,
-                AuditText::Formatted(alloc::format!(
-                    "applied-confirmed 但 journal 推进失败 {err}——对账"
-                )),
-            )),
-            SettleReceipt::Indeterminate {
-                note: alloc::format!("applied-confirmed 但 journal 推进失败 {err}——对账"),
-            },
-        ),
-        SettleTrigger::PeerIdempotentHit => (
-            alloc::vec![
-                SettleOp::Journal {
-                    from: ExecutionStatus::TransportAcked,
-                    to: ExecutionStatus::Reconciling,
-                },
-                SettleOp::Intent {
-                    state: DispatchState::Indeterminate,
-                },
-            ],
-            Some((
-                failed_pass.0,
-                failed_pass.1,
-                AuditText::Formatted(String::from(
-                    "对端幂等命中：原结果未知——对账，不升级 Committed",
-                )),
-            )),
-            SettleReceipt::Indeterminate {
-                note: String::from("对端幂等命中：原结果未知——对账，不升级 Committed"),
-            },
-        ),
-        SettleTrigger::PeerDryRun => {
-            let note = String::from("对端 dry-run（未写设备）");
-            (
-                alloc::vec![
-                    SettleOp::Journal {
-                        from: ExecutionStatus::TransportAcked,
-                        to: ExecutionStatus::Rejected,
-                    },
-                    SettleOp::Intent {
-                        state: DispatchState::Rejected,
-                    },
-                ],
-                Some((
-                    failed_pass.0,
-                    failed_pass.1,
-                    AuditText::StatesSuffix(alloc::format!("note={note}")),
-                )),
-                SettleReceipt::Terminal {
-                    final_state: DispatchState::Rejected,
-                    note,
-                },
-            )
-        }
-        SettleTrigger::PeerDenied { class } => {
-            let note = alloc::format!("device-denied class={class}");
-            (
-                alloc::vec![
-                    SettleOp::Journal {
-                        from: ExecutionStatus::TransportAcked,
-                        to: ExecutionStatus::Failed,
-                    },
-                    SettleOp::Intent {
-                        state: DispatchState::Failed,
-                    },
-                ],
-                Some((
-                    failed_pass.0,
-                    failed_pass.1,
-                    AuditText::StatesSuffix(alloc::format!("note={note}")),
-                )),
-                SettleReceipt::Terminal {
-                    final_state: DispatchState::Failed,
-                    note,
-                },
-            )
-        }
-        SettleTrigger::ReadbackUnavailable => {
-            let note = String::from("readback-unavailable：物理状态未确认，需对账");
-            (
-                alloc::vec![
-                    SettleOp::Journal {
-                        from: ExecutionStatus::TransportAcked,
-                        to: ExecutionStatus::Indeterminate,
-                    },
-                    SettleOp::Intent {
-                        state: DispatchState::Indeterminate,
-                    },
-                ],
-                Some((
-                    failed_pass.0,
-                    failed_pass.1,
-                    AuditText::StatesSuffix(alloc::format!("note={note}")),
-                )),
-                SettleReceipt::Indeterminate { note },
-            )
-        }
-        SettleTrigger::ReadbackMismatch => {
-            let note = String::from("readback-mismatch：ACK 成功但物理状态未达目标");
-            (
-                alloc::vec![
-                    SettleOp::Journal {
-                        from: ExecutionStatus::TransportAcked,
-                        to: ExecutionStatus::Failed,
-                    },
-                    SettleOp::Intent {
-                        state: DispatchState::Failed,
-                    },
-                ],
-                Some((
-                    ExecOutcome::Failed,
-                    SafetyOutcome::Blocked,
-                    AuditText::StatesSuffix(alloc::format!("note={note}")),
-                )),
-                SettleReceipt::Terminal {
-                    final_state: DispatchState::Failed,
-                    note,
-                },
-            )
-        }
-        SettleTrigger::PeerFailed => {
-            let note = String::from("device-exec-failed");
-            (
-                alloc::vec![
-                    SettleOp::Journal {
-                        from: ExecutionStatus::TransportAcked,
-                        to: ExecutionStatus::Failed,
-                    },
-                    SettleOp::Intent {
-                        state: DispatchState::Failed,
-                    },
-                ],
-                Some((
-                    failed_pass.0,
-                    failed_pass.1,
-                    AuditText::StatesSuffix(alloc::format!("note={note}")),
-                )),
-                SettleReceipt::Terminal {
-                    final_state: DispatchState::Failed,
-                    note,
-                },
-            )
-        }
-    };
-    Settlement {
-        durable,
-        audit,
-        receipt,
-    }
-}
-
-/// stage 推进（流程继续型 durable 写，区别于终局结算）。
-#[derive(Debug, Clone, Copy)]
-enum SettleStage {
-    /// journal Authorized→Persisted（步骤 6.5）。
-    JournalPersisted,
-    /// journal Persisted→Sent（投递 Ok 后，步骤 7）。
-    JournalSent,
-    /// durable intent → Delivered（步骤 7）。
-    IntentDelivered,
-    /// journal Sent→TransportAcked（ACK 解码后，步骤 8）。
-    JournalTransportAcked,
-}
-
-/// 结算不变参（蓝图 63 WP-63.1.3）：一次命令结算路径上**不随触发变化**
-/// 的上下文——`started`/`command_id`/`correlation`/`energy`/
-/// `setpoint_kw`/`response`。`states` 是唯一随臂推进的可变参，仍逐调用
-/// 传 `&mut`。
-///
-/// `response` 两段式（非变异）：投递帧未到位（前置结算）→ `None`；
-/// 帧解码后调用点以 `Some(&帧)` 重建 ctx 拷贝。Copy 语义——绝不在
-/// 编排点内原地改 ctx。
-#[derive(Clone, Copy)]
-struct ExecutionCtx<'a> {
-    started: u64,
-    command_id: [u8; 16],
-    correlation: [u8; 16],
-    /// 对端回执原文（Applied 行 sm3 摘要供给；前置结算 None）。
-    response: Option<&'a [u8]>,
-    /// 记账能量（kWh；前置结算路径 0.0——与 execute_core 现状一致）。
-    energy: f64,
-    /// 连续 setpoint 值（AppliedConfirmed 时更新爬坡基线；离散 None）。
-    setpoint_kw: Option<f64>,
-    /// 蓝图 70 R10：命令语义目标 (device, point)——AppliedConfirmed 爬坡
-    /// 基线按键（多资产各键独立；单资产形态 = 旧 (profile.device,profile.point)
-    /// 逐字节一致）。
-    target: (u32, u32),
+    pub(crate) holds: crate::hold_registry::HoldRegistry,
 }
 
 /// 结算编排面（`DispatchEngine` 内聚实现；host/target 同源）。
@@ -1027,11 +490,10 @@ impl SettleDispatch for DispatchEngine {
             }
             states.push(DispatchState::ReadbackVerified);
             // 61 v0.314.24：E4 证据 token——串口必须出现 applied-confirmed
-            //（唯一 Committed 前置事实；readback 前禁止出现该行）。
+            //（唯一 Committed 前置事实；readback 前禁止出现该行）。词形
+            // 单源 = evidence 表（C7 收口；host golden 锁）。
             #[cfg(target_os = "none")]
-            eneros_runtime::println!(
-                "[svc-control-dispatch] EXEC-JOURNAL applied-confirmed（独立回读匹配→Committed）"
-            );
+            eneros_runtime::println!("{}", crate::evidence::EXEC_JOURNAL_APPLIED_CONFIRMED);
             // 复查 FIX（61 §3.4）：记录最近 AppliedConfirmed setpoint
             //（单点爬坡基线；仅 ActivePowerKw 有连续量语义）。蓝图 70 R10：
             // 基线按键 = 命令语义目标 (device,point)（多资产各键独立）。
@@ -1214,7 +676,7 @@ impl DispatchEngine {
             held_plans: None,
             held_store_unavailable: false,
             input_retainer: None,
-            holds: hold_registry::HoldRegistry::new(),
+            holds: crate::hold_registry::HoldRegistry::new(),
         };
         // 启动恢复播种：durable 未决记录（v1 遗留 Applied/Persisted 或
         // 崩溃窗口遗留）→ Reconciling。投递与否不可证明——重放零投递、
@@ -1232,12 +694,10 @@ impl DispatchEngine {
             }
         }
         // 61 v0.314.24：启动恢复可见性——遗留/崩溃遗留未决记录一律进对账，
-        // 永不以 Committed 复活。
+        // 永不以 Committed 复活。词形单源 = evidence 表（C7 收口）。
         #[cfg(target_os = "none")]
         if recovered > 0 {
-            eneros_runtime::println!(
-                "[svc-control-dispatch] EXEC-JOURNAL recovered pending={recovered} → reconciling"
-            );
+            eneros_runtime::println!("{}", crate::evidence::exec_journal_recovered(recovered));
         }
         let _ = recovered;
         engine
@@ -1250,7 +710,7 @@ impl DispatchEngine {
 
     /// 蓝图 70 R10：按 (device,point) 解析执行路由索引（点表协议映射
     /// 键；未注册目标 → None——调用方 fail-closed 拒绝）。
-    fn route_index_for(&self, device: u32, point: u32) -> Option<usize> {
+    pub(crate) fn route_index_for(&self, device: u32, point: u32) -> Option<usize> {
         self.routes
             .iter()
             .position(|r| r.profile.device_id == device && r.profile.point_id == point)
@@ -1356,56 +816,28 @@ impl DispatchEngine {
         }
     }
 
-    /// 从 proposal 派生 correlation（plan_id 前 16 字节，定长）。
-    /// 迁移期保留：PlanTyped correlation 派生的历史参照（adapter 测试
-    /// 以同规则锁定字节兼容）。.32 facade reader 删除时一并清偿。
-    #[allow(dead_code)]
-    fn correlation_of(plan_id: &str) -> [u8; 16] {
-        let mut id = [0u8; 16];
-        let bytes = plan_id.as_bytes();
-        let n = core::cmp::min(16, bytes.len());
-        id[..n].copy_from_slice(&bytes[..n]);
-        id
-    }
+    // （2026-09-24 R14-N 清偿）原 `#[allow(dead_code)] fn correlation_of`
+    // 随 .32 facade reader 删除清偿退役——plan_id 前 16B 派生的活单源在
+    // adapter `plan_id_of`（附零 ID 拒绝门），独立 oracle 在 tests/
+    // journal_crash_matrix `plan_correlation`。
 
-    /// 步骤 1：proposal 校验（schema/units/ranges/idempotency）。
-    fn validate_proposal(&self, p: &ProposedControlPlan) -> Result<(), DispatchError> {
-        if p.power_kw.is_nan() || p.power_kw.is_infinite() {
-            return Err(DispatchError::ProposalInvalid("power_kw 非有限".into()));
-        }
-        if p.power_kw.abs() > self.max_power_kw {
-            return Err(DispatchError::ProposalInvalid(format!(
-                "power_kw {} 超上限 {}",
-                p.power_kw, self.max_power_kw
-            )));
-        }
-        if p.ttl_secs == 0 {
-            return Err(DispatchError::ProposalInvalid(
-                "ttl_secs 为 0（防零有效期）".into(),
-            ));
-        }
-        if p.schedule.schedule.is_empty() {
-            return Err(DispatchError::ProposalInvalid("空调度不可投递".into()));
-        }
-        Ok(())
-    }
+    // 步骤 1（2026-09-24 C2 收口退役）：原 `fn validate_proposal`
+    // （proposal schema 检查：power_kw 有限/不超 max_power_kw、ttl_secs
+    // 非零、调度非空）随 legacy `fn run` 退役——它是 run 独有的前置
+    // 检查；typed 链的等价防线 = 独立认证硬约束（FixtureCertifier/
+    // TrustedInputCertifier 的功率上下限）+ 编译期合同值域
+    //（PlanContract min/max）+ CandidatePlan 构造期 ttl>0 校验。
 
-    /// 47（WP-47.1 协议入站写）：协议写意图 12 态链（与 [`run`] 同链，
-    /// 入口换为 [`PointWriteIntent`]）。重放门 + 链幂等双防重复 sequence。
+    /// 47（WP-47.1 协议入站写）：协议写意图 12 态链（与 typed 入口
+    /// [`run_typed`](Self::run_typed) 同链，入口换为 [`PointWriteIntent`]）。
+    /// 重放门 + 链幂等双防重复 sequence。
     /// WP-5.3（[10] §4.1）：投递前唯一 Arbiter 裁决。迁移期映射：
     /// Reject ⇒ NotAuthorized（零投递）；MergeInSolver ⇒ ProposalInvalid
     /// （可叠加服务回 solver）；Preempt ⇒ 对账完成前拒绝新写。新意图的
     /// 幂等键与在途命令不同，不能用同键去重冒充抢占前对账。
-    fn arbitrate(
-        &mut self,
-        source: crate::arbiter::CommandSource,
-        valid_now: bool,
-        device_id: u32,
-    ) -> Result<(), DispatchError> {
-        self.arbitrate_owned(source, valid_now, device_id, None)
-    }
-
-    fn arbitrate_owned(
+    /// （R14-N：原 `arbitrate` None 转发壳退役——仅 2 个同文件调用点，
+    /// owner 语义在唯一入口显式。）
+    pub(crate) fn arbitrate_owned(
         &mut self,
         source: crate::arbiter::CommandSource,
         valid_now: bool,
@@ -1504,10 +936,11 @@ impl DispatchEngine {
         };
         // WP-5.3（[10] §4.1）：协议入站写同经唯一 Arbiter（调度机构类；
         // 在途登记按意图目标设备——多资产各键独立）。
-        self.arbitrate(
+        self.arbitrate_owned(
             crate::arbiter::CommandSource::GridOperatorConfirmed,
             true,
             u32::from(intent.device_id),
+            None,
         )?;
 
         let power_kw = match intent.value {
@@ -1597,51 +1030,11 @@ impl DispatchEngine {
         id
     }
 
-    /// 执行完整 12 步链。
-    fn run(
-        &mut self,
-        proposal: &ProposedControlPlan,
-        telemetry: &TrustedTelemetry,
-        actor: &AuthenticatedActor,
-        deadline_ms: u64,
-    ) -> Result<DispatchReceipt, DispatchError> {
-        let started = (self.now_fn)();
-
-        // 步骤 1：proposal 校验。
-        self.validate_proposal(proposal)?;
-
-        // 步骤 2：telemetry 执行时刻新鲜度。
-        if !telemetry.is_valid_at(started) {
-            return Err(DispatchError::TelemetryExpired);
-        }
-
-        // 蓝图 61 v0.314.28：**typed 链收口**——proposal 在 dispatch 边界
-        // 经严格 adapter 进入 CandidatePlan（[17] .28"经严格 adapter 进入
-        // CandidatePlan"），合核只消费 typed 产物（含 PlanTyped 身份）。
-        // 旧 facade reader（70B wire 读臂）已于 v0.329.0 删除（蓝图 69.4）。
-        // 蓝图 70 R10：legacy 单资产 facade 绑定默认路由（routes[0]）。
-        let plan = crate::adapter::proposal_to_candidate(
-            proposal,
-            (
-                u64::from(self.routes[0].profile.device_id),
-                u16::try_from(self.routes[0].profile.device_id).unwrap_or(0),
-                self.routes[0].profile.point_id,
-                0,
-            ),
-            eneros_telemetry_model::unit_catalog::code_of(self.routes[0].profile.unit),
-            1, // catalog_version（.35 registry 落地前的 profile 单源常量）
-        )?;
-        let energy = schedule_energy_kwh(&proposal.schedule);
-        self.run_typed(
-            &plan,
-            proposal.target_device.clone(),
-            Some(energy),
-            telemetry,
-            actor,
-            deadline_ms,
-            None,
-        )
-    }
+    // （2026-09-24 C2 收口：legacy facade 入口 `fn run` 已退役——生产与
+    // 测试统一走 typed 入口 `ControlDispatch::submit_typed`/`submit_trusted`。
+    // 旧路径两个前置检查的去向：telemetry 新鲜度在 typed 入口同款检查；
+    // proposal schema 检查（功率上限/ttl 非零）由独立认证硬约束与编译期
+    // 合同值域承担。）
 
     /// 蓝图 61 v0.314.28：typed 入口——CandidatePlan → 过渡认证证书 →
     /// **PlanCompiler 命令批**（WP-5.1，v0.314.41）→ 逐命令 12 步合核。
@@ -1866,16 +1259,8 @@ impl DispatchEngine {
         // attempting to reserve devices belonging to still-unsent successors.
         let mut unresolved = None;
         for intent in outcome.batches.iter().flat_map(|batch| batch.intents()) {
-            let key = crate::compiler::plan_command_correlation(
-                plan.id(),
-                intent.intent_id(),
-                legacy_single,
-            );
-            let digest = eneros_protocol_abstract::write::semantic_command_digest(
-                u32::from(intent.device_id()),
-                intent.point_id(),
-                CommandValue::ActivePowerKw(intent.power_kw()),
-            );
+            let (key, digest) =
+                crate::compiler::intent_journal_identity(plan.id(), intent, legacy_single);
             match self.journal.lookup(&key, &digest) {
                 Some(JournalHit::Conflict) => {
                     return Err(DispatchError::IdempotencyConflict(String::from(
@@ -1908,23 +1293,15 @@ impl DispatchEngine {
                 .flat_map(|b| b.intents())
                 .filter(|i| u32::from(i.device_id()) == d)
                 .all(|i| {
-                    let key = crate::compiler::plan_command_correlation(
-                        plan.id(),
-                        i.intent_id(),
-                        legacy_single,
-                    );
-                    let digest = eneros_protocol_abstract::write::semantic_command_digest(
-                        d,
-                        i.point_id(),
-                        eneros_telemetry_model::command::CommandValue::ActivePowerKw(i.power_kw()),
-                    );
+                    let (key, digest) =
+                        crate::compiler::intent_journal_identity(plan.id(), i, legacy_single);
                     matches!(
                         self.journal.lookup(&key, &digest),
                         Some(JournalHit::Current(_))
                     )
                 });
             if !replay_only {
-                self.arbitrate(crate::arbiter::CommandSource::SiteOptimizer, true, d)?;
+                self.arbitrate_owned(crate::arbiter::CommandSource::SiteOptimizer, true, d, None)?;
             }
         }
 
@@ -2152,7 +1529,7 @@ impl DispatchEngine {
     /// 蓝图 70 R10：route_idx 入参（多资产执行路由；参数 7→8——成束重构
     /// 与 run_typed 同律，归 70.11 计划持有模块落地时统一收拢）。
     #[allow(clippy::too_many_arguments)]
-    fn execute_core(
+    pub(crate) fn execute_core(
         &mut self,
         cmd: CoreCommand,
         telemetry: &TrustedTelemetry,
@@ -2422,8 +1799,9 @@ impl DispatchEngine {
                     &mut states,
                     &pre_ctx,
                 );
+                // 词形单源 = evidence 表（C7 收口）。
                 #[cfg(target_os = "none")]
-                eneros_runtime::println!("[svc-control-dispatch] SAFETY-REJECTED reason={reason}");
+                eneros_runtime::println!("{}", crate::evidence::safety_rejected(&reason));
                 return receipt;
             }
         }
@@ -2770,16 +2148,6 @@ impl ControlDispatch for DispatchEngine {
         u64::from(self.routes[0].profile.device_id)
     }
 
-    fn submit(
-        &mut self,
-        proposal: &ProposedControlPlan,
-        telemetry: &TrustedTelemetry,
-        actor: &AuthenticatedActor,
-        deadline_ms: u64,
-    ) -> Result<DispatchReceipt, DispatchError> {
-        self.run(proposal, telemetry, actor, deadline_ms)
-    }
-
     fn submit_intent(
         &mut self,
         intent: &PointWriteIntent,
@@ -2793,22 +2161,22 @@ impl ControlDispatch for DispatchEngine {
     fn submit_typed(
         &mut self,
         plan: &eneros_decision_contract::CandidatePlan,
-        target_device: &str,
         telemetry: &TrustedTelemetry,
         actor: &AuthenticatedActor,
-        deadline_ms: u64,
     ) -> Result<DispatchReceipt, DispatchError> {
         let started = (self.now_fn)();
         if !telemetry.is_valid_at(started) {
             return Err(DispatchError::TelemetryExpired);
         }
+        // R14-A：投递标签/清算超时引擎内部自派生（原幻影形参退役——
+        // 生产调用点从未传过第二值；词形与超时值不变）。
         self.run_typed(
             plan,
-            alloc::string::String::from(target_device),
+            alloc::string::String::from(STATION_PLAN_TARGET_LABEL),
             None,
             telemetry,
             actor,
-            deadline_ms,
+            HELD_DELIVERY_SETTLE_MS,
             None,
         )
     }
@@ -2817,10 +2185,8 @@ impl ControlDispatch for DispatchEngine {
         &mut self,
         plan: &eneros_decision_contract::CandidatePlan,
         trusted: &eneros_agent_sdk::snap_input_wire::TrustedInput,
-        target_device: &str,
         telemetry: &TrustedTelemetry,
         actor: &AuthenticatedActor,
-        deadline_ms: u64,
     ) -> Result<DispatchReceipt, DispatchError> {
         let started = (self.now_fn)();
         if !telemetry.is_valid_at(started) {
@@ -2828,11 +2194,11 @@ impl ControlDispatch for DispatchEngine {
         }
         self.run_typed(
             plan,
-            alloc::string::String::from(target_device),
+            alloc::string::String::from(STATION_PLAN_TARGET_LABEL),
             None,
             telemetry,
             actor,
-            deadline_ms,
+            HELD_DELIVERY_SETTLE_MS,
             Some(trusted),
         )
     }
@@ -2858,7 +2224,7 @@ impl DispatchEngine {
     ///    时域起点必须与可信输入逐字段相等；
     /// 3. 摘要自洽：`objective_digest` 必须等于绑定公式输出（防篡改）；
     /// 4. 完整性：快照必须完整（缺必需点 = 无控制资格）。
-    fn admit_trusted_input(
+    pub(crate) fn admit_trusted_input(
         &self,
         plan: &eneros_decision_contract::CandidatePlan,
         trusted: Option<&eneros_agent_sdk::snap_input_wire::SnapshotFacts>,
@@ -2929,296 +2295,6 @@ pub const STATION_PLAN_TARGET_LABEL: &str = "pcs";
 /// 本值是单次 delivery.deliver 的超时上界（deadline==0 → u64::MAX
 /// 分支见 execute 链）。三消费点：trusted 提交、持有驱动、恢复对账。
 pub const HELD_DELIVERY_SETTLE_MS: u64 = 5_000;
-
-/// 计划派生绑定束（R13-B；ADR-0052 §4 构造收拢义务）。
-/// D-3 教训载体：plan_input_digest 与 plan_sha 同为 [u8;32]，
-/// 命名字段构造取代位置实参后互换在构造点即语义可见。
-///
-/// 可见性：`pub`（非蓝图原判 pub(crate)）——唯一 crate 外现实消费组 =
-/// 本 crate 集成测试（tests/settlement_lock.rs D-3 红测需命名字段构造
-/// input_digest/wire_sha 可区分对）；不构成对外稳定 API 承诺，形态随
-/// 引擎内聚演进（R13-B 登记在案）。
-pub struct PlanBinding {
-    pub plan_id: eneros_decision_contract::PlanId,
-    pub input_digest: [u8; 32],
-    /// = CandidatePlan wire SHA-256（62 v0.315.0 WP-62.1.2；构造方经
-    /// `CandidatePlan::plan_wire_sha256` 单源派生）。
-    pub wire_sha: [u8; 32],
-    pub ttl_ms: u64,
-    pub legacy_single: bool,
-}
-
-/// 计划投递上下文（CONTEXT.md 词条；持久化=登记 R13-G 未实施）。
-/// 随计划同生命周期流动：投递标签（STATION_PLAN_TARGET_LABEL 单源）+
-/// 逐投递清算超时（HELD_DELIVERY_SETTLE_MS 单源，≠saga 批 deadline）。
-/// 可见性同理 `PlanBinding`（集成测试构造面）。
-pub struct DeliveryContext {
-    pub target_label: alloc::string::String,
-    pub settle_timeout_ms: u64,
-}
-
-/// 蓝图 61 Phase 5 WP-5.2（[10] §3.3）：12 步合核 → [`SagaExecutor`]
-/// 生产 adapter——命令批经 [`eneros_control_dispatch::saga::BatchSaga`]
-/// 编排时，逐命令的授权/投递/读回/记账仍由唯一合核承载（不产生第二
-/// 执行真相）。
-///
-/// > 状态：~~deferred（ADR-0052，蓝图 63 v0.316.0）~~ → **定向解冻**
-/// > （ADR-0052 修订 2026-09-20：激活前置 §2b 经 ADR-0054 满足；仅
-/// > 接入所需行为解冻，生产激活证据与时点见修订段）。
-/// > 原 too_many_arguments allow 已随 R13-B 构造收拢删除
-/// > （PlanBinding + DeliveryContext 命名字段构造，ADR-0052 §4 义务
-/// > 执行）。
-///
-/// - `execute`：走 [`DispatchEngine::execute_core`]-equivalent 链
-///   （PlanCommand 身份：幂等键 = intent_id 派生 / legacy 单命令 = PlanId
-///   ——journal 同键防重复投递）；
-/// - `reconcile`（[10] §3.4 readback-first）：只调用设备独立读取接口，
-///   不重入执行链、不追加意图、不发送写命令；读值匹配后由 driver
-///   再次独立读取确认，读失败交人工处理。
-/// - `compensate`：补偿派生键（`"comp"` 域分隔）全新执行——新意图、
-///   新授权、新 journal 条目，不改写历史。
-pub struct EngineSagaExecutor<'a> {
-    engine: &'a mut DispatchEngine,
-    telemetry: &'a TrustedTelemetry,
-    actor: &'a AuthenticatedActor,
-    plan_id: eneros_decision_contract::PlanId,
-    plan_input_digest: [u8; 32],
-    /// CandidatePlan wire SHA-256（62 v0.315.0 WP-62.1.2；构造方经
-    /// `CandidatePlan::plan_wire_sha256` 派生后显式传入）。
-    plan_sha: [u8; 32],
-    plan_ttl_ms: u64,
-    legacy_single: bool,
-    target_device: String,
-    deadline_ms: u64,
-}
-
-use crate::saga::{CmdOutcome, ReconcileOutcome, SagaExecutor};
-
-/// 能量窗估算单源（WP-64.3.2.3；R-64.e 边界内——`run_typed` 幂等命中
-/// 路径与 [`EngineSagaExecutor::execute_intent`] 两体共用的 crate 内
-/// 私有函数。62 卷「不给 executor 增删参数」冻结注记已随 ADR-0052
-/// 定向解冻（修订 2026-09-20）失效；R13-B 已完成构造收拢，本函数
-/// 签名不变）。
-///
-/// 语义冻结：`window_secs = (valid_until - now).min(ttl)/1000`（下限
-/// `max(1)` 由调用方施加，保持原表达式位置）；能量上限形态 =
-/// `|power| × 意图窗（valid_from..valid_until，小时）`。
-fn intent_window_estimate(
-    intent: &eneros_decision_contract::CommandIntent,
-    now_ms: u64,
-    ttl_ms: u64,
-) -> (u64, f64) {
-    let window_secs = intent.valid_until_ms().saturating_sub(now_ms).min(ttl_ms) / 1000;
-    let window_h = (intent
-        .valid_until_ms()
-        .saturating_sub(intent.valid_from_ms()) as f64)
-        / 3_600_000.0;
-    let energy_kwh = intent.power_kw().abs() * window_h;
-    (window_secs, energy_kwh)
-}
-
-/// correlation → 事件摘要证据（32B 证据位；SHA-256 域分隔）。
-fn request_digest_of(correlation: [u8; 16]) -> [u8; 32] {
-    use sha2::Digest as _;
-    let mut h = sha2::Sha256::new();
-    h.update(b"eneros.saga-request.v1");
-    h.update(correlation);
-    h.finalize().into()
-}
-
-impl<'a> EngineSagaExecutor<'a> {
-    /// 构造收拢（R13-B / ADR-0052 §4 义务）：11 参 → 5 参——计划派生
-    /// 绑定束 [`PlanBinding`] + 投递上下文 [`DeliveryContext`] 命名字段
-    /// 构造（[u8;32] 同型互换在构造点即语义可见，62.1 D-3 防御）。
-    pub fn new(
-        engine: &'a mut DispatchEngine,
-        telemetry: &'a TrustedTelemetry,
-        actor: &'a AuthenticatedActor,
-        binding: PlanBinding,
-        delivery: DeliveryContext,
-    ) -> Self {
-        let PlanBinding {
-            plan_id,
-            input_digest,
-            wire_sha,
-            ttl_ms,
-            legacy_single,
-        } = binding;
-        Self {
-            engine,
-            telemetry,
-            actor,
-            plan_id,
-            plan_input_digest: input_digest,
-            plan_sha: wire_sha,
-            plan_ttl_ms: ttl_ms,
-            legacy_single,
-            target_device: delivery.target_label,
-            deadline_ms: delivery.settle_timeout_ms,
-        }
-    }
-
-    fn execute_intent(
-        &mut self,
-        intent: &eneros_decision_contract::CommandIntent,
-        correlation: [u8; 16],
-        power_override_kw: Option<f64>,
-    ) -> Result<DispatchReceipt, DispatchError> {
-        let started = (self.engine.now_fn)();
-        if started < intent.valid_from_ms() || started >= intent.valid_until_ms() {
-            return Err(DispatchError::ProposalInvalid(String::from(
-                "saga command outside validity window",
-            )));
-        }
-        let (window_secs, energy_est) = intent_window_estimate(intent, started, self.plan_ttl_ms);
-        // 恢复的批可能引用已移除的路由：与普通意图入口同样拒绝，
-        // 不能让未注册目标使整个服务 panic。
-        let route_idx = self
-            .engine
-            .route_index_for(u32::from(intent.device_id()), intent.point_id())
-            .ok_or_else(|| {
-                DispatchError::NotAuthorized(alloc::format!(
-                    "saga target device={} point={} 未绑定本 dispatch",
-                    intent.device_id(),
-                    intent.point_id()
-                ))
-            })?;
-        self.engine.arbitrate_owned(
-            crate::arbiter::CommandSource::SiteOptimizer,
-            true,
-            u32::from(intent.device_id()),
-            Some(self.plan_id),
-        )?;
-        self.engine.execute_core(
-            CoreCommand {
-                identity: CoreIdentity::PlanCommand { correlation },
-                ttl_secs: window_secs.max(1),
-                power_kw: power_override_kw.unwrap_or_else(|| intent.power_kw()),
-                target_device: self.target_device.clone(),
-                input_digest: Some(self.plan_input_digest),
-                energy_kwh: Some(energy_est),
-                // 62 v0.315.0 WP-62.1.2（D-3）：wire SHA-256（原此处传
-                // plan_input_digest——输入摘要冒充 wire 绑定摘要）。
-                plan_sha: Some(self.plan_sha),
-                idem_note: String::from("saga idempotent-hit（原结果，不重复写）"),
-            },
-            self.telemetry,
-            self.actor,
-            started,
-            alloc::vec![DispatchState::Proposed, DispatchState::Validated],
-            self.deadline_ms,
-            route_idx,
-        )
-    }
-
-    fn map_receipt(receipt: DispatchReceipt) -> CmdOutcome {
-        let note = receipt.note.clone().unwrap_or_default();
-        let digest: [u8; 32] = {
-            use sha2::Digest as _;
-            let mut h = sha2::Sha256::new();
-            h.update(receipt.correlation_id);
-            h.update([receipt.final_state.as_str().len() as u8]);
-            h.update(receipt.final_state.as_str().as_bytes());
-            h.finalize().into()
-        };
-        match receipt.final_state {
-            DispatchState::Committed => CmdOutcome::Applied {
-                receipt_digest: digest,
-                readback: None,
-            },
-            DispatchState::Rejected => CmdOutcome::Rejected { reason: note },
-            DispatchState::Failed => CmdOutcome::Failed { reason: note },
-            DispatchState::Indeterminate => CmdOutcome::Unknown {
-                request_digest: digest,
-                reason: note,
-            },
-            other => CmdOutcome::Unknown {
-                request_digest: digest,
-                reason: alloc::format!("in-flight journal state: {other:?}"),
-            },
-        }
-    }
-}
-
-impl SagaExecutor for EngineSagaExecutor<'_> {
-    fn applied_durable(
-        &mut self,
-        intent: &eneros_decision_contract::CommandIntent,
-        readback: Option<f64>,
-    ) -> Result<(), String> {
-        let correlation = crate::compiler::plan_command_correlation(
-            &self.plan_id,
-            intent.intent_id(),
-            self.legacy_single,
-        );
-        self.engine
-            .settle_saga_applied(intent, correlation, readback)
-    }
-
-    fn execute(
-        &mut self,
-        intent: &eneros_decision_contract::CommandIntent,
-        _attempt: u32,
-    ) -> CmdOutcome {
-        let correlation = crate::compiler::plan_command_correlation(
-            &self.plan_id,
-            intent.intent_id(),
-            self.legacy_single,
-        );
-        match self.execute_intent(intent, correlation, None) {
-            Ok(r) => {
-                let mut outcome = Self::map_receipt(r);
-                if let CmdOutcome::Applied { readback, .. } = &mut outcome {
-                    *readback = self.engine.post_apply_readback(intent, self.deadline_ms);
-                }
-                outcome
-            }
-            Err(DispatchError::DeliveryTimeout) => CmdOutcome::Unknown {
-                request_digest: request_digest_of(correlation),
-                reason: String::from("delivery timeout"),
-            },
-            Err(e) => CmdOutcome::Rejected {
-                reason: alloc::format!("{e:?}"),
-            },
-        }
-    }
-
-    fn reconcile(&mut self, intent: &eneros_decision_contract::CommandIntent) -> ReconcileOutcome {
-        self.engine.reconcile_saga_intent(intent, self.deadline_ms)
-    }
-
-    fn compensate(
-        &mut self,
-        intent: &eneros_decision_contract::CommandIntent,
-        restore_kw: f64,
-    ) -> CmdOutcome {
-        // 补偿 = 新意图、新授权、新 journal（[10] §3.3.9）：补偿幂等键
-        // 独立派生（"comp" 域分隔），与原命令互不覆盖。
-        let base = crate::compiler::plan_command_correlation(
-            &self.plan_id,
-            intent.intent_id(),
-            self.legacy_single,
-        );
-        let correlation = {
-            use sha2::Digest as _;
-            let mut h = sha2::Sha256::new();
-            h.update(b"eneros.saga-compensation.v1");
-            h.update(base);
-            let d: [u8; 32] = h.finalize().into();
-            d[..16].try_into().expect("16B")
-        };
-        match self.execute_intent(intent, correlation, Some(restore_kw)) {
-            Ok(r) => Self::map_receipt(r),
-            Err(DispatchError::DeliveryTimeout) => CmdOutcome::Unknown {
-                request_digest: request_digest_of(correlation),
-                reason: String::from("compensation timeout"),
-            },
-            Err(e) => CmdOutcome::Rejected {
-                reason: alloc::format!("{e:?}"),
-            },
-        }
-    }
-}
 
 // 集成测试在 tests/ 目录（需要装配完整 chain + 内存通道 + 对端 ingress）。
 /// WP-A.2 测试桩：完整字段 TrustedTelemetry（engine 咽喉单测用）。
@@ -3386,496 +2462,6 @@ mod unit_tests {
         let projected = DispatchEngine::project_system_state(&tm);
         assert_eq!(projected.timestamp_ms, 0);
     }
-
-    // ===== 62 v0.315.0 WP-62.1.3 结算决策表表级单测 =====
-    //
-    // 逐触发断言四元组（durable 写序 / audit 形态与逐字节文案 / 回执形态）。
-    // 新增触发事件 = SettleTrigger 一臂 + settle 一臂 + 本节一用例。
-
-    /// ACK 后典型状态路径（OutcomeCode 各臂的 audit states 调试串来源）。
-    fn ack_states() -> Vec<DispatchState> {
-        alloc::vec![
-            DispatchState::Persisted,
-            DispatchState::Delivered,
-            DispatchState::TransportAcked,
-        ]
-    }
-
-    /// IntentAppendFailed / JournalPersistFailed 触发点的真实流程位
-    /// （execute_core：Authorized/Reserved 已推、Persisted 未推——pre-
-    /// persist 阶段）。夹具须与真实位一致，否则未来该触发改 StatesSuffix
-    /// 形态时测试夹具会掩盖词形漂移（62 复查 62.1-B 收口）。
-    fn pre_persist_states() -> Vec<DispatchState> {
-        alloc::vec![
-            DispatchState::Proposed,
-            DispatchState::Validated,
-            DispatchState::Authorized,
-            DispatchState::Reserved,
-        ]
-    }
-
-    fn audit_of(s: &Settlement, states: &[DispatchState]) -> (ExecOutcome, SafetyOutcome, String) {
-        let (exec, safety, text) = s.audit.as_ref().expect("audit 存在");
-        (*exec, *safety, text.render(states))
-    }
-
-    fn journal_op(from: ExecutionStatus, to: ExecutionStatus) -> SettleOp {
-        SettleOp::Journal { from, to }
-    }
-
-    fn intent_op(state: DispatchState) -> SettleOp {
-        SettleOp::Intent { state }
-    }
-
-    #[test]
-    fn settle_table_safety_reject() {
-        let states = alloc::vec![DispatchState::Authorized];
-        let s = settle(
-            &SettleTrigger::SafetyReject {
-                reason: String::from("ov"),
-            },
-            &states,
-        );
-        assert_eq!(
-            s.durable,
-            alloc::vec![journal_op(
-                ExecutionStatus::Authorized,
-                ExecutionStatus::Failed
-            )]
-        );
-        let (exec, safety, text) = audit_of(&s, &states);
-        assert!(matches!(exec, ExecOutcome::Failed));
-        assert!(matches!(safety, SafetyOutcome::Blocked));
-        assert_eq!(text, format!("states={states:?};safety-reject=ov"));
-        assert!(matches!(s.receipt, SettleReceipt::SafetyReject { .. }));
-    }
-
-    #[test]
-    fn settle_table_budget_rate_no_audit() {
-        let s = settle(&SettleTrigger::BudgetRate, &ack_states());
-        assert_eq!(
-            s.durable,
-            alloc::vec![journal_op(
-                ExecutionStatus::Authorized,
-                ExecutionStatus::Failed
-            )]
-        );
-        assert!(s.audit.is_none(), "rate 预算拒绝现状无 audit");
-        assert!(matches!(
-            s.receipt,
-            SettleReceipt::BudgetExceeded { kind: "rate" }
-        ));
-    }
-
-    #[test]
-    fn settle_table_budget_energy_no_audit() {
-        let s = settle(&SettleTrigger::BudgetEnergy, &ack_states());
-        assert_eq!(
-            s.durable,
-            alloc::vec![journal_op(
-                ExecutionStatus::Authorized,
-                ExecutionStatus::Failed
-            )]
-        );
-        assert!(s.audit.is_none(), "energy 预算拒绝现状无 audit");
-        assert!(matches!(
-            s.receipt,
-            SettleReceipt::BudgetExceeded { kind: "energy" }
-        ));
-    }
-
-    #[test]
-    fn settle_table_intent_append_failed() {
-        let s = settle(
-            &SettleTrigger::IntentAppendFailed {
-                err: String::from("DiskFull"),
-            },
-            &pre_persist_states(),
-        );
-        assert_eq!(
-            s.durable,
-            alloc::vec![journal_op(
-                ExecutionStatus::Authorized,
-                ExecutionStatus::Failed
-            )]
-        );
-        let (exec, safety, text) = audit_of(&s, &pre_persist_states());
-        assert!(matches!(exec, ExecOutcome::Failed));
-        assert!(matches!(safety, SafetyOutcome::Passed));
-        assert_eq!(
-            text,
-            "intent persist failed: DiskFull（零投递，终局 Failed）"
-        );
-        assert!(matches!(
-            s.receipt,
-            SettleReceipt::IntentPersistFailed { .. }
-        ));
-    }
-
-    #[test]
-    fn settle_table_journal_persist_failed() {
-        let s = settle(
-            &SettleTrigger::JournalPersistFailed {
-                err: String::from("NotAuthorized"),
-            },
-            &pre_persist_states(),
-        );
-        assert!(s.durable.is_empty(), "推进已试败，表内无补偿写");
-        let (_, _, text) = audit_of(&s, &pre_persist_states());
-        assert_eq!(
-            text,
-            "execution-journal Authorized→Persisted failed: NotAuthorized"
-        );
-        assert!(matches!(
-            s.receipt,
-            SettleReceipt::IntentPersistFailed { .. }
-        ));
-    }
-
-    #[test]
-    fn settle_table_sent_advance_failed() {
-        let states = ack_states();
-        let s = settle(
-            &SettleTrigger::SentAdvanceFailed {
-                err: String::from("NotAuthorized"),
-            },
-            &states,
-        );
-        assert_eq!(
-            s.durable,
-            alloc::vec![intent_op(DispatchState::Indeterminate)]
-        );
-        let (_, _, text) = audit_of(&s, &states);
-        assert_eq!(
-            text,
-            "delivery-ok 但 journal Sent 推进失败 NotAuthorized——对账"
-        );
-        assert!(matches!(
-            s.receipt,
-            SettleReceipt::Indeterminate { ref note }
-                if note == "delivery-ok 但 journal Sent 推进失败 NotAuthorized——对账"
-        ));
-    }
-
-    #[test]
-    fn settle_table_mark_delivered_failed() {
-        let s = settle(&SettleTrigger::MarkDeliveredFailed, &ack_states());
-        assert!(s.durable.is_empty());
-        let (_, _, text) = audit_of(&s, &ack_states());
-        assert_eq!(text, "delivery-ok 但 durable mark-sent 失败——对账");
-        assert!(matches!(s.receipt, SettleReceipt::Indeterminate { .. }));
-    }
-
-    #[test]
-    fn settle_table_delivery_timeout() {
-        let s = settle(&SettleTrigger::DeliveryTimeout, &ack_states());
-        assert_eq!(
-            s.durable,
-            alloc::vec![
-                journal_op(ExecutionStatus::Persisted, ExecutionStatus::Indeterminate),
-                intent_op(DispatchState::Indeterminate),
-            ]
-        );
-        let (_, _, text) = audit_of(&s, &ack_states());
-        assert_eq!(
-            text,
-            "delivery-timeout → Indeterminate（先读回/查询状态，不盲重试）"
-        );
-        assert!(matches!(
-            s.receipt,
-            SettleReceipt::Indeterminate { ref note }
-                if note == "delivery-timeout：写可能已发生，需对账"
-        ));
-    }
-
-    #[test]
-    fn settle_table_delivery_unreachable() {
-        let s = settle(&SettleTrigger::DeliveryUnreachable, &ack_states());
-        assert_eq!(
-            s.durable,
-            alloc::vec![
-                journal_op(ExecutionStatus::Persisted, ExecutionStatus::Failed),
-                intent_op(DispatchState::Failed),
-            ]
-        );
-        let (_, _, text) = audit_of(&s, &ack_states());
-        assert_eq!(text, "delivery-unreachable");
-        assert!(matches!(s.receipt, SettleReceipt::Unreachable));
-    }
-
-    #[test]
-    fn settle_table_delivery_error() {
-        let states = ack_states();
-        let s = settle(
-            &SettleTrigger::DeliveryError {
-                err: String::from("Protocol(\"x\")"),
-            },
-            &states,
-        );
-        assert_eq!(
-            s.durable,
-            alloc::vec![
-                journal_op(ExecutionStatus::Persisted, ExecutionStatus::Indeterminate),
-                intent_op(DispatchState::Indeterminate),
-            ]
-        );
-        let (_, _, text) = audit_of(&s, &states);
-        assert_eq!(
-            text,
-            "delivery: Protocol(\"x\") → Indeterminate（写可能已发生，对账）"
-        );
-        assert!(matches!(
-            s.receipt,
-            SettleReceipt::Indeterminate { ref note }
-                if note == "delivery-error Protocol(\"x\")：物理结果未知，需对账"
-        ));
-    }
-
-    #[test]
-    fn settle_table_response_decode_failed() {
-        let s = settle(
-            &SettleTrigger::ResponseDecodeFailed {
-                err: String::from("Truncated"),
-            },
-            &ack_states(),
-        );
-        assert_eq!(
-            s.durable,
-            alloc::vec![
-                journal_op(ExecutionStatus::Sent, ExecutionStatus::Indeterminate),
-                intent_op(DispatchState::Indeterminate),
-            ]
-        );
-        let (_, _, text) = audit_of(&s, &ack_states());
-        assert_eq!(text, "response-decode: Truncated → Indeterminate（对账）");
-        assert!(matches!(
-            s.receipt,
-            SettleReceipt::Indeterminate { ref note }
-                if note == "response-decode-failed：物理结果未知，需对账"
-        ));
-    }
-
-    #[test]
-    fn settle_table_ack_advance_failed() {
-        let s = settle(
-            &SettleTrigger::AckAdvanceFailed {
-                err: String::from("NotAuthorized"),
-            },
-            &ack_states(),
-        );
-        assert_eq!(
-            s.durable,
-            alloc::vec![intent_op(DispatchState::Indeterminate)]
-        );
-        let (_, _, text) = audit_of(&s, &ack_states());
-        assert_eq!(
-            text,
-            "ack-decoded 但 journal TransportAcked 推进失败 NotAuthorized——对账"
-        );
-        assert!(matches!(s.receipt, SettleReceipt::Indeterminate { .. }));
-    }
-
-    #[test]
-    fn settle_table_applied_write_order_invariant() {
-        // 写序不变量：durable 终态 ack 先行，成功后才 journal AppliedConfirmed。
-        let s = settle(&SettleTrigger::Applied, &ack_states());
-        assert_eq!(
-            s.durable,
-            alloc::vec![
-                intent_op(DispatchState::Committed),
-                journal_op(
-                    ExecutionStatus::TransportAcked,
-                    ExecutionStatus::AppliedConfirmed
-                ),
-            ]
-        );
-        let (exec, safety, text) = audit_of(&s, &ack_states());
-        assert!(matches!(exec, ExecOutcome::Succeeded));
-        assert!(matches!(safety, SafetyOutcome::Passed));
-        assert_eq!(text, format!("states={:?}", ack_states()));
-        assert!(matches!(s.receipt, SettleReceipt::Committed));
-    }
-
-    #[test]
-    fn settle_table_applied_durable_failed() {
-        let s = settle(&SettleTrigger::AppliedDurableFailed, &ack_states());
-        assert_eq!(
-            s.durable,
-            alloc::vec![journal_op(
-                ExecutionStatus::TransportAcked,
-                ExecutionStatus::Indeterminate
-            )]
-        );
-        let (_, _, text) = audit_of(&s, &ack_states());
-        assert_eq!(
-            text,
-            "applied-confirmed 但 durable 终态落盘失败——对账（不伪造成功）"
-        );
-        assert!(matches!(s.receipt, SettleReceipt::Indeterminate { .. }));
-    }
-
-    #[test]
-    fn settle_table_applied_advance_failed() {
-        let s = settle(
-            &SettleTrigger::AppliedAdvanceFailed {
-                err: String::from("NotAuthorized"),
-            },
-            &ack_states(),
-        );
-        assert!(s.durable.is_empty());
-        let (_, _, text) = audit_of(&s, &ack_states());
-        assert_eq!(
-            text,
-            "applied-confirmed 但 journal 推进失败 NotAuthorized——对账"
-        );
-        assert!(matches!(s.receipt, SettleReceipt::Indeterminate { .. }));
-    }
-
-    #[test]
-    fn settle_table_peer_idempotent_hit() {
-        let s = settle(&SettleTrigger::PeerIdempotentHit, &ack_states());
-        assert_eq!(
-            s.durable,
-            alloc::vec![
-                journal_op(
-                    ExecutionStatus::TransportAcked,
-                    ExecutionStatus::Reconciling
-                ),
-                intent_op(DispatchState::Indeterminate),
-            ]
-        );
-        let (_, _, text) = audit_of(&s, &ack_states());
-        assert_eq!(text, "对端幂等命中：原结果未知——对账，不升级 Committed");
-        assert!(matches!(
-            s.receipt,
-            SettleReceipt::Indeterminate { ref note }
-                if note == "对端幂等命中：原结果未知——对账，不升级 Committed"
-        ));
-    }
-
-    #[test]
-    fn settle_table_peer_dry_run() {
-        let states = ack_states();
-        let s = settle(&SettleTrigger::PeerDryRun, &states);
-        assert_eq!(
-            s.durable,
-            alloc::vec![
-                journal_op(ExecutionStatus::TransportAcked, ExecutionStatus::Rejected),
-                intent_op(DispatchState::Rejected),
-            ]
-        );
-        let (_, _, text) = audit_of(&s, &states);
-        assert_eq!(
-            text,
-            format!("states={states:?};note=对端 dry-run（未写设备）")
-        );
-        assert!(matches!(
-            s.receipt,
-            SettleReceipt::Terminal {
-                final_state: DispatchState::Rejected,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn settle_table_peer_denied() {
-        let states = ack_states();
-        let s = settle(&SettleTrigger::PeerDenied { class: 3 }, &states);
-        assert_eq!(
-            s.durable,
-            alloc::vec![
-                journal_op(ExecutionStatus::TransportAcked, ExecutionStatus::Failed),
-                intent_op(DispatchState::Failed),
-            ]
-        );
-        let (_, _, text) = audit_of(&s, &states);
-        assert_eq!(
-            text,
-            format!("states={states:?};note=device-denied class=3")
-        );
-        assert!(matches!(
-            s.receipt,
-            SettleReceipt::Terminal {
-                final_state: DispatchState::Failed,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn settle_table_readback_unavailable() {
-        let states = ack_states();
-        let s = settle(&SettleTrigger::ReadbackUnavailable, &states);
-        assert_eq!(
-            s.durable,
-            alloc::vec![
-                journal_op(
-                    ExecutionStatus::TransportAcked,
-                    ExecutionStatus::Indeterminate
-                ),
-                intent_op(DispatchState::Indeterminate),
-            ]
-        );
-        let (_, _, text) = audit_of(&s, &states);
-        assert_eq!(
-            text,
-            format!("states={states:?};note=readback-unavailable：物理状态未确认，需对账")
-        );
-        assert!(matches!(s.receipt, SettleReceipt::Indeterminate { .. }));
-    }
-
-    #[test]
-    fn settle_table_readback_mismatch_blocked() {
-        let states = ack_states();
-        let s = settle(&SettleTrigger::ReadbackMismatch, &states);
-        assert_eq!(
-            s.durable,
-            alloc::vec![
-                journal_op(ExecutionStatus::TransportAcked, ExecutionStatus::Failed),
-                intent_op(DispatchState::Failed),
-            ]
-        );
-        let (exec, safety, text) = audit_of(&s, &states);
-        assert!(matches!(exec, ExecOutcome::Failed));
-        assert!(
-            matches!(safety, SafetyOutcome::Blocked),
-            "读回不符必须 Blocked"
-        );
-        assert_eq!(
-            text,
-            format!("states={states:?};note=readback-mismatch：ACK 成功但物理状态未达目标")
-        );
-        assert!(matches!(
-            s.receipt,
-            SettleReceipt::Terminal {
-                final_state: DispatchState::Failed,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn settle_table_peer_failed() {
-        let states = ack_states();
-        let s = settle(&SettleTrigger::PeerFailed, &states);
-        assert_eq!(
-            s.durable,
-            alloc::vec![
-                journal_op(ExecutionStatus::TransportAcked, ExecutionStatus::Failed),
-                intent_op(DispatchState::Failed),
-            ]
-        );
-        let (_, _, text) = audit_of(&s, &states);
-        assert_eq!(text, format!("states={states:?};note=device-exec-failed"));
-        assert!(matches!(
-            s.receipt,
-            SettleReceipt::Terminal {
-                final_state: DispatchState::Failed,
-                ..
-            }
-        ));
-    }
 }
 
 impl DispatchEngine {
@@ -3885,7 +2471,7 @@ impl DispatchEngine {
     /// （合同 `readback_point_id`）= 对账/恢复路径的验证源——三语义分离）。
     /// 前置 = 资产有控制合同（与对账路径同门）；读失败/非有限值 = None
     /// （诚实缺证，不用设定值代填，不改变已判定的 Applied 终态）。
-    fn post_apply_readback(
+    pub(crate) fn post_apply_readback(
         &mut self,
         intent: &eneros_decision_contract::CommandIntent,
         deadline_ms: u64,
@@ -3908,7 +2494,7 @@ impl DispatchEngine {
         }
     }
 
-    fn reconcile_saga_intent(
+    pub(crate) fn reconcile_saga_intent(
         &mut self,
         intent: &eneros_decision_contract::CommandIntent,
         deadline_ms: u64,
@@ -3958,32 +2544,64 @@ impl DispatchEngine {
     }
 }
 
-#[path = "held_engine.rs"]
-pub mod held_engine;
+// C1 拆分（2026-09-24）：三件套迁 saga_exec.rs——外部路径
+// `engine::{EngineSagaExecutor, PlanBinding, DeliveryContext}` 不变。
+pub use crate::saga_exec::{DeliveryContext, EngineSagaExecutor, PlanBinding};
 
-#[path = "hold_registry.rs"]
-pub(crate) mod hold_registry;
+// （2026-09-24 C1 收口：held_engine/hold_registry 原经文件尾
+// `#[path = ...] mod` 暗挂成本文件逻辑子模块——文件树看似平级、逻辑
+// 是 engine 内脏。现转正为 crate 级真模块（lib.rs 声明）；本文件经
+// `crate::held_engine`/`crate::hold_registry` 引用。）
 
 #[cfg(test)]
 mod tests {
-    /// R13-B 源文本守卫（双向锁）：held_engine 生产驱动/对账路径必须经
-    /// STATION_PLAN_TARGET_LABEL / HELD_DELIVERY_SETTLE_MS 单源常量；
-    /// 手抄 "pcs" 字面或裸清算超时（5_000/5000）回流即红。变异验证：
-    /// 回退任一调用点为字面 ⇒ contains 臂红；删常量引用 ⇒ 正臂红。
+    /// R14-A 复查轮补锁（变异实锤：把 "pcs" 改成任何值，原全 crate
+    /// 测试仍绿——测试侧 "pcs" 字面只是观察者期望值、从未接到断言）。
+    /// 投递标签/清算超时进 durable IntentRecord wire（tlen 段）与逐投递
+    /// 超时行为——值域即契约，引擎内部自派生后本测是值域唯一 host 锁。
     #[test]
-    fn held_engine_delivery_uses_shared_constants() {
-        let src = include_str!("held_engine.rs");
+    fn station_delivery_identity_value_frozen() {
+        assert_eq!(
+            super::STATION_PLAN_TARGET_LABEL,
+            "pcs",
+            "投递标签 wire 词形冻结"
+        );
+        assert_eq!(
+            super::HELD_DELIVERY_SETTLE_MS,
+            5_000,
+            "逐投递清算超时值冻结"
+        );
+        // typed/trusted 两入口确实引用单源常量（防字面回流）。针经运行
+        // 期拼接——本测源文本不含完整针形，自匹配排除（守卫自咬纪律）。
+        let src = include_str!("engine.rs");
+        assert_eq!(
+            src.matches(concat!("String::from(STATION_PLAN_TARGET_LAB", "EL),"))
+                .count(),
+            2,
+            "typed/trusted 两入口标签必须经单源常量自派生"
+        );
+    }
+
+    /// R13-B/R14-A 源文本守卫（双向锁）：DeliveryContext 默认构造是
+    /// 投递标签/清算超时单源常量的唯一**构造**落点（saga_exec.rs）；
+    /// 手抄 "pcs" 字面或裸清算超时（5_000/5000）回流即红。
+    /// 复查轮补锁（2026-09-24）：held_engine.rs 恢复对账路径仍是常量
+    /// 活消费点——对 R14-A 守卫改锁后失去覆盖，此处一并锁定。
+    /// 变异验证：回退 Default 为字面 ⇒ 负臂红；删常量引用 ⇒ 正臂红。
+    #[test]
+    fn delivery_context_default_uses_shared_constants() {
+        let src = include_str!("saga_exec.rs");
         assert!(
-            src.contains("EngineSagaExecutor::new("),
-            "驱动路径 executor 构造在位"
+            src.contains("impl Default for DeliveryContext"),
+            "DeliveryContext 默认构造在位"
         );
         assert!(
             src.contains("crate::engine::STATION_PLAN_TARGET_LABEL"),
-            "投递标签须引用单源常量（R13-B）"
+            "投递标签须引用单源常量（R13-B/R14-A）"
         );
         assert!(
             src.contains("crate::engine::HELD_DELIVERY_SETTLE_MS"),
-            "清算超时须引用单源常量（R13-B）"
+            "清算超时须引用单源常量（R13-B/R14-A）"
         );
         assert!(
             !src.contains("\"pcs\""),
@@ -3992,6 +2610,16 @@ mod tests {
         assert!(
             !src.contains("5_000") && !src.contains("5000"),
             "手抄清算超时字面回归（应引 HELD_DELIVERY_SETTLE_MS）"
+        );
+        // 恢复对账路径（R13-B 原守卫覆盖面，复查轮恢复）。
+        let held = include_str!("held_engine.rs");
+        assert!(
+            held.contains("crate::engine::HELD_DELIVERY_SETTLE_MS"),
+            "恢复对账超时须引用单源常量（R13-B）"
+        );
+        assert!(
+            !held.contains("5_000") && !held.contains("5000"),
+            "held_engine 手抄清算超时字面回归"
         );
     }
 }

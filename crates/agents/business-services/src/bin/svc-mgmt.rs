@@ -1139,7 +1139,7 @@ impl MgmtHandler {
         // rpc.handle）；现任何模式下截断 v2 = 协议违例。
         match mgmt_principal::classify_session(req) {
             SessionShape::Short => {
-                resp.extend_from_slice(b"ERR:proto");
+                resp.extend_from_slice(eneros_business_services::svc_wire::ERR_PROTO);
                 return false;
             }
             SessionShape::V2Truncated => {
@@ -1147,7 +1147,7 @@ impl MgmtHandler {
                     "[svc-mgmt] MGT-PRINCIPAL rejected (truncated v2 shape len={}) —— 不落回 v1 无签解析",
                     req.len()
                 );
-                resp.extend_from_slice(b"ERR:proto");
+                resp.extend_from_slice(eneros_business_services::svc_wire::ERR_PROTO);
                 return false;
             }
             // station 部署面：旧 48B 无签形 = 一律拒绝——静默回退 v1 =
@@ -1179,7 +1179,7 @@ impl MgmtHandler {
                         let action_len = req[5 + SESSION_LEN + V2_TAIL_LEN + 8] as usize;
                         let action_start = 5 + SESSION_LEN + V2_TAIL_LEN + 9;
                         if action_start + action_len > req.len() {
-                            resp.extend_from_slice(b"ERR:len");
+                            resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
                             return false;
                         }
                         let action =
@@ -1258,7 +1258,7 @@ impl MgmtHandler {
         let action_len = req[5 + SESSION_LEN + 8] as usize;
         let action_start = 5 + SESSION_LEN + 9;
         if action_start + action_len > req.len() {
-            resp.extend_from_slice(b"ERR:len");
+            resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
             return false;
         }
         let action = core::str::from_utf8(&req[action_start..action_start + action_len])

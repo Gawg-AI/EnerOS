@@ -1,0 +1,23 @@
+   Compiling eneros-drv-svc v0.337.0 (/home/ahx/文档/EnerOS/crates/drivers/drv-svc)
+   Compiling eneros-control-services v0.337.0 (/home/ahx/文档/EnerOS/crates/agents/control-services)
+   Compiling eneros-business-services v0.337.0 (/home/ahx/文档/EnerOS/crates/agents/business-services)
+   Compiling eneros-agent-sdk v0.337.0 (/home/ahx/文档/EnerOS/crates/agents/agent-sdk)
+   Compiling eneros-agent v0.337.0 (/home/ahx/文档/EnerOS/crates/agents/agent)
+   Compiling eneros-control-dispatch v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/control-dispatch)
+   Compiling eneros-device-agent v0.337.0 (/home/ahx/文档/EnerOS/crates/agents/device-agent)
+   Compiling eneros70-standards-repro v0.1.0 (/tmp/eneros70-recheck2-standards)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.40s
+     Running `/tmp/eneros70-standards-repro/target/debug/eneros70-standards-repro unknown-capacity`
+S1 last-attempt protection+confirmation: fixed
+S1 missing-identity raw BOOTCTRL write allowed=true
+S2 sync terminal-failure first=Failed replay=Failed query=Failed durable=Running pending=true persist_calls=2
+S2 async observation first=Accepted query=Failed durable=Running pending=true persist_calls=2
+RS1 recovery persisted then query Completed, exactly one execution: PASS
+S3 different action same-id: fixed, executed=1
+UNKNOWN capacity before=15 new_status=Accepted old_op_present=false calls=16
+
+thread 'main' (3974763) panicked at src/main.rs:69:3:
+assertion `left == right` failed: full unknown ledger must backpressure
+  left: Accepted
+ right: Failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

@@ -1,0 +1,9 @@
+[selftest] PASS D01 执行记录正常重复不误报
+[selftest] PASS D02 跨文件重复定义失败
+[selftest] PASS D03a WP 数量缺失失败
+[selftest] PASS D03b 坏链接失败
+[selftest] PASS D03c 行锚越界失败
+[selftest] PASS D04 引用不存在的 WP 失败
+[selftest] PASS D05a 默认模式：历史漂移 = 告警不失败
+[selftest] PASS D05b --check-source：漂移严格失败
+[selftest] all PASS

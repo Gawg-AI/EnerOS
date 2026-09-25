@@ -35,3 +35,11 @@ VOL70.5 | [✓][R9] 窗B 身份面观测（IDENTITY ×1） | NONE
 VOL70.5 | VOL70.5-GATE: PASS VOL70.5-GATE: FAIL | NONE
 VOL70.5 | ==== VOL70.5-GATE: PASS ==== | PASS
 VOL70.5 | BOOT-IDENTITY-PAGE: slot=A | NONE
+# ---- 73 复查补锁（py 旧 lstrip/rpartition 宽松面与 rust 判定相反的角落）----
+# 裸冒号 + 括注含冒号：首冒号=行首名分隔符 → PASS（rpartition 会整行不可判）。
+VOL70.2-R03 | VOL70.2-R03-POWER-CUT: PASS (win: B) | PASS
+# 贴连括注 = 扩展 token（RR3 拒绝面），双空格同理；冒号名不是行首名单 token。
+VOL70.5 | VOL70.5-GATE: PASS(x) | NONE
+VOL70.5 | VOL70.5-GATE: FAIL(x) | NONE
+VOL70.5 | VOL70.5-GATE: PASS  (x) | NONE
+a:b | a:b: PASS | NONE

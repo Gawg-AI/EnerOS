@@ -1,0 +1,5 @@
+    Blocking waiting for file lock on build directory
+   Compiling eneros-protocol-services v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/protocol-services)
+   Compiling eneros-business-services v0.337.0 (/home/ahx/文档/EnerOS/crates/agents/business-services)
+    Checking eneros-modbus-rtu v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/modbus-rtu)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1.93s

@@ -1,0 +1,42 @@
+run70-candidate-evidence: gate VOL70.1 claims PASS but --exit-code=1: PASS 记录要求实际聚合退出码为 0
+run70-candidate-evidence: no terminal verdict line for gate 'VOL70.1' in run.log——无法判定门终态（别的 gate 的 PASS 不能充当本 gate 证据）
+run70-candidate-evidence: no terminal verdict line for gate 'VOL70.1' in run.log——无法判定门终态（别的 gate 的 PASS 不能充当本 gate 证据）
+[selftest] PASS attrib: vol window
+[selftest] PASS attrib: gate suffix
+[selftest] PASS attrib: subgate
+[selftest] PASS attrib: compound gate suffix
+[selftest] PASS attrib: other gate not mine (E05)
+[selftest] PASS attrib: near-prefix not mine
+[selftest] PASS attrib: fail terminal
+[selftest] PASS attrib: plain line not terminal
+[selftest] PASS attrib RR3: subgate line does not prove parent
+[selftest] PASS attrib RR3: extended PASS token rejected
+[selftest] PASS attrib RR3: suffix segment does not prove compound gate
+[selftest] PASS attrib RR3: trailing text after token rejected
+[selftest] PASS attrib RR3: bare name terminal kept (compound gate fixtures)
+[selftest] PASS attrib RR3fix: bounded parenthetical note is legal (r12 real format)
+[selftest] PASS attrib RR3fix: unclosed parenthetical still rejected
+[selftest] PASS gate_status: wrong gate absent → None
+[selftest] PASS gate_status: other gate FAIL ignored
+[selftest] PASS gate_status: conflict → FAIL
+[selftest] PASS recorder E04: nonzero exit rejected
+[selftest] PASS recorder E05: wrong gate rejected
+[selftest] PASS recorder E06: no terminal rejected
+[candidate-evidence] case=CORE-70-R01 status=PASS candidate=569d29f1cff4…
+[candidate-evidence] run-record → evidence/70/70.15/569d29f1cff4bf3b8fd80e476d2efc0c45cfb69f2db5c052dac327c325c4cdcc/CORE-70-R01.43eb2364a759e7d7.run-record.json
+[candidate-evidence] envelope   → evidence/70/70.15/569d29f1cff4bf3b8fd80e476d2efc0c45cfb69f2db5c052dac327c325c4cdcc/CORE-70-R01.43eb2364a759e7d7.envelope.json
+[candidate-evidence] index      → evidence/70/70.15/569d29f1cff4bf3b8fd80e476d2efc0c45cfb69f2db5c052dac327c325c4cdcc/candidate-index.json
+[selftest] PASS recorder E08: negative-run gate accepted
+[selftest] PASS recorder E08: record written
+[selftest] PASS recorder E08: verdict PASS recorded
+[selftest] PASS recorder E08: index registered
+[candidate-evidence] case=CORE-70-R01 status=FAIL candidate=569d29f1cff4…
+[candidate-evidence] run-record → evidence/70/70.15/569d29f1cff4bf3b8fd80e476d2efc0c45cfb69f2db5c052dac327c325c4cdcc/CORE-70-R01.c6cb0329e10f50bf.run-record.json
+[candidate-evidence] envelope   → evidence/70/70.15/569d29f1cff4bf3b8fd80e476d2efc0c45cfb69f2db5c052dac327c325c4cdcc/CORE-70-R01.c6cb0329e10f50bf.envelope.json
+[candidate-evidence] index      → 未变更（失败证据不注册成功条目）
+[selftest] PASS recorder FAIL: returns 1
+[selftest] PASS recorder FAIL: index untouched by failure
+[selftest] PASS recorder RR4: success envelope bytes preserved
+[selftest] PASS recorder RR4: index envelope digest still matches disk
+[selftest] PASS recorder RR4: failure run archived separately
+[selftest] all PASS

@@ -174,37 +174,18 @@ impl RecordingDispatch {
 }
 
 impl ControlDispatch for RecordingDispatch {
-    fn submit(
-        &mut self,
-        proposal: &eneros_dual_brain::ProposedControlPlan,
-        telemetry: &TrustedTelemetry,
-        actor: &AuthenticatedActor,
-        deadline_ms: u64,
-    ) -> Result<DispatchReceipt, DispatchError> {
-        self.submitted
-            .push((proposal.clone(), telemetry.clone(), *actor, deadline_ms));
-        if let Some(f) = self.result_fn.as_mut() {
-            return f();
-        }
-        match &self.result {
-            Some(r) => r.clone(),
-            None => Err(DispatchError::Internal(String::from(
-                "unconfigured test dispatch",
-            ))),
-        }
-    }
+    // （2026-09-24 C2 收口退役）原 `fn submit(&ProposedControlPlan, …)`
+    // 臂随 trait facade 入口删除；市场链路经 `submit_typed` 记账。
 
     /// 蓝图 61 v0.314.29：typed 提交（测试 double 记录轨迹——市场链路
     /// 不消费 typed 路径）。
     fn submit_typed(
         &mut self,
         plan: &eneros_decision_contract::CandidatePlan,
-        target_device: &str,
         telemetry: &TrustedTelemetry,
         actor: &AuthenticatedActor,
-        deadline_ms: u64,
     ) -> Result<DispatchReceipt, DispatchError> {
-        let _ = (plan, target_device, telemetry, actor, deadline_ms);
+        let _ = (plan, telemetry, actor);
         if let Some(f) = self.result_fn.as_mut() {
             return f();
         }
@@ -223,13 +204,11 @@ impl ControlDispatch for RecordingDispatch {
         &mut self,
         plan: &eneros_decision_contract::CandidatePlan,
         trusted: &eneros_agent_sdk::snap_input_wire::TrustedInput,
-        target_device: &str,
         telemetry: &TrustedTelemetry,
         actor: &AuthenticatedActor,
-        deadline_ms: u64,
     ) -> Result<DispatchReceipt, DispatchError> {
         let _ = (trusted,);
-        self.submit_typed(plan, target_device, telemetry, actor, deadline_ms)
+        self.submit_typed(plan, telemetry, actor)
     }
 
     /// 47（WP-47.1）：协议写意图提交。测试 double 记录轨迹并返回

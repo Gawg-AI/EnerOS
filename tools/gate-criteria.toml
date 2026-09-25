@@ -1,8 +1,11 @@
 # ============================================================================
 # 门判据登记（蓝图 73 批B / 候选 C4）：id → 判定规格。
 #
-# 三个编译器（bash / python / xtask-rust）凡消费判据的都从本文件取——
-# 判据是数据，不再是散在脚本里的 grep 字面。
+# 消费面（73 批C 对码核实）：**bash 门 + python 判据器（criterion.py）**
+# 两处从本文件取判据——判据是数据，不再是散在脚本里的 grep 字面。
+# xtask-rust **不**读本文件（它只与 python 共享
+# tools/testdata/gate-terminal-fixtures.txt 那份终态行 fixture）；旧头注
+# "三个编译器都从本文件取"是虚述，已订正。
 #
 # 模式纪律（C3）：pattern 一律**全 token / 锚定**（行内完整词形匹配，
 # criterion.py 实现左/右边界），禁止裸子串；大小写敏感默认（例外须条目
@@ -65,14 +68,32 @@ any_of = []
 none_of = [
     "PANIC: panicked at",
     "memory allocation of",
+    "PANIC #",
+    "PANIC reboot #",
+    "[PANIC]",
 ]
 min_count = 0
 on_missing_input = "fail"
 case_sensitive = true
-# 词表采纳 run70_gate_judge.py 现行口径（三者中最严谨；扫描域=全文件，
-# 不得只扫 READY 之后——judge.py:120 注释在案）。vol5 门的 -i 宽面与
-# r10-held 的第三词表（alloc.*failed/ALLOC-FAIL）退役。
-# 回声由调用点覆写（R7 / 窗B / B5 三消费方文案不同，C2 逐字节同形）。
+# 词表 = 本仓 panic 出口的**全集**（73 批C 逐出口清点，非只抄 judge.py）：
+#   `PANIC: panicked at` ← 各 svc bin 的 `PANIC: {info}`（PanicInfo Display）
+#   `memory allocation of` ← 分配失败（含 `PANIC: memory allocation of …`）
+#   `PANIC #`            ← root-task/src/panic.rs:269（WDT unmapped → spin）
+#                           + services/src/panic.rs:50（supervisor restart）
+#   `PANIC reboot #`     ← root-task/src/panic.rs:257（WDT mapped → arming reset）
+#   `[PANIC]`            ← runtime/hello/src/main.rs:68（用户态组件 panic）
+# 旧词表只认 "PANIC: panicked at" ⇒ 真 panic 判绿；归档重放实证于
+# evidence/70/70.12/probe-window.qemu-serial.log（裸子串方言偶然兜住，
+# 锚定词表反而漏检）。扫描域=全文件，不得只扫 READY 之后（judge.py:120）。
+# 回声由调用点覆写（R1/R2/R7/窗B/A6/C4/B5/R26/R30/R13 消费方文案不同，
+# C2 逐字节同形）。
+# 收编状态（73 批C 完成）：本条目已是零-PANIC 判据的唯一执行面——
+# vol4 R1、vol5 R7+窗B、vol6 R1/R26/R30、vol7 R1/R5/R13、vol89 R7、
+# r10-held A6/B5/C4、r03-powercut R2 全部经 criterion.py；
+# run70_gate_judge.py G1/G2 亦读本条目（原"第四方言"硬编码已删）。
+# criterion.py --selftest 的 test_live_gates_do_not_bare_grep_panic 把
+# "退役"从注释宣称变成可执行事实。run69 系已被 70 系取代、无任何调用方，
+# 其 alloc.rs 豁免形不在守卫面内（历史物证，勿照抄）。
 
 [[criterion]]
 id = "ACQ-MODBUS"

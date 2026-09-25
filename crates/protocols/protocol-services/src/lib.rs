@@ -20,6 +20,10 @@ pub mod service;
 #[cfg(any(target_os = "none", test))]
 pub mod protocol_ladder;
 
+/// C9（2026-09-24）：svc-mqtt 三臂 SECURITY-CHECK 判定 + 观测词形单源
+///（host 可测；bin cfg(none) 区只剩拨号/注入/壳）。
+pub mod mqtt_assembly;
+
 /// 46（WP-46.3）：协议配置/点表拉取。S1 起取数 seam 注入（host 可测；
 /// 调用侧管道单源 = agent-sdk `config_gateway`）。EL0 target 构建启用
 /// `sel4` feature（agent-sdk ipc_sel4）。

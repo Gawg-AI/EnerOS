@@ -1,0 +1,69 @@
+{
+  "schema": "eneros.evidence-envelope.v1",
+  "evidence_id": "ev-e686636d9b06",
+  "run_id": "run-18d6e6df5e19f7e3",
+  "nonce": "18d6e6df5e19fc64",
+  "test_id": "CORE-70-R06",
+  "scope": "L3",
+  "started_at": "2026-09-20T02:35:48Z",
+  "ended_at": "2026-09-20T02:35:48Z",
+  "source_commit": "a65f00aeac23bc4e7ef3c29146b942cb834d895f",
+  "dirty_tree_digest": "b0a415b37494a90e39aa8ae99c3bfbcc2b49d6a4cec3f93f691eeeb6cfb1f097",
+  "product_manifest_digest": "3c086bef5ddd90fb7c97a40e62bdb05c82d06e3dab1224f3bf4a6848a4661513",
+  "profile_digest": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6",
+  "artifact_sha256": "d1ae153eeb21b021d6257ca1229fe2e87be250c40057fbd976bb3f5683a7012c",
+  "toolchain_digest": "b0e2970b5185a2a1cc5bc01ca66815684f1bbf57def3ada089f295bd6e009e1b",
+  "platform_inventory_digest": "6d3a999079d440ba560d679d70986d60761ce90d468ec0cefa735078e06e6579",
+  "command": "tools/run70-vol5-gate.sh（DL=560 窗A + 窗B；R6 注入加宽 8 次）",
+  "inputs": [
+    {
+      "name": "Cargo.lock",
+      "path": "Cargo.lock",
+      "sha256": "2134357992c9016b7a5916d80edb20ee062269d3f9484a035a523039ee179cc4"
+    },
+    {
+      "name": "product-manifest",
+      "path": "target/eneros/manifest/qemu-test/product-manifest.normalized.json",
+      "sha256": "3c086bef5ddd90fb7c97a40e62bdb05c82d06e3dab1224f3bf4a6848a4661513"
+    },
+    {
+      "name": "profile",
+      "path": "product/profiles/qemu-test.json",
+      "sha256": "369cbede50c025d0c3217fb203e67a0c44bcfb23cd85f3b45cd3294d268c4be6"
+    },
+    {
+      "name": "rust-toolchain.toml",
+      "path": "rust-toolchain.toml",
+      "sha256": "fba61d7105ee6c504bc99f212fd86a9f5dd0fb979d85a320f7115a3019b4c39e"
+    }
+  ],
+  "oracle": {
+    "kind": "oracle",
+    "detail": "生产身份面 16 项：身份 capsule/推送、OTA 装配+配置取数、TLS 端到端、控制链 Committed、设备回读、探针隔离、伪 principal 拒绝（注入加宽后交叉核验 forger 发送计数）、窗B 测试锚探针链"
+  },
+  "positive_results": [
+    {
+      "id": "identity",
+      "status": "PASS",
+      "detail": "16/16 全 ✓——R4a 控制链 Committed=39、R6 伪 principal 拒绝（1；forger 发送 3）、窗B OTA-DOWNLOAD v2 ✓、零 PANIC；OTA-ANCHOR 禁用面 PASS"
+    }
+  ],
+  "negative_results": [
+    {
+      "id": "skip-trial",
+      "status": "FAIL",
+      "detail": "R5b 探针不在 release 装配（零 OTA-DOWNLOAD OK）=隔离负例判据"
+    }
+  ],
+  "verdict": "PASS",
+  "violations": [],
+  "artifacts": [
+    {
+      "name": "run-record",
+      "path": "evidence/70/70.15/1c53b872613fa7fa5e9846ed7befbb31ba4372b230c9c75b4e6f968891cda493/CORE-70-R06.495cd26008cbd44c.run-record.json",
+      "sha256": "495cd26008cbd44cd121de2fa2886e93e30c41e251819847cb7147058ffea25d"
+    }
+  ],
+  "signer": "dev",
+  "signature": "15375f26b93957c3417c58b9b1d88113cde9fcfbe4bfaebe3e2e5f5a10dff4bfcde68695640faddbed0545164a4df5901019d2c9be43b7eea7c20eddaff02102"
+}

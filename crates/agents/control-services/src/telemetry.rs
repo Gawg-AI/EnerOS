@@ -2015,4 +2015,85 @@ mod tests {
             clock_id: 1,
         }
     }
+
+    // ========================================================================
+    // C3（2026-09-24）：钉面 17B wire 双面锁（客户端编码器 ↔ 本服务
+    // handle_request 解码）。迁移前客户端（dispatch_assembly cfg(none)
+    // TelemetrySnapRetainer）与服务端各自手抄布局——漂移只在 QEMU 可见；
+    // 现客户端编码单源 = dispatch_wire，本测锁两侧一致性。
+    // ========================================================================
+
+    /// 钉面成功替身（pin/release 恒 true——双面锁只关心 wire 布局与
+    /// 应答形状，不关心容量语义）。
+    struct PinOkFace;
+
+    impl crate::event_face::ObsEventFace for PinOkFace {
+        fn on_obs_batch(
+            &mut self,
+            _events: &[eneros_telemetry_model::event::ObservationEvent],
+            _now_ms: u64,
+        ) {
+        }
+        fn set_snapshot_catalog(
+            &mut self,
+            _repo: eneros_semantic_catalog::CatalogRepository,
+            _now_ms: u64,
+        ) {
+        }
+        fn current_input(&self) -> Option<eneros_agent_sdk::snap_input_wire::TrustedInput> {
+            None
+        }
+        fn snapshot_blob(&mut self, _id: &[u8; 16]) -> Option<Vec<u8>> {
+            None
+        }
+        fn hold_offset(&mut self, _partition: u32, _offset: u64) {}
+        fn pin_snapshot(&mut self, _id: &[u8; 16]) -> bool {
+            true
+        }
+        fn release_snapshot(&mut self, _id: &[u8; 16]) -> bool {
+            true
+        }
+        fn retention_blocked(&self) -> bool {
+            false
+        }
+    }
+
+    /// 双面锁：客户端 `dispatch_wire::snap_*_request`（17B = [op, id×16]）
+    /// ↔ 服务端 `handle_request` 的 TEL_REQ_SNAP_HOLD/_RELEASE 臂（len==17
+    /// 判据 + `req[1..17]` 切片）；应答 `[TEL_RESP_OK]` ↔ 客户端
+    /// `snap_resp_ok`。任一侧布局漂移（长度/首字节/切片偏移）本测即红。
+    #[test]
+    fn snap_wire_dual_side_lock() {
+        use eneros_agent_sdk::tel_wire::{TEL_REQ_SNAP_HOLD, TEL_RESP_ERR, TEL_RESP_OK};
+        let id = [0x5Au8; 16];
+        let mut svc = service();
+        svc.set_event_face(alloc::boxed::Box::new(PinOkFace));
+        let now = 10_000;
+
+        // hold：客户端编码 → 服务端接纳 → OK 应答 → 客户端判真。
+        let hold = crate::dispatch_wire::snap_hold_request(id);
+        assert_eq!(hold.len(), 17, "客户端 17B 布局");
+        let resp = handle_request(&mut svc, &hold, now);
+        assert_eq!(resp, vec![TEL_RESP_OK], "服务端按同一布局接纳并回 OK");
+        assert!(crate::dispatch_wire::snap_resp_ok(&resp));
+
+        // release：同一布局，恒 OK（幂等语义）。
+        let release = crate::dispatch_wire::snap_release_request(id);
+        assert_eq!(release.len(), 17);
+        let resp = handle_request(&mut svc, &release, now);
+        assert_eq!(resp, vec![TEL_RESP_OK]);
+        assert!(crate::dispatch_wire::snap_resp_ok(&resp));
+
+        // 负例①：非 17B（缺 id）→ 服务端 ERR（服务端半边的布局判据）。
+        let resp = handle_request(&mut svc, &[TEL_REQ_SNAP_HOLD], now);
+        assert_eq!(resp, vec![TEL_RESP_ERR], "非 17B 必须拒绝");
+        assert!(!crate::dispatch_wire::snap_resp_ok(&resp));
+
+        // 负例②：pin 面失败（容量满/事件面缺失）→ ERR → 客户端判假
+        //（fail-closed：engine 拒绝新准入的入口判据）。
+        let mut no_face = service(); // 未 set_event_face → pin_snapshot=false
+        let resp = handle_request(&mut no_face, &hold, now);
+        assert_eq!(resp, vec![TEL_RESP_ERR]);
+        assert!(!crate::dispatch_wire::snap_resp_ok(&resp));
+    }
 }

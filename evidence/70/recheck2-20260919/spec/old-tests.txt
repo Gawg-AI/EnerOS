@@ -1,0 +1,19 @@
+    Blocking waiting for file lock on build directory
+warning: use of deprecated method `sha2::digest::generic_array::GenericArray::<T, N>::as_slice`: please upgrade to generic-array 1.x
+   --> /home/ahx/文档/EnerOS/crates/agents/snapshot-service/src/wire.rs:270:25
+    |
+270 |         if h.finalize().as_slice() != payload_sha {
+    |                         ^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: `eneros-snapshot-service` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.77s
+     Running repro.rs (target/debug/deps/repro-325a02254a9e36eb)
+
+running 2 tests
+test review_capacity_rejection_unpins_live_plans ... ok
+test review_release_failure_is_not_retried_on_idle_ticks ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 20 filtered out; finished in 0.01s
+

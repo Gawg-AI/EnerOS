@@ -1,0 +1,28 @@
+{
+  "head": "9ed12d3ee5b182c81066eabf1ba9a783954c28f0",
+  "base": "071f60629f73e71dd0c1351874bc82786ecf2ab7",
+  "workspace": {
+    "passed": 9118,
+    "failed": 0,
+    "targets": 466
+  },
+  "feature_matrix": "PASS (9 entries)",
+  "fmt": "PASS",
+  "blueprint_validation": {
+    "exit_code": 1,
+    "errors": 33,
+    "source_drift_files": 53
+  },
+  "check_current": "BLOCKED (CORE-70-R11 EXT-70-HW)",
+  "qemu_rerun": false,
+  "hardware_rerun": false,
+  "findings": {
+    "standards": 3,
+    "spec": 5,
+    "P1": 5,
+    "P2": 3,
+    "dynamic_reproductions": 7,
+    "static_callchain_only": 1
+  },
+  "product_source_modified": false
+}

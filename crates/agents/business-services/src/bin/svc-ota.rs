@@ -296,8 +296,8 @@ impl eneros_control_services::ControlServiceHandler for OtaHandler {
         use eneros_business_services::ota_service::*;
         use eneros_durable_state::DurableStateStore;
         const MAGIC: &[u8; 4] = b"OTA1";
-        if req.len() < 5 || &req[..4] != MAGIC {
-            resp.extend_from_slice(b"ERR:proto");
+        if eneros_business_services::svc_wire::parse_envelope(MAGIC, req).is_none() {
+            resp.extend_from_slice(eneros_business_services::svc_wire::ERR_PROTO);
             return false;
         }
         // 0x08 IDENTITY（root 独占分发）：capsule 校验 → 身份入册（单调
@@ -306,7 +306,7 @@ impl eneros_control_services::ControlServiceHandler for OtaHandler {
             let capsule_bytes = match eneros_agent_sdk::ota_wire::parse_identity_req(req) {
                 Ok(c) => c,
                 Err(_) => {
-                    resp.extend_from_slice(b"ERR:len");
+                    resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
                     return false;
                 }
             };
@@ -388,7 +388,7 @@ impl eneros_control_services::ControlServiceHandler for OtaHandler {
         // 未就绪 → ERR:not-ready（诚实不可得，不伪造零值）。
         if req[4] == 0x09 {
             if req.len() != 5 {
-                resp.extend_from_slice(b"ERR:len");
+                resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
                 return false;
             }
             self.ensure_ready(_now_ms);
@@ -420,7 +420,7 @@ impl eneros_control_services::ControlServiceHandler for OtaHandler {
                     match eneros_agent_sdk::ota_wire::parse_persist_trial_req(req) {
                         Ok(v) => v,
                         Err(_) => {
-                            resp.extend_from_slice(b"ERR:len");
+                            resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
                             return false;
                         }
                     };
@@ -497,7 +497,7 @@ impl eneros_control_services::ControlServiceHandler for OtaHandler {
                     };
                     return handle_boot_install(req[4], req, resp, io);
                 }
-                resp.extend_from_slice(b"ERR:cmd");
+                resp.extend_from_slice(eneros_business_services::svc_wire::ERR_CMD);
                 false
             }
         }
@@ -559,7 +559,7 @@ fn handle_boot_install(
         0x0B => {
             eneros_runtime::println!("[svc-ota] BOOT-TRIAL: begin len={}", req.len());
             if req.len() < 5 + 8 + 16 {
-                resp.extend_from_slice(b"ERR:len");
+                resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
                 return false;
             }
             // 单次中继：svc-storage 侧事务（bootctrl 零 IPC 搬运）。
@@ -623,7 +623,7 @@ fn handle_boot_install(
                         return true;
                     }
                     eneros_runtime::println!("[svc-ota] BOOT-TRIAL: rejected (len)");
-                    resp.extend_from_slice(b"ERR:len");
+                    resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
                     return false;
                 }
                 Err(e) => {
@@ -640,7 +640,7 @@ fn handle_boot_install(
         }
         0x0C => {
             if req.len() < 5 + 1 + 8 + 16 {
-                resp.extend_from_slice(b"ERR:len");
+                resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
                 return false;
             }
             let slot_is_a = req[5] == 1;
@@ -667,7 +667,7 @@ fn handle_boot_install(
                 }
                 Ok(_) => {
                     eneros_runtime::println!("[svc-ota] BOOT-CONFIRM: rejected (len)");
-                    resp.extend_from_slice(b"ERR:len");
+                    resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
                     false
                 }
                 Err(_) => {
@@ -688,7 +688,7 @@ fn handle_boot_install(
             }
             Ok(_) => {
                 eneros_runtime::println!("[svc-ota] BOOT-CANCEL: rejected (len)");
-                resp.extend_from_slice(b"ERR:len");
+                resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
                 false
             }
             Err(_) => {
@@ -777,7 +777,7 @@ fn handle_boot_install(
             }
         }
         _ => {
-            resp.extend_from_slice(b"ERR:cmd");
+            resp.extend_from_slice(eneros_business_services::svc_wire::ERR_CMD);
             false
         }
     }

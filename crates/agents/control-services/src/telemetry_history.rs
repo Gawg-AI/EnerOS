@@ -22,7 +22,7 @@ use core::cell::RefCell;
 
 use eneros_agent_sdk::block_io::{BlockIo, EipcBlockDevice, EipcSend};
 use eneros_agent_sdk::history_wire::{HistPointWire, HistoryPageSource, PAGE_RECORDS};
-use eneros_fs::{FsError, Lfs};
+use eneros_fs::mount_or_format;
 use eneros_storage::driver::BlockDevice;
 use eneros_storage::partition::{CachedBlocks, RegionScope};
 use eneros_tsdb::schema::{DataQuality, DeviceId, MetricId, TimeSeriesPoint, TsdbConfig};
@@ -420,30 +420,18 @@ pub fn open_disk_history<C: EipcSend + Clone + 'static>(
     // Face 以 4096B 计块；作用域基址按其口径折算（base512/8）。
     let base_block_4k = base_block_512 / 8;
 
-    // 先 mount（保数据）；仅当坏超级块才格式化重试（fresh face 保用权）。
-    let fs = {
-        match RegionScope::new(
+    // mount-or-format 单源（2026-09-24 收口 C13）：先 mount（保数据），
+    // 仅坏超级块才格式化重试（fresh face 保用权）——缓存深度 16 与区段
+    // 几何在此显式传入（此前与 event_face 各手抄一份、已现漂移）。
+    let fs = mount_or_format(|| {
+        RegionScope::new(
             CachedBlocks::<16, _>::new(face.clone()),
             base_block_4k,
             fs_blocks,
-        ) {
-            Ok(scope) => match Lfs::mount(alloc::boxed::Box::new(scope)) {
-                Ok(fs) => fs,
-                Err(FsError::BadSuperBlock) => {
-                    let dev2 = face.clone();
-                    let scope2 = RegionScope::new(
-                        CachedBlocks::<16, _>::new(dev2),
-                        base_block_4k,
-                        fs_blocks,
-                    )
-                    .map_err(|_| ())?;
-                    Lfs::format(alloc::boxed::Box::new(scope2)).map_err(|_| ())?
-                }
-                Err(_) => return Err(()),
-            },
-            Err(_) => return Err(()),
-        }
-    };
+        )
+        .ok()
+    })
+    .ok_or(())?;
 
     let cfg = TsdbConfig {
         data_dir: alloc::string::String::from(DISK_DATA_DIR),

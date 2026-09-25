@@ -1,0 +1,12 @@
+{"event": "WRITE", "func": "fc06", "addr": "0x200", "value": 1, "ts": 1000}
+{"event": "READ", "func": "fc03", "addr": "0x200", "value": 1}
+{"event": "WRITE", "func": "fc06", "addr": "0x201", "value": 1, "ts": 1000}
+{"event": "READ", "func": "fc03", "addr": "0x201", "value": 1}
+{"event": "WRITE", "func": "fc06", "addr": "0x202", "value": 1, "ts": 1000}
+{"event": "READ", "func": "fc03", "addr": "0x202", "value": 1}
+{"event": "WRITE", "func": "fc06", "addr": "0x200", "value": 2, "ts": 1000}
+{"event": "READ", "func": "fc03", "addr": "0x200", "value": 2}
+{"event": "WRITE", "func": "fc06", "addr": "0x201", "value": 2, "ts": 1000}
+{"event": "READ", "func": "fc03", "addr": "0x201", "value": 2}
+{"event": "WRITE", "func": "fc06", "addr": "0x202", "value": 2, "ts": 1000}
+{"event": "READ", "func": "fc03", "addr": "0x202", "value": 2}

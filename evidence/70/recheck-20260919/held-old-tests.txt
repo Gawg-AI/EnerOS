@@ -1,0 +1,41 @@
+   Compiling eneros-handover-abi v0.337.0 (/home/ahx/文档/EnerOS/crates/abi/handover-abi)
+   Compiling eneros-drv-svc v0.337.0 (/home/ahx/文档/EnerOS/crates/drivers/drv-svc)
+   Compiling eneros-crypto v0.337.0 (/home/ahx/文档/EnerOS/crates/security/crypto)
+   Compiling eneros-signer-keyring v0.337.0 (/home/ahx/文档/EnerOS/crates/security/signer-keyring)
+   Compiling eneros-safety-validator v0.337.0 (/home/ahx/文档/EnerOS/crates/ai/safety-validator)
+   Compiling eneros-control-gateway v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/control-gateway)
+   Compiling eneros-config-bundle v0.337.0 (/home/ahx/文档/EnerOS/crates/runtime/config-bundle)
+   Compiling eneros-ota-ab v0.337.0 (/home/ahx/文档/EnerOS/crates/security/ota-ab)
+   Compiling eneros-intent-parser v0.337.0 (/home/ahx/文档/EnerOS/crates/ai/intent-parser)
+   Compiling eneros-fast-path v0.337.0 (/home/ahx/文档/EnerOS/crates/ai/fast-path)
+   Compiling eneros-ingestion-core v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/ingestion-core)
+   Compiling eneros-semantic-catalog v0.337.0 (/home/ahx/文档/EnerOS/crates/agents/semantic-catalog)
+   Compiling eneros-intent-contract v0.337.0 (/home/ahx/文档/EnerOS/crates/ai/intent-contract)
+   Compiling eneros-event-store v0.337.0 (/home/ahx/文档/EnerOS/crates/runtime/event-store)
+   Compiling eneros-agent-sdk v0.337.0 (/home/ahx/文档/EnerOS/crates/agents/agent-sdk)
+   Compiling eneros-dual-brain v0.337.0 (/home/ahx/文档/EnerOS/crates/ai/dual-brain)
+   Compiling eneros-snapshot-service v0.337.0 (/home/ahx/文档/EnerOS/crates/agents/snapshot-service)
+warning: use of deprecated method `sha2::digest::generic_array::GenericArray::<T, N>::as_slice`: please upgrade to generic-array 1.x
+   --> /home/ahx/文档/EnerOS/crates/agents/snapshot-service/src/wire.rs:270:25
+    |
+270 |         if h.finalize().as_slice() != payload_sha {
+    |                         ^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+   Compiling eneros-resource-registry v0.337.0 (/home/ahx/文档/EnerOS/crates/agents/resource-registry)
+warning: `eneros-snapshot-service` (lib) generated 1 warning
+   Compiling eneros-agent v0.337.0 (/home/ahx/文档/EnerOS/crates/agents/agent)
+   Compiling eneros-certifier v0.337.0 (/home/ahx/文档/EnerOS/crates/ai/certifier)
+   Compiling eneros-control-dispatch v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/control-dispatch)
+   Compiling eneros-device-agent v0.337.0 (/home/ahx/文档/EnerOS/crates/agents/device-agent)
+   Compiling eneros70-spec-repro v0.1.0 (/tmp/eneros70-spec-recheck)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.08s
+     Running repro.rs (target/debug/deps/repro-325a02254a9e36eb)
+
+running 2 tests
+test review_capacity_rejection_unpins_live_plans ... ok
+test review_release_failure_is_not_retried_on_idle_ticks ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 20 filtered out; finished in 0.01s
+

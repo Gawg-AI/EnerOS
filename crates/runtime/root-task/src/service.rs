@@ -268,6 +268,68 @@ impl ReadinessTracker {
     }
 }
 
+/// C10（2026-09-24）：root 直连服务**索引束**——事件循环入口一次构建
+///（handles 在 spawn 后固定 ⇒ 索引稳定），各驱动点 O(1) 取用。原 11 处
+/// 内联 `handles.iter().find/position(name==…)`（每 tick 多次 O(n) 扫描）
+/// 收敛于此；「root 直连名单」自此数据化（与 SERVICE_WIRING 的 driven
+/// 名单互补：这里 = root 主动直呼的服务）。纯结构 + 纯方法，host 可测。
+#[cfg_attr(not(target_os = "none"), allow(dead_code))] // host 面死码（消费者在 cfg(none) 循环）
+struct DirectIndexes {
+    hang: Option<usize>,
+    fault: Option<usize>,
+    telemetry: Option<usize>,
+    energy_agent: Option<usize>,
+    ai_worker: Option<usize>,
+    mgmt: Option<usize>,
+    ota: Option<usize>,
+    config: Option<usize>,
+}
+
+#[cfg_attr(not(target_os = "none"), allow(dead_code))] // host 面死码（消费者在 cfg(none) 循环）
+impl DirectIndexes {
+    const fn empty() -> Self {
+        Self {
+            hang: None,
+            fault: None,
+            telemetry: None,
+            energy_agent: None,
+            ai_worker: None,
+            mgmt: None,
+            ota: None,
+            config: None,
+        }
+    }
+
+    /// 事件循环入口一次构建（name→idx；名单外的服务不进束——root 不直呼）。
+    fn build(handles: &[crate::spawn::SpawnedHandle]) -> Self {
+        let idx = |name: &str| handles.iter().position(|h| h.name == name);
+        Self {
+            hang: idx("svc-hang"),
+            fault: idx("svc-fault"),
+            telemetry: idx("svc-telemetry"),
+            energy_agent: idx("svc-energy-agent"),
+            ai_worker: idx("svc-ai-worker"),
+            mgmt: idx("svc-mgmt"),
+            ota: idx("svc-ota"),
+            config: idx("svc-config"),
+        }
+    }
+
+    /// 索引 → 句柄投影（handles 与构建时同一数组——spawn 后固定）。
+    fn handle<'a>(
+        &self,
+        handles: &'a [crate::spawn::SpawnedHandle],
+        idx: Option<usize>,
+    ) -> Option<&'a crate::spawn::SpawnedHandle> {
+        idx.and_then(|i| handles.get(i))
+    }
+
+    /// 索引 → endpoint 投影。
+    fn ep_of(&self, handles: &[crate::spawn::SpawnedHandle], idx: Option<usize>) -> Option<u64> {
+        self.handle(handles, idx).map(|h| h.ep)
+    }
+}
+
 /// root 编排状态单源（[`run_ipc_loop`] 循环捕获的全部可变局部归一；
 /// 死局部 `fault_tick` 不入——63.2 并表后恒等冗余，删除）。
 #[cfg_attr(not(target_os = "none"), allow(dead_code))] // host 面字段不回读（target run_ipc_loop 活；66.5.2 收窄）
@@ -306,6 +368,8 @@ struct Orchestration {
     probe_entered: u64,
     probe_neg_sent: bool,
     probe_done: bool,
+    /// C10：直连服务索引束（run_ipc_loop 入口 build；spawn 后 handles 固定）。
+    direct: DirectIndexes,
 }
 
 #[cfg_attr(not(target_os = "none"), allow(dead_code))] // host 面死码（66.5.2 收窄）
@@ -335,6 +399,7 @@ impl Orchestration {
             probe_entered: 0,
             probe_neg_sent: false,
             probe_done: false,
+            direct: DirectIndexes::empty(),
         }
     }
 
@@ -345,6 +410,45 @@ impl Orchestration {
         name: &str,
     ) -> Option<crate::spawn::SpawnedHandle> {
         handles.iter().find(|h| h.name == name).cloned()
+    }
+
+    /// R14-C：管理裁决前奏单源——ready 投影（boot readiness Ready 且
+    /// 不在重验等待）+ 维护退出健康门（全部 required 服务 lifecycle
+    /// Ready）+ 状态机 handle。原 mgmt_poll_step 与 mgt_probe_step
+    /// DriveMgt2 臂语义逐字双抄（仅排版缩进差异），判据改动须两处同步、
+    /// 漂移只能 QEMU 门抓（2026-09-24 收编；尾段两调用点各自保留——poll
+    /// 有 OtaRelay 中继与 IPC reply，探针直驱无）。
+    ///
+    /// 借用序：readiness/awaiting 拷出快照后再 &mut self.mgmt（原注释
+    /// 的借用互斥义务由本方法单点承担）。host 可测：SpawnedHandle /
+    /// Supervisor / RootMgmtState 均 host 可编译（本 impl 块无 cfg 门）。
+    fn adjudicate(
+        &mut self,
+        supervisor: &crate::supervisor::Supervisor,
+        handles: &[crate::spawn::SpawnedHandle],
+        service_names: &[&str],
+        req: &[u8],
+    ) -> crate::mgmt::MgmtVerdict {
+        let ready_boot: alloc::vec::Vec<bool> = self
+            .readiness
+            .state
+            .iter()
+            .map(|v| *v == Some(ReadinessVerdict::Ready))
+            .collect();
+        let awaiting = self.mgmt.awaiting_indices();
+        let ready_of =
+            |idx: usize| ready_boot.get(idx).copied().unwrap_or(false) && !awaiting.contains(&idx);
+        // 维护退出健康门：全部 required 服务 lifecycle Ready。
+        let required_ready = handles.iter().enumerate().all(|(i, h)| {
+            h.requirement != crate::bundle::Requirement::Required
+                || supervisor
+                    .services
+                    .get(i)
+                    .map(|s| s.lifecycle_state() == crate::supervisor::LifecycleState::Ready)
+                    .unwrap_or(false)
+        });
+        self.mgmt
+            .handle(req, self.tick, service_names, required_ready, &ready_of)
     }
 }
 
@@ -391,7 +495,7 @@ impl Orchestration {
             return;
         };
         self.once.mark_hang();
-        if let Some(idx) = handles.iter().position(|x| x.name == "svc-hang") {
+        if let Some(idx) = self.direct.hang {
             self.hang_monitor.note_request(idx, self.tick as i64);
         }
         eneros_runtime::println!(
@@ -592,29 +696,9 @@ impl Orchestration {
                 return;
             }
         };
-        // ready 投影：boot readiness Ready 且不在重验等待。先取快照
-        //（readiness/awaiting 均拷出——下方 &mut self.mgmt 借用互斥）。
-        let ready_boot: alloc::vec::Vec<bool> = self
-            .readiness
-            .state
-            .iter()
-            .map(|v| *v == Some(ReadinessVerdict::Ready))
-            .collect();
-        let awaiting = self.mgmt.awaiting_indices();
-        let ready_of =
-            |idx: usize| ready_boot.get(idx).copied().unwrap_or(false) && !awaiting.contains(&idx);
-        // 维护退出健康门：全部 required 服务 lifecycle Ready。
-        let required_ready = handles.iter().enumerate().all(|(i, h)| {
-            h.requirement != crate::bundle::Requirement::Required
-                || supervisor
-                    .services
-                    .get(i)
-                    .map(|s| s.lifecycle_state() == crate::supervisor::LifecycleState::Ready)
-                    .unwrap_or(false)
-        });
-        let mut verdict =
-            self.mgmt
-                .handle(&req, self.tick, service_names, required_ready, &ready_of);
+        // ready 投影 + 健康门 + 状态机裁决：R14-C 前奏单源（本方法与
+        // 探针 DriveMgt2 臂共用）。
+        let mut verdict = self.adjudicate(supervisor, handles, service_names, &req);
         // 70.7.5：OTA1 单程中继（0x06 status / 0x07 rollback）——root 是
         // OTA1 唯一可信调用方（无 (*, svc-ota) 授予边，agent-sdk 红灯锁）；
         // OTA1 响应字节原样回填 MGT2 响应（失败 → ERR:ota-relay 不伪造）。
@@ -639,7 +723,7 @@ impl Orchestration {
         handles: &[crate::spawn::SpawnedHandle],
         rollback: bool,
     ) -> alloc::vec::Vec<u8> {
-        let Some(h) = handles.iter().find(|h| h.name == "svc-ota") else {
+        let Some(h) = self.direct.handle(handles, self.direct.ota) else {
             return crate::root_mgmt_wire::err_resp("ota-unavailable");
         };
         let frame = if rollback {
@@ -687,17 +771,13 @@ impl Orchestration {
         if self.probe_done {
             return;
         }
-        let Some(svc_mgmt_ep) = handles.iter().find(|h| h.name == "svc-mgmt").map(|h| h.ep) else {
+        let Some(svc_mgmt_ep) = self.direct.ep_of(handles, self.direct.mgmt) else {
             return;
         };
-        let Some(svc_config_ep) = handles
-            .iter()
-            .find(|h| h.name == "svc-config")
-            .map(|h| h.ep)
-        else {
+        let Some(svc_config_ep) = self.direct.ep_of(handles, self.direct.config) else {
             return;
         };
-        let Some(svc_ota_ep) = handles.iter().find(|h| h.name == "svc-ota").map(|h| h.ep) else {
+        let Some(svc_ota_ep) = self.direct.ep_of(handles, self.direct.ota) else {
             return;
         };
         let capsule = read_identity_capsule();
@@ -738,30 +818,9 @@ impl Orchestration {
         match directive {
             ProbeDirective::None => {}
             ProbeDirective::DriveMgt2(req) => {
-                // root 状态机直驱（与 mgmt_poll_step 同裁决/词形/动作路径）。
-                let ready_boot: alloc::vec::Vec<bool> = self
-                    .readiness
-                    .state
-                    .iter()
-                    .map(|v| *v == Some(ReadinessVerdict::Ready))
-                    .collect();
-                let awaiting = self.mgmt.awaiting_indices();
-                let ready_of = |idx: usize| {
-                    ready_boot.get(idx).copied().unwrap_or(false) && !awaiting.contains(&idx)
-                };
-                let required_ready = handles.iter().enumerate().all(|(i, h)| {
-                    h.requirement != crate::bundle::Requirement::Required
-                        || supervisor
-                            .services
-                            .get(i)
-                            .map(|s| {
-                                s.lifecycle_state() == crate::supervisor::LifecycleState::Ready
-                            })
-                            .unwrap_or(false)
-                });
-                let verdict =
-                    self.mgmt
-                        .handle(&req, self.tick, service_names, required_ready, &ready_of);
+                // root 状态机直驱（R14-C：裁决前奏与 mgmt_poll_step 共用
+                // 单源；本臂无 OtaRelay 中继/IPC reply——探针直驱语义）。
+                let verdict = self.adjudicate(supervisor, handles, service_names, &req);
                 if let Some(word) = &verdict.word {
                     eneros_runtime::println!("[eneros-root-task] {word}");
                 }
@@ -966,8 +1025,6 @@ pub fn run_ipc_loop(
         driver_supervisor.report_line(),
         driver_supervisor.healthy_count()
     );
-    // 44.3：svc-fault 探针可选——缺失时 fault_idx=None，注入块跳过。
-    let fault_idx = handles.iter().position(|h| h.name == "svc-fault");
 
     // ============================================================================
     // 蓝图 40 收尾：控制链驱动 + 心跳监控（WP-40.4 隔离面 + Exit #6/#10
@@ -1017,6 +1074,13 @@ pub fn run_ipc_loop(
         now_ms(),
         &heartbeat_limits,
     );
+    // C10：直连索引束一次构建（handles spawn 后固定 ⇒ 索引全程稳定）。
+    orch.direct = DirectIndexes::build(handles);
+    // 44.3：svc-fault 探针可选——缺失时 fault_idx=None，注入块跳过
+    //（C10：直连束单源）。（2026-09-24 R14 复查轮修复：原位置在 orch
+    // 绑定之前 = use-before-bind，R13 在途改动遗留、target 构建从未
+    // 跑过故未暴露——E0425 实锤；绑定移至 direct 构建之后。）
+    let fault_idx = orch.direct.fault;
 
     loop {
         // 22 §2.W1.6：每轮喂硬件狗（喂狗间隔 < 看门狗超时 10s）。
@@ -1168,10 +1232,10 @@ pub fn run_ipc_loop(
                     );
                 }
             } else if let (Some(t), Some(e)) = (&telemetry_handle, &energy_handle) {
-                if let Some(i) = handles.iter().position(|h| h.name == "svc-telemetry") {
+                if let Some(i) = orch.direct.telemetry {
                     orch.hang_monitor.note_request(i, orch.tick as i64);
                 }
-                if let Some(i) = handles.iter().position(|h| h.name == "svc-energy-agent") {
+                if let Some(i) = orch.direct.energy_agent {
                     orch.hang_monitor.note_request(i, orch.tick as i64);
                 }
                 match control_chain_tick(t.ep, e.ep, &mut orch.collect_seq, &mut orch.chain_epoch) {
@@ -1225,7 +1289,7 @@ pub fn run_ipc_loop(
         // 与 ControlChain 错峰；服务未 spawn 时自然 no-op——handle 缺失
         // 即跳过，与 HangInject 同款装配容错）。
         if crate::wiring::periodic_due(crate::wiring::PeriodicTask::DegradeObserve, orch.tick) {
-            if let Some(h) = handles.iter().find(|h| h.name == "svc-ai-worker") {
+            if let Some(h) = orch.direct.handle(handles, orch.direct.ai_worker) {
                 degrade_observe_tick(h.ep, &mut orch.chain_epoch);
             }
         }
@@ -1233,7 +1297,7 @@ pub fn run_ipc_loop(
         // 同跑（与 MgtProbe 的 qemu-test-synth 门控不同：这是 svc-mgmt 终
         // 态补写的**持续**周期来源，无结束点）；服务未 spawn 时自然 no-op。
         if crate::wiring::periodic_due(crate::wiring::PeriodicTask::MgmtPersistTick, orch.tick) {
-            if let Some(h) = handles.iter().find(|h| h.name == "svc-mgmt") {
+            if let Some(h) = orch.direct.handle(handles, orch.direct.mgmt) {
                 mgmt_persist_tick(h.ep, &mut orch.mgmt_persist_epoch);
             }
         }
@@ -2365,6 +2429,73 @@ fn send_frame(ep: u64, frame: &[u8]) -> Result<(), eneros_sel4_sys::safe::Sel4Er
 
 #[cfg(test)]
 mod tests {
+    /// C10：直连索引束 host 测——build 对 fixture handles 的 8 名单索引
+    /// 正确（缺服务 = None）、handle/ep_of 投影 O(1) 等值于按名查找。
+    #[test]
+    fn direct_indexes_build_and_projection() {
+        use crate::spawn::SpawnedHandle;
+        // SpawnedHandle 无 Default（全字段构造；DirectIndexes 只读
+        // name/ep——其余字段零值占位）。
+        let mk = |name: &str, ep: u64| SpawnedHandle {
+            name: alloc::string::String::from(name),
+            tcb: 0,
+            ep,
+            ntfn: 0,
+            entry: 0,
+            stack_top: 0,
+            buffer_vaddr: 0,
+            ready_ntfn: 0,
+            capabilities: 0,
+            requirement: crate::bundle::Requirement::Optional,
+            eipc_mask: 0,
+            cnode: 0,
+            heartbeat_ntfn: 0,
+            storage_handover: None,
+            net_handover: None,
+            uart_handover: None,
+        };
+        let handles = [
+            mk("svc-telemetry", 11),
+            mk("svc-hang", 12),
+            mk("svc-mgmt", 13),
+            mk("svc-ota", 14),
+            mk("svc-config", 15),
+            mk("svc-energy-agent", 16),
+            mk("svc-ai-worker", 17),
+        ];
+        let idx = DirectIndexes::build(&handles);
+        assert_eq!(idx.telemetry, Some(0));
+        assert_eq!(idx.hang, Some(1));
+        assert_eq!(idx.mgmt, Some(2));
+        assert_eq!(idx.ota, Some(3));
+        assert_eq!(idx.config, Some(4));
+        assert_eq!(idx.energy_agent, Some(5));
+        assert_eq!(idx.ai_worker, Some(6));
+        assert_eq!(
+            idx.fault, None,
+            "未 spawn 的直连目标 = None（探针跳过语义）"
+        );
+        // 投影等值：ep_of ≡ 按名 find().map(ep)；handle ≡ find()。
+        for (name, slot) in [
+            ("svc-telemetry", idx.telemetry),
+            ("svc-hang", idx.hang),
+            ("svc-mgmt", idx.mgmt),
+            ("svc-ota", idx.ota),
+            ("svc-config", idx.config),
+            ("svc-energy-agent", idx.energy_agent),
+            ("svc-ai-worker", idx.ai_worker),
+            ("svc-fault", idx.fault),
+        ] {
+            let by_name = handles.iter().find(|h| h.name == name);
+            assert_eq!(idx.handle(&handles, slot), by_name, "{name} handle 投影");
+            assert_eq!(
+                idx.ep_of(&handles, slot),
+                by_name.map(|h| h.ep),
+                "{name} ep 投影"
+            );
+        }
+    }
+
     use eneros_ipc_wire::el0::{decode_frame, encode_frame, El0FrameType};
 
     use super::*;
@@ -2421,6 +2552,117 @@ mod tests {
         assert_eq!(mrs, vec![1, 0xAB]);
         let out = frame_from_mrs(&mrs).expect("decode");
         assert_eq!(out, vec![0xAB]);
+    }
+
+    // R14-C：管理裁决前奏单源——adjudicate 承载 ready 投影（boot Ready
+    // 且不在 awaiting）与 required 健康门（全 Ready 才放行维护退出）。
+    // 原 mgmt_poll_step / 探针 DriveMgt2 双抄期本语义无 host 可测面。
+    #[test]
+    fn adjudicate_prelude_health_gate_and_ready_projection() {
+        let mut orch = Orchestration::new(3, 0, 1_000, &[i64::MAX; 3]);
+        let mut supervisor =
+            crate::supervisor::Supervisor::new(&["svc-a", "svc-b", "svc-opt"], 1_000);
+        // SpawnedHandle 无 Default（全字段构造；adjudicate 只读
+        // name/requirement——其余字段零值占位）。
+        let mk = |name: &str, ep: u64| crate::spawn::SpawnedHandle {
+            name: alloc::string::String::from(name),
+            tcb: 0,
+            ep,
+            ntfn: 0,
+            entry: 0,
+            stack_top: 0,
+            buffer_vaddr: 0,
+            ready_ntfn: 0,
+            capabilities: 0,
+            requirement: crate::bundle::Requirement::Required,
+            eipc_mask: 0,
+            cnode: 0,
+            heartbeat_ntfn: 0,
+            storage_handover: None,
+            net_handover: None,
+            uart_handover: None,
+        };
+        let mut handles = [mk("svc-a", 21), mk("svc-b", 22), mk("svc-opt", 23)];
+        // Optional 服务：健康门只看 required——optional 未 Ready 不拦维护
+        // 退出（变异咬合关键面：!=/== 与 ||/&& 的判别路径）。
+        handles[2].requirement = crate::bundle::Requirement::Optional;
+        let names = ["svc-a", "svc-b", "svc-opt"];
+        let req = |cmd: u8, arg: &[u8]| {
+            let mut r = alloc::vec::Vec::from(&crate::root_mgmt_wire::PROTO_MAGIC[..]);
+            r.push(cmd);
+            r.extend_from_slice(arg);
+            r
+        };
+        // ① 维护进入放行（前置）。
+        let v = orch.adjudicate(
+            &supervisor,
+            &handles,
+            &names,
+            &req(crate::root_mgmt_wire::CMD_MAINT_ENTER, &[]),
+        );
+        assert_eq!(v.resp, crate::root_mgmt_wire::ok_resp(), "维护进入放行");
+        // ② 健康门：required 服务 lifecycle 未 Ready → 退出拒绝。
+        let v = orch.adjudicate(
+            &supervisor,
+            &handles,
+            &names,
+            &req(crate::root_mgmt_wire::CMD_MAINT_EXIT, &[]),
+        );
+        assert_eq!(
+            v.resp,
+            crate::root_mgmt_wire::err_resp("maint-health-gate"),
+            "required 未全 Ready：维护退出必须被健康门拒绝"
+        );
+        // ③ 全 required Ready → 退出放行（走 11 态单向推进真实链）。
+        for svc in &mut supervisor.services {
+            use crate::supervisor::LifecycleState::*;
+            for step in [Verified, Created, Mapped, Configured, Started, Ready] {
+                svc.lifecycle.transition(step).expect("合法单向推进");
+            }
+        }
+        let v = orch.adjudicate(
+            &supervisor,
+            &handles,
+            &names,
+            &req(crate::root_mgmt_wire::CMD_MAINT_EXIT, &[]),
+        );
+        assert_eq!(
+            v.resp,
+            crate::root_mgmt_wire::ok_resp(),
+            "全 required Ready → 维护退出放行"
+        );
+        // ④ ready 投影：boot Ready 且不在 awaiting → 实例 ready 位真。
+        orch.readiness.state[0] = Some(ReadinessVerdict::Ready);
+        let target = |name: &str| {
+            let mut t = alloc::vec![0u8; crate::root_mgmt_wire::TARGET_LEN];
+            t[..name.len()].copy_from_slice(name.as_bytes());
+            t
+        };
+        let resp = orch
+            .adjudicate(
+                &supervisor,
+                &handles,
+                &names,
+                &req(crate::root_mgmt_wire::CMD_INSTANCE, &target("svc-a")),
+            )
+            .resp;
+        let (_, _, _, ready) =
+            crate::root_mgmt_wire::parse_instance_resp(&resp).expect("instance resp 解码");
+        assert!(ready, "boot Ready 且不在 awaiting → ready 位真");
+        // ⑤ awaiting 排除：手动重启登记待重验 → ready 位假（boot Ready
+        // 不再单边决定）。
+        orch.mgmt.note_restarted(0, true, 2_000);
+        let resp = orch
+            .adjudicate(
+                &supervisor,
+                &handles,
+                &names,
+                &req(crate::root_mgmt_wire::CMD_INSTANCE, &target("svc-a")),
+            )
+            .resp;
+        let (_, _, _, ready) =
+            crate::root_mgmt_wire::parse_instance_resp(&resp).expect("instance resp 解码");
+        assert!(!ready, "awaiting 待重验：boot Ready 不再单边决定 ready 位");
     }
 
     // ==================== WP-64.2.1：root wire 面单源结构守卫 ====================

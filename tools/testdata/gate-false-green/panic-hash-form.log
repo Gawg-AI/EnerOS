@@ -1,0 +1,4 @@
+[eneros-root-task] PANIC #1 at crates/runtime/root-task/src/mgt_probe.rs:342 — WDT unmapped — spin, awaiting external reset
+[svc-telemetry] PANIC #2 at crates/runtime/services/src/panic.rs:50 — suspending (supervisor restart, W1.3)
+[eneros-root-task] PANIC reboot #3 at crates/runtime/root-task/src/panic.rs:257 — arming watchdog reset
+[PANIC] user-space component panic

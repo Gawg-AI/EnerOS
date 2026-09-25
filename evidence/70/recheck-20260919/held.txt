@@ -1,0 +1,126 @@
+   Compiling version_check v0.9.5
+   Compiling zeroize v1.9.0
+   Compiling typenum v1.20.1
+   Compiling subtle v2.6.1
+   Compiling const-oid v0.9.6
+   Compiling rand_core v0.6.4
+   Compiling cfg-if v1.0.5
+   Compiling cpufeatures v0.2.17
+   Compiling base16ct v0.2.0
+   Compiling eneros-hex v0.337.0 (/home/ahx/文档/EnerOS/crates/abi/hex)
+   Compiling eneros-handover-abi v0.337.0 (/home/ahx/文档/EnerOS/crates/abi/handover-abi)
+   Compiling eneros-upa-model v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/upa-model)
+   Compiling eneros-ipc-wire v0.337.0 (/home/ahx/文档/EnerOS/crates/abi/ipc-wire)
+   Compiling find-msvc-tools v0.1.13
+   Compiling shlex v2.0.1
+   Compiling eneros-solver-core v0.337.0 (/home/ahx/文档/EnerOS/crates/ai/solver-core)
+   Compiling scopeguard v1.2.0
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling lock_api v0.4.14
+   Compiling eneros-image-format v0.337.0 (/home/ahx/文档/EnerOS/crates/boot/image-format)
+   Compiling der v0.7.10
+   Compiling byteorder v1.5.0
+   Compiling heapless v0.8.0
+   Compiling serde_core v1.0.229
+   Compiling ff v0.13.1
+   Compiling cc v1.4.7
+   Compiling unicode-ident v1.0.26
+   Compiling eneros-virtio-core v0.337.0 (/home/ahx/文档/EnerOS/crates/drivers/virtio-core)
+   Compiling group v0.13.0
+   Compiling zmij v1.0.23
+   Compiling stable_deref_trait v1.2.1
+   Compiling serde_json v1.0.151
+   Compiling spin v0.9.9
+   Compiling generic-array v0.14.9
+   Compiling itoa v1.0.18
+   Compiling eneros-llm-engine v0.337.0 (/home/ahx/文档/EnerOS/crates/ai/llm-engine)
+   Compiling hash32 v0.3.1
+   Compiling eneros-protocol-keys v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/protocol-keys)
+   Compiling memchr v2.8.3
+   Compiling serde v1.0.229
+   Compiling eneros-solver-model v0.337.0 (/home/ahx/文档/EnerOS/crates/ai/solver-model)
+   Compiling eneros-hal v0.337.0 (/home/ahx/文档/EnerOS/crates/hal/hal)
+   Compiling spinning_top v0.2.5
+   Compiling eneros-drv-svc v0.337.0 (/home/ahx/文档/EnerOS/crates/drivers/drv-svc)
+   Compiling linked_list_allocator v0.10.6
+   Compiling eneros-energy-lp-model v0.337.0 (/home/ahx/文档/EnerOS/crates/ai/energy-lp-model)
+   Compiling eneros-durable-state v0.337.0 (/home/ahx/文档/EnerOS/crates/runtime/durable-state)
+   Compiling eneros-elf-loader v0.337.0 (/home/ahx/文档/EnerOS/crates/abi/elf-loader)
+   Compiling eneros-dispatch-state v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/dispatch-state)
+   Compiling eneros-time v0.337.0 (/home/ahx/文档/EnerOS/crates/drivers/time)
+   Compiling eneros-infer-scheduler v0.337.0 (/home/ahx/文档/EnerOS/crates/ai/infer-scheduler)
+   Compiling eneros-metrics v0.337.0 (/home/ahx/文档/EnerOS/crates/observability/metrics)
+   Compiling syn v3.0.6
+   Compiling eneros-sel4-sys v0.337.0 (/home/ahx/文档/EnerOS/crates/runtime/sel4-sys)
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.6
+   Compiling sec1 v0.7.3
+   Compiling crypto-bigint v0.5.5
+   Compiling digest v0.10.7
+   Compiling sha2 v0.10.9
+   Compiling hmac v0.12.1
+   Compiling signature v2.2.0
+   Compiling rfc6979 v0.4.0
+   Compiling eneros-runtime v0.337.0 (/home/ahx/文档/EnerOS/crates/runtime/runtime)
+   Compiling eneros-storage v0.337.0 (/home/ahx/文档/EnerOS/crates/drivers/storage)
+   Compiling eneros-telemetry-model v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/telemetry-model)
+   Compiling eneros-boot-protocol v0.337.0 (/home/ahx/文档/EnerOS/crates/boot/boot-protocol)
+   Compiling eneros-audit v0.337.0 (/home/ahx/文档/EnerOS/crates/security/audit)
+   Compiling eneros-protocol-abstract v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/protocol-abstract)
+   Compiling eneros-decision-contract v0.337.0 (/home/ahx/文档/EnerOS/crates/ai/decision-contract)
+   Compiling elliptic-curve v0.13.8
+   Compiling primeorder v0.13.6
+   Compiling ecdsa v0.16.9
+   Compiling serde_derive v1.0.229
+   Compiling p256 v0.13.2
+   Compiling eneros-crypto v0.337.0 (/home/ahx/文档/EnerOS/crates/security/crypto)
+   Compiling eneros-prompt-template v0.337.0 (/home/ahx/文档/EnerOS/crates/ai/prompt-template)
+   Compiling eneros-signer-keyring v0.337.0 (/home/ahx/文档/EnerOS/crates/security/signer-keyring)
+   Compiling eneros-safety-validator v0.337.0 (/home/ahx/文档/EnerOS/crates/ai/safety-validator)
+   Compiling eneros-control-gateway v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/control-gateway)
+   Compiling eneros-config-bundle v0.337.0 (/home/ahx/文档/EnerOS/crates/runtime/config-bundle)
+   Compiling eneros-ota-ab v0.337.0 (/home/ahx/文档/EnerOS/crates/security/ota-ab)
+   Compiling eneros-fast-path v0.337.0 (/home/ahx/文档/EnerOS/crates/ai/fast-path)
+   Compiling eneros-ingestion-core v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/ingestion-core)
+   Compiling eneros-semantic-catalog v0.337.0 (/home/ahx/文档/EnerOS/crates/agents/semantic-catalog)
+   Compiling eneros-agent-sdk v0.337.0 (/home/ahx/文档/EnerOS/crates/agents/agent-sdk)
+   Compiling eneros-event-store v0.337.0 (/home/ahx/文档/EnerOS/crates/runtime/event-store)
+   Compiling eneros-intent-parser v0.337.0 (/home/ahx/文档/EnerOS/crates/ai/intent-parser)
+   Compiling eneros-intent-contract v0.337.0 (/home/ahx/文档/EnerOS/crates/ai/intent-contract)
+   Compiling eneros-snapshot-service v0.337.0 (/home/ahx/文档/EnerOS/crates/agents/snapshot-service)
+warning: use of deprecated method `sha2::digest::generic_array::GenericArray::<T, N>::as_slice`: please upgrade to generic-array 1.x
+   --> /home/ahx/文档/EnerOS/crates/agents/snapshot-service/src/wire.rs:270:25
+    |
+270 |         if h.finalize().as_slice() != payload_sha {
+    |                         ^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+   Compiling eneros-resource-registry v0.337.0 (/home/ahx/文档/EnerOS/crates/agents/resource-registry)
+   Compiling eneros-dual-brain v0.337.0 (/home/ahx/文档/EnerOS/crates/ai/dual-brain)
+   Compiling eneros-certifier v0.337.0 (/home/ahx/文档/EnerOS/crates/ai/certifier)
+warning: `eneros-snapshot-service` (lib) generated 1 warning
+   Compiling eneros-agent v0.337.0 (/home/ahx/文档/EnerOS/crates/agents/agent)
+   Compiling eneros-control-dispatch v0.337.0 (/home/ahx/文档/EnerOS/crates/protocols/control-dispatch)
+   Compiling eneros-device-agent v0.337.0 (/home/ahx/文档/EnerOS/crates/agents/device-agent)
+   Compiling eneros70-spec-repro v0.1.0 (/tmp/eneros70-spec-recheck)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.80s
+     Running repro.rs (/tmp/eneros70-spec-recheck/target/debug/deps/repro-325a02254a9e36eb)
+
+running 1 test
+actual failure: IntentPersistFailed("held storage: write-failed")
+
+thread 'recheck_h02_real_persist_failure_preserves_existing_pin' (855636) panicked at repro.rs:1872:5:
+H02: actual write failure must not unpin first live plan
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test recheck_h02_real_persist_failure_preserves_existing_pin ... FAILED
+
+failures:
+
+failures:
+    recheck_h02_real_persist_failure_preserves_existing_pin
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test repro`

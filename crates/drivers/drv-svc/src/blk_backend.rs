@@ -22,6 +22,7 @@ extern crate alloc;
 
 use core::cell::RefCell;
 
+use eneros_boot_protocol::boot_control::BOOT_CONTROL_RECORD_SIZE;
 // SPEC-B/C（2026-08-28）：移交 vaddr 常量单一事实源 = abi/handover-abi
 //（历史与 spawn.rs 同值不同名双源已收编；此处仅别名 re-use，无值定义）。
 pub use eneros_handover_abi::{
@@ -32,6 +33,7 @@ use eneros_storage::driver::virtio_blk::{DmaPool, VirtioBlkDriver, VolatileMmio}
 use eneros_storage::driver::BlockDevice;
 
 use crate::block_cmd::BlockBackend;
+use crate::boot_guard::BOOTCTRL_COPY_STRIDE_LBAS;
 
 /// 服务侧 DMA 池（root 移交的连续物理帧；cpu 视图 = 服务 VSpace 映射
 /// 虚拟地址，设备视图 = 物理基址）。
@@ -280,8 +282,8 @@ pub struct BootSlotBackend<
     /// init 期读取填充（init 期驱动 I/O 正常），运行期 bootctrl 读全走
     /// 影子（运行期 boot 队列请求设备端不完成——挂死根因待 QEMU trace
     /// 定位）；事务写成功后同步更新影子。定长数组（零堆——处理链上
-    /// 禁 alloc）。
-    shadow: core::cell::RefCell<[u8; 8192]>,
+    /// 禁 alloc）；大小 = 双副本记录（布局单源派生，非独立魔数）。
+    shadow: core::cell::RefCell<[u8; 2 * BOOT_CONTROL_RECORD_SIZE]>,
     /// 影子与介质一致性（70.7 复查）：部分/错位 BOOTCTRL 写会使其失效，
     /// 此后 bootctrl 读面显式 Err 而非回陈旧记录。整条 4096B 记录写
     /// （唯一生产形态）恢复有效。
@@ -360,26 +362,29 @@ impl BootSlotBackend<VolatileMmio, SvcDmaPool, eneros_storage::driver::virtio_bl
         // inner 的 read 形参是**字节偏移**（数据盘历史契约——run15 实弹：
         // 扇区 LBA 直传被 /512 换算成块 36，读回 GPT 区垃圾 → 双副本
         // decode 失败 "bootctrl-both-invalid"）。boot 面单位契约 = 512B
-        // 扇区 LBA，此处与 BlockBackend::read（下方）为仅有的两个换算点。
+        // 扇区 LBA；扇区→字节换算单源 = `boot_guard::sector_byte_offset`
+        //（init 期此处与 `read_sectors` 共用同一换算）。
         //
         // 70.7（REG-70.7-BOOT-DEV-IO-HANG 栈预算修复）：双副本**直接读入
         // 影子缓冲原地**（8 KiB 单缓冲）——旧版栈上 first+second 2×4 KiB
         // 再拷入影子，`try_new_boot` 帧 16 KiB，叠加 BootControl::decode
         // 解码帧后越过 svc-storage 32 KiB 栈 → guard 页 FAULT → 重启
         // （实弹：0x225930 = guard 页内）。
-        let mut shadow = [0u8; 8192];
+        let mut shadow = [0u8; 2 * BOOT_CONTROL_RECORD_SIZE];
         {
-            let (first, second) = shadow.split_at_mut(4096);
-            inner
-                .read(bc_lba * 512, first)
-                .map_err(|_| "bootctrl-read")?;
-            inner
-                .read((bc_lba + 8) * 512, second)
-                .map_err(|_| "bootctrl-read")?;
+            let (first, second) = shadow.split_at_mut(BOOT_CONTROL_RECORD_SIZE);
+            // 换算单源与 read_sectors 同一 helper（2026-09-24 复查修正：
+            // 注释先于代码为真——bc_lba=18432 量级无溢出，Err 分支为
+            // 结构一致性而非可达路径）。
+            let off0 = crate::boot_guard::sector_byte_offset(bc_lba).ok_or("bootctrl-read")?;
+            let off1 = crate::boot_guard::sector_byte_offset(bc_lba + BOOTCTRL_COPY_STRIDE_LBAS)
+                .ok_or("bootctrl-read")?;
+            inner.read(off0, first).map_err(|_| "bootctrl-read")?;
+            inner.read(off1, second).map_err(|_| "bootctrl-read")?;
         }
         let guard = crate::boot_guard::BootWriteGuard::resolve_with_running(
-            &shadow[..4096],
-            &shadow[4096..],
+            &shadow[..BOOT_CONTROL_RECORD_SIZE],
+            &shadow[BOOT_CONTROL_RECORD_SIZE..],
             running,
         )?;
         // 影子副本 = 上述双副本本身（运行期 bootctrl 读零驱动 I/O）。
@@ -408,16 +413,19 @@ impl<
     /// boot 面读取（512B 扇区 LBA 单位）——boot 面调用点一律走本方法。
     fn read_sectors(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
         // boot 面单位契约 = **512B 扇区 LBA**（boot_disk::lba_range_of 同
-        // 口径）；inner read 形参 = 字节偏移——本处单点换算（try_new_boot
-        // 内部读为另一点，见上）。
-        let off = lba.checked_mul(512).ok_or(())?;
+        // 口径）；扇区→字节换算单源 = `boot_guard::sector_byte_offset`
+        //（init 期双副本读为另一调用点，见 try_new_boot_once）。
+        let off = crate::boot_guard::sector_byte_offset(lba).ok_or(())?;
         // BOOTCTRL 双副本区间 → 影子副本（运行期零驱动 I/O）。
         let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
             eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
         );
-        let rec0 = bc_lba * 512;
-        let rec1 = (bc_lba + 8) * 512;
-        let is_bootctrl_record_read = (off == rec0 || off == rec1) && buf.len() == 4096;
+        // 布局算术（BOOTCTRL 基址/副本基址字节）同走换算单源。
+        let rec0 = crate::boot_guard::sector_byte_offset(bc_lba).ok_or(())?;
+        let rec1 =
+            crate::boot_guard::sector_byte_offset(bc_lba + BOOTCTRL_COPY_STRIDE_LBAS).ok_or(())?;
+        let is_bootctrl_record_read =
+            (off == rec0 || off == rec1) && buf.len() == BOOT_CONTROL_RECORD_SIZE;
         if is_bootctrl_record_read && !self.shadow_valid.get() {
             // 影子已因部分写失效——回陈旧记录 = 事务基于错误基线规划；
             // 显式失败（fail-closed），等待下次服务重启重新填充。
@@ -428,12 +436,12 @@ impl<
             return Err(());
         }
         let shadow = self.shadow.borrow();
-        if off == rec0 && buf.len() == 4096 {
-            buf.copy_from_slice(&shadow[..4096]);
+        if off == rec0 && buf.len() == BOOT_CONTROL_RECORD_SIZE {
+            buf.copy_from_slice(&shadow[..BOOT_CONTROL_RECORD_SIZE]);
             return Ok(());
         }
-        if off == rec1 && buf.len() == 4096 {
-            buf.copy_from_slice(&shadow[4096..8192]);
+        if off == rec1 && buf.len() == BOOT_CONTROL_RECORD_SIZE {
+            buf.copy_from_slice(&shadow[BOOT_CONTROL_RECORD_SIZE..]);
             return Ok(());
         }
         crate::block_cmd::BlockBackend::read(&mut self.inner, off, buf)
@@ -457,7 +465,7 @@ impl<
         if !allowed {
             return Err(());
         }
-        let off = lba.checked_mul(512).ok_or(())?;
+        let off = crate::boot_guard::sector_byte_offset(lba).ok_or(())?;
         // 70.14 插桩（第六轮）：把"console 路径阻塞"与"调用边界阻塞"分开。
         // 第五轮已证：本行**打印**，紧随的驱动方法体首行**不打印**，且同窗其它
         // 服务仍在打印（console 未死）、宿主 %CPU=0（非自旋）。故本行先自增一个
@@ -490,15 +498,16 @@ impl<
         let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
             eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
         );
-        let span_lo = bc_lba * 512;
-        if off >= span_lo && off < span_lo + 8192 {
+        // BOOTCTRL 区段基址（字节）——换算单源。
+        let span_lo = crate::boot_guard::sector_byte_offset(bc_lba).ok_or(())?;
+        if off >= span_lo && off < span_lo + (2 * BOOT_CONTROL_RECORD_SIZE) as u64 {
             let dst = (off - span_lo) as usize;
-            if data.len() == 4096 && dst % 4096 == 0 {
+            if data.len() == BOOT_CONTROL_RECORD_SIZE && dst % BOOT_CONTROL_RECORD_SIZE == 0 {
                 let mut shadow = self.shadow.borrow_mut();
-                shadow[dst..dst + 4096].copy_from_slice(data);
+                shadow[dst..dst + BOOT_CONTROL_RECORD_SIZE].copy_from_slice(data);
             } else {
-                let rec = dst / 4096;
-                let rec_off = span_lo + (rec as u64) * 4096;
+                let rec = dst / BOOT_CONTROL_RECORD_SIZE;
+                let rec_off = span_lo + (rec as u64) * BOOT_CONTROL_RECORD_SIZE as u64;
                 // 70.14（REG-70.12-PROBE-BOOT-TRIAL-STALL 真根因修复）：旧实现用
                 // `let mut fresh = [0u8; 4096]` —— 该局部使**本函数帧恒为 4 KiB**
                 // （实弹反汇编：函数入口 `sub sp, sp, #0x1000`），于是 trial 的
@@ -506,12 +515,13 @@ impl<
                 // seL4 fault；线程停在内核、整机 idle（实测四 CPU 全 idle_thread、
                 // 宿主 %CPU=0、串口在此行之后完全静默）。改为**堆缓冲**：帧降到
                 // 数百字节，boot 安装长链不再触碰 svc-storage 的 64 KiB 栈上限。
-                let mut fresh = alloc::vec![0u8; 4096];
+                let mut fresh = alloc::vec![0u8; BOOT_CONTROL_RECORD_SIZE];
                 let refresh =
                     crate::block_cmd::BlockBackend::read(&mut self.inner, rec_off, &mut fresh);
                 if refresh.is_ok() {
                     let mut shadow = self.shadow.borrow_mut();
-                    shadow[rec * 4096..(rec + 1) * 4096].copy_from_slice(&fresh);
+                    shadow[rec * BOOT_CONTROL_RECORD_SIZE..(rec + 1) * BOOT_CONTROL_RECORD_SIZE]
+                        .copy_from_slice(&fresh);
                 } else {
                     self.shadow_valid.set(false);
                     #[cfg(target_os = "none")]
@@ -530,26 +540,7 @@ impl<
     fn running_identity(&self) -> Option<crate::boot_guard::RunningIdentity> {
         self.guard.running
     }
-}
 
-impl<
-        M: eneros_storage::driver::virtio_blk::VirtioMmio,
-        P: DmaPool,
-        C: eneros_storage::driver::virtio_blk::ArmCache,
-    > crate::block_cmd::BlockBackend for BootSlotBackend<M, P, C>
-{
-    /// supertrait 约束保留体（73 批A C9）：数据面 trait 名下的实现，
-    /// 但本类型**只挂 install 面**（`attach_install`），永不进入数据面
-    /// 分派；经 `dyn InstallBackend` 的调用一律走
-    /// [`crate::block_cmd::InstallBackend::read_sectors`]（同一逻辑，
-    /// 512B 扇区单位）。
-    fn read(&mut self, offset_bytes: u64, buf: &mut [u8]) -> Result<(), ()> {
-        crate::block_cmd::InstallBackend::read_sectors(self, offset_bytes, buf)
-    }
-    /// supertrait 约束保留体（同上）——一律走 `write_sectors`。
-    fn write(&mut self, offset_bytes: u64, data: &[u8]) -> Result<(), ()> {
-        crate::block_cmd::InstallBackend::write_sectors(self, offset_bytes, data)
-    }
     /// 70.14 复查修复：**必须下沉到 inner**（原实现恒 `Ok(())`）。
     ///
     /// `BootInstall` 的四个事务（trial/confirm/cancel/install）把"双副本写 +
@@ -560,12 +551,10 @@ impl<
     ///
     /// 下沉后 `VirtioBlkBackend::flush` → `issue(VIRTIO_BLK_T_FLUSH)`——与数据盘
     /// `BLK_CMD_FLUSH` 同一条已验证路径（boot 盘与数据盘同为 virtio-blk，
-    /// QEMU 与真机都支持 FLUSH）。
+    /// QEMU 与真机都支持 FLUSH）。supertrait 拆除（2026-09-24）后为本
+    /// trait 自有方法，路由不变。
     fn flush(&mut self) -> Result<(), ()> {
         crate::block_cmd::BlockBackend::flush(&mut self.inner)
-    }
-    fn health(&self) -> (u64, u32, u8) {
-        crate::block_cmd::BlockBackend::health(&self.inner)
     }
 }
 
@@ -857,16 +846,17 @@ mod tests {
             inner,
             guard,
             boot_dma_vaddr: 0,
-            shadow: core::cell::RefCell::new([0u8; 8192]),
+            shadow: core::cell::RefCell::new([0u8; 2 * BOOT_CONTROL_RECORD_SIZE]),
             shadow_valid: core::cell::Cell::new(true),
         };
-        use crate::block_cmd::BlockBackend as _;
         // 扇区 LBA 100 → 字节 51200（换算生效）；扇区 0 保持零。
+        // boot 面一律走具名单位方法（supertrait 已拆除——继承名 read/write
+        // 不复存在，裸名混用从编译期不可表示）。
         let mut buf = [0u8; 10];
-        boot.read(100, &mut buf).unwrap();
+        boot.read_sectors(100, &mut buf).unwrap();
         assert_eq!(&buf, b"SECTOR100!");
         let mut z = [0u8; 4];
-        boot.read(0, &mut z).unwrap();
+        boot.read_sectors(0, &mut z).unwrap();
         assert!(z == [0u8; 4], "扇区 0 不得读到字节 0 偏移的地标");
 
         // 写守卫：factory A=trial(15) 活跃 → 非活动 = BOOT_B；BOOT_B 内
@@ -878,10 +868,13 @@ mod tests {
             ranges.bootctrl_start_lba,
             ranges.bootctrl_lbas,
         );
-        assert!(boot.write(bs_, b"g").is_ok(), "BOOTCTRL 内写放行");
-        assert!(boot.write(is, b"g").is_ok(), "非活动槽内写放行");
-        assert!(boot.write(0, b"x").is_err(), "活跃槽零写");
-        assert!(boot.write(bs_ + bl_, b"x").is_err(), "越 BOOTCTRL 尾零写");
+        assert!(boot.write_sectors(bs_, b"g").is_ok(), "BOOTCTRL 内写放行");
+        assert!(boot.write_sectors(is, b"g").is_ok(), "非活动槽内写放行");
+        assert!(boot.write_sectors(0, b"x").is_err(), "活跃槽零写");
+        assert!(
+            boot.write_sectors(bs_ + bl_, b"x").is_err(),
+            "越 BOOTCTRL 尾零写"
+        );
 
         // REG-70.7-BOOT-TRIAL-IO 回归锁（run54 实弹）：守卫判定是**扇区**
         // 单位——4096B 记录写（8 扇区）必须放行。旧实现在此按字节与 lba
@@ -908,12 +901,16 @@ mod tests {
             !boot.write_allowed(bs_ + bl_, 1),
             "BOOTCTRL 尾后一字节仍拒绝"
         );
-        // 端到端：二副本记录写真实落盘（run54 曾 Err）。
-        let rec = [0xA5u8; 4096];
-        boot.write(bs_, &rec).expect("BOOTCTRL 副本 0 记录写");
-        boot.write(bs_ + 8, &rec).expect("BOOTCTRL 副本 1 记录写");
-        let mut back = [0u8; 4096];
-        boot.read(bs_ + 8, &mut back).expect("读回副本 1");
+        // 端到端：二副本记录写真实落盘（run54 曾 Err）。副本 1 基址 =
+        // BOOTCTRL 基址 + 双副本间距（布局单源常量）。
+        let rec = [0xA5u8; BOOT_CONTROL_RECORD_SIZE];
+        boot.write_sectors(bs_, &rec)
+            .expect("BOOTCTRL 副本 0 记录写");
+        boot.write_sectors(bs_ + BOOTCTRL_COPY_STRIDE_LBAS, &rec)
+            .expect("BOOTCTRL 副本 1 记录写");
+        let mut back = [0u8; BOOT_CONTROL_RECORD_SIZE];
+        boot.read_sectors(bs_ + BOOTCTRL_COPY_STRIDE_LBAS, &mut back)
+            .expect("读回副本 1");
         assert_eq!(back, rec, "记录写→影子/介质读回一致");
     }
 
@@ -960,10 +957,10 @@ mod tests {
             inner,
             guard,
             boot_dma_vaddr: 0,
-            shadow: core::cell::RefCell::new([0u8; 8192]),
+            shadow: core::cell::RefCell::new([0u8; 2 * BOOT_CONTROL_RECORD_SIZE]),
             shadow_valid: core::cell::Cell::new(true),
         };
-        use crate::block_cmd::BlockBackend as _;
+        use crate::block_cmd::InstallBackend as _;
         let before = flushes.get();
         boot.flush().expect("boot 面 flush");
         assert_eq!(
@@ -1026,9 +1023,9 @@ mod tests {
             boot_dma_vaddr: 0,
             // 影子 = init 期读入的双副本（与 try_new_boot_once 同形态）。
             shadow: core::cell::RefCell::new({
-                let mut s = [0u8; 8192];
-                s[..4096].copy_from_slice(&rec_a);
-                s[4096..].copy_from_slice(&rec_a);
+                let mut s = [0u8; 2 * BOOT_CONTROL_RECORD_SIZE];
+                s[..BOOT_CONTROL_RECORD_SIZE].copy_from_slice(&rec_a);
+                s[BOOT_CONTROL_RECORD_SIZE..].copy_from_slice(&rec_a);
                 s
             }),
             shadow_valid: core::cell::Cell::new(true),
@@ -1037,11 +1034,12 @@ mod tests {
         // install_ranges 字段名进类型（73 批A S1：位置解构不可表示）。
         let bs_ = crate::block_cmd::InstallBackend::install_ranges(&boot).bootctrl_start_lba;
         assert_eq!(bs_, 18432, "qemu-v1 BOOTCTRL 基址");
-        boot.write(bs_, &[0xEE, 0xEE, 0xEE])
+        use crate::block_cmd::InstallBackend as _;
+        boot.write_sectors(bs_, &[0xEE, 0xEE, 0xEE])
             .expect("部分写必须放行");
         // ② 读回副本 0：必须看到介质现状（含 0xEE），而不是旧影子。
-        let mut back = [0u8; 4096];
-        boot.read(bs_, &mut back).expect("读回副本 0");
+        let mut back = [0u8; BOOT_CONTROL_RECORD_SIZE];
+        boot.read_sectors(bs_, &mut back).expect("读回副本 0");
         assert_eq!(
             &back[..3],
             &[0xEE, 0xEE, 0xEE],
@@ -1058,10 +1056,10 @@ mod tests {
         assert_ne!(&back[4092..4096], &[0u8; 4], "CRC 域不得被清零");
         assert_eq!(&back[4092..4096], &rec_a[4092..4096], "CRC 与记录 A 一致");
         // ③ 整条记录写（生产唯一形态）仍直接生效。
-        let rec_b = [0x5Au8; 4096];
-        boot.write(bs_, &rec_b).expect("整条记录写");
-        let mut back2 = [0u8; 4096];
-        boot.read(bs_, &mut back2).expect("读回副本 0");
+        let rec_b = [0x5Au8; BOOT_CONTROL_RECORD_SIZE];
+        boot.write_sectors(bs_, &rec_b).expect("整条记录写");
+        let mut back2 = [0u8; BOOT_CONTROL_RECORD_SIZE];
+        boot.read_sectors(bs_, &mut back2).expect("读回副本 0");
         assert_eq!(back2, rec_b, "整条记录写覆盖影子");
     }
 
@@ -1112,7 +1110,7 @@ mod tests {
             inner,
             guard,
             boot_dma_vaddr: 0,
-            shadow: core::cell::RefCell::new([0u8; 8192]),
+            shadow: core::cell::RefCell::new([0u8; 2 * BOOT_CONTROL_RECORD_SIZE]),
             shadow_valid: core::cell::Cell::new(true),
         };
         // boot 面：数值 1 = 扇区 LBA 1 → 字节 512..（0xBB 地标）。

@@ -1,0 +1,9 @@
+[svc-control-dispatch] PLAN-COMPILED batches=2 intents=6 skipped=6 manual=0 compiler=[11] batch=[33] plan=[10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10]
+[svc-control-dispatch] PLAN-HELD plan=[10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10] batches=2 intents=6
+[svc-control-dispatch] HELD-COMMAND intent=[20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20] state=Applied attempts=1 readback=Some(1) reason=- plan=[10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10] dev=0x1 pt=10 val=1
+[svc-control-dispatch] HELD-COMMAND intent=[21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21] state=Applied attempts=1 readback=Some(1) reason=- plan=[10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10] dev=0x8 pt=1009 val=1
+[svc-control-dispatch] HELD-COMMAND intent=[22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22, 22] state=Applied attempts=1 readback=Some(1) reason=- plan=[10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10] dev=0x9 pt=1014 val=1
+[svc-control-dispatch] HELD-COMMAND intent=[23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23] state=Applied attempts=1 readback=Some(2) reason=- plan=[10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10] dev=0x1 pt=10 val=2
+[svc-control-dispatch] HELD-COMMAND intent=[24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24, 24] state=Applied attempts=1 readback=Some(2) reason=- plan=[10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10] dev=0x8 pt=1009 val=2
+[svc-control-dispatch] HELD-COMMAND intent=[25, 25, 25, 25, 25, 25, 25, 25, 25, 25, 25, 25, 25, 25, 25, 25] state=Applied attempts=1 readback=Some(2) reason=- plan=[10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10] dev=0x9 pt=1014 val=2
+[svc-control-dispatch] HELD-PLAN-DONE plan=[10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10] batches=2 applied=6 blocked=0 failed=0 state=Committed

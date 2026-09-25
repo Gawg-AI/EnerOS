@@ -727,7 +727,7 @@ mod tests {
                 Some(telemetry.provenance_digest),
             );
             Ok(encode_candidate_payload(
-                &proposal_to_candidate_unbound(&plan).expect("stub cand"),
+                &proposal_to_candidate_unbound(&plan, 0).expect("stub cand"),
             ))
         }
     }

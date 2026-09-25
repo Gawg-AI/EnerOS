@@ -38,13 +38,26 @@ pub mod degrade;
 pub mod dispatch;
 pub mod durable_intent;
 pub mod engine;
+/// C7（2026-09-24）：控制链串口证据行词形单源表——调用点零字面，词形
+/// 锁锁表（golden）；formatter 即 host 可测的「记录不打印」形态。
+pub mod evidence;
 pub mod feedback;
+/// C1 转正（2026-09-24）：原 engine.rs 文件尾 `#[path]` 暗挂子模块——
+/// 文件树看似平级、逻辑是 engine 内脏；现为 crate 级真模块。
+pub mod held_engine;
 pub mod held_plan;
-pub use engine::held_engine::{HeldInputRetainer, NoRetention};
+pub(crate) mod hold_registry;
+pub use held_engine::{HeldInputRetainer, NoRetention};
 pub mod intent;
 pub mod journal;
 pub mod plan_hold;
 pub mod saga;
+/// C1 拆分（2026-09-24）：EngineSagaExecutor/PlanBinding/DeliveryContext
+/// 自 engine.rs 迁出（engine 侧 re-export 保路径）。
+pub mod saga_exec;
+/// C1 拆分（2026-09-24）：结算决策表（纯函数 + 类型族 + 表级单测）自
+/// engine.rs 迁出；编排面 SettleDispatch 留 engine。
+pub(crate) mod settle;
 
 pub use certify::{CertificateSource, CertifierReply, CertifyReject, NoCertifier};
 #[cfg(feature = "sel4")]

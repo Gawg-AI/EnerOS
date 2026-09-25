@@ -24,6 +24,9 @@
 set -uo pipefail
 source "$(dirname "$0")/gate-env.sh"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# 73 批C：判据器自举——门先验自己的判据器，再用它（S4，同 vol5/r10-held）。
+python3 "$ROOT/tools/criterion.py" --selftest >/dev/null || {
+  echo "criterion.py selftest FAIL"; exit 9; }
 cd "$ROOT"
 EVROOT="$ROOT/evidence/70/70.4"
 RUN="$ROOT/target/evidence70-vol4"
@@ -218,8 +221,10 @@ cp -f "$DIR/iec104.transcript.jsonl" "$EVROOT/$W.iec104.transcript.jsonl" 2>/dev
 
 echo "=== 判据扫描 ==="
 # ---- R1：零 PANIC / 零分配失败（无豁免）-----------------------------------
-PANICS=$(grep -aci "PANIC\|memory allocation of" "$S" || true)
-if [ "$PANICS" -eq 0 ]; then echo "[✓][R1] 零 PANIC / 零分配失败"; else echo "[✗][R1] PANIC=$PANICS"; FAIL=1; fi
+# 73 批C：判据登记化（PANIC-SCAN 单源；旧 -i 宽面退役，回声逐字节同形）。
+python3 "$ROOT/tools/criterion.py" check PANIC-SCAN \
+  --echo-ok "[✓][R1] 零 PANIC / 零分配失败" --echo-fail "[✗][R1] PANIC={count}" \
+  "$S" || FAIL=1
 
 # ---- R2：段1 健康链 --------------------------------------------------------
 n=$(head -n "$ANCHOR1" "$S" | grep -ac "REMOTE-BRAIN used=true"); n=${n:-0}

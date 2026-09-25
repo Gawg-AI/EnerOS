@@ -1,0 +1,26 @@
+   Compiling eneros-xtask v0.0.0 (/tmp/eneros70-candidate-recheck-p69pm1di/xtask)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.04s
+     Running unittests src/main.rs (/tmp/eneros70-review-isolated/xtask/target/debug/deps/eneros_xtask-7f10f876a7b98e70)
+
+running 2 tests
+
+thread 'evidence_chain::tests::recheck70_malformed_pass_token_is_not_terminal_pass' (879988) panicked at src/evidence_chain.rs:7474:9:
+assertion `left != right` failed
+  left: Some(true)
+ right: Some(true)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test evidence_chain::tests::recheck70_malformed_pass_token_is_not_terminal_pass ... FAILED
+
+thread 'evidence_chain::tests::recheck70_subgate_cannot_prove_parent_required_case' (879989) panicked at src/evidence_chain.rs:7470:9:
+R03-only result passed R02: ["CASE CORE-70-R01 PASS scope=L2 env=evidence/70/70.15/dda18a0e21ae47c53b4309434cbc02ae8bf764fa83a6defbb719431242722aa7/CORE-70-R01.json", "CASE CORE-70-R02 PASS scope=L2 env=evidence/70/70.15/dda18a0e21ae47c53b4309434cbc02ae8bf764fa83a6defbb719431242722aa7/CORE-70-R02.json"]
+test evidence_chain::tests::recheck70_subgate_cannot_prove_parent_required_case ... FAILED
+
+failures:
+
+failures:
+    evidence_chain::tests::recheck70_malformed_pass_token_is_not_terminal_pass
+    evidence_chain::tests::recheck70_subgate_cannot_prove_parent_required_case
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 200 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `--bin eneros-xtask`

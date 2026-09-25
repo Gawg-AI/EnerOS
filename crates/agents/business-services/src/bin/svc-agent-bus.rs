@@ -121,8 +121,8 @@ struct BusHandler {
 impl eneros_control_services::ControlServiceHandler for BusHandler {
     fn handle(&mut self, req: &[u8], resp: &mut alloc::vec::Vec<u8>, _now_ms: u64) -> bool {
         const MAGIC: &[u8; 4] = b"BUS1";
-        if req.len() < 5 || &req[..4] != MAGIC {
-            resp.extend_from_slice(b"ERR:proto");
+        if eneros_business_services::svc_wire::parse_envelope(MAGIC, req).is_none() {
+            resp.extend_from_slice(eneros_business_services::svc_wire::ERR_PROTO);
             return false;
         }
         match req[4] {
@@ -147,7 +147,7 @@ impl eneros_control_services::ControlServiceHandler for BusHandler {
             }
             0x03 => {
                 if req.len() != 7 {
-                    resp.extend_from_slice(b"ERR:len");
+                    resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
                     return false;
                 }
                 let pid = u16::from_le_bytes(req[5..7].try_into().unwrap());
@@ -163,7 +163,7 @@ impl eneros_control_services::ControlServiceHandler for BusHandler {
                 }
             }
             _ => {
-                resp.extend_from_slice(b"ERR:cmd");
+                resp.extend_from_slice(eneros_business_services::svc_wire::ERR_CMD);
                 false
             }
         }
