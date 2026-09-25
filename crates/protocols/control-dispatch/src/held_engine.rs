@@ -20,6 +20,7 @@ use crate::dispatch::{AuthenticatedActor, DispatchError, DispatchReceipt, Dispat
 use crate::engine::*;
 use crate::held_plan::{DurablePlans, HeldPlan};
 use crate::journal::{ExecutionStatus, JournalHit};
+use crate::settle::{ExecutionCtx, SettleTrigger};
 use crate::saga::{BatchState, DriveReport};
 use crate::saga::{CmdOutcome, ReconcileOutcome, SagaExecutor};
 
@@ -605,6 +606,16 @@ impl DispatchEngine {
     /// R14-B：身份对 (correlation, digest) 由调用方经
     /// `compiler::intent_journal_identity` 同点派生后整对传入——本函数
     /// 不再自行补算 digest（原对内两半分处两函数，漂移不可见）。
+    ///
+    /// R16-B（蓝图 75 WP-75.1.1）：本函数收缩为「身份预检 + 归一化」——
+    /// lookup / 幂等 / readback 有限差校验 / intent 身份三元组 / 条件转移
+    /// →Reconciling（表行表达不了条件转移，归一化是其职责）；终局四段
+    /// 写序（intent Committed → journal 终局确认 → 记账基线 →
+    /// 在途清账）经一次 `settle_command`
+    /// （SettleDispatch 编排点）走 `SettleTrigger::RecoveredApplied` 表行
+    /// 执行（结算写序单源回到决策表；失败传播、错误词形逐字保留）。
+    /// 守卫：`engine::tests::recovered_settle_write_order_lives_in_settle_table_only`
+    ///（守卫针描述用词形化指称——标识符字面会自咬，R14 教训）。
     pub(super) fn settle_saga_applied(
         &mut self,
         intent: &CommandIntent,
@@ -653,25 +664,26 @@ impl DispatchEngine {
                 )
                 .map_err(|e| alloc::format!("recovery journal: {e:?}"))?;
         }
-        self.intent_log
-            .update_state(&record.command_id, DispatchState::Committed)
-            .map_err(|e| alloc::format!("recovery persist: {e:?}"))?;
         // The Saga stores the readback evidence. Do not manufacture a transport
         // receipt digest: the lost ACK remains lost in the original record.
-        self.journal
-            .transition(
-                &correlation,
-                ExecutionStatus::Reconciling,
-                ExecutionStatus::AppliedConfirmed,
-                now,
-                None,
-            )
-            .map_err(|e| alloc::format!("recovery journal: {e:?}"))?;
-        self.last_confirmed.insert(
-            (u32::from(intent.device_id()), intent.point_id()),
-            (actual, now),
-        );
-        self.arbiter.clear_in_flight(u32::from(intent.device_id()));
+        // （表行 RecoveredApplied：无回执摘要、不重复记账——差异裁决见表行
+        // 注释。）ctx.started = 归一化时刻：journal 时间戳与记账基线
+        // 同源（与原手写路径的 `now` 一致）。
+        let ctx = ExecutionCtx {
+            started: now,
+            command_id: record.command_id,
+            correlation,
+            response: None,
+            energy: 0.0,
+            setpoint_kw: Some(actual),
+            target: (u32::from(intent.device_id()), intent.point_id()),
+        };
+        let mut states = Vec::new();
+        self.settle_command(SettleTrigger::RecoveredApplied, &mut states, &ctx)
+            .map_err(|e| match e {
+                DispatchError::IntentPersistFailed(s) => s,
+                other => alloc::format!("recovery: {other:?}"),
+            })?;
         Ok(())
     }
 }

@@ -1484,6 +1484,45 @@ fn durable_plan_readback_settles_unknown_journal_before_next_step() {
     );
 }
 
+/// R16-B 差异锁（蓝图 75 WP-75.1.1）：恢复对账终局（RecoveredApplied
+/// 表行，恢复路径经 settle_saga_applied → settle_command 收表）**有意**
+/// 不重复记账——committed_count 不变、gate 零 record。journal/intent
+/// 照常推进终局（对账事实落盘：pending 清空），但恢复路径绝不重放正常
+/// Applied 行的记账面（gate.record/committed_count/states.push）。本测
+/// 在现行为下即绿——它锁的是「有意差异」，防未来有人好心补记账。
+/// 变异咬合②：settle_command RecoveredApplied 分支偷加
+/// `committed_count += 1` 或 `gate.record` ⇒ 本测红。
+#[test]
+fn recovered_applied_settle_does_not_double_book() {
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let delivered = Rc::new(RefCell::new(0));
+    let mut engine = held_fixture_fault(media, delivered.clone(), true);
+    let (plan, input) = held_candidate();
+    engine
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
+        .unwrap();
+    assert_eq!(*delivered.borrow(), 1, "设备已写（ACK 丢失形态）");
+    // 同 tick 内恢复对账已把 unknown journal 结算到终局（独立回读匹配）。
+    assert!(
+        engine.pending_intents().is_empty(),
+        "恢复结算已把 journal/intent 推进终局"
+    );
+    // 差异锁本体：恢复结算**不重复记账**。
+    assert_eq!(
+        engine.committed_count(),
+        0,
+        "恢复不重复记账（有意差异，R16-B）"
+    );
+    assert_eq!(
+        engine.gate_used_kwh(),
+        0.0,
+        "恢复不触发 gate.record（有意差异，R16-B）"
+    );
+}
+
 /// ADR-0054:15–16：新鲜 Applied 必须携带**实际回读**证据（Saga 事件持久
 /// 化、HQR1 可查），且读回值 = 独立读回（设备漂移 +0.05），不是请求
 /// 设定值回显。变异靶：post_apply_readback 改为回填 intent.power_kw()

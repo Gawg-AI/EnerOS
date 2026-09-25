@@ -70,6 +70,11 @@ pub(crate) enum SettleTrigger {
     ReadbackMismatch,
     /// 对端执行失败。
     PeerFailed,
+    /// 恢复对账终局（蓝图 75 WP-75.1.1，R16-B）：held saga 恢复路径的
+    /// AppliedConfirmed 推进（ReadOnlyRecovery::applied_durable →
+    /// `settle_saga_applied` 身份预检后收表）。见 settle 表
+    /// RecoveredApplied 行注释（有意差异的裁决面）。
+    RecoveredApplied,
 }
 
 /// 单笔 durable 写（结算表行内元素）。
@@ -507,6 +512,35 @@ pub(crate) fn settle(trigger: &SettleTrigger, states: &[DispatchState]) -> Settl
                 },
             )
         }
+        // R16-B（蓝图 75 WP-75.1.1）：恢复对账终局表行——held saga 已持久
+        // 两份独立读回证据（ReadOnlyRecovery 路径），本行把 journal/intent
+        // 推进到终局。**有意差异在此裁决**（原手写路径无注释、无测试说明
+        // 是否有意）：
+        // - 无回执摘要（receipt=Committed 无 note）——丢失的 ACK 就保持
+        //   丢失，不制造 transport 摘要（原 :653-654 注释语义）；
+        // - audit = None，**不触发 gate.record / 不增 committed_count /
+        //   不推 states**（恢复不重复记账——正常 Applied 行的记账面不在
+        //   本行重放；差异锁测试 typed_chain
+        //   `recovered_applied_settle_does_not_double_book` 防回潮）。
+        // 条件转移 →Reconciling（journal 记录非 Reconciling 时先归一）是
+        // 表行表达不了的预检归一化，留在调用方
+        // `held_engine::settle_saga_applied`。
+        SettleTrigger::RecoveredApplied => (
+            // 写序与正常 Applied 同律：durable 终态 ack 先行，成功后才
+            // journal AppliedConfirmed（61 v0.314.24 写序不变量的表内
+            // 表达；与原手写序 :650-668 逐字一致）。
+            alloc::vec![
+                SettleOp::Intent {
+                    state: DispatchState::Committed,
+                },
+                SettleOp::Journal {
+                    from: ExecutionStatus::Reconciling,
+                    to: ExecutionStatus::AppliedConfirmed,
+                },
+            ],
+            None,
+            SettleReceipt::Committed,
+        ),
     };
     Settlement {
         durable,
@@ -1048,5 +1082,28 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn settle_table_recovered_applied() {
+        // R16-B（蓝图 75 WP-75.1.1）：恢复对账终局表行——写序同 Applied
+        // 两相（durable ack 先行）；audit=None、receipt 无摘要（有意差异
+        // 见表行注释：恢复不重复记账，丢失的 ACK 保持丢失）。
+        let s = settle(&SettleTrigger::RecoveredApplied, &ack_states());
+        assert_eq!(
+            s.durable,
+            alloc::vec![
+                intent_op(DispatchState::Committed),
+                journal_op(
+                    ExecutionStatus::Reconciling,
+                    ExecutionStatus::AppliedConfirmed
+                ),
+            ]
+        );
+        assert!(s.audit.is_none(), "恢复终局无 audit（差异显式化）");
+        assert!(
+            matches!(s.receipt, SettleReceipt::Committed),
+            "receipt=Committed 无摘要（调用方丢弃，纯内部携带）"
+        );
     }
 }

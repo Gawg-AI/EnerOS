@@ -366,7 +366,10 @@ pub struct DispatchEngine {
 }
 
 /// 结算编排面（`DispatchEngine` 内聚实现；host/target 同源）。
-trait SettleDispatch {
+/// R16-B（蓝图 75 WP-75.1.1）起 pub(crate)：held_engine 恢复对账终局
+/// 经 `settle_command`（RecoveredApplied 表行）走同一编排点——结算写序
+/// 唯一编排面的承诺由此闭合（crate 内可见，无外部面变化）。
+pub(crate) trait SettleDispatch {
     /// stage 推进单点：恰一笔 durable 写，失败返回 `{err:?}` 文案
     /// （与原各内联块 `{e:?}` 词形一致）。
     fn push_stage(
@@ -452,6 +455,45 @@ impl SettleDispatch for DispatchEngine {
         let command_id = ctx.command_id;
         let correlation = ctx.correlation;
         let settlement = settle(&trigger, states);
+        if matches!(trigger, SettleTrigger::RecoveredApplied) {
+            // R16-B（蓝图 75 WP-75.1.1）：恢复对账终局应用分支——按
+            // RecoveredApplied 表行 durable 序驱动（表行 = 写序权威，
+            // [Intent(Committed), Journal(Reconciling→AppliedConfirmed)]），
+            // 失败**传播**（恢复路径无 `let _` 容忍——写失败 = 对账未完成，
+            // 调用方上抛；错误词形与原恢复路径逐字一致）。
+            // **有意差异**（表行注释裁决，差异锁测试
+            // `recovered_applied_settle_does_not_double_book` 防回潮）：
+            // 不 gate.record、不增 committed_count、不推 states、无回执
+            // 摘要——恢复不重复记账。journal 时间戳与 last_confirmed 基线
+            // 同源（ctx.started = 调用方归一化时刻，与原手写路径一致）。
+            for op in &settlement.durable {
+                match op {
+                    SettleOp::Intent { state } => {
+                        self.intent_log
+                            .update_state(&command_id, *state)
+                            .map_err(|e| {
+                                DispatchError::IntentPersistFailed(alloc::format!(
+                                    "recovery persist: {e:?}"
+                                ))
+                            })?;
+                    }
+                    SettleOp::Journal { from, to } => {
+                        self.journal
+                            .transition(&correlation, *from, *to, started, None)
+                            .map_err(|e| {
+                                DispatchError::IntentPersistFailed(alloc::format!(
+                                    "recovery journal: {e:?}"
+                                ))
+                            })?;
+                    }
+                }
+            }
+            if let Some(v) = ctx.setpoint_kw {
+                self.last_confirmed.insert(ctx.target, (v, started));
+            }
+            self.arbiter.clear_in_flight(ctx.target.0);
+            return self.receipt_result(settlement.receipt, states, started, command_id, correlation);
+        }
         if matches!(trigger, SettleTrigger::Applied) {
             // 61 v0.314.24 写序（表内 durable 序 [Intent, Journal]）：
             // durable 终态 ack 先行（持久确认成功），成功后才 journal
@@ -2620,6 +2662,42 @@ mod tests {
         assert!(
             !held.contains("5_000") && !held.contains("5000"),
             "held_engine 手抄清算超时字面回归"
+        );
+    }
+
+    /// R16-B 源扫描守卫（蓝图 75 WP-75.1.1，防回潮）：恢复对账终局的
+    /// 写序已收进 settle 决策表（`RecoveredApplied` 行，经
+    /// `SettleDispatch::settle_command` 唯一编排点执行）——held_engine.rs
+    /// 内不得再出现 journal 终局直转 / intent 直写 / 记账基线插入 / 在途
+    /// 清账字面。针用**裸标识符**（抗 rustfmt 换行拆分——WP-75.1.1 变异③
+    /// 实锤：`last_confirmed.insert` 单行针被多行形式静默逃逸）且运行期
+    /// 拼接（防守卫自咬；对照先例：本文件上方 R13-B/R14-A 守卫与
+    /// dispatch_service.rs 源自扫描守卫）。
+    /// 变异咬合③：在 settle_saga_applied 回填任一直写 ⇒ 对应断言红。
+    #[test]
+    fn recovered_settle_write_order_lives_in_settle_table_only() {
+        let src = include_str!("held_engine.rs");
+        // journal Reconciling→终局确认的转移只允许存在于表；held_engine
+        // 仅保留幂等预检读点（恰 1 处——裸标识符计数，doc 已去字面）。
+        assert_eq!(
+            src.matches(concat!("Applied", "Confirmed")).count(),
+            1,
+            "终局确认只允许幂等预检读点（终局转移已收表）"
+        );
+        assert_eq!(
+            src.matches(concat!("update_", "state")).count(),
+            0,
+            "intent 直写已收表（经 settle_command 编排点）"
+        );
+        assert_eq!(
+            src.matches(concat!("last_", "confirmed")).count(),
+            0,
+            "记账基线插入已收表"
+        );
+        assert_eq!(
+            src.matches(concat!("clear_in_", "flight")).count(),
+            0,
+            "在途清账已收表"
         );
     }
 }
