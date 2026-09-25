@@ -51,6 +51,37 @@ impl HeldInputRetainer for NoRetention {
     }
 }
 
+/// R16-N（蓝图 75 WP-75.1.6）：held 计划时域预检（**纯判定**，自
+/// run_typed held 分叉下沉——原三重校验嵌在 349 行函数体中不可单测）。
+/// 判据与拒绝词形逐字保持：计划时域终点超遥测有效期 / 超证书有效期 /
+/// 任一意图有效期超遥测有效期 ⇒ `ProposalInvalid("held horizon exceeds
+/// trusted telemetry")`。既有行为锁：typed_chain
+/// `held_plan_horizon_beyond_control_window_rejected`。调用点位置不动
+/// （accept_held_plan 准入前）；不触 typed 链类型合同与 correlation
+/// 派生（ADR-0048）。
+pub(crate) fn held_horizon_violation(
+    plan: &CandidatePlan,
+    telemetry: &TrustedTelemetry,
+    certificate: &eneros_decision_contract::CertifiedPlan,
+    batches: &[CommandBatch],
+) -> Option<DispatchError> {
+    let horizon_end = plan.horizon_start_ms().saturating_add(
+        plan.step_ns().saturating_mul(u64::from(plan.step_count())) / 1_000_000,
+    );
+    if horizon_end > telemetry.valid_until_ms
+        || horizon_end > certificate.valid_until_ms()
+        || batches
+            .iter()
+            .flat_map(|b| b.intents())
+            .any(|i| i.valid_until_ms() > telemetry.valid_until_ms)
+    {
+        return Some(DispatchError::ProposalInvalid(String::from(
+            "held horizon exceeds trusted telemetry",
+        )));
+    }
+    None
+}
+
 impl DispatchEngine {
     /// Assembly supplies an already opened registered region. No RAM fallback
     /// is permitted for production multi-step plans.

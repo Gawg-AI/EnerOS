@@ -1124,8 +1124,10 @@ impl DispatchEngine {
     /// （μs 级），同样改体内派生。参数 8 → 6（删除
     /// `#[allow(clippy::too_many_arguments)]`）。
     #[allow(clippy::too_many_arguments)] // 蓝图 70.8 WP-70.8.4：新增可信
-                                         // 输入事实入参（认证准入前置判据）——参数成束重构留待 70.11 计划持有
-                                         // 模块落地时统一收拢（届时 trusted/energy/telemetry 归入单一请求结构）。
+                                         // 输入事实入参（认证准入前置判据）。参数成束重构现状（R16-N，
+                                         // 2026-09-25）：held 模块（ADR-0054）已落地，原「留待 70.11
+                                         // 落地时收拢」理由 stale；horizon 预检已下沉 held_engine
+                                         // 纯判定（WP-75.1.6）；成束重构继续挂起，锚点登记 REG-75-N。
     fn run_typed(
         &mut self,
         plan: &eneros_decision_contract::CandidatePlan,
@@ -1287,20 +1289,15 @@ impl DispatchEngine {
                 let input = trusted.ok_or_else(|| {
                     DispatchError::NotAuthorized(String::from("held plan requires trusted input"))
                 })?;
-                let horizon_end = plan.horizon_start_ms().saturating_add(
-                    plan.step_ns().saturating_mul(u64::from(plan.step_count())) / 1_000_000,
-                );
-                if horizon_end > telemetry.valid_until_ms
-                    || horizon_end > certificate.valid_until_ms()
-                    || outcome
-                        .batches
-                        .iter()
-                        .flat_map(|b| b.intents())
-                        .any(|i| i.valid_until_ms() > telemetry.valid_until_ms)
-                {
-                    return Err(DispatchError::ProposalInvalid(String::from(
-                        "held horizon exceeds trusted telemetry",
-                    )));
+                // R16-N（蓝图 75 WP-75.1.6）：时域预检下沉为 held_engine
+                // 纯判定（held_horizon_violation）——判据/词形逐字保持。
+                if let Some(err) = crate::held_engine::held_horizon_violation(
+                    plan,
+                    telemetry,
+                    &certificate,
+                    &outcome.batches,
+                ) {
+                    return Err(err);
                 }
                 return self.accept_held_plan(
                     plan,
