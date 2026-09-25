@@ -1058,6 +1058,7 @@ dependencies = [
  "eneros-protocol-abstract",
  "eneros-safety-validator",
  "eneros-solver-core",
+ "eneros-upa-model",
  "serde",
  "serde_json",
 ]
