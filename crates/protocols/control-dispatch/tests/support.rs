@@ -214,8 +214,8 @@ use eneros_safety_validator::{
 /// ~70 行 evaluator 构造逐字同构）。
 ///
 /// `units` = 六必需点的单位集：各套件的域覆盖差异**显式传参**，禁止
-/// 「顺手统一」（settlement_lock 点 5/6 = `Other`——走
-/// RequiredPointCoverage 的其他校验路径，行为差异是有意的）。
+/// 「顺手统一」（点 5/6 = `Other` 走 RequiredPointCoverage 的其他校验
+/// 路径——七套件中六套如此，typed_chain 为全 `Ratio` 的少数派）。
 /// 时钟差异同理显式化：六套件 now_ms 为常量，setpoint_ramp_contract
 /// 为可变 CLOCK——经 [`trusted_telemetry_with_clock`] 现取传入。
 #[allow(dead_code)] // 跨二进制共享模块：setpoint 套件专用（其余套件常量时钟）
@@ -312,7 +312,11 @@ pub fn trusted_telemetry_with(units: &[PointUnit; 6]) -> eneros_safety_validator
     trusted_telemetry_with_clock(units, fixture_now_ms())
 }
 
-/// 默认形态（六点全 Ratio）——七套件中六套的现行域覆盖。
+/// 默认形态（点 4=Ratio、5/6=Other）——七套件中六套的现行域覆盖
+///（code-review 复核订正：R0 旧版实为六套 Other/Other、仅 typed_chain
+/// 全 Ratio；首版收编曾把方向做反成「六套全 Ratio」，恰犯卷册所禁的
+/// 顺手统一——unit 字段为评估器纯元数据故断言未翻，但夹具逐字节
+/// 保真与登记面必须归位）。
 #[allow(dead_code)] // 跨二进制共享模块：六套件默认形态（support_defaults 等未用套件按未用处理）
 pub fn trusted_telemetry() -> eneros_safety_validator::TrustedTelemetry {
     trusted_telemetry_with(&[
@@ -320,8 +324,8 @@ pub fn trusted_telemetry() -> eneros_safety_validator::TrustedTelemetry {
         PointUnit::Ampere,
         PointUnit::Hertz,
         PointUnit::Ratio,
-        PointUnit::Ratio,
-        PointUnit::Ratio,
+        PointUnit::Other,
+        PointUnit::Other,
     ])
 }
 

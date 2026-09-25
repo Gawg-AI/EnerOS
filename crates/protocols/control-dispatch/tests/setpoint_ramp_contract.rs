@@ -17,8 +17,8 @@ fn trusted_telemetry() -> eneros_safety_validator::TrustedTelemetry {
             eneros_safety_validator::PointUnit::Ampere,
             eneros_safety_validator::PointUnit::Hertz,
             eneros_safety_validator::PointUnit::Ratio,
-            eneros_safety_validator::PointUnit::Ratio,
-            eneros_safety_validator::PointUnit::Ratio,
+            eneros_safety_validator::PointUnit::Other,
+            eneros_safety_validator::PointUnit::Other,
         ],
         now_ms(),
     )

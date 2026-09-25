@@ -35,7 +35,18 @@ use eneros_dual_brain::audit::DecisionAudit;
 use eneros_dual_brain::DecisionPath;
 use eneros_telemetry_model::point_spec::PointSpec;
 use eneros_telemetry_model::PhysicalUnit;
-use support::trusted_telemetry;
+/// R16-O：全 Ratio 是本套件的少数派现行形态（七套件中唯一）——显式
+/// 包装保留，不吃 support 默认（code-review 复核订正）。
+fn trusted_telemetry() -> eneros_safety_validator::TrustedTelemetry {
+    support::trusted_telemetry_with(&[
+        eneros_safety_validator::PointUnit::Volt,
+        eneros_safety_validator::PointUnit::Ampere,
+        eneros_safety_validator::PointUnit::Hertz,
+        eneros_safety_validator::PointUnit::Ratio,
+        eneros_safety_validator::PointUnit::Ratio,
+        eneros_safety_validator::PointUnit::Ratio,
+    ])
+}
 
 const KEY: &[u8] = b"typed-chain-test-key-0123456789ab";
 const LEASE_ID: [u8; 16] = [0x11; 16];
