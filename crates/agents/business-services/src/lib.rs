@@ -68,3 +68,56 @@ pub use eneros_drv_svc::allocator::HeapAllocator;
 pub use eneros_drv_svc::instance_epoch;
 /// 单调毫秒。
 pub use eneros_drv_svc::now_ms;
+
+/// WP-75.2.3（R16-D）：business-services bin 族 panic handler 单源宏——
+/// 声化（println 死因）+ 自旋。词形 `[<svc>] PANIC: {info}` 与 svc-ota
+/// 先例（REG-70.7 排查：静默 spin 掩盖死因整排障周期）逐字一致；host
+/// 测试构建展开为零（cfg 门）。八 bin 逐一 `svc_panic!("svc-x");` 收编，
+/// 静默 handler 回流由 `bins_panic_handler_vocalized_single_source` 守卫。
+#[macro_export]
+macro_rules! svc_panic {
+    ($name:expr) => {
+        #[cfg(target_os = "none")]
+        #[panic_handler]
+        fn panic(info: &core::panic::PanicInfo) -> ! {
+            eneros_runtime::println!("[{}] PANIC: {}", $name, info);
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    };
+}
+
+#[cfg(test)]
+mod panic_guard_tests {
+    /// WP-75.2.3 守卫（红测先行）：八 bin panic 声化单源——
+    /// ① 每个 bin 须以 `svc_panic!("<自身名>")` 收编 handler；
+    /// ② 自有 `#[panic_handler]` 定义零残留（单源宏内）。
+    /// 现状（七 bin 静默）下红；宏收编后绿；任一 bin 改回静默即红。
+    #[test]
+    fn bins_panic_handler_vocalized_single_source() {
+        const BINS: &[(&str, &str)] = &[
+            ("svc-market", include_str!("bin/svc-market.rs")),
+            ("svc-ledger", include_str!("bin/svc-ledger.rs")),
+            ("svc-agent-bus", include_str!("bin/svc-agent-bus.rs")),
+            ("svc-cloud-sync", include_str!("bin/svc-cloud-sync.rs")),
+            ("svc-config", include_str!("bin/svc-config.rs")),
+            ("svc-mgmt", include_str!("bin/svc-mgmt.rs")),
+            ("svc-observability", include_str!("bin/svc-observability.rs")),
+            ("svc-ota", include_str!("bin/svc-ota.rs")),
+        ];
+        let macro_open = concat!("svc_panic", "!(\"");
+        let handler_attr = concat!("#", "[panic_handler]");
+        for (name, src) in BINS {
+            let want = format!("{macro_open}{name}\")");
+            assert!(
+                src.contains(&want),
+                "{name} 未以 svc_panic!(\"{name}\") 收编 panic handler"
+            );
+            assert!(
+                !src.contains(handler_attr),
+                "{name} 残留自有 panic handler（WP-75.2.3 已单源入宏）"
+            );
+        }
+    }
+}

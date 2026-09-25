@@ -11,8 +11,6 @@
 #![cfg_attr(target_os = "none", no_main)]
 #![allow(clippy::empty_loop)]
 
-#[cfg(target_os = "none")]
-use core::panic::PanicInfo;
 
 #[cfg(target_os = "none")]
 extern crate alloc;
@@ -242,13 +240,7 @@ impl eneros_control_services::ControlServiceHandler for MarketHandler {
     }
 }
 
-#[cfg(target_os = "none")]
-#[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    loop {
-        core::hint::spin_loop();
-    }
-}
+eneros_business_services::svc_panic!("svc-market");
 
 #[cfg(all(not(test), not(target_os = "none")))]
 fn main() {}

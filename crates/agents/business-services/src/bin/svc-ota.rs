@@ -23,8 +23,6 @@
 #![cfg_attr(target_os = "none", no_main)]
 #![allow(clippy::empty_loop)]
 
-#[cfg(target_os = "none")]
-use core::panic::PanicInfo;
 
 #[cfg(target_os = "none")]
 extern crate alloc;
@@ -785,15 +783,7 @@ fn handle_boot_install(
     }
 }
 
-#[cfg(target_os = "none")]
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    // REG-70.7 排查：静默黑洞有声化（E 卷教训——无声 spin 掩盖死因）。
-    eneros_runtime::println!("[svc-ota] PANIC: {}", info);
-    loop {
-        core::hint::spin_loop();
-    }
-}
+eneros_business_services::svc_panic!("svc-ota");
 
 #[cfg(all(not(test), not(target_os = "none")))]
 fn main() {}

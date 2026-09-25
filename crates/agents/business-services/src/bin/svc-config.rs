@@ -14,8 +14,6 @@
 #![cfg_attr(target_os = "none", no_main)]
 #![allow(clippy::empty_loop)]
 
-#[cfg(target_os = "none")]
-use core::panic::PanicInfo;
 
 #[cfg(target_os = "none")]
 extern crate alloc;
@@ -341,13 +339,7 @@ impl eneros_control_services::ControlServiceHandler for ConfigHandler {
     }
 }
 
-#[cfg(target_os = "none")]
-#[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    loop {
-        core::hint::spin_loop();
-    }
-}
+eneros_business_services::svc_panic!("svc-config");
 
 /// host 构建 no-op 入口（与 svc-drv-* 同模式）。
 #[cfg(all(not(test), not(target_os = "none")))]
