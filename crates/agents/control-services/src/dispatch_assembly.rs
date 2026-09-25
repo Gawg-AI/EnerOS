@@ -245,10 +245,11 @@ impl crate::ControlServiceHandler for DispatchHandler {
         let Some(engine) = self.engine.as_mut() else {
             return handle_unloaded(req, resp, &mut self.intent_requests);
         };
+        // WP-75.2.7（R16-H）：opcode 单表分派下沉 service
+        // （handle_request）——assembly 只剩 INTENT 特化（计数 + 遥测
+        // 快照 + 审计观测）与其余全量直通；unknown 语义由单表表达
+        // （拒绝词形保现行）。
         match req.first() {
-            Some(&DISP_SUBMIT) => {
-                *resp = crate::dispatch_service::handle_submit(engine, req);
-            }
             Some(&DISP_SUBMIT_INTENT) => {
                 // 47（WP-47.1 协议入站写）：意图授权前取受信任遥测快照；
                 // 不可得 → 服务侧 fail-closed 拒绝（不猜成功）。
@@ -262,7 +263,7 @@ impl crate::ControlServiceHandler for DispatchHandler {
                         "[svc-control-dispatch] INTENT request: telemetry snapshot unavailable —— fail-closed"
                     );
                 }
-                *resp = crate::dispatch_service::handle_submit_intent(engine, req, tel.as_ref());
+                *resp = crate::dispatch_service::handle_request(engine, req, tel.as_ref());
                 // 47（Exit 补证）：审计入链可观测——append/drop 计数随
                 // 每个控制事件刷新（appended>0 才有入链证据，dropped>0
                 // 即证据缺口）。63 WP-63.1.2：只读 getter。
@@ -273,7 +274,7 @@ impl crate::ControlServiceHandler for DispatchHandler {
                 );
             }
             _ => {
-                *resp = crate::dispatch_service::handle_submit(engine, req);
+                *resp = crate::dispatch_service::handle_request(engine, req, None);
             }
         }
         true

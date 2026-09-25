@@ -92,70 +92,93 @@ pub fn decode_receipt(buf: &[u8]) -> Option<(u8, DispatchState, u64, u64, String
     Some((status, state, committed, latency, note))
 }
 
+/// 服务逻辑：opcode 单表分派（WP-75.2.7/R16-H）——SUBMIT / TRUSTED /
+/// HELD_TICK / HELD_QUERY / INTENT / unknown 六臂 + 空请求臂收拢于此。
+/// 「unknown opcode 走 not-submit 拒绝」惯例原只有 assembly 知道（`_`
+/// 兜底臂落 handle_submit 内层双 owner），现单点化为 service 单表；
+/// INTENT 臂遥测由调用方提供（assembly 取快照；不可得 = None → 臂内
+/// fail-closed 拒绝，词形保现行）。拒绝词形逐字保形。
+pub fn handle_request(
+    engine: &mut dyn ControlDispatch,
+    req: &[u8],
+    telemetry: Option<&eneros_safety_validator::TrustedTelemetry>,
+) -> Vec<u8> {
+    match req.first() {
+        Some(&DISP_SUBMIT) => submit_typed_arm(engine, req),
+        Some(&DISP_SUBMIT_INTENT) => handle_submit_intent(engine, req, telemetry),
+        Some(&DISP_SUBMIT_TRUSTED) => handle_submit_trusted(engine, &req[1..]),
+        Some(&DISP_HELD_TICK) => held_tick_arm(engine, req),
+        Some(&DISP_HELD_QUERY) => held_query_arm(engine, req),
+        Some(_) => err_receipt("unknown opcode"),
+        None => err_receipt("empty request"),
+    }
+}
+
 /// 服务逻辑：请求（proposal wire + telemetry wire + actor）→ 回执。
+/// （WP-75.2.7 起为 [`handle_request`] 的无遥测 shim——既有调用点与
+/// 测试零改动；HELD/TRUSTED/unknown 臂语义由单表表达。）
 pub fn handle_submit(engine: &mut dyn ControlDispatch, req: &[u8]) -> Vec<u8> {
-    let Some(&code) = req.first() else {
-        return err_receipt("empty request");
+    handle_request(engine, req, None)
+}
+
+/// HELD_TICK 臂（WP-75.2.7 自 handle_submit 抽出——语义逐行保形）。
+fn held_tick_arm(engine: &mut dyn ControlDispatch, req: &[u8]) -> Vec<u8> {
+    let input = if req.len() == 1 {
+        None
+    } else {
+        let Some(input) = eneros_agent_sdk::snap_input_wire::TrustedInput::decode(&req[1..])
+        else {
+            return err_receipt("bad held tick input");
+        };
+        Some(input)
     };
-    if code == DISP_HELD_TICK {
-        let input = if req.len() == 1 {
-            None
-        } else {
-            let Some(input) = eneros_agent_sdk::snap_input_wire::TrustedInput::decode(&req[1..])
-            else {
-                return err_receipt("bad held tick input");
-            };
-            Some(input)
-        };
-        let telemetry = input
-            .as_ref()
-            .and_then(|input| decode_trusted(input.telemetry()));
-        if input.is_some() && telemetry.is_none() {
-            return err_receipt("bad held tick telemetry");
-        }
-        return match engine.tick_held(input.as_ref(), telemetry.as_ref()) {
-            Ok(active) => alloc::vec![DISP_OK, active.min(u8::MAX as usize) as u8],
-            Err(error) => err_receipt(&format!("{error:?}")),
-        };
+    let telemetry = input
+        .as_ref()
+        .and_then(|input| decode_trusted(input.telemetry()));
+    if input.is_some() && telemetry.is_none() {
+        return err_receipt("bad held tick telemetry");
     }
-    if code == DISP_HELD_QUERY {
-        if req.len() != 2 {
-            return err_receipt("bad held query");
-        }
-        return match engine.query_held() {
-            Ok(reports) => match reports.get(req[1] as usize) {
-                Some(report) => {
-                    let mut out = alloc::vec![DISP_OK];
-                    out.extend_from_slice(b"HQR1");
-                    out.extend_from_slice(&report.batch_id);
-                    out.push(report.final_state as u8);
-                    out.extend_from_slice(&report.events.to_le_bytes());
-                    out.push(report.commands.len() as u8);
-                    for command in &report.commands {
-                        out.extend_from_slice(&command.intent_id);
-                        out.push(command.state as u8);
-                        out.extend_from_slice(&command.attempts.to_le_bytes());
-                        out.push(u8::from(command.readback.is_some()));
-                        out.extend_from_slice(&command.readback.unwrap_or(0.0).to_le_bytes());
-                        let reason = command.reason.as_deref().unwrap_or("").as_bytes();
-                        let len = reason.len().min(128);
-                        out.push(len as u8);
-                        out.extend_from_slice(&reason[..len]);
-                    }
-                    out
+    match engine.tick_held(input.as_ref(), telemetry.as_ref()) {
+        Ok(active) => alloc::vec![DISP_OK, active.min(u8::MAX as usize) as u8],
+        Err(error) => err_receipt(&format!("{error:?}")),
+    }
+}
+
+/// HELD_QUERY 臂（WP-75.2.7 自 handle_submit 抽出——语义逐行保形）。
+fn held_query_arm(engine: &mut dyn ControlDispatch, req: &[u8]) -> Vec<u8> {
+    if req.len() != 2 {
+        return err_receipt("bad held query");
+    }
+    match engine.query_held() {
+        Ok(reports) => match reports.get(req[1] as usize) {
+            Some(report) => {
+                let mut out = alloc::vec![DISP_OK];
+                out.extend_from_slice(b"HQR1");
+                out.extend_from_slice(&report.batch_id);
+                out.push(report.final_state as u8);
+                out.extend_from_slice(&report.events.to_le_bytes());
+                out.push(report.commands.len() as u8);
+                for command in &report.commands {
+                    out.extend_from_slice(&command.intent_id);
+                    out.push(command.state as u8);
+                    out.extend_from_slice(&command.attempts.to_le_bytes());
+                    out.push(u8::from(command.readback.is_some()));
+                    out.extend_from_slice(&command.readback.unwrap_or(0.0).to_le_bytes());
+                    let reason = command.reason.as_deref().unwrap_or("").as_bytes();
+                    let len = reason.len().min(128);
+                    out.push(len as u8);
+                    out.extend_from_slice(&reason[..len]);
                 }
-                None => err_receipt("held batch not found"),
-            },
-            Err(error) => err_receipt(&format!("{error:?}")),
-        };
+                out
+            }
+            None => err_receipt("held batch not found"),
+        },
+        Err(error) => err_receipt(&format!("{error:?}")),
     }
-    // 蓝图 70.8 WP-70.8.4：可信输入形态（生产入口）。
-    if code == DISP_SUBMIT_TRUSTED {
-        return handle_submit_trusted(engine, &req[1..]);
-    }
-    if code != DISP_SUBMIT {
-        return err_receipt("unknown opcode");
-    }
+}
+
+/// SUBMIT typed 臂（WP-75.2.7 自 handle_submit 抽出——语义逐行保形）。
+fn submit_typed_arm(engine: &mut dyn ControlDispatch, req: &[u8]) -> Vec<u8> {
     let body = &req[1..];
     // 蓝图 69.4 v0.329.0：单读——唯一入口 = CandidatePlan V1（`CAND`
     // magic；decision-contract 单源）→ `submit_typed`。旧 70B proposal
@@ -990,6 +1013,50 @@ mod tests {
             offenders.is_empty(),
             "EA 构帧匿名 actor 字面复现（WP-75.2.0 已收编 ActorKind 单源）：{offenders:?}"
         );
+    }
+
+    /// WP-75.2.7（R16-H）路由全臂：单表入口 `handle_request` 收拢
+    /// SUBMIT / TRUSTED / HELD_TICK / HELD_QUERY / INTENT / unknown 六臂
+    /// ——unknown 经 `Some(_)` 得现行 not-submit 拒绝词形，INTENT 无
+    /// 遥测 fail-closed（词形保现行）。
+    #[test]
+    fn handle_request_routes_all_arms() {
+        let mut engine = engine();
+        // SUBMIT 臂（空 body → short request 拒绝词形——臂可达可观测）。
+        let resp = handle_request(&mut engine, &[DISP_SUBMIT], None);
+        assert!(decode_receipt(&resp).expect("receipt").4.contains("short request"));
+        // TRUSTED 臂（空 body → short trusted request）。
+        let resp = handle_request(&mut engine, &[DISP_SUBMIT_TRUSTED], None);
+        assert!(decode_receipt(&resp).expect("receipt").4.contains("short trusted request"));
+        // HELD_TICK 臂（无输入 tick → Ok + 在场计数）。
+        let resp = handle_request(&mut engine, &[DISP_HELD_TICK], None);
+        assert_eq!(resp[0], DISP_OK);
+        // HELD_QUERY 臂（空引擎 → held batch not found 词形）。
+        let resp = handle_request(&mut engine, &[DISP_HELD_QUERY, 0], None);
+        assert!(decode_receipt(&resp).expect("receipt").4.contains("held batch not found"));
+        // INTENT 臂无遥测 → fail-closed（词形保现行）。
+        // encode_intent_request 帧已含 opcode + actor 字节（帧壳单源）。
+        let req = eneros_protocol_abstract::write::encode_intent_request(
+            &eneros_protocol_abstract::write::PointWriteIntent::new(
+                "mqtt",
+                1,
+                10,
+                eneros_upa_model::PointValue::Float(5.0),
+                1,
+                1_700_000_000_000,
+            ),
+        );
+        let resp = handle_request(&mut engine, &req, None);
+        assert!(decode_receipt(&resp)
+            .expect("receipt")
+            .4
+            .contains("no trusted telemetry"));
+        // unknown opcode → not-submit 拒绝词形（单表 `Some(_)` 臂）。
+        let resp = handle_request(&mut engine, &[99], None);
+        assert!(decode_receipt(&resp).expect("receipt").4.contains("unknown opcode"));
+        // 空请求 → empty request 词形（None 臂保形）。
+        let resp = handle_request(&mut engine, &[], None);
+        assert!(decode_receipt(&resp).expect("receipt").4.contains("empty request"));
     }
 
     #[test]
