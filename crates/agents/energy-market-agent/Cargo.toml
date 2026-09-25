@@ -46,3 +46,6 @@ eneros-llm-engine = { path = "../../ai/llm-engine", features = ["mock"] }
 # 21-B A2：真后端端到端测试（HighsSolver 经 new_real 装配）——测试构建
 # 与 mock feature 共存（solver-core 的 release 熔断仅作用于非 debug）。
 eneros-solver-core = { path = "../../ai/solver-core", features = ["highs-ffi"] }
+
+# WP-75.2.4：记录面真化测试构造 PointWriteIntent（值域类型单源）。
+eneros-upa-model = { path = "../../protocols/upa-model" }

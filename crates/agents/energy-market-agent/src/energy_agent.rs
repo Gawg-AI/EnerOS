@@ -35,6 +35,12 @@ use eneros_solver_core::solver::Solver;
 
 use crate::market::MarketChannel;
 
+/// 迁移轨资源目录合同版本（WP-75.2.4：`proposal_to_candidate_unbound`
+/// 实参的裸 `1` 具名化——与 `configs/catalog.toml` 的 `contract_version`
+/// 由锁测 `catalog_contract_version_locked` 恒等锁定；toml 升版而常量
+/// 未动即红，防市场候选带陈旧版本被引擎 admit 面 fail-closed 拒绝）。
+pub const MIGRATION_CATALOG_VERSION: u64 = 1;
+
 /// 受信任遥测提供者（蓝图 40 WP-40.2 的消费者 seam——svc-telemetry 实现；
 /// 输出只能是 `TrustedTelemetry` 或结构化拒绝）。
 pub trait TrustedTelemetryProvider {
@@ -270,15 +276,18 @@ impl<S: Solver> AgentRuntime for EnergyAgent<S> {
                 self.tick_count += 1;
                 // 4. 提交给唯一 ControlDispatch（WP-40.6；2026-09-24 C2
                 // 收口：迁移轨经 unbound adapter 构造 typed 候选——绑定由
-                // 引擎编译期解析，目录版本 1 与测试夹具同源；构造失败按
-                // 前置失败记账（零投递））。
+                // 引擎编译期解析，目录版本与 configs/catalog.toml 锁测同源
+                // （MIGRATION_CATALOG_VERSION）；构造失败按前置失败记账
+                // （零投递））。
                 let actor = AuthenticatedActor {
                     kind: ActorKind::Ai,
                     service: [0u8; 16],
                     session_epoch: 0,
                 };
-                let submission =
-                    eneros_control_dispatch::adapter::proposal_to_candidate_unbound(&plan, 1)
+                let submission = eneros_control_dispatch::adapter::proposal_to_candidate_unbound(
+                    &plan,
+                    MIGRATION_CATALOG_VERSION,
+                )
                         .and_then(|cand| {
                             // R14-A：投递标签/超时已退役为引擎内部自派生
                             // （原实参 plan.target_device/0 仅被测试 double
@@ -818,5 +827,30 @@ mod w26_twin_feedforward_tests {
         assert_eq!(agent.twin_confidence, 0.9);
         agent.on_start(1_000).expect("start");
         agent.on_tick(2_000).expect("tick");
+    }
+
+    /// WP-75.2.4 防漂移锁：`MIGRATION_CATALOG_VERSION` 与
+    /// `configs/catalog.toml` 的 `contract_version` 恒等。今日恰好相等
+    /// ——锁的是未来漂移（toml 升版而常量未动 → 红：资源目录版本漂移
+    /// 会使市场候选带陈旧版本被引擎 admit 面 fail-closed 拒绝）。
+    #[test]
+    fn catalog_contract_version_locked() {
+        let toml = include_str!("../../../../configs/catalog.toml");
+        let line = toml
+            .lines()
+            .find(|l| l.trim_start().starts_with("contract_version"))
+            .expect("catalog.toml 含 contract_version");
+        let v: u64 = line
+            .split('=')
+            .nth(1)
+            .expect("contract_version = <u64>")
+            .trim()
+            .parse()
+            .expect("contract_version 是 u64");
+        assert_eq!(
+            v,
+            MIGRATION_CATALOG_VERSION,
+            "catalog.toml contract_version 与 MIGRATION_CATALOG_VERSION 漂移（同步升级两者）"
+        );
     }
 }
