@@ -15,10 +15,18 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
+use eneros_jsonl_wire::{hstr, JsonlError, Scan};
 use heapless::String as HString;
 
 use crate::log_filter::LogFilter;
 use crate::logging::{LogEntry, LogError, LogLevel, LogStorage};
+
+/// JSONL 骨架错误 → 本 crate 错误词形（变体名冻结：WP-74.3.3 映射表）.
+impl From<JsonlError> for LogError {
+    fn from(_: JsonlError) -> Self {
+        Self::SerializeFailed
+    }
+}
 
 /// 追加型 JSONL 日志存储：每条 JSON 一行，进程重启不丢（33 OB-07）.
 pub struct FileStorage {
@@ -86,22 +94,6 @@ impl LogStorage for FileStorage {
 
 // ===== JSONL 反序列化（识别本 crate to_json 的固定结构） =====
 
-/// 将超长 `&str` 截断转换为定容 HString（与 logging.rs 内 hstr 同语义）.
-fn hstr<const N: usize>(s: &str) -> HString<N> {
-    match HString::try_from(s) {
-        Ok(h) => h,
-        Err(_) => {
-            let mut h = HString::new();
-            for ch in s.chars() {
-                if h.push(ch).is_err() {
-                    break;
-                }
-            }
-            h
-        }
-    }
-}
-
 fn parse_level(s: &str) -> Result<LogLevel, LogError> {
     match s {
         "DEBUG" => Ok(LogLevel::Debug),
@@ -113,166 +105,41 @@ fn parse_level(s: &str) -> Result<LogLevel, LogError> {
     }
 }
 
-/// 单遍 JSON 扫描器（UTF-8 安全；字符串值处理 `\"` `\\` `\u00XX` 转义）.
-struct Scan<'a> {
-    s: &'a str,
-    i: usize,
+/// 读取非负整数（骨架 read_number_text 原文 + u64 解析——领域数值形状
+/// 留本 crate，WP-74.3.3）.
+fn read_number(sc: &mut Scan) -> Result<u64, LogError> {
+    let text = sc.read_number_text()?;
+    text.parse().map_err(|_| LogError::SerializeFailed)
 }
 
-impl<'a> Scan<'a> {
-    fn skip_ws(&mut self) {
-        while let Some(ch) = self.s[self.i..].chars().next() {
-            if ch.is_whitespace() {
-                self.i += ch.len_utf8();
-            } else {
-                break;
-            }
+/// 读取 fields 子对象（"k":"v" 键值对）.
+fn read_fields(sc: &mut Scan) -> Result<heapless::Vec<(HString<32>, HString<128>), 8>, LogError> {
+    sc.expect('{')?;
+    let mut fields = heapless::Vec::new();
+    loop {
+        sc.skip_ws();
+        if sc.peek() == Some('}') {
+            break;
         }
-    }
-
-    fn peek(&self) -> Option<char> {
-        self.s[self.i..].chars().next()
-    }
-
-    fn bump(&mut self) -> Option<char> {
-        let ch = self.peek()?;
-        self.i += ch.len_utf8();
-        Some(ch)
-    }
-
-    fn expect(&mut self, c: char) -> Result<(), LogError> {
-        self.skip_ws();
-        if self.peek() == Some(c) {
-            self.i += c.len_utf8();
-            Ok(())
-        } else {
-            Err(LogError::SerializeFailed)
+        let k = sc.read_string()?;
+        sc.expect(':')?;
+        let v = sc.read_string()?;
+        let _ = fields.push((hstr::<32>(&k), hstr::<128>(&v)));
+        sc.skip_ws();
+        if sc.peek() == Some('}') {
+            break;
         }
+        sc.expect(',')?;
     }
-
-    /// 读取 JSON 字符串值（支持 `\"` `\\` `\u00XX` 转义；UTF-8 原样）.
-    fn read_string(&mut self) -> Result<String, LogError> {
-        self.expect('"')?;
-        let mut out = String::new();
-        loop {
-            let ch = self.bump().ok_or(LogError::SerializeFailed)?;
-            match ch {
-                '"' => return Ok(out),
-                '\\' => {
-                    let esc = self.bump().ok_or(LogError::SerializeFailed)?;
-                    match esc {
-                        '"' => out.push('"'),
-                        '\\' => out.push('\\'),
-                        'u' => {
-                            let mut code = 0u32;
-                            for _ in 0..4 {
-                                let d = self.bump().ok_or(LogError::SerializeFailed)?;
-                                code =
-                                    code * 16 + d.to_digit(16).ok_or(LogError::SerializeFailed)?;
-                            }
-                            out.push(char::from_u32(code).ok_or(LogError::SerializeFailed)?);
-                        }
-                        _ => return Err(LogError::SerializeFailed),
-                    }
-                }
-                c => out.push(c),
-            }
-        }
-    }
-
-    /// 读取非负整数.
-    fn read_number(&mut self) -> Result<u64, LogError> {
-        self.skip_ws();
-        let start = self.i;
-        while let Some(c) = self.peek() {
-            if c.is_ascii_digit() {
-                self.i += c.len_utf8();
-            } else {
-                break;
-            }
-        }
-        if self.i == start {
-            return Err(LogError::SerializeFailed);
-        }
-        self.s[start..self.i]
-            .parse()
-            .map_err(|_| LogError::SerializeFailed)
-    }
-
-    /// 读取 fields 子对象（"k":"v" 键值对）.
-    fn read_fields(&mut self) -> Result<heapless::Vec<(HString<32>, HString<128>), 8>, LogError> {
-        self.expect('{')?;
-        let mut fields = heapless::Vec::new();
-        loop {
-            self.skip_ws();
-            if self.peek() == Some('}') {
-                break;
-            }
-            let k = self.read_string()?;
-            self.expect(':')?;
-            let v = self.read_string()?;
-            let _ = fields.push((hstr::<32>(&k), hstr::<128>(&v)));
-            self.skip_ws();
-            if self.peek() == Some('}') {
-                break;
-            }
-            self.expect(',')?;
-        }
-        // 消费子对象收尾 '}'（否则外层解析会把 fields 的 '}' 误判为
-        // 整个对象的结束，后续 trace_id/span_id/agent_id 全丢）。
-        self.expect('}')?;
-        Ok(fields)
-    }
-
-    /// 跳过未知键的值（字符串/对象/数字）.
-    fn skip_value(&mut self) -> Result<(), LogError> {
-        self.skip_ws();
-        match self.peek() {
-            Some('"') => {
-                self.read_string()?;
-                Ok(())
-            }
-            Some('{') => {
-                let mut depth = 0usize;
-                loop {
-                    let ch = self.bump().ok_or(LogError::SerializeFailed)?;
-                    match ch {
-                        '{' => depth += 1,
-                        '}' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                break;
-                            }
-                        }
-                        '"' => loop {
-                            let c2 = self.bump().ok_or(LogError::SerializeFailed)?;
-                            if c2 == '\\' {
-                                let _ = self.bump().ok_or(LogError::SerializeFailed)?;
-                            } else if c2 == '"' {
-                                break;
-                            }
-                        },
-                        _ => {}
-                    }
-                }
-                Ok(())
-            }
-            _ => {
-                while let Some(c) = self.peek() {
-                    if c == ',' || c == '}' {
-                        break;
-                    }
-                    self.i += c.len_utf8();
-                }
-                Ok(())
-            }
-        }
-    }
+    // 消费子对象收尾 '}'（否则外层解析会把 fields 的 '}' 误判为
+    // 整个对象的结束，后续 trace_id/span_id/agent_id 全丢）。
+    sc.expect('}')?;
+    Ok(fields)
 }
 
 /// 将 to_json 生成的一行 JSON 反序列化为 `LogEntry`.
 fn parse_log_json(line: &str) -> Result<LogEntry, LogError> {
-    let mut sc = Scan { s: line, i: 0 };
+    let mut sc = Scan::new(line);
     let mut entry = LogEntry {
         timestamp_ms: 0,
         level: LogLevel::Info,
@@ -293,17 +160,17 @@ fn parse_log_json(line: &str) -> Result<LogEntry, LogError> {
         sc.expect(':')?;
         sc.skip_ws();
         match key.as_str() {
-            "ts" => entry.timestamp_ms = sc.read_number()?,
+            "ts" => entry.timestamp_ms = read_number(&mut sc)?,
             "level" => {
                 let lv = sc.read_string()?;
                 entry.level = parse_level(&lv)?;
             }
             "target" => entry.target = hstr::<64>(&sc.read_string()?),
             "msg" => entry.message = hstr::<256>(&sc.read_string()?),
-            "fields" => entry.fields = sc.read_fields()?,
-            "trace_id" => entry.trace_id = sc.read_number()?,
-            "span_id" => entry.span_id = sc.read_number()?,
-            "agent_id" => entry.agent_id = sc.read_number()? as u32,
+            "fields" => entry.fields = read_fields(&mut sc)?,
+            "trace_id" => entry.trace_id = read_number(&mut sc)?,
+            "span_id" => entry.span_id = read_number(&mut sc)?,
+            "agent_id" => entry.agent_id = read_number(&mut sc)? as u32,
             _ => sc.skip_value()?,
         }
         sc.skip_ws();
@@ -385,16 +252,24 @@ mod tests {
         let mut logger = StructuredLoggerImpl::new(LogLevel::Debug);
         logger
             .log(
-                LogBuilder::new(LogLevel::Warn, "modbus.tcp", "含\"引号\"与\\反斜杠", 42)
-                    .field("desc", "值\"含引号\"")
-                    .build(),
+                LogBuilder::new(
+                    LogLevel::Warn,
+                    "modbus.tcp",
+                    "含\"引号\"与\\反斜杠及\u{01}控制符",
+                    42,
+                )
+                .field("desc", "值\"含引号\"")
+                .build(),
             )
             .unwrap();
         assert_eq!(logger.flush_to(&mut store).unwrap(), 1);
 
         let read_back = store.read_all().unwrap();
         assert_eq!(read_back.len(), 1);
-        assert_eq!(read_back[0].message.as_str(), "含\"引号\"与\\反斜杠");
+        assert_eq!(
+            read_back[0].message.as_str(),
+            "含\"引号\"与\\反斜杠及\u{01}控制符"
+        );
         assert_eq!(read_back[0].fields[0].1.as_str(), "值\"含引号\"");
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -428,6 +303,45 @@ mod tests {
         let got = reopened.query(&filter).unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].target.as_str(), "a.c");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 历史 bug 回归 fixture（WP-74.3.3；file_store.rs 收尾注释现场）：
+    /// fields 收尾 `}` 未消费时被误判为整行结束，其后 trace_id/span_id/
+    /// agent_id 全丢——非空 fields 且后随非零追踪三元组的条目必须逐字段
+    /// 往返保全（jsonl-wire 单源化后此形态为双 crate 共用回归素材）.
+    #[test]
+    fn fields_closing_brace_regression_keeps_trace_identity() {
+        let dir = std::env::temp_dir().join(format!("eneros-log-fs4-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fields-regression.jsonl");
+        let path_str = path.to_str().unwrap();
+
+        let mut store = FileStorage::open(path_str).unwrap();
+        let mut logger = StructuredLoggerImpl::new(LogLevel::Debug);
+        logger
+            .log(
+                LogBuilder::new(LogLevel::Info, "agent.energy", "带字段与追踪身份", 3000)
+                    .trace(99)
+                    .span(7)
+                    .agent(3)
+                    .field("power_kw", "120.5")
+                    .build(),
+            )
+            .unwrap();
+        assert_eq!(logger.flush_to(&mut store).unwrap(), 1);
+        store.flush().unwrap();
+
+        let read_back = store.read_all().unwrap();
+        assert_eq!(read_back.len(), 1);
+        // 修复前：fields 收尾 '}' 误判整行结束 → 三元组全丢（恒 0）。
+        assert_eq!(read_back[0].trace_id, 99);
+        assert_eq!(read_back[0].span_id, 7);
+        assert_eq!(read_back[0].agent_id, 3);
+        assert_eq!(read_back[0].fields.len(), 1);
+        assert_eq!(read_back[0].fields[0].0.as_str(), "power_kw");
+        assert_eq!(read_back[0].fields[0].1.as_str(), "120.5");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

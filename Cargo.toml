@@ -182,6 +182,7 @@ members = [
     "crates/agents/fleet-ops",
     "crates/agents/ops-lifecycle",
     "crates/agents/data-governance",
+    "crates/observability/jsonl-wire",
     "crates/observability/metrics",
     "crates/observability/logging",
     "crates/observability/tracing",

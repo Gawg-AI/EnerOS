@@ -1341,6 +1341,13 @@ name = "eneros-ipc-wire"
 version = "0.341.0"
 
 [[package]]
+name = "eneros-jsonl-wire"
+version = "0.341.0"
+dependencies = [
+ "heapless 0.8.0",
+]
+
+[[package]]
 name = "eneros-llm-engine"
 version = "0.341.0"
 
@@ -1348,6 +1355,7 @@ version = "0.341.0"
 name = "eneros-logging"
 version = "0.341.0"
 dependencies = [
+ "eneros-jsonl-wire",
  "eneros-metrics",
  "heapless 0.8.0",
 ]
@@ -1364,6 +1372,7 @@ version = "0.341.0"
 name = "eneros-metrics"
 version = "0.341.0"
 dependencies = [
+ "eneros-jsonl-wire",
  "heapless 0.8.0",
  "loom",
 ]
@@ -2017,6 +2026,7 @@ dependencies = [
 name = "eneros-tracing"
 version = "0.341.0"
 dependencies = [
+ "eneros-jsonl-wire",
  "eneros-logging",
  "heapless 0.8.0",
 ]

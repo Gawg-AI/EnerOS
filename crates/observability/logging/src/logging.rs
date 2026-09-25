@@ -9,6 +9,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write as _;
 
+use eneros_jsonl_wire::{escape_json_into, hstr};
 use heapless::String as HString;
 
 use crate::log_filter::LogFilter;
@@ -81,38 +82,6 @@ pub trait LogStorage {
     fn append(&mut self, entry: &LogEntry, json: &[u8]) -> Result<(), LogError>;
     /// 按过滤条件查询存储中的条目.
     fn query(&self, filter: &LogFilter) -> Result<Vec<LogEntry>, LogError>;
-}
-
-/// 将 `&str` 截断转换为定容 HString（超长截断，不 panic）.
-fn hstr<const N: usize>(s: &str) -> HString<N> {
-    match HString::try_from(s) {
-        Ok(h) => h,
-        Err(_) => {
-            // 超长时按字符边界截断到容量
-            let mut h = HString::<N>::new();
-            for ch in s.chars() {
-                if h.push(ch).is_err() {
-                    break;
-                }
-            }
-            h
-        }
-    }
-}
-
-/// JSON 字符串转义：`"` 与 `\` 转义，控制字符转 `\u00XX`（防注入破坏结构）.
-fn escape_json_into(out: &mut String, s: &str) {
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            c if (c as u32) < 0x20 => {
-                // 控制字符转义为 \u00XX；格式化失败仅理论可能，忽略写入结果
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
 }
 
 /// 序列化日志条目为 JSON（蓝图 §4.5；补充 span_id 与字符串转义）.

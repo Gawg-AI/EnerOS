@@ -8,6 +8,8 @@ description = "EnerOS 指标采集 (v0.120.0) — Metrics 注册/采集/缓冲�
 
 [dependencies]
 heapless = { version = "0.8", default-features = false }
+# WP-74.3.3：JSONL 线码单源叶（escape/Scan/hstr 骨架）。
+eneros-jsonl-wire = { path = "../jsonl-wire" }
 # v0.247.0（C-247）：increment 丢失更新并发模型验证（loom；feature 门控）。
 loom = { version = "0.7", optional = true }
 

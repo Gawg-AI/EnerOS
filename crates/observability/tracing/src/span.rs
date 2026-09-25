@@ -4,6 +4,7 @@
 //! 按偏差 D1，`SpanBuilder::new` 通过 `now_ms` 参数传入时间戳；按偏差
 //! D4，`Span` 增加 `sampled` 字段；按偏差 D6，`agent_id` 为定容字符串。
 
+use eneros_jsonl_wire::hstr;
 use heapless::String as HString;
 
 /// Trace ID（128 位，蓝图 §4.1）.
@@ -61,23 +62,6 @@ pub struct Span {
     pub agent_id: HString<32>,
     /// 是否采样（trace 创建时判定，随上下文传播）.
     pub sampled: bool,
-}
-
-/// 将 `&str` 截断转换为定容 HString（超长截断，不 panic）.
-pub(crate) fn hstr<const N: usize>(s: &str) -> HString<N> {
-    match HString::try_from(s) {
-        Ok(h) => h,
-        Err(_) => {
-            // 超长时按字符边界截断到容量
-            let mut h = HString::<N>::new();
-            for ch in s.chars() {
-                if h.push(ch).is_err() {
-                    break;
-                }
-            }
-            h
-        }
-    }
 }
 
 /// Span 构建器（蓝图 §4.5；偏差 D1：new 增加 now_ms 参数）.

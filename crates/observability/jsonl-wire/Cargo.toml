@@ -1,0 +1,11 @@
+[package]
+name = "eneros-jsonl-wire"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+description = "EnerOS 蓝图 74 卷三 WP-74.3.3：JSONL 线码单源叶 crate——JSON 字符串转义（escape_json_into）/单遍扫描骨架（Scan）/截断字符串转换（hstr）——eneros-logging 与 eneros-metrics file_store 双胞胎逐行同构代码的收编单源（no_std + alloc 最小依赖）"
+
+[dependencies]
+heapless = { version = "0.8", default-features = false }

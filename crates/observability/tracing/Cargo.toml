@@ -8,6 +8,8 @@ description = "EnerOS 分布式追踪 (v0.122.0) — Trace/Span 数据模型/26 
 
 [dependencies]
 heapless = { version = "0.8", default-features = false }
+# WP-74.3.3：JSONL 线码单源叶（hstr 截断转换第 4 处收编）。
+eneros-jsonl-wire = { path = "../jsonl-wire" }
 
 [dev-dependencies]
 eneros-logging = { path = "../logging" }

@@ -8,6 +8,8 @@ description = "EnerOS 结构化日志 (v0.121.0) — JSON 序列化/分级缓冲
 
 [dependencies]
 heapless = { version = "0.8", default-features = false }
+# WP-74.3.3：JSONL 线码单源叶（escape/Scan/hstr 骨架）。
+eneros-jsonl-wire = { path = "../jsonl-wire" }
 
 [features]
 default = []
