@@ -139,7 +139,8 @@ pub fn held_batch(batch_id4: &[u8], state: &BatchState, events: u64, plan_id: &[
 }
 
 /// HELD-COMMAND 行（F70-05/RR2：完整 intent id + 所属完整 plan id +
-/// dev/pt/val 绑定锚，11 字段；`reason` 缺省语义 `-` 由调用方
+/// dev/pt/val 绑定锚，9 个 kv 字段（卷册蓝图「11 字段」口径含
+/// readback=Some/val 拆项，实数 9）；`reason` 缺省语义 `-` 由调用方
 /// `as_deref().unwrap_or("-")` 供给）。
 #[allow(clippy::too_many_arguments)]
 pub fn held_command(
@@ -284,7 +285,7 @@ mod tests {
                 "[svc-control-dispatch] HELD-BATCH batch=[be, ef, ca, fe] state=Completed events=3 plan={expect_plan16}"
             )
         );
-        // HELD-COMMAND（held_engine.rs；11 字段，reason 缺省 `-`）。
+        // HELD-COMMAND（held_engine.rs；9 个 kv 字段，reason 缺省 `-`）。
         assert_eq!(
             held_command(
                 &intent16,

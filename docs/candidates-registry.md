@@ -1478,7 +1478,7 @@ claims 对账（第三路逐条实跑）：REG-74-C/L/M 与登记册 B74-3 全�
 | REG-75-Z | `settle.rs settle()` | **Done（v0.343.0 WP-75.1.5，提交 14d942e9）**：states 死参数删除（let _ 悬置——interface 承诺不存在的行为）；22 处表级测试 + 3 处编排调用实参同步；若未来某臂真需要 states 判据届时再加回并消费。CONTEXT.md SettleTrigger 词条签名同步 settle(trigger)。DoD：grep settle( 调用点零 states 残留。计数不变 | 蓝图 75 卷一 §5 |
 | REG-75-Y | `held_plan.rs terminal()/unresolved()` 全量重放 | **Open（P3，Speculative，登记不修）**：两谓词对每 batch 调 saga()（空事件 new/非空 BatchSaga::restore 全量重放），held_device_busy 在每次仲裁对全部 plan 调用且 plans() 深克隆——O(事件数×plan数) 每命令。不修理由：正确性无虞；无实测规模伤害；restore 缓存终态位会碰 HeldBatch wire 解码路径（frozen wire 邻接面）。**施工门**：出现「恢复大计划后仲裁延迟」实测证据或 held plan 数量上双位数时，在 Decode 后构造期派生 terminal/unresolved 位（不加 wire 字段） | 蓝图 75 卷一 §6 |
 
-**收口核算**：全量 host 9269（基线）→ 9257（WP-75.1.0 −12）→ **9263**（+3 表/差异锁/守卫 +1 evidence golden +1 adapter 守卫 +1 idem golden）；clippy --workspace --all-targets -D warnings 绿；cargo fmt --check 绿。
+**收口核算**：全量 host 9269（基线）→ 9257（WP-75.1.0 −12）→ **9263**（+6 = +3 表/差异锁/守卫 +1 evidence golden +1 adapter 守卫 +1 idem golden；karpathy 复查轮勘误——收口提交 1335c1d9 信息中「+4」为笔误，总数 9263 与分解 +6 自洽）；clippy --workspace --all-targets -D warnings 绿；cargo fmt --check 绿。
 
 **附带发现（本卷门义务执行挖出的三项预存断裂，均已最小修复；修正面均在本卷卷册边界外的遗留层）**：
 1. `orphan-crate-unregistered:eneros-installer-uefi`（qemu-prod image 门，74-03 c64c3747 加 crate 漏登记 orphans_allowlist）→ 按 schema v1.1 约定（条目仅 package+reason，deny_unknown_fields）补登记 `product/policy/frozen-crates.json`；
