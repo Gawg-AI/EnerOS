@@ -108,7 +108,10 @@ pub fn plan_command_deferred(intent_id4: &[u8], due_in_ms: u64) -> String {
 
 /// PLAN-COMMAND-SKIP-EXPIRED 行（已过期步跳过留证）。
 pub fn plan_command_skip_expired(intent_id4: &[u8]) -> String {
-    format!("{PREFIX}PLAN-COMMAND-SKIP-EXPIRED intent={:02x?}", intent_id4)
+    format!(
+        "{PREFIX}PLAN-COMMAND-SKIP-EXPIRED intent={:02x?}",
+        intent_id4
+    )
 }
 
 /// PLAN-COMMANDS-DEFERRED 行（延期/过期步数一次性对账；0/0 也打印）。

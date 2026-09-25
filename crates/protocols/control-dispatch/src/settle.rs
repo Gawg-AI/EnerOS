@@ -149,9 +149,8 @@ pub(crate) struct Settlement {
 ///
 /// 表级单测（`unit_tests::settle_table_*`）逐触发断言四元组与
 /// 文案逐字节词形；新增触发事件只需本 match 加一臂。
-pub(crate) fn settle(trigger: &SettleTrigger, states: &[DispatchState]) -> Settlement {
+pub(crate) fn settle(trigger: &SettleTrigger) -> Settlement {
     let failed_pass = (ExecOutcome::Failed, SafetyOutcome::Passed);
-    let _ = states; // 文案经 AuditText 惰性渲染；签名保留 states 语义位
     let (durable, audit, receipt) = match trigger {
         SettleTrigger::SafetyReject { reason } => (
             alloc::vec![SettleOp::Journal {
@@ -637,12 +636,9 @@ mod tests {
     #[test]
     fn settle_table_safety_reject() {
         let states = alloc::vec![DispatchState::Authorized];
-        let s = settle(
-            &SettleTrigger::SafetyReject {
-                reason: String::from("ov"),
-            },
-            &states,
-        );
+        let s = settle(&SettleTrigger::SafetyReject {
+            reason: String::from("ov"),
+        });
         assert_eq!(
             s.durable,
             alloc::vec![journal_op(
@@ -659,7 +655,7 @@ mod tests {
 
     #[test]
     fn settle_table_budget_rate_no_audit() {
-        let s = settle(&SettleTrigger::BudgetRate, &ack_states());
+        let s = settle(&SettleTrigger::BudgetRate);
         assert_eq!(
             s.durable,
             alloc::vec![journal_op(
@@ -676,7 +672,7 @@ mod tests {
 
     #[test]
     fn settle_table_budget_energy_no_audit() {
-        let s = settle(&SettleTrigger::BudgetEnergy, &ack_states());
+        let s = settle(&SettleTrigger::BudgetEnergy);
         assert_eq!(
             s.durable,
             alloc::vec![journal_op(
@@ -693,12 +689,9 @@ mod tests {
 
     #[test]
     fn settle_table_intent_append_failed() {
-        let s = settle(
-            &SettleTrigger::IntentAppendFailed {
-                err: String::from("DiskFull"),
-            },
-            &pre_persist_states(),
-        );
+        let s = settle(&SettleTrigger::IntentAppendFailed {
+            err: String::from("DiskFull"),
+        });
         assert_eq!(
             s.durable,
             alloc::vec![journal_op(
@@ -721,12 +714,9 @@ mod tests {
 
     #[test]
     fn settle_table_journal_persist_failed() {
-        let s = settle(
-            &SettleTrigger::JournalPersistFailed {
-                err: String::from("NotAuthorized"),
-            },
-            &pre_persist_states(),
-        );
+        let s = settle(&SettleTrigger::JournalPersistFailed {
+            err: String::from("NotAuthorized"),
+        });
         assert!(s.durable.is_empty(), "推进已试败，表内无补偿写");
         let (_, _, text) = audit_of(&s, &pre_persist_states());
         assert_eq!(
@@ -742,12 +732,9 @@ mod tests {
     #[test]
     fn settle_table_sent_advance_failed() {
         let states = ack_states();
-        let s = settle(
-            &SettleTrigger::SentAdvanceFailed {
-                err: String::from("NotAuthorized"),
-            },
-            &states,
-        );
+        let s = settle(&SettleTrigger::SentAdvanceFailed {
+            err: String::from("NotAuthorized"),
+        });
         assert_eq!(
             s.durable,
             alloc::vec![intent_op(DispatchState::Indeterminate)]
@@ -766,7 +753,7 @@ mod tests {
 
     #[test]
     fn settle_table_mark_delivered_failed() {
-        let s = settle(&SettleTrigger::MarkDeliveredFailed, &ack_states());
+        let s = settle(&SettleTrigger::MarkDeliveredFailed);
         assert!(s.durable.is_empty());
         let (_, _, text) = audit_of(&s, &ack_states());
         assert_eq!(text, "delivery-ok 但 durable mark-sent 失败——对账");
@@ -775,7 +762,7 @@ mod tests {
 
     #[test]
     fn settle_table_delivery_timeout() {
-        let s = settle(&SettleTrigger::DeliveryTimeout, &ack_states());
+        let s = settle(&SettleTrigger::DeliveryTimeout);
         assert_eq!(
             s.durable,
             alloc::vec![
@@ -797,7 +784,7 @@ mod tests {
 
     #[test]
     fn settle_table_delivery_unreachable() {
-        let s = settle(&SettleTrigger::DeliveryUnreachable, &ack_states());
+        let s = settle(&SettleTrigger::DeliveryUnreachable);
         assert_eq!(
             s.durable,
             alloc::vec![
@@ -813,12 +800,9 @@ mod tests {
     #[test]
     fn settle_table_delivery_error() {
         let states = ack_states();
-        let s = settle(
-            &SettleTrigger::DeliveryError {
-                err: String::from("Protocol(\"x\")"),
-            },
-            &states,
-        );
+        let s = settle(&SettleTrigger::DeliveryError {
+            err: String::from("Protocol(\"x\")"),
+        });
         assert_eq!(
             s.durable,
             alloc::vec![
@@ -840,12 +824,9 @@ mod tests {
 
     #[test]
     fn settle_table_response_decode_failed() {
-        let s = settle(
-            &SettleTrigger::ResponseDecodeFailed {
-                err: String::from("Truncated"),
-            },
-            &ack_states(),
-        );
+        let s = settle(&SettleTrigger::ResponseDecodeFailed {
+            err: String::from("Truncated"),
+        });
         assert_eq!(
             s.durable,
             alloc::vec![
@@ -864,12 +845,9 @@ mod tests {
 
     #[test]
     fn settle_table_ack_advance_failed() {
-        let s = settle(
-            &SettleTrigger::AckAdvanceFailed {
-                err: String::from("NotAuthorized"),
-            },
-            &ack_states(),
-        );
+        let s = settle(&SettleTrigger::AckAdvanceFailed {
+            err: String::from("NotAuthorized"),
+        });
         assert_eq!(
             s.durable,
             alloc::vec![intent_op(DispatchState::Indeterminate)]
@@ -885,7 +863,7 @@ mod tests {
     #[test]
     fn settle_table_applied_write_order_invariant() {
         // 写序不变量：durable 终态 ack 先行，成功后才 journal AppliedConfirmed。
-        let s = settle(&SettleTrigger::Applied, &ack_states());
+        let s = settle(&SettleTrigger::Applied);
         assert_eq!(
             s.durable,
             alloc::vec![
@@ -905,7 +883,7 @@ mod tests {
 
     #[test]
     fn settle_table_applied_durable_failed() {
-        let s = settle(&SettleTrigger::AppliedDurableFailed, &ack_states());
+        let s = settle(&SettleTrigger::AppliedDurableFailed);
         assert_eq!(
             s.durable,
             alloc::vec![journal_op(
@@ -923,12 +901,9 @@ mod tests {
 
     #[test]
     fn settle_table_applied_advance_failed() {
-        let s = settle(
-            &SettleTrigger::AppliedAdvanceFailed {
-                err: String::from("NotAuthorized"),
-            },
-            &ack_states(),
-        );
+        let s = settle(&SettleTrigger::AppliedAdvanceFailed {
+            err: String::from("NotAuthorized"),
+        });
         assert!(s.durable.is_empty());
         let (_, _, text) = audit_of(&s, &ack_states());
         assert_eq!(
@@ -940,7 +915,7 @@ mod tests {
 
     #[test]
     fn settle_table_peer_idempotent_hit() {
-        let s = settle(&SettleTrigger::PeerIdempotentHit, &ack_states());
+        let s = settle(&SettleTrigger::PeerIdempotentHit);
         assert_eq!(
             s.durable,
             alloc::vec![
@@ -963,7 +938,7 @@ mod tests {
     #[test]
     fn settle_table_peer_dry_run() {
         let states = ack_states();
-        let s = settle(&SettleTrigger::PeerDryRun, &states);
+        let s = settle(&SettleTrigger::PeerDryRun);
         assert_eq!(
             s.durable,
             alloc::vec![
@@ -988,7 +963,7 @@ mod tests {
     #[test]
     fn settle_table_peer_denied() {
         let states = ack_states();
-        let s = settle(&SettleTrigger::PeerDenied { class: 3 }, &states);
+        let s = settle(&SettleTrigger::PeerDenied { class: 3 });
         assert_eq!(
             s.durable,
             alloc::vec![
@@ -1013,7 +988,7 @@ mod tests {
     #[test]
     fn settle_table_readback_unavailable() {
         let states = ack_states();
-        let s = settle(&SettleTrigger::ReadbackUnavailable, &states);
+        let s = settle(&SettleTrigger::ReadbackUnavailable);
         assert_eq!(
             s.durable,
             alloc::vec![
@@ -1035,7 +1010,7 @@ mod tests {
     #[test]
     fn settle_table_readback_mismatch_blocked() {
         let states = ack_states();
-        let s = settle(&SettleTrigger::ReadbackMismatch, &states);
+        let s = settle(&SettleTrigger::ReadbackMismatch);
         assert_eq!(
             s.durable,
             alloc::vec![
@@ -1065,7 +1040,7 @@ mod tests {
     #[test]
     fn settle_table_peer_failed() {
         let states = ack_states();
-        let s = settle(&SettleTrigger::PeerFailed, &states);
+        let s = settle(&SettleTrigger::PeerFailed);
         assert_eq!(
             s.durable,
             alloc::vec![
@@ -1089,7 +1064,7 @@ mod tests {
         // R16-B（蓝图 75 WP-75.1.1）：恢复对账终局表行——写序同 Applied
         // 两相（durable ack 先行）；audit=None、receipt 无摘要（有意差异
         // 见表行注释：恢复不重复记账，丢失的 ACK 保持丢失）。
-        let s = settle(&SettleTrigger::RecoveredApplied, &ack_states());
+        let s = settle(&SettleTrigger::RecoveredApplied);
         assert_eq!(
             s.durable,
             alloc::vec![

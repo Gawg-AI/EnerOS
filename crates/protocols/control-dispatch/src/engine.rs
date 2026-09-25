@@ -480,7 +480,7 @@ impl SettleDispatch for DispatchEngine {
         let started = ctx.started;
         let command_id = ctx.command_id;
         let correlation = ctx.correlation;
-        let settlement = settle(&trigger, states);
+        let settlement = settle(&trigger);
         if matches!(trigger, SettleTrigger::RecoveredApplied) {
             // R16-B（蓝图 75 WP-75.1.1）：恢复对账终局应用分支——按
             // RecoveredApplied 表行 durable 序驱动（表行 = 写序权威，
@@ -518,7 +518,13 @@ impl SettleDispatch for DispatchEngine {
                 self.last_confirmed.insert(ctx.target, (v, started));
             }
             self.arbiter.clear_in_flight(ctx.target.0);
-            return self.receipt_result(settlement.receipt, states, started, command_id, correlation);
+            return self.receipt_result(
+                settlement.receipt,
+                states,
+                started,
+                command_id,
+                correlation,
+            );
         }
         if matches!(trigger, SettleTrigger::Applied) {
             // 61 v0.314.24 写序（表内 durable 序 [Intent, Journal]）：
@@ -531,7 +537,7 @@ impl SettleDispatch for DispatchEngine {
                 .is_err()
             {
                 return self.settle_nested(
-                    &settle(&SettleTrigger::AppliedDurableFailed, states),
+                    &settle(&SettleTrigger::AppliedDurableFailed),
                     states,
                     ctx,
                 );
@@ -546,12 +552,9 @@ impl SettleDispatch for DispatchEngine {
                 Some(receipt_digest),
             ) {
                 return self.settle_nested(
-                    &settle(
-                        &SettleTrigger::AppliedAdvanceFailed {
-                            err: alloc::format!("{e:?}"),
-                        },
-                        states,
-                    ),
+                    &settle(&SettleTrigger::AppliedAdvanceFailed {
+                        err: alloc::format!("{e:?}"),
+                    }),
                     states,
                     ctx,
                 );
@@ -2458,7 +2461,10 @@ mod unit_tests {
             IdemNote::IntentReplay.as_str(),
             "idempotent-hit（同 (protocol,seq) 重放——不重复写）"
         );
-        assert_eq!(IdemNote::PlanReplay.as_str(), "idempotent-hit（原结果，不重复写）");
+        assert_eq!(
+            IdemNote::PlanReplay.as_str(),
+            "idempotent-hit（原结果，不重复写）"
+        );
         assert_eq!(
             IdemNote::SagaReplay.as_str(),
             "saga idempotent-hit（原结果，不重复写）"
