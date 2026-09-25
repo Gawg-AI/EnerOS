@@ -6,7 +6,10 @@ extern crate alloc;
 use alloc::vec;
 
 use eneros_boot_protocol::{InstallManifest, INSTALL_MANIFEST_SIZE};
-use eneros_installer_uefi::{verify_install_manifest, InstallFailure, TrustAnchor};
+use eneros_installer_uefi::{
+    find_iso_payload, iso_read_exact, verify_install_manifest, InstallFailure, IsoFile, IsoIo,
+    IsoMedia, TrustAnchor, ISO_SECTOR_SIZE,
+};
 use sha2::{Digest, Sha256};
 use uefi::boot::{self, ScopedProtocol, SearchType};
 use uefi::proto::media::block::BlockIO;
@@ -16,13 +19,20 @@ use uefi::{entry, print, println, Status};
 include!(concat!(env!("OUT_DIR"), "/installer_trust.rs"));
 
 const IO_CHUNK_SIZE: usize = 1024 * 1024;
-const ISO_SECTOR_SIZE: usize = 2048;
-const ISO_MAX_DIRECTORY_SIZE: usize = 64 * 1024;
 
-#[derive(Debug, Clone, Copy)]
-struct IsoFile {
-    first_lba: u64,
-    length: u64,
+/// UEFI `BlockIO` → [`IsoMedia`] adapter（bin 侧读管道；lib 解析逻辑
+/// 经 trait 与 UEFI 解耦——WP-74.3.2）.
+struct BlockIoMedia<'a> {
+    io: &'a mut ScopedProtocol<BlockIO>,
+}
+
+impl IsoMedia for BlockIoMedia<'_> {
+    fn read_exact(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), IsoIo> {
+        let media_id = self.io.media().media_id();
+        self.io
+            .read_blocks(media_id, lba, buf)
+            .map_err(|_| IsoIo::Read)
+    }
 }
 
 #[entry]
@@ -53,39 +63,53 @@ fn install() -> Result<(u64, [u8; 32]), InstallFailure> {
         let Ok(mut source) = boot::open_protocol_exclusive::<BlockIO>(handle) else {
             continue;
         };
-        let media = source.media();
-        if !media.is_media_present()
-            || !media.is_read_only()
-            || media.block_size() as usize != ISO_SECTOR_SIZE
-        {
+        let (iso_media, last_lba) = {
+            let media = source.media();
+            (
+                media.is_media_present()
+                    && media.is_read_only()
+                    && media.block_size() as usize == ISO_SECTOR_SIZE,
+                media.last_block(),
+            )
+        };
+        if !iso_media {
             continue;
         }
-        let Some((manifest_file, payload_file)) = find_iso_payload(&mut source)? else {
-            continue;
+        // ISO 读相（定位/验签/源摘要）：adapter 持 source 可变借用，
+        // 块结束释放后写相重建 adapter（写盘读源同管道）。
+        let (manifest, payload_file) = {
+            let mut media_adapter = BlockIoMedia { io: &mut source };
+            let Some((manifest_file, payload_file)) =
+                find_iso_payload(&mut media_adapter, last_lba)?
+            else {
+                continue;
+            };
+            let mut encoded = [0u8; INSTALL_MANIFEST_SIZE];
+            iso_read_exact(&mut media_adapter, manifest_file, 0, &mut encoded)?;
+            if manifest_file.length != INSTALL_MANIFEST_SIZE as u64 {
+                return Err(InstallFailure::ManifestFormat);
+            }
+            // WP-74.3.1：验签唯一入口 = BootSignatureProvider（lib 层）；
+            // 锚由 build.rs 生成的信任常量构造（生成链不动）。
+            let anchor = TrustAnchor {
+                public_key: TRUSTED_PUBLIC_KEY,
+                key_id: TRUSTED_KEY_ID,
+                platform_id: PLATFORM_ID,
+                minimum_security_version: MINIMUM_SECURITY_VERSION,
+            };
+            let manifest = verify_install_manifest(&encoded, &anchor)?;
+            if payload_file.length != manifest.payload_length {
+                return Err(InstallFailure::PayloadDigest);
+            }
+            let source_digest = hash_iso_file(&mut media_adapter, payload_file)?;
+            if source_digest != manifest.payload_digest {
+                return Err(InstallFailure::PayloadDigest);
+            }
+            (manifest, payload_file)
         };
-        let mut encoded = [0u8; INSTALL_MANIFEST_SIZE];
-        iso_read_exact(&mut source, manifest_file, 0, &mut encoded)?;
-        if manifest_file.length != INSTALL_MANIFEST_SIZE as u64 {
-            return Err(InstallFailure::ManifestFormat);
-        }
-        // WP-74.3.1：验签唯一入口 = BootSignatureProvider（lib 层）；
-        // 锚由 build.rs 生成的信任常量构造（生成链不动）。
-        let anchor = TrustAnchor {
-            public_key: TRUSTED_PUBLIC_KEY,
-            key_id: TRUSTED_KEY_ID,
-            platform_id: PLATFORM_ID,
-            minimum_security_version: MINIMUM_SECURITY_VERSION,
-        };
-        let manifest = verify_install_manifest(&encoded, &anchor)?;
-        if payload_file.length != manifest.payload_length {
-            return Err(InstallFailure::PayloadDigest);
-        }
-        let source_digest = hash_iso_file(&mut source, payload_file)?;
-        if source_digest != manifest.payload_digest {
-            return Err(InstallFailure::PayloadDigest);
-        }
         let mut target = select_blank_target(&manifest)?;
-        write_payload(&mut source, payload_file, &manifest, &mut target)?;
+        let mut media_adapter = BlockIoMedia { io: &mut source };
+        write_payload(&mut media_adapter, payload_file, &manifest, &mut target)?;
         let readback_digest = hash_target(&manifest, &mut target)?;
         if readback_digest != manifest.payload_digest {
             return Err(InstallFailure::TargetReadback);
@@ -93,109 +117,6 @@ fn install() -> Result<(u64, [u8; 32]), InstallFailure> {
         return Ok((manifest.payload_length, readback_digest));
     }
     Err(InstallFailure::SourceNotFound)
-}
-
-fn find_iso_payload(
-    source: &mut ScopedProtocol<BlockIO>,
-) -> Result<Option<(IsoFile, IsoFile)>, InstallFailure> {
-    let media_id = source.media().media_id();
-    let mut descriptor = [0u8; ISO_SECTOR_SIZE];
-    source
-        .read_blocks(media_id, 16, &mut descriptor)
-        .map_err(|_| InstallFailure::SourceRead)?;
-    if descriptor[0] != 1 || descriptor[1..6] != *b"CD001" || descriptor[6] != 1 {
-        return Ok(None);
-    }
-    let root = parse_iso_record(&descriptor[156..], source.media().last_block())?
-        .ok_or(InstallFailure::SourceOpen)?;
-    let eneros =
-        find_iso_entry(source, root, b"ENEROS", true)?.ok_or(InstallFailure::SourceNotFound)?;
-    let manifest = find_iso_entry(source, eneros, b"INSTALL.MAN", false)?
-        .ok_or(InstallFailure::SourceNotFound)?;
-    let payload = find_iso_entry(source, eneros, b"PAYLOAD.RAW", false)?
-        .ok_or(InstallFailure::SourceNotFound)?;
-    Ok(Some((manifest, payload)))
-}
-
-fn find_iso_entry(
-    source: &mut ScopedProtocol<BlockIO>,
-    directory: IsoFile,
-    expected: &[u8],
-    expected_directory: bool,
-) -> Result<Option<IsoFile>, InstallFailure> {
-    let length = usize::try_from(directory.length).map_err(|_| InstallFailure::SourceOpen)?;
-    if length == 0 || length > ISO_MAX_DIRECTORY_SIZE {
-        return Err(InstallFailure::SourceOpen);
-    }
-    let mut bytes = vec![0u8; length];
-    iso_read_exact(source, directory, 0, &mut bytes)?;
-    let last_lba = source.media().last_block();
-    let mut offset = 0usize;
-    while offset < bytes.len() {
-        let record_length = usize::from(bytes[offset]);
-        if record_length == 0 {
-            offset = offset
-                .checked_add(ISO_SECTOR_SIZE)
-                .map(|next| next / ISO_SECTOR_SIZE * ISO_SECTOR_SIZE)
-                .ok_or(InstallFailure::SourceOpen)?;
-            continue;
-        }
-        let record = bytes
-            .get(offset..offset + record_length)
-            .ok_or(InstallFailure::SourceOpen)?;
-        let file = parse_iso_record(record, last_lba)?.ok_or(InstallFailure::SourceOpen)?;
-        let name_length = usize::from(*record.get(32).ok_or(InstallFailure::SourceOpen)?);
-        let mut name = record
-            .get(33..33 + name_length)
-            .ok_or(InstallFailure::SourceOpen)?;
-        if let Some(index) = name.iter().position(|byte| *byte == b';') {
-            name = &name[..index];
-        }
-        let is_directory = record.get(25).is_some_and(|flags| flags & 0x02 != 0);
-        if name == expected && is_directory == expected_directory {
-            return Ok(Some(file));
-        }
-        offset = offset
-            .checked_add(record_length)
-            .ok_or(InstallFailure::SourceOpen)?;
-    }
-    Ok(None)
-}
-
-fn parse_iso_record(record: &[u8], last_lba: u64) -> Result<Option<IsoFile>, InstallFailure> {
-    let length = usize::from(*record.first().ok_or(InstallFailure::SourceOpen)?);
-    if length == 0 {
-        return Ok(None);
-    }
-    if length < 34 || record.len() < length {
-        return Err(InstallFailure::SourceOpen);
-    }
-    let first_lba = u64::from(u32::from_le_bytes(
-        record[2..6]
-            .try_into()
-            .map_err(|_| InstallFailure::SourceOpen)?,
-    ));
-    let file_length = u64::from(u32::from_le_bytes(
-        record[10..14]
-            .try_into()
-            .map_err(|_| InstallFailure::SourceOpen)?,
-    ));
-    let blocks = file_length
-        .checked_add(ISO_SECTOR_SIZE as u64 - 1)
-        .map(|value| value / ISO_SECTOR_SIZE as u64)
-        .ok_or(InstallFailure::SourceOpen)?;
-    if file_length == 0
-        || first_lba
-            .checked_add(blocks)
-            .filter(|end| *end <= last_lba + 1)
-            .is_none()
-    {
-        return Err(InstallFailure::SourceOpen);
-    }
-    Ok(Some(IsoFile {
-        first_lba,
-        length: file_length,
-    }))
 }
 
 fn select_blank_target(
@@ -294,8 +215,8 @@ fn ensure_blank(target: &mut ScopedProtocol<BlockIO>) -> Result<(), InstallFailu
     Ok(())
 }
 
-fn write_payload(
-    source: &mut ScopedProtocol<BlockIO>,
+fn write_payload<M: IsoMedia + ?Sized>(
+    source: &mut M,
     payload: IsoFile,
     manifest: &InstallManifest,
     target: &mut ScopedProtocol<BlockIO>,
@@ -365,8 +286,8 @@ fn hash_target(
     Ok(hash.finalize().into())
 }
 
-fn hash_iso_file(
-    source: &mut ScopedProtocol<BlockIO>,
+fn hash_iso_file<M: IsoMedia + ?Sized>(
+    source: &mut M,
     file: IsoFile,
 ) -> Result<[u8; 32], InstallFailure> {
     let mut buffer = vec![0u8; IO_CHUNK_SIZE];
@@ -384,55 +305,6 @@ fn hash_iso_file(
             .ok_or(InstallFailure::SourceRead)?;
     }
     Ok(hash.finalize().into())
-}
-
-fn iso_read_exact(
-    source: &mut ScopedProtocol<BlockIO>,
-    file: IsoFile,
-    offset: u64,
-    mut output: &mut [u8],
-) -> Result<(), InstallFailure> {
-    let requested = u64::try_from(output.len()).map_err(|_| InstallFailure::SourceRead)?;
-    if offset
-        .checked_add(requested)
-        .filter(|end| *end <= file.length)
-        .is_none()
-    {
-        return Err(InstallFailure::SourceRead);
-    }
-    let media_id = source.media().media_id();
-    let mut absolute = file
-        .first_lba
-        .checked_mul(ISO_SECTOR_SIZE as u64)
-        .and_then(|start| start.checked_add(offset))
-        .ok_or(InstallFailure::SourceRead)?;
-    let mut scratch = [0u8; ISO_SECTOR_SIZE];
-    while !output.is_empty() {
-        let within = usize::try_from(absolute % ISO_SECTOR_SIZE as u64)
-            .map_err(|_| InstallFailure::SourceRead)?;
-        if within == 0 && output.len() >= ISO_SECTOR_SIZE {
-            let direct = output.len() / ISO_SECTOR_SIZE * ISO_SECTOR_SIZE;
-            let (head, tail) = output.split_at_mut(direct);
-            source
-                .read_blocks(media_id, absolute / ISO_SECTOR_SIZE as u64, head)
-                .map_err(|_| InstallFailure::SourceRead)?;
-            absolute = absolute
-                .checked_add(direct as u64)
-                .ok_or(InstallFailure::SourceRead)?;
-            output = tail;
-        } else {
-            source
-                .read_blocks(media_id, absolute / ISO_SECTOR_SIZE as u64, &mut scratch)
-                .map_err(|_| InstallFailure::SourceRead)?;
-            let count = output.len().min(ISO_SECTOR_SIZE - within);
-            output[..count].copy_from_slice(&scratch[within..within + count]);
-            absolute = absolute
-                .checked_add(count as u64)
-                .ok_or(InstallFailure::SourceRead)?;
-            output = &mut output[count..];
-        }
-    }
-    Ok(())
 }
 
 fn print_install_success(bytes: u64, digest: &[u8; 32]) {

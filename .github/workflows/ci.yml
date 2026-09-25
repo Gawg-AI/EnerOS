@@ -214,7 +214,7 @@ jobs:
         run: cargo xtask test gate-semantics
 
       - name: Boot format and loader tests
-        run: cargo test --locked -p eneros-boot-protocol -p eneros-image-format -p eneros-boot-manager-uefi
+        run: cargo test --locked -p eneros-boot-protocol -p eneros-image-format -p eneros-boot-manager-uefi -p eneros-installer-uefi
 
       - name: Verify frozen Cargo graph and binary BOM
         shell: pwsh
