@@ -235,7 +235,7 @@ pub fn v2_tail(req: &[u8]) -> Option<&[u8]> {
 /// 解 request_id（按形状）。
 pub fn request_id(req: &[u8], shape: SessionShape) -> Option<u64> {
     let at = request_id_offset(shape);
-    let raw: &[u8; REQUEST_ID_LEN] = req[at..at + REQUEST_ID_LEN].try_into().ok()?;
+    let raw: &[u8; REQUEST_ID_LEN] = req.get(at..at + REQUEST_ID_LEN)?.try_into().ok()?;
     Some(u64::from_le_bytes(*raw))
 }
 
@@ -247,8 +247,8 @@ pub fn action_len(req: &[u8], shape: SessionShape) -> Option<usize> {
 /// 借出 action 文本段与 arg 段（零拷贝）。
 ///
 /// 拒绝条件与收编前的消费端逐字相同：`action_start + action_len >
-/// req.len()` ⇒ None（调用方映射 `ERR:proto` 同族的长度违例响应——status/
-/// 词形映射是裁决，留在调用方）。
+/// req.len()` ⇒ None（调用方把它映射成 `ERR:len` 响应——错误词形/状态映射是
+/// 裁决，留在调用方，本模块只说"这段字节借不出来"）。
 pub fn action_and_arg(req: &[u8], shape: SessionShape) -> Option<(&[u8], &[u8])> {
     let start = action_start_offset(shape);
     let end = start + action_len(req, shape)?;
