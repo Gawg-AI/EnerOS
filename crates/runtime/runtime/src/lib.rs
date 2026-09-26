@@ -27,15 +27,17 @@ pub use console::init;
 /// 的覆盖：真 panic 时串口行必命中门词。
 ///
 /// host 测试构建展开为零（`cfg(target_os = "none")` 门）——这是宏方案不触
-/// 链接期约束的关键：`#[panic_handler]` 定义权留在 bin crate 根（WP-69.3.1
-/// 边界，protocol_ladder.rs 注释 + host 结构锁在案）。
+/// 链接期约束的关键：handler **定义权在宏体**，**调用点仍在 bin crate 根**，
+/// 展开位置与 WP-69.3.1 边界同（protocol_ladder.rs t-ladder-3 host 结构锁
+/// 按「bin 根有宏调用 + 无自有定义」双向锁死）。
 ///
 /// 宏体用 `$crate::println!` 而非硬写 `eneros_runtime::println!`：前者在任意
 /// 调用方展开都指回本 crate，消除「依赖本 crate 的 bin 之外误用即自引用」的
 /// 陷阱；展开出的字节与后者恒等（词形零变化）。
 ///
 /// 全族静默 handler 回流由 `crates/runtime/runtime/src/panic_guard.rs` 守卫
-/// （21 bin 单点 + 豁免登记 REG-76-A/B/C）。
+/// （30 bin 单点 = 卷一点名 21 目标 bin + svc-storage + business 8；
+/// 豁免名单与理由见该文件 doc + 登记册 REG-76-B/E）。
 #[macro_export]
 macro_rules! svc_panic {
     ($name:expr) => {

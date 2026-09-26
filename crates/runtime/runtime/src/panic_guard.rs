@@ -29,7 +29,9 @@ const PANIC_FN: &str = concat!("fn ", "panic(");
 /// ④ 宏体打印半边词形模板。
 const PRINT_TEMPLATE: &str = concat!("PANIC: {}", "\", $name");
 /// ⑤ 宏体挂起半边（ADR-026 §1 不复位整机、自旋等监督面）。
-const SUSPEND_TOKEN: &str = concat!("spin_", "loop");
+/// 裸 `spin_loop` 亦出现在宏 doc 注释里（doc 遮蔽 ⇒ 删宏体自旋不红），
+/// 故针取宏体独有全路径形。
+const SUSPEND_TOKEN: &str = concat!("core::hint::spin_", "loop");
 /// ⑥ A 族审计 hook 调用针（豁免族须保持的另一形态）。
 const AUDIT_HOOK: &str = concat!("svc_panic", "_hook(");
 
@@ -205,6 +207,14 @@ fn el0_bins_vocalized_via_single_macro() {
     for &(name, src) in TABLE {
         let want = [CALL_OPEN, name, "\")"].concat();
         assert!(src.contains(&want), "{name} 未以 {want} 收编 panic handler");
+        // 针须为**语句**而非注释/文档里的巧合文本：取命中所在行的前缀，
+        // 只允许空（行首）或 `::`（跨 crate 路径形），含 `//` 一律红。
+        let at = src.find(&want).unwrap_or_default();
+        let head = src[..at].rsplit('\n').next().unwrap_or("").trim_end();
+        assert!(
+            head.is_empty() || (head.ends_with("::") && !head.contains("//")),
+            "{name} 的宏调用不是语句（行首前缀 {head:?} 像注释/文档——假绿通道）"
+        );
         assert!(
             !src.contains(HANDLER_ATTR),
             "{name} 残留自有 panic handler 属性（单源宏是唯一出口）"
@@ -261,12 +271,6 @@ fn bin_directories_are_fully_partitioned() {
             if uses_macro {
                 tabled_callers += 1;
             }
-            assert!(
-                uses_macro
-                    || TABLE.iter().any(|(n, _)| *n == stem)
-                    || EXEMPT_SILENT.contains(&stem),
-                "{stem} 既未收编宏、也不在守卫表/静默豁免名单（声化覆盖面悄悄缩水）"
-            );
             assert!(
                 TABLE.iter().any(|(n, _)| *n == stem) || EXEMPT_SILENT.contains(&stem),
                 "{stem} 在目录里却不在守卫表（登记新 bin 须同步入表，见 REG-76-C）"
