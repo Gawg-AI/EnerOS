@@ -117,6 +117,11 @@ pub fn handle_request(
 /// 服务逻辑：请求（proposal wire + telemetry wire + actor）→ 回执。
 /// （WP-75.2.7 起为 [`handle_request`] 的无遥测 shim——既有调用点与
 /// 测试零改动；HELD/TRUSTED/unknown 臂语义由单表表达。）
+///
+/// karpathy 复查轮注记：对 opcode 2（INTENT）本 shim 现路由进
+/// [`handle_submit_intent`]（原 handle_submit 得 "unknown opcode"）——
+/// 生产面无调用方（assembly INTENT 显式臂先于直通臂），属单表收敛的
+/// 死路径语义变化；新词形由 `handle_request_routes_all_arms` 锁定。
 pub fn handle_submit(engine: &mut dyn ControlDispatch, req: &[u8]) -> Vec<u8> {
     handle_request(engine, req, None)
 }

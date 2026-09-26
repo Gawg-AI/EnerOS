@@ -83,18 +83,19 @@ mod tests {
         assert_eq!(big.payload.len(), 300);
     }
 
-    /// 负例族：总长 < 5+56 → ERR_LEN；plen 超出实际载荷 → ERR_LEN。
+    /// 负例族：总长 < 5+56 → ERR_LEN（定长门）；plen 超出实际载荷 →
+    /// ERR_LEN（**钳制门独立负例**——karpathy 复查轮修正：原负例总长
+    /// 60B 先被定长门拒，钳制门拒绝侧零覆盖，变异实证假绿）。
     #[test]
     fn negative_lengths_and_clamp_rejected() {
         let mut short = valid_upload_req(4);
         short.truncate(5 + 55); // 差 1B（不足定长头部）
         assert_eq!(parse_upload_req(&short), Err(crate::svc_wire::ERR_LEN));
-        // plen 声称 300，实际载荷 0 → 钳制门拒绝。
-        let mut p = alloc::vec![0u8; 55];
-        p[53..55].copy_from_slice(&300u16.to_le_bytes());
-        let mut req = alloc::vec::Vec::from(&b"CLD1"[..]);
-        req.push(0x01);
-        req.extend_from_slice(&p);
+        // 钳制门负例：总长 61B（恰过 5+56 定长门）但 plen 声称 300 >
+        // 实际载荷 1B → 唯钳制门 `5+55+plen > req.len()` 拒绝。
+        let mut req = valid_upload_req(1);
+        req[5 + 53..5 + 55].copy_from_slice(&300u16.to_le_bytes());
+        assert_eq!(req.len(), 5 + 56, "前置：须恰过定长门");
         assert_eq!(parse_upload_req(&req), Err(crate::svc_wire::ERR_LEN));
     }
 }

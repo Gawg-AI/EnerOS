@@ -290,6 +290,12 @@ mod recording_face_tests {
         d.result = Some(Err(DispatchError::Internal(String::from("unused"))));
         let mut stub = StubTelemetryProvider::new(Some(StubTelemetryProvider::full_base()));
         let tel = stub.trusted_telemetry(2000).expect("受信任遥测");
+        // karpathy 复查轮：stub 的 source_epoch 恒 0——覆写非零值给
+        // epoch 留痕断言一个牙（实现硬编码 0 须红）。
+        let tel = TrustedTelemetry {
+            source_epoch: 7,
+            ..tel
+        };
         let actor = AuthenticatedActor {
             kind: eneros_control_gateway::envelope::ActorKind::Ai,
             service: [0u8; 16],
