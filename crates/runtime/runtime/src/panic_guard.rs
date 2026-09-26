@@ -11,6 +11,10 @@
 //! 由 `guard_source_carries_no_contiguous_needles` 上锁），且断言方向选择上
 //! 「误红不假绿」——宁可挡住注释里的巧合文本，不放过真实回流。
 
+// 测试断言允许 panic!/expect!（仓库惯例：elf-loader/ota-ab/board-facts 先例
+// ——disallowed_macros 是生产代码纪律，本模块 cfg(test) 通篇是判据断言）。
+#![allow(clippy::disallowed_macros)]
+
 extern crate std;
 
 use std::fs;
