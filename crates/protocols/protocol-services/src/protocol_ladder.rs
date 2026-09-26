@@ -251,8 +251,10 @@ pub(crate) fn assemble<P: ProtocolPlugin>(
 
 /// 协议 bin 的标准入口（族 A；WP-69.3.1）：io 构造 → [`assemble`] →
 /// Ready 臂自检 → `driver_service_main`。**不含** `#[global_allocator]` /
-/// `#[panic_handler]` / `_start` 签名与 `set_ipc_buffer`/`ALLOC.init()`
+/// panic handler / `_start` 签名与 `set_ipc_buffer`/`ALLOC.init()`
 /// （链接期 / EL0 入口 ABI 约束，留在 bin crate 根——卷册 WP-69.3.1 边界，
+/// 蓝图 76 卷一注记：handler 的**定义权**已收归 `eneros_runtime::svc_panic!`
+/// 宏体，但**调用点仍在 bin crate 根**，展开位置与链接期语义不变）。
 /// 移动会改变链接期语义且触碰内存预算铁律）。
 /// 短名经 [`short_name`] 单源由 `parts.service` 推导（"svc-goose"→"goose"，
 /// 与改造前 `driver_service_main` 第二参字面逐字相同，不另设参数双源）。
@@ -1173,9 +1175,17 @@ mod tests {
                 src.contains("#[global_allocator]"),
                 "{name} allocator 留 bin（链接期约束，WP-69.3.1 边界）"
             );
+            // WP-69.3.1「handler 留 bin 根」边界在蓝图 76 卷一后改读单源形：
+            // bin 根顶层的宏调用即定义点（宏体带 handler 属性，展开位置仍是
+            // bin crate 根 ⇒ 链接期语义不变）；bin 内自有定义才是本锁要挡的。
+            let macro_call = concat!("svc_panic", "!(\"");
             assert!(
-                src.contains("#[panic_handler]"),
-                "{name} panic handler 留 bin（no_std bin 根约束）"
+                src.contains(macro_call),
+                "{name} panic handler 未留在 bin 根（单源宏调用是唯一合法形，蓝图 76 卷一）"
+            );
+            assert!(
+                !src.contains(concat!("#", "[panic_handler]")),
+                "{name} 残留自有 panic handler 定义（定义权已收归 svc_panic! 宏体）"
             );
         }
     }
