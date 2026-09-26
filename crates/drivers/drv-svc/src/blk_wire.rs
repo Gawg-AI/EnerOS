@@ -22,6 +22,18 @@
 /// 是为了让"body 有多长"与"数据段上限"在同一处可读）。
 pub use crate::block_cmd::{BLK_READ_MAX, BLK_WRITE_MAX};
 
+/// 信封 → **body** 切片（子码 `payload[0]` 之后的请求段）。
+///
+/// 这是本模块唯一一处伸进信封的读操作：「body 从第 1 字节起」本身就是
+/// 布局知识，收编前在服务端 + 4 替身各写一遍（含 `OFF_BYTES` 局部常量
+/// 两份）。`payload_len == 0` 退化为空 body（不是越界 panic），随后一律
+/// 被各 `parse_*` 的长度门判 [`LenErr::Short`]——与收编前「`payload_len
+/// < 13/9/25/26` → 拒绝」四道门逐案等价。
+pub fn body_of(req: &crate::runtime::DriverRequest) -> &[u8] {
+    let n = (req.payload_len as usize).saturating_sub(1);
+    &req.payload[1..1 + n]
+}
+
 /// body 长度不足（布局违例）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LenErr {

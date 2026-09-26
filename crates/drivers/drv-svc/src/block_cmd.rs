@@ -23,17 +23,6 @@ use alloc::boxed::Box;
 use super::runtime::{DriverRequest, DriverResponse, ST_INVALID, ST_OK, ST_UNAVAILABLE};
 use crate::blk_wire;
 
-/// 信封 **body** 切片（子码 `payload[0]` 之后的请求段）。
-///
-/// `payload_len == 0` 时退化为空 body（而非 `payload[1..0]` 越界 panic）——
-/// 空 body 一律被 [`blk_wire`] 的长度门判 `Short`，与收编前「`payload_len
-/// < 13` → ST_INVALID」四道门逐案等价（收编纪律：门在、词形在、顺序在）。
-#[inline]
-fn body(req: &DriverRequest) -> &[u8] {
-    let n = (req.payload_len as usize).saturating_sub(1);
-    &req.payload[1..1 + n]
-}
-
 /// 子操作码：读（lba 8B + count 4B → data）。
 pub const BLK_CMD_READ: u8 = 0x01;
 /// 子操作码：写（lba 8B + data ≤[`BLK_WRITE_MAX`]）。
@@ -129,7 +118,7 @@ pub fn handle_boot_cmd(
 ) {
     match cmd {
         BLK_BOOT_READ => {
-            let (lba, count) = match blk_wire::parse_boot_read(body(req)) {
+            let (lba, count) = match blk_wire::parse_boot_read(blk_wire::body_of(req)) {
                 Ok(v) => v,
                 Err(_) => {
                     resp.status = ST_INVALID;
@@ -157,7 +146,7 @@ pub fn handle_boot_cmd(
             }
         }
         BLK_BOOT_INSTALL_WRITE => {
-            let (lba, data) = match blk_wire::parse_boot_write(body(req)) {
+            let (lba, data) = match blk_wire::parse_boot_write(blk_wire::body_of(req)) {
                 Ok(v) => v,
                 Err(_) => {
                     resp.status = ST_INVALID;
@@ -199,7 +188,7 @@ pub fn handle_boot_cmd(
                 "[svc-storage] BOOT-TRIAL: RX req_len={} (slot 0x09)",
                 req.payload_len
             );
-            let (secver, image_id) = match blk_wire::parse_boot_trial(body(req)) {
+            let (secver, image_id) = match blk_wire::parse_boot_trial(blk_wire::body_of(req)) {
                 Ok(v) => v,
                 Err(_) => {
                     resp.status = ST_INVALID;
@@ -217,13 +206,14 @@ pub fn handle_boot_cmd(
             }
         }
         BLK_BOOT_CONFIRM => {
-            let (slot_is_a, secver, image_id) = match blk_wire::parse_boot_confirm(body(req)) {
-                Ok(v) => v,
-                Err(_) => {
-                    resp.status = ST_INVALID;
-                    return;
-                }
-            };
+            let (slot_is_a, secver, image_id) =
+                match blk_wire::parse_boot_confirm(blk_wire::body_of(req)) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        resp.status = ST_INVALID;
+                        return;
+                    }
+                };
             let mut inst = crate::boot_install::BootInstall::new(install);
             match inst.confirm_running(slot_is_a, secver, image_id) {
                 Ok(seq) => {
@@ -284,7 +274,7 @@ pub fn handle_block_cmd(
         BLK_CMD_READ => {
             // wire 字段历史名 lba，数据面语义 = 字节偏移（73 批A C9 单位
             // 契约；与 BlockBackend::read 形参同名对齐）。
-            let (offset_bytes, count) = match blk_wire::parse_read(body(req)) {
+            let (offset_bytes, count) = match blk_wire::parse_read(blk_wire::body_of(req)) {
                 Ok(v) => v,
                 Err(_) => {
                     resp.status = ST_INVALID;
@@ -309,7 +299,7 @@ pub fn handle_block_cmd(
             }
         }
         BLK_CMD_WRITE => {
-            let (offset_bytes, data) = match blk_wire::parse_write(body(req)) {
+            let (offset_bytes, data) = match blk_wire::parse_write(blk_wire::body_of(req)) {
                 Ok(v) => v,
                 Err(_) => {
                     resp.status = ST_INVALID;

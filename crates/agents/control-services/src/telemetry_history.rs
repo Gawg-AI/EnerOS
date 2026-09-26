@@ -463,6 +463,7 @@ pub fn open_disk_history<C: EipcSend + Clone + 'static>(
 
 #[cfg(test)]
 mod spec_c_chain_tests {
+    use eneros_drv_svc::blk_wire;
     use eneros_drv_svc::block_cmd::{BLK_CMD_FLUSH, BLK_CMD_READ, BLK_CMD_WRITE};
     use eneros_drv_svc::runtime::{wire, DriverResponse, OP_EXECUTE, ST_OK};
     use eneros_durable_state::StoreError;
@@ -556,31 +557,28 @@ mod spec_c_chain_tests {
             if r.opcode != OP_EXECUTE || r.payload_len == 0 {
                 return Err(());
             }
-            const OFF_BYTES: usize = core::mem::size_of::<u64>();
             let sub = r.payload[0];
             let mut resp = DriverResponse::new(r.correlation, ST_OK, 0xA1);
             match sub {
                 BLK_CMD_READ => {
                     self.read_cmds.set(self.read_cmds.get() + 1);
-                    if (r.payload_len as usize) < 1 + OFF_BYTES + 4 {
+                    // WP-76.2.4：布局门单源；拒绝形态保持 transport Err。
+                    let gate = blk_wire::parse_read(blk_wire::body_of(&r))
+                        .ok()
+                        .filter(|(_, n)| *n > 0 && (*n as usize) <= blk_wire::BLK_READ_MAX);
+                    let Some((off, n)) = gate else {
                         return Err(());
-                    }
-                    let off = u64::from_le_bytes(r.payload[1..1 + OFF_BYTES].try_into().unwrap());
-                    let n = u32::from_le_bytes(
-                        r.payload[1 + OFF_BYTES..1 + OFF_BYTES + 4]
-                            .try_into()
-                            .unwrap(),
-                    ) as usize;
+                    };
+                    let n = n as usize;
                     self.do_read(off, &mut resp.payload[..n])?;
                     resp.payload_len = n as u16;
                 }
                 BLK_CMD_WRITE => {
                     self.write_cmds.set(self.write_cmds.get() + 1);
-                    if (r.payload_len as usize) < 1 + OFF_BYTES {
+                    let Ok((off, data)) = blk_wire::parse_write(blk_wire::body_of(&r)) else {
                         return Err(());
-                    }
-                    let off = u64::from_le_bytes(r.payload[1..1 + OFF_BYTES].try_into().unwrap());
-                    self.do_write(off, &r.payload[1 + OFF_BYTES..r.payload_len as usize])?;
+                    };
+                    self.do_write(off, data)?;
                 }
                 BLK_CMD_FLUSH => {}
                 _ => return Err(()),

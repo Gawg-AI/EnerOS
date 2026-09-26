@@ -384,6 +384,7 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
+    use eneros_drv_svc::blk_wire;
     use eneros_drv_svc::block_cmd::{BLK_CMD_FLUSH, BLK_CMD_READ, BLK_CMD_WRITE};
     use eneros_drv_svc::runtime::{wire, DriverResponse, ST_OK};
 
@@ -464,9 +465,20 @@ mod tests {
             let sub = dreq.payload[0];
             match sub {
                 BLK_CMD_READ => {
-                    let lba = u64::from_le_bytes(dreq.payload[1..9].try_into().unwrap());
-                    let count =
-                        u32::from_le_bytes(dreq.payload[9..13].try_into().unwrap()) as usize;
+                    // WP-76.2.4 弱门修复：本替身收编前**既无长度门也无 count
+                    // 域界**——短载荷直切 `payload[9..13]` 是 panic 面，超上限
+                    // count 在介质边界内还会越 `resp.payload`（461B）写界。
+                    // 门与生产同源（blk_wire 布局 + BLK_READ_MAX）；拒绝形态
+                    // 保持本替身惯例 = status 语义而非 transport Err（其测试族
+                    // 既有契约，卷二 §10 登记不修统一）。
+                    let gate = blk_wire::parse_read(blk_wire::body_of(&dreq))
+                        .ok()
+                        .filter(|(_, n)| *n > 0 && (*n as usize) <= blk_wire::BLK_READ_MAX);
+                    let Some((lba, count)) = gate else {
+                        resp.status = 5; // ST_INVALID
+                        return wire::encode_response(&resp).to_vec();
+                    };
+                    let count = count as usize;
                     let start = lba as usize;
                     let data = self.data.borrow();
                     if start + count > data.len() {
@@ -477,8 +489,10 @@ mod tests {
                     }
                 }
                 BLK_CMD_WRITE => {
-                    let lba = u64::from_le_bytes(dreq.payload[1..9].try_into().unwrap());
-                    let payload = &dreq.payload[9..dreq.payload_len as usize];
+                    let Ok((lba, payload)) = blk_wire::parse_write(blk_wire::body_of(&dreq)) else {
+                        resp.status = 5;
+                        return wire::encode_response(&resp).to_vec();
+                    };
                     let start = lba as usize;
                     let mut data = self.data.borrow_mut();
                     if start + payload.len() > data.len() {
@@ -604,9 +618,11 @@ mod tests {
                 "attach 期探针只发 HEALTH 子命令"
             );
             let mut resp = DriverResponse::new(dreq.correlation, ST_OK, 7);
-            resp.payload[..8].copy_from_slice(&self.blocks.to_le_bytes());
-            resp.payload[8..12].copy_from_slice(&self.bs.to_le_bytes());
-            resp.payload[12] = self.code;
+            resp.payload[..13].copy_from_slice(&blk_wire::pack_health(
+                self.blocks,
+                self.bs,
+                self.code,
+            ));
             resp.payload_len = 13;
             Ok(wire::encode_response(&resp).to_vec())
         }
@@ -697,7 +713,12 @@ mod tests {
                     .push(dreq.payload[..dreq.payload_len as usize].to_vec());
                 let mut resp = DriverResponse::new(dreq.correlation, ST_OK, 7);
                 if dreq.payload[0] == BLK_CMD_READ {
-                    let n = u32::from_le_bytes(dreq.payload[9..13].try_into().unwrap()) as usize;
+                    // 夹具只「应答」不「锁字节」——解请求走同一单源，本测的
+                    // 字节裁判是下面的 frames 对拍（夹具自解一遍布局会自洽）。
+                    let Ok((_, n)) = blk_wire::parse_read(blk_wire::body_of(&dreq)) else {
+                        return Err(());
+                    };
+                    let n = n as usize;
                     for b in resp.payload[..n].iter_mut() {
                         *b = 0x5A;
                     }

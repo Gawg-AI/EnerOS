@@ -13,6 +13,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
+use eneros_drv_svc::blk_wire;
 use eneros_drv_svc::block_cmd::{BLK_CMD_FLUSH, BLK_CMD_READ, BLK_CMD_WRITE};
 use eneros_drv_svc::runtime::{wire, DriverResponse, OP_EXECUTE, ST_OK};
 
@@ -43,20 +44,20 @@ impl eneros_agent_sdk::block_io::EipcSend for FakeStorage {
         if r.opcode != OP_EXECUTE || r.payload_len == 0 {
             return Err(());
         }
-        const OFF_BYTES: usize = core::mem::size_of::<u64>();
         let sub = r.payload[0];
         let mut resp = DriverResponse::new(r.correlation, ST_OK, 0xA1);
         match sub {
             BLK_CMD_READ => {
-                if (r.payload_len as usize) < 1 + OFF_BYTES + 4 {
+                // WP-76.2.4：布局门单源（旧门是手写 `< 1+8+4` 偏移，且无 count
+                // 域界——超 461B 越 `resp.payload` 界）。拒绝形态保持本替身惯例
+                // = transport Err（其夹具以 expect_err 消费）。
+                let gate = blk_wire::parse_read(blk_wire::body_of(&r))
+                    .ok()
+                    .filter(|(_, n)| *n > 0 && (*n as usize) <= blk_wire::BLK_READ_MAX);
+                let Some((off, n)) = gate else {
                     return Err(());
-                }
-                let off = u64::from_le_bytes(r.payload[1..1 + OFF_BYTES].try_into().unwrap());
-                let n = u32::from_le_bytes(
-                    r.payload[1 + OFF_BYTES..1 + OFF_BYTES + 4]
-                        .try_into()
-                        .unwrap(),
-                ) as usize;
+                };
+                let n = n as usize;
                 self.cmds.borrow_mut().push((BLK_CMD_READ, off, n));
                 let disk = self.disk.borrow();
                 let end = off as usize + n;
@@ -67,11 +68,9 @@ impl eneros_agent_sdk::block_io::EipcSend for FakeStorage {
                 resp.payload_len = n as u16;
             }
             BLK_CMD_WRITE => {
-                if (r.payload_len as usize) < 1 + OFF_BYTES {
+                let Ok((off, data)) = blk_wire::parse_write(blk_wire::body_of(&r)) else {
                     return Err(());
-                }
-                let off = u64::from_le_bytes(r.payload[1..1 + OFF_BYTES].try_into().unwrap());
-                let data = &r.payload[1 + OFF_BYTES..r.payload_len as usize];
+                };
                 self.cmds
                     .borrow_mut()
                     .push((BLK_CMD_WRITE, off, data.len()));
