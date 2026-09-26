@@ -1072,4 +1072,79 @@ mod tests {
             "BLK_BOOT_CANCEL seq 响应逐字节"
         );
     }
+    /// WP-76.2.1 §2 步 3 的**短帧负例族**：四道长度门在收编后仍逐门成立。
+    /// 收编前门形是 `payload_len < 13/9/25/26`，现由 [`blk_wire`] 的 body
+    /// 定长门承担——本测喂「差一字节」的四条帧，全部必须 ST_INVALID 且
+    /// **零载荷**（不得半解、不得回 ST_UNAVAILABLE 伪装成设备故障）。
+    #[test]
+    fn blk_short_frames_rejected_by_all_four_length_gates() {
+        let mut service = StorageService::new();
+        service.attach(RamBackend::new(4096));
+
+        // 12B READ（差 1B count 尾字节）。
+        let mut req = mk_req(BLK_CMD_READ);
+        req.payload[1..9].copy_from_slice(&0u64.to_le_bytes());
+        req.payload[9..12].copy_from_slice(&[1, 0, 0]);
+        req.payload_len = 12;
+        let mut resp = DriverResponse::new(1, 0, 1);
+        service.handle(&req, &mut resp);
+        assert_eq!(resp.status, ST_INVALID, "12B READ 必须拒（旧门 <13）");
+        assert_eq!(resp.payload_len, 0, "拒绝臂不得带半解载荷");
+
+        // 8B WRITE（只有 off、无数据段前缀余地 = 旧门 <9）。
+        let mut req = mk_req(BLK_CMD_WRITE);
+        req.payload[1..8].copy_from_slice(&0x0102_0304_0506_0708u64.to_le_bytes()[..7]);
+        req.payload_len = 8;
+        let mut resp = DriverResponse::new(1, 0, 1);
+        service.handle(&req, &mut resp);
+        assert_eq!(resp.status, ST_INVALID, "8B WRITE 必须拒（旧门 <9）");
+
+        // 24B TRIAL / 25B CONFIRM（各差 1B image_id 尾字节）。
+        //
+        // **装配前提（本轮实测得出）**：boot 子码先过能力门——无安装面时
+        // dispatcher 直接落 `ST_UNAVAILABLE`，**先于**长度门（该次序收编前
+        // 即如此，本卷未触碰）。故 boot 面长度门负例必须挂安装面才落在
+        // ST_INVALID 上；能力门次序本身也在下面单立一条断言钉住。
+        let mut svc: StorageService<RamBackend> = StorageService::new();
+        svc.attach(RamBackend::new(64));
+        svc.attach_install(std::boxed::Box::new(InstallFace {
+            ram: RamBackend::new(40000 * 512),
+        }));
+
+        let mut req = mk_req(BLK_BOOT_TRIAL);
+        req.payload_len = 24;
+        let mut resp = DriverResponse::new(1, 0, 1);
+        svc.handle(&req, &mut resp);
+        assert_eq!(resp.status, ST_INVALID, "24B TRIAL 必须拒（旧门 <25）");
+
+        let mut req = mk_req(BLK_BOOT_CONFIRM);
+        req.payload_len = 25;
+        let mut resp = DriverResponse::new(1, 0, 1);
+        svc.handle(&req, &mut resp);
+        assert_eq!(resp.status, ST_INVALID, "25B CONFIRM 必须拒（旧门 <26）");
+
+        // 空 body（只带子码）同样落 ST_INVALID——`body_of` 的
+        // `payload_len == 0` 退化形在此闭合（旧形靠 <13 顺带覆盖）。
+        for sub in [BLK_CMD_READ, BLK_CMD_WRITE] {
+            let req = mk_req(sub);
+            let mut resp = DriverResponse::new(1, 0, 1);
+            service.handle(&req, &mut resp);
+            assert_eq!(resp.status, ST_INVALID, "{sub:#04x} 空 body 必须拒");
+        }
+        for sub in [BLK_BOOT_TRIAL, BLK_BOOT_CONFIRM] {
+            let req = mk_req(sub);
+            let mut resp = DriverResponse::new(1, 0, 1);
+            svc.handle(&req, &mut resp);
+            assert_eq!(resp.status, ST_INVALID, "{sub:#04x} 空 body 必须拒");
+        }
+
+        // 能力门先于长度门（登记既有语义，非本轮引入；若将来把长度门挪到
+        // 能力门之前，本断言即红——两门次序本身也是 wire 语义的一部分）。
+        let mut bare: StorageService<RamBackend> = StorageService::new();
+        bare.attach(RamBackend::new(64));
+        let req = mk_req(BLK_BOOT_TRIAL);
+        let mut resp = DriverResponse::new(1, 0, 1);
+        bare.handle(&req, &mut resp);
+        assert_eq!(resp.status, ST_UNAVAILABLE, "无安装面 = 能力门先于长度门");
+    }
 }
