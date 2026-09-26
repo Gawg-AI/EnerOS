@@ -690,4 +690,116 @@ mod tests {
         assert_eq!(dev.health_status().bad_blocks, 0, "new 不探测=缺省完美");
         assert_eq!(dev.health_status().total_blocks, 8);
     }
+    /// 蓝图 76 卷二 WP-76.2.1：数据面**客户端构帧**逐字节金锁。
+    ///
+    /// 值与 drv-svc `blk_request_bytes_golden_all_subcodes` **同源**
+    /// （off = 0x1122334455667788 / data = 0xE0..0xEF）——服务端「解」与
+    /// 客户端「构」各有一枚字节锁：任一侧移动布局即双红。WP-76.2.2/3 把
+    /// 两侧收编为 `drv-svc::blk_wire` 单源后，本锁仍须原样绿（单源未失守
+    /// 的实证；旧形只是各写一遍）。数据面 READ/WRITE 构帧此前**零字节锁**
+    /// （`boot_install_bodies_are_body_only` 只覆盖 boot 面）。
+    #[test]
+    fn data_plane_frames_match_server_golden() {
+        struct Recorder {
+            frames: Vec<Vec<u8>>,
+        }
+        impl EipcSend for Recorder {
+            fn drv_call(&mut self, req: &[u8], _timeout_ns: u64) -> Result<Vec<u8>, ()> {
+                let dreq = wire::decode_request(req).unwrap();
+                self.frames
+                    .push(dreq.payload[..dreq.payload_len as usize].to_vec());
+                let mut resp = DriverResponse::new(dreq.correlation, ST_OK, 7);
+                if dreq.payload[0] == BLK_CMD_READ {
+                    let n = u32::from_le_bytes(dreq.payload[9..13].try_into().unwrap()) as usize;
+                    for b in resp.payload[..n].iter_mut() {
+                        *b = 0x5A;
+                    }
+                    resp.payload_len = n as u16;
+                }
+                Ok(wire::encode_response(&resp).to_vec())
+            }
+        }
+
+        const OFF: u64 = 0x1122_3344_5566_7788;
+        let pat = [
+            0xE0u8, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xEB, 0xEC, 0xED,
+            0xEE, 0xEF,
+        ];
+        const WRITE_FRAME: [u8; 25] = [
+            0x02, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0xE0, 0xE1, 0xE2, 0xE3, 0xE4,
+            0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF,
+        ];
+        const READ_FRAME: [u8; 13] = [
+            0x01, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x10, 0x00, 0x00, 0x00,
+        ];
+
+        let mut io = BlockIo::new(Recorder { frames: vec![] }, "svc-storage", 7, 1000);
+        io.write_from(OFF, &pat).unwrap();
+        let mut buf = [0u8; 16];
+        io.read_into(OFF, &mut buf).unwrap();
+
+        assert_eq!(io.client.frames.len(), 2);
+        assert_eq!(
+            &io.client.frames[0][..],
+            &WRITE_FRAME[..],
+            "BLK_CMD_WRITE 构帧逐字节（子码 + 字节偏移 8 + data）"
+        );
+        assert_eq!(
+            &io.client.frames[1][..],
+            &READ_FRAME[..],
+            "BLK_CMD_READ 构帧逐字节（子码 + 字节偏移 8 + count 4）"
+        );
+        assert_eq!(&buf, &[0x5Au8; 16], "读回的响应数据段须落在请求偏移");
+    }
+
+    /// 蓝图 76 卷二 WP-76.2.1：`probe_health` **解包方向**逐字节锁。
+    /// 13B 应答（blocks 8 + block_size 4 + 折码 1）是 wire 冻结形状——
+    /// 客户端只消费 blocks 与折码，`block_size` 为回显冗余（本地已知）。
+    /// 短于 13B 一律 `None`（观测面零裁决：不得因应答形状拖垮构造）。
+    #[test]
+    fn health_response_bytes_decode_lock() {
+        struct Fixed {
+            bytes: Vec<u8>,
+        }
+        impl EipcSend for Fixed {
+            fn drv_call(&mut self, req: &[u8], _timeout_ns: u64) -> Result<Vec<u8>, ()> {
+                let dreq = wire::decode_request(req).unwrap();
+                assert_eq!(dreq.payload[0], BLK_CMD_HEALTH);
+                let mut resp = DriverResponse::new(dreq.correlation, ST_OK, 7);
+                let n = self.bytes.len();
+                resp.payload[..n].copy_from_slice(&self.bytes);
+                resp.payload_len = n as u16;
+                Ok(wire::encode_response(&resp).to_vec())
+            }
+        }
+        // 与 drv-svc HEALTH 金锁同源（blocks=4096 / bs=1 / 折码 2=坏块）。
+        const RESP_BAD: [u8; 13] = [
+            0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02,
+        ];
+        let mut io = BlockIo::new(
+            Fixed {
+                bytes: RESP_BAD.to_vec(),
+            },
+            "svc-storage",
+            7,
+            1000,
+        );
+        let h = io.probe_health().expect("13B 定形应答必须可解");
+        assert_eq!(h.total_blocks, 4096, "blocks 取 payload[0..8] 小端");
+        assert_eq!(h.bad_blocks, 1, "折码 2 → bad_blocks=1");
+        assert_eq!(h.wear_level, 0);
+        assert_eq!(h.remaining_life, 100);
+        assert_eq!(h.temperature, 0, "wire 无温度域（恒 0）");
+
+        // 短一字节 = 形状外 → None（不得半解）。
+        let mut io = BlockIo::new(
+            Fixed {
+                bytes: RESP_BAD[..12].to_vec(),
+            },
+            "svc-storage",
+            7,
+            1000,
+        );
+        assert!(io.probe_health().is_none(), "12B 短应答必须拒解");
+    }
 }

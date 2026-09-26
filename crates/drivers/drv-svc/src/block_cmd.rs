@@ -842,4 +842,227 @@ mod tests {
             }
         }
     }
+
+    // ===== 蓝图 76 卷二 WP-76.2.1：块命令 wire 逐字节金锁（全子码）=====
+    //
+    // 工艺 = 与 [`blk_boot_guard_response_bytes_golden`] 同源：期望值是**现服务端
+    // 跑出来的**（一次性夹具测试 `-- --nocapture` 打 hex 后固化为字面量），不是
+    // 手算——手算会把「我以为的布局」当成「实际布局」，金锁就失去判别力。
+    // 本族是 WP-76.2.2~4 全部重构的**唯一字节裁判**：任何 wire 布局移动都在这里
+    // 变红（含替身收编后与 blk_wire 的对拍）。
+    //
+    // 夹具事实（生成时的取值，勿"顺手改得更漂亮"——改了即换 wire）：
+    //   off = 0x1122334455667788 / count = 0x99AADDBB / data 模式串 = 0xE0..0xEF
+    //   trial: secver = 0x0B0C0D0E0F101112 + image_id = 0xA0..0xAF
+    //   boot 事务夹具 = A 运行身份（secver 1 / release_id 全零）+ bootctrl 种子
+    //   （A=successful(15) / B=successful(14) / sequence=1）⇒ 非活动 = B。
+
+    /// 数据面 + boot 面**请求**帧逐字节（READ/WRITE/FLUSH/BOOT_READ）。
+    /// READ 与 BOOT_READ 布局同形而**单位不同**（字节偏移 vs 扇区 LBA）——
+    /// 金锁锁字节，单位史实写进 [`blk_wire`] 模块 doc（WP-76.2.2）。
+    #[test]
+    fn blk_request_bytes_golden_all_subcodes() {
+        let off = 0x1122_3344_5566_7788u64;
+        let count = 0x99AA_DDBBu32;
+        let pat = [
+            0xE0u8, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xEB, 0xEC, 0xED,
+            0xEE, 0xEF,
+        ];
+
+        const READ_REQ: [u8; 13] = [
+            0x01, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0xBB, 0xDD, 0xAA, 0x99,
+        ];
+        const BOOT_READ_REQ: [u8; 13] = [
+            0x05, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0xBB, 0xDD, 0xAA, 0x99,
+        ];
+        const WRITE_REQ: [u8; 25] = [
+            0x02, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0xE0, 0xE1, 0xE2, 0xE3, 0xE4,
+            0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF,
+        ];
+        const FLUSH_REQ: [u8; 1] = [0x03];
+
+        let mut req = mk_req(BLK_CMD_READ);
+        req.payload[1..9].copy_from_slice(&off.to_le_bytes());
+        req.payload[9..13].copy_from_slice(&count.to_le_bytes());
+        req.payload_len = 13;
+        assert_eq!(&req.payload[..13], &READ_REQ, "BLK_CMD_READ 请求逐字节");
+
+        let mut req = mk_req(BLK_BOOT_READ);
+        req.payload[1..9].copy_from_slice(&off.to_le_bytes());
+        req.payload[9..13].copy_from_slice(&count.to_le_bytes());
+        req.payload_len = 13;
+        assert_eq!(
+            &req.payload[..13],
+            &BOOT_READ_REQ,
+            "BLK_BOOT_READ 请求逐字节"
+        );
+
+        let mut req = mk_req(BLK_CMD_WRITE);
+        req.payload[1..9].copy_from_slice(&off.to_le_bytes());
+        req.payload[9..25].copy_from_slice(&pat);
+        req.payload_len = 25;
+        assert_eq!(&req.payload[..25], &WRITE_REQ, "BLK_CMD_WRITE 请求逐字节");
+
+        let req = mk_req(BLK_CMD_FLUSH);
+        assert_eq!(
+            &req.payload[..1],
+            &FLUSH_REQ,
+            "BLK_CMD_FLUSH 请求 = 只带子码"
+        );
+    }
+
+    /// 数据面**响应**逐字节：READ 数据段（`payload_len = count`，数据从
+    /// payload[0] 起、无头部）、HEALTH 13B（blocks/bs/折码）、FLUSH 空。
+    #[test]
+    fn blk_data_plane_response_bytes_golden() {
+        let pat = [
+            0xE0u8, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xEB, 0xEC, 0xED,
+            0xEE, 0xEF,
+        ];
+        const HEALTH_RESP: [u8; 13] = [
+            0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // blocks = 4096
+            0x01, 0x00, 0x00, 0x00, // block_size = 1（RamBackend 口径）
+            0x00, // 折码 0 = healthy
+        ];
+
+        let mut service = StorageService::new();
+        service.attach(RamBackend::new(4096));
+
+        let mut resp = DriverResponse::new(1, 0, 1);
+        let mut w = mk_req(BLK_CMD_WRITE);
+        w.payload[1..9].copy_from_slice(&0x100u64.to_le_bytes());
+        w.payload[9..25].copy_from_slice(&pat);
+        w.payload_len = 25;
+        service.handle(&w, &mut resp);
+        assert_eq!(resp.status, ST_OK);
+        assert_eq!(resp.payload_len, 0, "WRITE 成功响应零载荷");
+
+        let mut resp = DriverResponse::new(1, 0, 1);
+        let mut r = mk_req(BLK_CMD_READ);
+        r.payload[1..9].copy_from_slice(&0x100u64.to_le_bytes());
+        r.payload[9..13].copy_from_slice(&16u32.to_le_bytes());
+        r.payload_len = 13;
+        service.handle(&r, &mut resp);
+        assert_eq!(resp.status, ST_OK);
+        assert_eq!(resp.payload_len, 16, "READ 响应 payload_len = 请求 count");
+        assert_eq!(&resp.payload[..16], &pat, "READ 响应数据段逐字节");
+
+        let mut resp = DriverResponse::new(1, 0, 1);
+        service.handle(&mk_req(BLK_CMD_FLUSH), &mut resp);
+        assert_eq!(resp.status, ST_OK);
+        assert_eq!(
+            resp.payload_len, 0,
+            "FLUSH 响应零载荷（每请求独立响应结构）"
+        );
+
+        let mut resp = DriverResponse::new(1, 0, 1);
+        service.handle(&mk_req(BLK_CMD_HEALTH), &mut resp);
+        assert_eq!(resp.status, ST_OK);
+        assert_eq!(resp.payload_len, 13);
+        assert_eq!(&resp.payload[..13], &HEALTH_RESP, "HEALTH 13B 逐字节");
+    }
+
+    /// boot 面**请求**逐字节：TRIAL 25B（secver 8 + image_id 16）、
+    /// CONFIRM 26B（slot_is_a 1 + secver 8 + image_id 16）。
+    /// CONFIRM 首字节判据是 `== 1`（非「非零即 A」）——`slot_is_a` 解析单源
+    /// 在 [`blk_wire::parse_boot_confirm`]，本锁冻结其线形。
+    #[test]
+    fn blk_boot_transaction_request_bytes_golden() {
+        let secver = 0x0B0C_0D0E_0F10_1112u64;
+        let id = [
+            0xA0u8, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD,
+            0xAE, 0xAF,
+        ];
+        const TRIAL_REQ: [u8; 25] = [
+            0x09, 0x12, 0x11, 0x10, 0x0F, 0x0E, 0x0D, 0x0C, 0x0B, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4,
+            0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF,
+        ];
+        const CONFIRM_REQ: [u8; 26] = [
+            0x0A, 0x01, 0x12, 0x11, 0x10, 0x0F, 0x0E, 0x0D, 0x0C, 0x0B, 0xA0, 0xA1, 0xA2, 0xA3,
+            0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF,
+        ];
+
+        let mut req = mk_req(BLK_BOOT_TRIAL);
+        req.payload[1..9].copy_from_slice(&secver.to_le_bytes());
+        req.payload[9..25].copy_from_slice(&id);
+        req.payload_len = 25;
+        assert_eq!(&req.payload[..25], &TRIAL_REQ, "BLK_BOOT_TRIAL 请求逐字节");
+
+        let mut req = mk_req(BLK_BOOT_CONFIRM);
+        req.payload[1] = 1;
+        req.payload[2..10].copy_from_slice(&secver.to_le_bytes());
+        req.payload[10..26].copy_from_slice(&id);
+        req.payload_len = 26;
+        assert_eq!(
+            &req.payload[..26],
+            &CONFIRM_REQ,
+            "BLK_BOOT_CONFIRM 请求逐字节"
+        );
+    }
+
+    /// boot 面**事务响应 seq** 逐字节（TRIAL/CANCEL 成功臂 8B 小端 + len=8）。
+    /// CONFIRM 成功臂不在此锁：block_cmd 的 `InstallFace` 只建模 A 运行身份，
+    /// confirm 过身份门后卡在记录重编码（seq 成功属 boot_install 事务域，
+    /// API 级锁 `confirm_marks_successful_and_sequence_advances` 已存）——
+    /// seq **打包字节形**与 TRIAL/CANCEL 同一处代码，两臂已足以冻结
+    /// （收编后由 [`blk_wire::pack_seq_resp`] 单源承担）。
+    #[test]
+    fn blk_boot_seq_response_bytes_golden() {
+        use eneros_boot_protocol::boot_control::BOOT_CONTROL_RECORD_SIZE;
+        const TRIAL_SEQ_RESP: [u8; 8] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        const CANCEL_SEQ_RESP: [u8; 8] = [0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+
+        // 种子：A 运行 successful(15) / B successful(14) / sequence=1
+        // ⇒ trial 提升非活动 B → sequence 2，cancel 再 +1 → 3。
+        let sid = [9u8; 16];
+        let mut ctl = eneros_boot_protocol::BootControl::factory(sid, 1, sid);
+        ctl.slot_a = eneros_boot_protocol::SlotState::successful(15, 1, sid);
+        ctl.slot_b = eneros_boot_protocol::SlotState::successful(14, 1, sid);
+        ctl.sequence = 1;
+        let rec = ctl.encode().unwrap();
+        let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
+            eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
+        );
+        let bc_off = bc_lba as usize * 512;
+
+        let mut face = InstallFace {
+            ram: RamBackend::new(40000 * 512),
+        };
+        face.ram.data[bc_off..bc_off + BOOT_CONTROL_RECORD_SIZE]
+            .copy_from_slice(&rec[..BOOT_CONTROL_RECORD_SIZE]);
+
+        let mut svc: StorageService<RamBackend> = StorageService::new();
+        svc.attach(RamBackend::new(64));
+        svc.attach_install(std::boxed::Box::new(face));
+
+        let secver = 0x0B0C_0D0E_0F10_1112u64;
+        let id = [
+            0xA0u8, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD,
+            0xAE, 0xAF,
+        ];
+        let mut req = mk_req(BLK_BOOT_TRIAL);
+        req.payload[1..9].copy_from_slice(&secver.to_le_bytes());
+        req.payload[9..25].copy_from_slice(&id);
+        req.payload_len = 25;
+
+        let mut resp = DriverResponse::new(1, 0, 1);
+        svc.handle(&req, &mut resp);
+        assert_eq!(resp.status, ST_OK, "trial 必须成功（否则本锁夹具漂移）");
+        assert_eq!(resp.payload_len, 8, "seq 响应定长 8B");
+        assert_eq!(
+            &resp.payload[..8],
+            &TRIAL_SEQ_RESP,
+            "BLK_BOOT_TRIAL seq 响应逐字节"
+        );
+
+        let mut resp = DriverResponse::new(1, 0, 1);
+        svc.handle(&mk_req(BLK_BOOT_CANCEL), &mut resp);
+        assert_eq!(resp.status, ST_OK);
+        assert_eq!(resp.payload_len, 8);
+        assert_eq!(
+            &resp.payload[..8],
+            &CANCEL_SEQ_RESP,
+            "BLK_BOOT_CANCEL seq 响应逐字节"
+        );
+    }
 }
