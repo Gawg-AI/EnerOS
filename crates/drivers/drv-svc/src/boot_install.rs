@@ -7,7 +7,8 @@
 //! 后续调用恒挂）。修订 = 事务随 boot 后端下沉到 svc-storage：每事务
 //! **单次 guard 式 IPC**（与首调同型），bootctrl 记录零 IPC 搬运。
 //!
-//! wire（BLK_BOOT_* 子码，handle_boot_cmd 分派）：
+//! wire（BLK_BOOT_* 子码，handle_boot_cmd 分派；**字段偏移单源 =
+//! [`crate::blk_wire`]，本表是叙述不是定义处**）：
 //!
 //! | 子码 | 请求 | 响应 |
 //! |---|---|---|
