@@ -10,6 +10,11 @@
 //! 自咬纪律（R14 两教训）：所有针**运行期拼接**（本文件不出现连续针形，
 //! 由 `guard_source_carries_no_contiguous_needles` 上锁），且断言方向选择上
 //! 「误红不假绿」——宁可挡住注释里的巧合文本，不放过真实回流。
+//!
+//! 被扫对象同款纪律（独立复查轮补；变异 MD/ME 两条假绿各自实跑到绿后才上的锁）：
+//! 判据① 调用针**宿主路径入针 + 独占一行**——调用点回指同名局部宏即单源失守，
+//! 旧宽松形放过它而全绿；判据② 宏体针只在**宏定义之后**数且恰一次——只数次数
+//! 不够（宏 doc 复述针形 + 宏体删半边是一增一减，计数仍为 1），须锚定扫描域。
 
 // 测试断言允许 panic!/expect!（仓库惯例：elf-loader/ota-ab/board-facts 先例
 // ——disallowed_macros 是生产代码纪律，本模块 cfg(test) 通篇是判据断言）。
@@ -19,9 +24,11 @@ extern crate std;
 
 use std::fs;
 
-/// ① 宏调用针前段（宏名 + 调用括号 + 开引号）——分段书写：本文件一旦出现
+/// ① 宏调用针前段（**宏宿主路径** + 宏名 + 调用括号 + 开引号）——分段书写：本文件一旦出现
 /// 连续针形，`guard_source_carries_no_contiguous_needles` 即红（守卫自咬锁）。
-const CALL_OPEN: &str = concat!("svc_panic", "!(\"");
+/// 宿主路径入针：只写宏名则调用点回指任一同名 `svc_panic!`（例如本 crate 复刻
+/// 一份静默体，即本卷收编前的原病灶形）判据①仍绿——「单源」失守而全绿。
+const CALL_OPEN: &str = concat!("eneros_runtime", "::svc_panic", "!(\"");
 /// ② 自有 panic handler 属性——禁物。
 const HANDLER_ATTR: &str = concat!("#", "[panic_handler]");
 /// ③ 手抄 handler 函数头——禁物（挡住绕过属性拼写的回流形态）。
@@ -205,15 +212,17 @@ fn el0_bins_vocalized_via_single_macro() {
         "守卫表条目数与卷一清点（21 目标 + storage + business 8）不符"
     );
     for &(name, src) in TABLE {
-        let want = [CALL_OPEN, name, "\")"].concat();
-        assert!(src.contains(&want), "{name} 未以 {want} 收编 panic handler");
-        // 针须为**语句**而非注释/文档里的巧合文本：取命中所在行的前缀，
-        // 只允许空（行首）或 `::`（跨 crate 路径形），含 `//` 一律红。
-        let at = src.find(&want).unwrap_or_default();
-        let head = src[..at].rsplit('\n').next().unwrap_or("").trim_end();
-        assert!(
-            head.is_empty() || (head.ends_with("::") && !head.contains("//")),
-            "{name} 的宏调用不是语句（行首前缀 {head:?} 像注释/文档——假绿通道）"
+        // 冻结形 = 「bin 只留一行调用」（§3 步 1）：针含**宏宿主路径**，调用语句
+        // 独占一行且恰一次。旧形（`contains` + 首处命中行前缀只要求以 `::` 结尾）
+        // 放过变异 MD——调用点回指本 crate 复刻的同名静默宏 ⇒ 单源失守而全绿。
+        // 残余：跨行块注释包住的整行语句仍能伪造正向命中，但该形下 bin 无 handler
+        // ⇒ target 链接期硬错，不可能静默出货；登记不修（登记册 B76-1 二次复查轮）。
+        let stmt = [CALL_OPEN, name, "\");"].concat();
+        let hits = src.lines().filter(|l| l.trim() == stmt).count();
+        assert_eq!(
+            hits, 1,
+            "{name} 未以独占一行的 {stmt} 收编 panic handler（命中 {hits} 次 \
+             = 静默回流 / 注释伪造 / 宏宿主不是 eneros-runtime / 行内附加文本）"
         );
         assert!(
             !src.contains(HANDLER_ATTR),
@@ -230,19 +239,25 @@ fn el0_bins_vocalized_via_single_macro() {
 #[test]
 fn macro_body_locks_print_and_suspend_halves() {
     let macro_src = include_str!("lib.rs");
-    assert!(
-        macro_src.contains(PRINT_TEMPLATE),
-        "svc_panic! 宏体缺打印半边（词形模板被删 = 声化失效）"
-    );
-    assert!(
-        macro_src.contains(SUSPEND_TOKEN),
-        "svc_panic! 宏体缺挂起半边（ADR-026 §1 不复位整机语义）"
-    );
+    // 扫描域锚定在**宏定义之后**：宏 doc 在定义之前，若按整文件计数，「doc 复述
+    // 针形」与「宏体半边已删」一增一减仍是恰一次（变异 ME 实证绿）——锚定后
+    // doc 落在扫描域外，宏体改动必红。
+    let Some(def_at) = macro_src.find(concat!("macro_rules! ", "svc_panic")) else {
+        panic!("svc_panic! 宏定义不在 lib.rs（判据②失去被扫对象）");
+    };
+    let macro_body = &macro_src[def_at..];
     let handler_sig = ["fn ", "panic(info: &core::panic::PanicInfo)"].concat();
-    assert!(
-        macro_src.contains(&handler_sig),
-        "svc_panic! 宏体不再定义 panic handler（单源本体失守）"
-    );
+    for (label, needle) in [
+        ("打印半边", PRINT_TEMPLATE),
+        ("挂起半边", SUSPEND_TOKEN),
+        ("handler 签名", handler_sig.as_str()),
+    ] {
+        let hits = macro_body.matches(needle).count();
+        assert_eq!(
+            hits, 1,
+            "svc_panic! 宏体{label}针在宏定义之后命中 {hits} 次（0=半边被删=声化/挂起失效；≥2=宏体复述或双定义）"
+        );
+    }
 }
 
 /// 完整性：四族 bin 目录被守卫表**完全划分**——每个 bin 要么在表内（宏收编），
