@@ -1759,6 +1759,7 @@ dependencies = [
  "eneros-hal",
  "eneros-handover-abi",
  "eneros-ipc-wire",
+ "eneros-mgmt-api",
  "eneros-net",
  "eneros-rs485",
  "eneros-runtime",

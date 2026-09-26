@@ -88,81 +88,54 @@ pub enum ProbeState {
     Done,
 }
 
+/// 探针固定字段组（**数据**侧——文法在 `eneros_mgmt_api::mgt1_frame`，宽度
+/// 判据/偏移一律不问本文件；蓝图 76 卷二 WP-76.2.6 数据与文法分离）。
+pub fn probe_fields() -> eneros_mgmt_api::mgt1_frame::SessionFields<'static> {
+    eneros_mgmt_api::mgt1_frame::SessionFields {
+        principal: PROBE_PRINCIPAL,
+        roles: &PROBE_ROLES,
+        tenant: &PROBE_TENANT,
+        channel: PROBE_CHANNEL,
+        expiry: PROBE_EXPIRY,
+        issued: PROBE_ISSUED,
+    }
+}
+
 /// 帧构造（v2 会话 + 固定 token/签名 + 变长动作段）。
+///
+/// 拼装逻辑单源 [`eneros_mgmt_api::mgt1_frame`]——svc-mgmt 解码端与本协议
+/// 构建端从此共用同一份宽度（收编前此处是 `MGT1` + 五段会话 + token + 签名
+/// 字段的逐字节镜像手拼，靠约定对齐，一端改版另一端静默错位）。输出字节
+/// 由 host 金锁 `tests_70_12::probe_frame_bytes_are_frozen` 冻结（gate 在仓
+/// 库外按同一布局重算 token 并签名，故此字节串是契约）。
 pub fn build_frame(request_id: u64, action: &[u8], arg: &[u8]) -> alloc::vec::Vec<u8> {
     use crate::mgt_probe::mgt_probe_data::PROBE_SIG;
-    let mut out =
-        alloc::vec::Vec::with_capacity(5 + 48 + 64 + 74 + 8 + 1 + action.len() + arg.len());
-    out.extend_from_slice(b"MGT1");
-    out.push(0x00); // 保留字节（svc-mgmt handler 自 offset 5 起 parse）
-                    // session v1 48B。
-    out.extend_from_slice(PROBE_PRINCIPAL);
-    out.extend_from_slice(&PROBE_ROLES);
-    out.extend_from_slice(&PROBE_TENANT);
-    out.extend_from_slice(PROBE_CHANNEL);
-    out.extend_from_slice(&PROBE_EXPIRY.to_le_bytes());
-    // token 64B（魔数 + 同域字段 + issued）。
-    out.extend_from_slice(b"MGTPTK1\0");
-    out.extend_from_slice(PROBE_PRINCIPAL);
-    out.extend_from_slice(&PROBE_ROLES);
-    out.extend_from_slice(&PROBE_TENANT);
-    out.extend_from_slice(PROBE_CHANNEL);
-    out.extend_from_slice(&PROBE_EXPIRY.to_le_bytes());
-    out.extend_from_slice(&PROBE_ISSUED.to_le_bytes());
-    // 签名字段 74B = u16 实长 + DER + 零填充。
-    let sig_len = PROBE_SIG.len() as u16;
-    out.extend_from_slice(&sig_len.to_le_bytes());
-    out.extend_from_slice(PROBE_SIG);
-    out.resize(out.len() + (74 - 2 - PROBE_SIG.len()), 0);
-    // request_id + action + arg。
-    out.extend_from_slice(&request_id.to_le_bytes());
-    out.push(action.len() as u8);
-    out.extend_from_slice(action);
-    out.extend_from_slice(arg);
-    out
+    eneros_mgmt_api::mgt1_frame::build_v2_frame(&probe_fields(), PROBE_SIG, request_id, action, arg)
+        .expect("探针帧字段宽度合法（16/4/4/16 + DER <= 72 + action <= 255）")
 }
 
 /// 伪 v2 帧（full-shape + 垃圾签名——BadSignature 拒绝词形负例）。
+///
+/// 畸形刻意保留：声明实长 70B 而字段内写满 72B 非零（零填充检亦必拒）——
+/// 声明与实写分离由 `build_v2_frame_with_sig_field` 的两个参数表达。
 pub fn build_forged_frame(request_id: u64, action: &[u8]) -> alloc::vec::Vec<u8> {
-    let mut out = alloc::vec::Vec::with_capacity(200);
-    out.extend_from_slice(b"MGT1");
-    out.push(0x00);
-    out.extend_from_slice(PROBE_PRINCIPAL);
-    out.extend_from_slice(&PROBE_ROLES);
-    out.extend_from_slice(&PROBE_TENANT);
-    out.extend_from_slice(PROBE_CHANNEL);
-    out.extend_from_slice(&PROBE_EXPIRY.to_le_bytes());
-    out.extend_from_slice(b"MGTPTK1\0");
-    out.extend_from_slice(PROBE_PRINCIPAL);
-    out.extend_from_slice(&PROBE_ROLES);
-    out.extend_from_slice(&PROBE_TENANT);
-    out.extend_from_slice(PROBE_CHANNEL);
-    out.extend_from_slice(&PROBE_EXPIRY.to_le_bytes());
-    out.extend_from_slice(&PROBE_ISSUED.to_le_bytes());
-    // 垃圾签名：非 DER 乱字节（der_decode_signature 必拒）。
-    out.extend_from_slice(&70u16.to_le_bytes());
-    out.extend_from_slice(&[0xDE; 72]);
-    out.extend_from_slice(&request_id.to_le_bytes());
-    out.push(action.len() as u8);
-    out.extend_from_slice(action);
-    out
+    use eneros_mgmt_api::mgt1_frame;
+    let garbage = [0xDEu8; mgt1_frame::SIG_DER_MAX];
+    mgt1_frame::build_v2_frame_with_sig_field(
+        &probe_fields(),
+        70u16,
+        &garbage,
+        request_id,
+        action,
+        &[],
+    )
+    .expect("伪造帧仅签名段畸形，字段宽度仍合法")
 }
 
 /// 短尾 v2 帧（带魔数缺签名段——62..199B 缝隙攻击帧，P0 回归负例）。
 pub fn build_truncated_frame(request_id: u64, action: &[u8]) -> alloc::vec::Vec<u8> {
-    let mut out = alloc::vec::Vec::with_capacity(100);
-    out.extend_from_slice(b"MGT1");
-    out.push(0x00);
-    out.extend_from_slice(PROBE_PRINCIPAL);
-    out.extend_from_slice(&PROBE_ROLES);
-    out.extend_from_slice(&PROBE_TENANT);
-    out.extend_from_slice(PROBE_CHANNEL);
-    out.extend_from_slice(&PROBE_EXPIRY.to_le_bytes());
-    out.extend_from_slice(b"MGTPTK1\0");
-    out.extend_from_slice(&request_id.to_le_bytes());
-    out.push(action.len() as u8);
-    out.extend_from_slice(action);
-    out
+    eneros_mgmt_api::mgt1_frame::build_truncated_v2_frame(&probe_fields(), request_id, action)
+        .expect("短尾帧仅尾段截断，字段宽度仍合法")
 }
 
 /// BOOT 守卫查询帧（OTA1 0x0A；无 arg）。
@@ -607,6 +580,117 @@ mod tests_70_12 {
         // 实弹形态：未注入 ENEROS_MGT_PROBE_BUNDLE ⇒ PROBE_BUNDLE 为空。
         assert_eq!(replay_arg_for(&[], 0), None);
         assert_eq!(replay_arg_for(&[0u8; 511], 1), None);
+    }
+
+    /// 十六进制小写编码（仅测试侧取证用）。
+    fn hex(v: &[u8]) -> alloc::string::String {
+        let mut o = alloc::string::String::new();
+        for b in v {
+            o.push_str(&alloc::format!("{b:02x}"));
+        }
+        o
+    }
+
+    /// **探针构帧字节金锁**（蓝图 76 卷二 WP-76.2.6 硬前置，先于任何重构落
+    /// 地）：`build_frame`/`build_forged_frame`/`build_truncated_frame` 的输
+    /// 出逐字节冻结。这不是实现细节而是**仓库外契约**——gate
+    /// （tools/run70-vol6-gate.sh 段0）用 Python 按同一布局重算 token 再签名，
+    /// 差一字节即门禁全红；文法收编进 `mgt1_frame` 后此锁就是"零字节移动"
+    /// 的实证。
+    ///
+    /// 仅 host 形态（`PROBE_SIG` 空）可逐字节钉：`qemu-test-synth` 装配会把
+    /// gate 现签的 DER 注入签名字段，那段落随门运行变化（结构不变量由
+    /// [`probe_frame_structure_survives_grammar_move`] 覆盖）。
+    #[cfg(not(feature = "qemu-test-synth"))]
+    #[test]
+    fn probe_frame_bytes_are_frozen() {
+        const FRAME_GET1: &str =
+            "4d4754310073746174696f6e2d6f70730000000000020000000100000070726f626500\
+    0000000000000000000000d8c32cbb0300004d475450544b310073746174696f6e2d6f\
+    70730000000000020000000100000070726f6265000000000000000000000000d8c32c\
+    bb0300000068e5cf8b0100000000000000000000000000000000000000000000000000\
+    0000000000000000000000000000000000000000000000000000000000000000000000\
+    000000000000000000000000000000000a000000000000000a636f6e6669672d676574\
+    636f6e74726f6c2d7772697465";
+        const FRAME_CONFLICT: &str =
+            "4d4754310073746174696f6e2d6f70730000000000020000000100000070726f626500\
+    0000000000000000000000d8c32cbb0300004d475450544b310073746174696f6e2d6f\
+    70730000000000020000000100000070726f6265000000000000000000000000d8c32c\
+    bb0300000068e5cf8b0100000000000000000000000000000000000000000000000000\
+    0000000000000000000000000000000000000000000000000000000000000000000000\
+    00000000000000000000000000000000d8000000000000000a636f6e6669672d736574\
+    5a5a5a";
+        const FRAME_FORGED: &str =
+            "4d4754310073746174696f6e2d6f70730000000000020000000100000070726f626500\
+    0000000000000000000000d8c32cbb0300004d475450544b310073746174696f6e2d6f\
+    70730000000000020000000100000070726f6265000000000000000000000000d8c32c\
+    bb0300000068e5cf8b0100004600dedededededededededededededededededededede\
+    dedededededededededededededededededededededededededededededededededede\
+    dedededededededededededededededef0be000000000000067265626f6f74";
+        const FRAME_TRUNCATED: &str =
+            "4d4754310073746174696f6e2d6f70730000000000020000000100000070726f626500\
+    0000000000000000000000d8c32cbb0300004d475450544b3100efbe00000000000006\
+    7265626f6f74";
+        assert_eq!(
+            hex(&build_frame(10, b"config-get", b"control-write")),
+            FRAME_GET1
+        );
+        assert_eq!(
+            hex(&build_frame(216, b"config-set", b"ZZZ")),
+            FRAME_CONFLICT
+        );
+        assert_eq!(
+            hex(&build_forged_frame(0xBEEF + 1, b"reboot")),
+            FRAME_FORGED
+        );
+        assert_eq!(
+            hex(&build_truncated_frame(0xBEEF, b"reboot")),
+            FRAME_TRUNCATED
+        );
+    }
+
+    /// 结构不变量（与 gate 注入的签名内容无关，故门构建面同样咬合）：探针
+    /// v2 帧的会话块/token 魔数/request_id/action 段位置 = `mgt1_frame` 文法
+    /// 偏移；短尾帧判 `V2Truncated`（不落回 v1）。探针-解码器镜像从此由 host
+    /// 测试兜住（卷二 §7 步骤 5 的牙齿）。
+    #[test]
+    fn probe_frame_structure_survives_grammar_move() {
+        use eneros_mgmt_api::mgt1_frame;
+        let f = build_frame(260, b"config-get", b"control-write");
+        assert_eq!(
+            mgt1_frame::classify_session(&f),
+            mgt1_frame::SessionShape::V2
+        );
+        assert_eq!(
+            mgt1_frame::request_id(&f, mgt1_frame::SessionShape::V2),
+            Some(260)
+        );
+        let (action, arg) =
+            mgt1_frame::action_and_arg(&f, mgt1_frame::SessionShape::V2).expect("探针帧尾段可借出");
+        assert_eq!(action, b"config-get");
+        assert_eq!(arg, b"control-write");
+        let tail = mgt1_frame::v2_tail(&f).expect("完整 v2 尾段");
+        let tok = mgt1_frame::token_view(&tail[..mgt1_frame::TOKEN_LEN]).expect("token");
+        assert_eq!(tok.principal, PROBE_PRINCIPAL);
+        assert_eq!(tok.roles, &PROBE_ROLES);
+        assert_eq!(tok.channel, PROBE_CHANNEL);
+        assert_eq!(tok.expiry, PROBE_EXPIRY);
+        assert_eq!(tok.issued, PROBE_ISSUED);
+        assert_eq!(
+            tok.tenant,
+            u32::from_le_bytes(PROBE_TENANT),
+            "探针 token 与 gate 重算布局同源"
+        );
+        let t = build_truncated_frame(0xBEEF, b"reboot");
+        assert_eq!(
+            mgt1_frame::classify_session(&t),
+            mgt1_frame::SessionShape::V2Truncated
+        );
+        let g = build_forged_frame(0xBEEF + 1, b"reboot");
+        assert_eq!(
+            mgt1_frame::classify_session(&g),
+            mgt1_frame::SessionShape::V2
+        );
     }
 
     #[test]

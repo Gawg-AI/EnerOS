@@ -158,6 +158,24 @@ pub enum RpcStatus {
     Failed,
 }
 
+impl RpcStatus {
+    /// MGT1 响应首字节（状态字节映射**单源**——蓝图 76 卷二 WP-76.2.6）。
+    ///
+    /// svc-mgmt 的 v2 验签臂与 v1 无签臂曾逐字抄两份同样的 match（漂移即
+    /// 探针判据分叉）。值冻结：`Completed=1 / Accepted=2 / Failed=0`——
+    /// root 探针与 agent-sdk 消费方依赖，改动是破坏性 wire 变更。
+    ///
+    /// `RpcStatus` 刻意留在本模块（它带 exec 环与 `ActionResult` 语义，不
+    /// 是 mgmt-api 的契约面；卷二 §10 登记不修项）。
+    pub fn wire_byte(self) -> u8 {
+        match self {
+            RpcStatus::Completed => 1u8,
+            RpcStatus::Accepted => 2,
+            RpcStatus::Failed => 0,
+        }
+    }
+}
+
 /// 动作执行结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionResult {
@@ -1575,5 +1593,14 @@ mod spec_c_history_query_tests {
         assert_eq!(r.payload.as_deref(), Some(&[0xAAu8, 0xBB, 0xCC][..]));
         assert_eq!(rpc.audit.len(), 1);
         assert_eq!(rpc.audit[0].action, "history-query");
+    }
+
+    /// 蓝图 76 卷二 WP-76.2.6：MGT1 响应首字节映射冻结（svc-mgmt 两臂从此
+    /// 共用 [`RpcStatus::wire_byte`]——值改动即破坏 root 探针/agent-sdk 判据）。
+    #[test]
+    fn rpc_status_wire_byte_is_frozen() {
+        assert_eq!(RpcStatus::Completed.wire_byte(), 1u8);
+        assert_eq!(RpcStatus::Accepted.wire_byte(), 2u8);
+        assert_eq!(RpcStatus::Failed.wire_byte(), 0u8);
     }
 }

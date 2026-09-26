@@ -16,61 +16,26 @@
 //! 算法域：ECDSA P-256（与目标 TLS 域同域；OTA 域 SM2 分域不动——
 //! 方向 3 §3 密钥用途分域纪律）。签名 = `SHA-256(token)` 的 ECDSA
 //! DER 签名（openssl CLI 互操作形态——gate 站端同源签发）。
+//!
+//! **文法归位（蓝图 76 卷二 WP-76.2.5）**：MGT1 帧的布局知识（长度常量、
+//! 形状判别、token/会话字段宽度与偏移）单源在 `eneros_mgmt_api::mgt1_frame`
+//! ——本模块只留**验签面**（ECDSA + SHA-256 + 墙钟 + alloc 的角色链）。常量
+//! 与 [`SessionShape`]/[`classify_session`] 从此处 re-export，既有 pub 面零
+//! 破坏；root 探针与 svc-mgmt 两端从此读同一份宽度（探针不依赖本 crate，
+//! 见卷二 §1B 依赖图裁决）。
 
 use alloc::string::String;
 use alloc::vec::Vec;
 
-/// token 魔数（"MGTPTK1"）。
-pub const TOKEN_MAGIC: [u8; 8] = *b"MGTPTK1\0";
-/// token 编码长度（canonical 定长）。
-pub const TOKEN_LEN: usize = 64;
-/// 签名 wire 字段 = 2B 实长（LE）+ DER（ECDSA P-256 DER ≤ 72B——整数
-/// 各带高位补零最多 33B）= 74B。
-pub const SIG_FIELD_LEN: usize = 74;
-/// 旧无签会话长度（v1；仅 station 公钥未部署的开发模式合法）。
-pub const SESSION_V1_LEN: usize = 48;
-/// v2 会话长度 = v1 ‖ token ‖ sig 字段。
-pub const SESSION_V2_LEN: usize = SESSION_V1_LEN + TOKEN_LEN + SIG_FIELD_LEN;
-/// MGT1 wire 头长度（magic "MGT1" 4B ‖ 1B）。
-pub const MGT1_HEADER_LEN: usize = 5;
-/// v1 最短请求：头 ‖ 会话 48 ‖ request_id 8 ‖ action_len 1。
-pub const V1_MIN_REQ_LEN: usize = MGT1_HEADER_LEN + SESSION_V1_LEN + 8 + 1;
-/// v2 最短请求：头 ‖ 会话 48 ‖ token 64 ‖ sig 74 ‖ request_id 8 ‖ action_len 1。
-pub const V2_MIN_REQ_LEN: usize = MGT1_HEADER_LEN + SESSION_V2_LEN + 8 + 1;
-
-/// MGT1 请求会话形状（长度 + token 魔数位置判据——svc-mgmt v1/v2 判别
-/// 单源）。三臂必须互斥完备：带 token 魔数却尾段不足的帧**不得**落回
-/// v1 无签解析——70.5 复查 P0：station 部署面 62..199B 短尾帧曾三臂全不
-/// 命中（非 v2 形状拒绝臂/完整 v2 验签臂/`ERR:proto` 短帧臂）直落 v1
-/// 无签解析，伪造 48B 会话块里的 admin 角色直达 `rpc.handle`。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionShape {
-    /// 连 48B 会话块 ‖ request_id ‖ action_len 都不够（`ERR:proto` 面）。
-    Short,
-    /// 旧 48B 无签形（仅 station 公钥未部署的开发模式合法）。
-    V1,
-    /// 带 token 魔数但不足完整 v2 长度——协议违例（任何模式都拒绝，
-    /// 不落回 v1）。
-    V2Truncated,
-    /// 完整 v2 形状（尾段之后至少含 request_id 8 ‖ action_len 1）。
-    V2,
-}
-
-/// 会话形状分类（判别 = v1 会话块之后的 token 魔数位置，与变长 action
-/// 无关；长度下界见 [`V1_MIN_REQ_LEN`]/[`V2_MIN_REQ_LEN`]）。
-pub fn classify_session(req: &[u8]) -> SessionShape {
-    if req.len() < V1_MIN_REQ_LEN {
-        return SessionShape::Short;
-    }
-    let magic_at = MGT1_HEADER_LEN + SESSION_V1_LEN;
-    if req[magic_at..magic_at + TOKEN_MAGIC.len()] != TOKEN_MAGIC {
-        return SessionShape::V1;
-    }
-    if req.len() < V2_MIN_REQ_LEN {
-        return SessionShape::V2Truncated;
-    }
-    SessionShape::V2
-}
+// ── MGT1 文法（单源 = `eneros_mgmt_api::mgt1_frame`；此处 re-export 保
+// 既有 pub 面：svc-mgmt 消费 `SESSION_V1_LEN`/`SESSION_V2_LEN`/
+// `classify_session`/`SessionShape`，本模块内部消费 `TOKEN_LEN`/
+// `SIG_FIELD_LEN`/`TOKEN_MAGIC`）──
+pub use eneros_mgmt_api::mgt1_frame::{
+    classify_session, SessionShape, MGT1_HEADER_LEN, SESSION_V1_LEN, SESSION_V2_LEN, SIG_FIELD_LEN,
+    TOKEN_LEN, TOKEN_MAGIC, V1_MIN_REQ_LEN, V2_MIN_REQ_LEN,
+};
+use eneros_mgmt_api::mgt1_frame::{token_view, SIG_DER_AT, SIG_DER_MAX, SIG_LEN_FIELD_AT};
 
 /// 验签拒绝类别（词形；只含类别，不含密钥材料）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,26 +185,31 @@ pub fn verify_v2_tail(
     }
     let mut token = [0u8; TOKEN_LEN];
     token.copy_from_slice(&tail[..TOKEN_LEN]);
-    if token[0..8] != TOKEN_MAGIC {
+    // token 内部字段宽度单源 = `mgt1_frame::token_view`（探针构建侧
+    // `build_token` 用同一份宽度的逆运算——两端从此不可能各自抄错一位）。
+    let tok = token_view(&token).ok_or(PrincipalReject::Malformed)?;
+    if tok.magic != &TOKEN_MAGIC {
         return Err(PrincipalReject::Malformed);
     }
-    // sig 字段 72B：前 2B = 实长（LE），后随 DER 签名（定长 wire + 变长
+    // sig 字段 74B：前 2B = 实长（LE），后随 DER 签名（定长 wire + 变长
     // DER 的桥接；余位补零——canonical）。
-    let sig_len = u16::from_le_bytes([tail[TOKEN_LEN], tail[TOKEN_LEN + 1]]) as usize;
-    if sig_len == 0 || sig_len > SIG_FIELD_LEN - 2 {
+    let sig_field = &tail[TOKEN_LEN..];
+    let sig_len =
+        u16::from_le_bytes([sig_field[SIG_LEN_FIELD_AT], sig_field[SIG_LEN_FIELD_AT + 1]]) as usize;
+    if sig_len == 0 || sig_len > SIG_DER_MAX {
         return Err(PrincipalReject::BadSignature);
     }
-    let sig_der = &tail[TOKEN_LEN + 2..TOKEN_LEN + 2 + sig_len];
-    if tail[TOKEN_LEN + 2 + sig_len..].iter().any(|b| *b != 0) {
+    let sig_der = &sig_field[SIG_DER_AT..SIG_DER_AT + sig_len];
+    if sig_field[SIG_DER_AT + sig_len..].iter().any(|b| *b != 0) {
         return Err(PrincipalReject::Malformed);
     }
     verify_signature(station_pubkey_der, &token, sig_der)?;
     // 域检 + 解出（签名已绑定以下字段——只做资格判据）。
-    let principal = field_str(&token[8..24]).ok_or(PrincipalReject::Malformed)?;
+    let principal = field_str(tok.principal).ok_or(PrincipalReject::Malformed)?;
     if principal.is_empty() {
         return Err(PrincipalReject::Malformed);
     }
-    let role_codes = &token[24..28];
+    let role_codes = tok.roles;
     let mut roles = Vec::new();
     for code in role_codes {
         if *code == 0 {
@@ -264,10 +234,10 @@ pub fn verify_v2_tail(
     if roles.is_empty() {
         roles.push(String::from("viewer"));
     }
-    let tenant_scope = u32::from_le_bytes(token[28..32].try_into().expect("u32"));
-    let channel_binding = field_str(&token[32..48]).ok_or(PrincipalReject::Malformed)?;
-    let expiry = u64::from_le_bytes(token[48..56].try_into().expect("u64"));
-    let issued = u64::from_le_bytes(token[56..64].try_into().expect("u64"));
+    let tenant_scope = tok.tenant;
+    let channel_binding = field_str(tok.channel).ok_or(PrincipalReject::Malformed)?;
+    let expiry = tok.expiry;
+    let issued = tok.issued;
     // 时序判据：签发 ≤ 过期（防倒挂 token）；当前 ≥ 过期（有效期未
     // 结束才可用）。**未来签发不拒**（as-designed）：绝对判据只锚过期
     // 时刻——station 与设备的墙钟偏差不构成拒绝面（签发时刻为记账
@@ -401,50 +371,7 @@ mod tests {
         );
     }
 
-    /// 70.5 复查 P0 回归锁：形状判别三臂互斥完备——带 token 魔数却尾段
-    /// 不足（62..199B）的帧 = `V2Truncated`（修复前三臂全不命中直落 v1
-    /// 无签解析：伪造 48B 会话块 admin 角色 ‖ 8B 魔数 ‖ 1B action_len ‖
-    /// action = 75B 攻击帧即达 `rpc.handle`）；完整 v2/旧 v1/短帧各归其位。
-    #[test]
-    fn classify_session_covers_truncated_v2_gap() {
-        let magic_at = MGT1_HEADER_LEN + SESSION_V1_LEN;
-        // 攻击帧：头 5 ‖ 伪造会话 48（roles[0]=2=admin）‖ 魔数 8 ‖ action_len ‖ action。
-        let mut forged = vec![0u8; magic_at];
-        forged[..4].copy_from_slice(b"MGT1");
-        forged[MGT1_HEADER_LEN + 16] = 2;
-        forged.extend_from_slice(&TOKEN_MAGIC);
-        forged.push(13);
-        forged.extend_from_slice(b"history-query");
-        assert_eq!(forged.len(), 75, "攻击帧长度落在 62..200 缝隙内");
-        assert_eq!(classify_session(&forged), SessionShape::V2Truncated);
-        // 缝隙全域：带魔数且 len ∈ [V1_MIN, V2_MIN) 一律截断 v2。
-        for len in V1_MIN_REQ_LEN..V2_MIN_REQ_LEN {
-            let mut req = vec![0u8; len];
-            req[magic_at..magic_at + 8].copy_from_slice(&TOKEN_MAGIC);
-            assert_eq!(
-                classify_session(&req),
-                SessionShape::V2Truncated,
-                "len={len}"
-            );
-        }
-        // 完整 v2（恰 200B 与更长）。
-        let mut full = vec![0u8; V2_MIN_REQ_LEN];
-        full[magic_at..magic_at + 8].copy_from_slice(&TOKEN_MAGIC);
-        assert_eq!(classify_session(&full), SessionShape::V2);
-        full.extend_from_slice(b"extra-action-bytes");
-        assert_eq!(classify_session(&full), SessionShape::V2);
-        // 旧 v1（无魔数，任意 ≥62B）与短帧（<62B）。
-        let v1 = vec![0u8; V1_MIN_REQ_LEN];
-        assert_eq!(classify_session(&v1), SessionShape::V1);
-        let v1_long = vec![0u8; V2_MIN_REQ_LEN + 7];
-        assert_eq!(classify_session(&v1_long), SessionShape::V1);
-        assert_eq!(
-            classify_session(&v1[..V1_MIN_REQ_LEN - 1]),
-            SessionShape::Short
-        );
-        assert_eq!(classify_session(&[]), SessionShape::Short);
-        // 长度常量锚（svc-mgmt 判别下界同源）。
-        assert_eq!(V1_MIN_REQ_LEN, 62);
-        assert_eq!(V2_MIN_REQ_LEN, 200);
-    }
+    // 形状判别三臂互斥完备的 P0 回归锁（62..199B 短尾缝隙 + 62/200 数值
+    // 锚）随文法迁至 `eneros_mgmt_api::mgt1_frame::tests::
+    // classify_session_covers_truncated_v2_gap`——判据在哪，牙齿就在哪。
 }

@@ -1048,8 +1048,9 @@ impl MgmtHandler {
     fn handle_frame(&mut self, req: &[u8], resp: &mut alloc::vec::Vec<u8>, now_ms: u64) -> bool {
         use eneros_business_services::mgmt_principal::{self, SessionShape};
         use eneros_business_services::mgmt_rpc::*;
-        const SESSION_LEN: usize = mgmt_principal::SESSION_V1_LEN;
-        const V2_TAIL_LEN: usize = mgmt_principal::SESSION_V2_LEN - SESSION_LEN;
+        // 76 卷二 WP-76.2.6：帧文法单源 `mgt1_frame`——本函数不再自拼
+        // 会话/尾段偏移算术，也不再手切 v1 会话块字段。
+        use eneros_mgmt_api::mgt1_frame;
         // 70.5（WP-70.5.6）：station 公钥部署面——
         // 在位 → MGT1 v2（session 48B ‖ token 64B ‖ sig 字段 74B）强制：
         //   验签通过才构建会话（wire 角色/主字段不可信——签名绑定）；
@@ -1085,7 +1086,12 @@ impl MgmtHandler {
                 return false;
             }
             SessionShape::V2 if station_deployed => {
-                let tail = &req[5 + SESSION_LEN..5 + SESSION_LEN + V2_TAIL_LEN];
+                // 判别已保证 len >= V2_MIN_REQ_LEN ⇒ 尾段必可借出；本臂
+                // 不可达（纯 match 穷尽，零行为变化）。
+                let Some(tail) = mgt1_frame::v2_tail(req) else {
+                    resp.extend_from_slice(eneros_business_services::svc_wire::ERR_PROTO);
+                    return false;
+                };
                 let Some(offset) = self.unix_offset_ms else {
                     eneros_runtime::println!(
                         "[svc-mgmt] MGT-PRINCIPAL rejected (wall clock unavailable) —— 过期判据 fail-closed"
@@ -1096,22 +1102,19 @@ impl MgmtHandler {
                 let now_unix_ms = now_ms.saturating_add(offset);
                 match mgmt_principal::verify_v2_tail(tail, station_key, now_unix_ms) {
                     Ok(vp) => {
-                        let request_id = u64::from_le_bytes(
-                            req[5 + SESSION_LEN + V2_TAIL_LEN..5 + SESSION_LEN + V2_TAIL_LEN + 8]
-                                .try_into()
-                                .unwrap(),
-                        );
-                        let action_len = req[5 + SESSION_LEN + V2_TAIL_LEN + 8] as usize;
-                        let action_start = 5 + SESSION_LEN + V2_TAIL_LEN + 9;
-                        if action_start + action_len > req.len() {
+                        let Some(request_id) = mgt1_frame::request_id(req, SessionShape::V2) else {
+                            resp.extend_from_slice(eneros_business_services::svc_wire::ERR_PROTO);
+                            return false;
+                        };
+                        // 判据与收编前逐字相同：`action_start + action_len >
+                        // req.len()` ⇒ ERR_LEN（None 即该条件）。
+                        let Some((action_bytes, arg)) =
+                            mgt1_frame::action_and_arg(req, SessionShape::V2)
+                        else {
                             resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
                             return false;
-                        }
-                        let action =
-                            core::str::from_utf8(&req[action_start..action_start + action_len])
-                                .unwrap_or("")
-                                .to_string();
-                        let arg = &req[action_start + action_len..];
+                        };
+                        let action = core::str::from_utf8(action_bytes).unwrap_or("").to_string();
                         let session = AuthenticatedSession {
                             principal: vp.principal,
                             roles: vp.roles,
@@ -1132,11 +1135,7 @@ impl MgmtHandler {
                             result.status,
                             result.detail
                         );
-                        resp.push(match result.status {
-                            RpcStatus::Completed => 1u8,
-                            RpcStatus::Accepted => 2,
-                            RpcStatus::Failed => 0,
-                        });
+                        resp.push(result.status.wire_byte());
                         resp.extend_from_slice(result.detail.as_bytes());
                         if let Some(p) = &result.payload {
                             if !p.is_empty() {
@@ -1157,42 +1156,41 @@ impl MgmtHandler {
             // 帧亦按 v1 解析（既有语义；qemu-test 兼容探针同纪律）。
             SessionShape::V1 | SessionShape::V2 => {}
         }
-        let p = &req[5..];
-        let mut principal = [0u8; 16];
-        principal.copy_from_slice(&p[0..16]);
-        let mut roles = [0u8; 4];
-        roles.copy_from_slice(&p[16..20]);
+        // v1 会话块五段（principal/roles/tenant/channel/expiry）解包单源
+        // `mgt1_frame::v1_session`——收编前此处逐段手切宽度字面。判别已保证
+        // len 达 V1_MIN_REQ_LEN ⇒ 会话块必可借出，本臂不可达（纯穷尽）。
+        let Some(p) = mgt1_frame::v1_session(&req[mgt1_frame::session_start()..]) else {
+            resp.extend_from_slice(eneros_business_services::svc_wire::ERR_PROTO);
+            return false;
+        };
         // 50（WP-50.2）：4B 角色字段 = **mgmt-api 角色码**（Role::to_u8 LE
         // 首字节、余位补零——字段装不下完整角色名，run8 实弹根因）。兼容
         // 旧字符串面（首字节非 {0..3} 码 → 按 ASCII 解析；全零 = 旧缺省
         // viewer 同语义）。
-        let role = match eneros_mgmt_api::Role::from_u8(roles[0]) {
-            Some(r) if roles[1] == 0 && roles[2] == 0 && roles[3] == 0 => {
+        let role = match eneros_mgmt_api::Role::from_u8(p.roles[0]) {
+            Some(r) if p.roles[1] == 0 && p.roles[2] == 0 && p.roles[3] == 0 => {
                 alloc::string::String::from(r.name())
             }
             _ => {
-                let legacy = alloc::string::String::from_utf8_lossy(&roles).into_owned();
+                let legacy = alloc::string::String::from_utf8_lossy(p.roles).into_owned();
                 legacy.trim_end_matches('\0').to_string()
             }
         };
-        let tenant = u32::from_le_bytes(p[20..24].try_into().unwrap());
-        let mut channel = [0u8; 16];
-        channel.copy_from_slice(&p[24..40]);
-        let expiry = u64::from_le_bytes(p[40..48].try_into().unwrap());
-        let request_id = u64::from_le_bytes(p[48..56].try_into().unwrap());
-        let action_len = req[5 + SESSION_LEN + 8] as usize;
-        let action_start = 5 + SESSION_LEN + 9;
-        if action_start + action_len > req.len() {
+        // 开发模式（station 公钥未部署）恒按 v1 布局读尾段——完整 v2 帧亦
+        // 按 v1 解析是既有裁决（§1B qemu-test 兼容纪律），故此处形状参数
+        // 固定 `SessionShape::V1`，不是 `shape`。
+        let Some(request_id) = mgt1_frame::request_id(req, SessionShape::V1) else {
+            resp.extend_from_slice(eneros_business_services::svc_wire::ERR_PROTO);
+            return false;
+        };
+        let Some((action_bytes, arg)) = mgt1_frame::action_and_arg(req, SessionShape::V1) else {
             resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
             return false;
-        }
-        let action = core::str::from_utf8(&req[action_start..action_start + action_len])
-            .unwrap_or("")
-            .to_string();
-        let arg = &req[action_start + action_len..];
+        };
+        let action = core::str::from_utf8(action_bytes).unwrap_or("").to_string();
 
         let session = AuthenticatedSession {
-            principal: alloc::string::String::from_utf8_lossy(&principal)
+            principal: alloc::string::String::from_utf8_lossy(p.principal)
                 .trim_end_matches('\0')
                 .to_string(),
             roles: vec![if role.is_empty() {
@@ -1200,11 +1198,11 @@ impl MgmtHandler {
             } else {
                 role
             }],
-            tenant_scope: tenant,
-            channel_binding: alloc::string::String::from_utf8_lossy(&channel)
+            tenant_scope: p.tenant,
+            channel_binding: alloc::string::String::from_utf8_lossy(p.channel)
                 .trim_end_matches('\0')
                 .to_string(),
-            expires_at_ms: expiry,
+            expires_at_ms: p.expiry,
         };
         let result = self.rpc.handle(&session, request_id, &action, arg, now_ms);
         eneros_runtime::println!(
@@ -1212,11 +1210,7 @@ impl MgmtHandler {
             result.status,
             result.detail
         );
-        resp.push(match result.status {
-            RpcStatus::Completed => 1u8,
-            RpcStatus::Accepted => 2,
-            RpcStatus::Failed => 0,
-        });
+        resp.push(result.status.wire_byte());
         resp.extend_from_slice(result.detail.as_bytes());
         // SPEC-C：二进制载荷扩展段（history-query 行区等）。旧消费方按
         // detail 文本前缀解析不受影响；新消费方读尾部 [len][bytes]。

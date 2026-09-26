@@ -25,6 +25,10 @@ extern crate alloc;
 
 pub mod auth;
 pub mod idempotency;
+/// MGT1 管理帧文法单源（蓝图 76 卷二 WP-76.2.5）。**刻意不**在 crate 根
+/// re-export：其 `TOKEN_LEN`(64) 与 [`auth`] 的 `TOKEN_LEN`(113) 是两个域，
+/// 靠模块路径区分而不是靠导入顺序猜。
+pub mod mgt1_frame;
 pub mod rate_limit;
 pub mod rbac;
 pub mod schema;

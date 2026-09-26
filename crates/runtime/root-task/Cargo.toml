@@ -51,6 +51,11 @@ eneros-safety-validator = { path = "../../ai/safety-validator" }
 # 蓝图 63 WP-63.1.1（v0.316.0）：DispatchState 码表单源——CONTROL-CHAIN
 # 终态字节解码/显示收窄（零依赖；不拖入 control-dispatch 闭包）。
 eneros-dispatch-state = { path = "../../protocols/dispatch-state" }
+# 蓝图 76 卷二 WP-76.2.5（v0.347.0）：MGT1 帧文法单源 eneros-mgmt-api——
+# 探针构帧与 svc-mgmt 解码端从此共用一份宽度（root 不依赖 business-services，
+# 故文法必须在两者共同的 no_std 叶上；零环：mgmt-api 只依赖 hex/crypto/
+# signer-keyring/heapless）。
+eneros-mgmt-api = { path = "../../observability/mgmt-api" }
 heapless = "0.8"
 # 30 RT-004：init bundle 模块 sha256 校验（打包侧 xtask 用 sha2 0.10
 # Sha256 写摘要——解析侧必须同算法；sha2 no_std 兼容）。
