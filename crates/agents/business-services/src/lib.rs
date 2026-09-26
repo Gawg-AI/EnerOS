@@ -115,39 +115,6 @@ mod degradation_wordform_guard_tests {
     }
 }
 
-#[cfg(test)]
-mod panic_guard_tests {
-    /// WP-75.2.3 守卫（红测先行）：八 bin panic 声化单源——
-    /// ① 每个 bin 须以 `svc_panic!("<自身名>")` 收编 handler；
-    /// ② 自有 `#[panic_handler]` 定义零残留（单源宏内）。
-    /// 现状（七 bin 静默）下红；宏收编后绿；任一 bin 改回静默即红。
-    #[test]
-    fn bins_panic_handler_vocalized_single_source() {
-        const BINS: &[(&str, &str)] = &[
-            ("svc-market", include_str!("bin/svc-market.rs")),
-            ("svc-ledger", include_str!("bin/svc-ledger.rs")),
-            ("svc-agent-bus", include_str!("bin/svc-agent-bus.rs")),
-            ("svc-cloud-sync", include_str!("bin/svc-cloud-sync.rs")),
-            ("svc-config", include_str!("bin/svc-config.rs")),
-            ("svc-mgmt", include_str!("bin/svc-mgmt.rs")),
-            (
-                "svc-observability",
-                include_str!("bin/svc-observability.rs"),
-            ),
-            ("svc-ota", include_str!("bin/svc-ota.rs")),
-        ];
-        let macro_open = concat!("svc_panic", "!(\"");
-        let handler_attr = concat!("#", "[panic_handler]");
-        for (name, src) in BINS {
-            let want = format!("{macro_open}{name}\")");
-            assert!(
-                src.contains(&want),
-                "{name} 未以 svc_panic!(\"{name}\") 收编 panic handler"
-            );
-            assert!(
-                !src.contains(handler_attr),
-                "{name} 残留自有 panic handler（WP-75.2.3 已单源入宏）"
-            );
-        }
-    }
-}
+// WP-75.2.3 的八 bin panic 守卫已于蓝图 76 卷一 WP-76.1.4 升级搬家：
+// 判据超集（30 bin 全族 + 宏本体两半边 + 目录完全划分 + 豁免形态分立）
+// 落在 `crates/runtime/runtime/src/panic_guard.rs`（宏宿主 = 守卫宿主）。

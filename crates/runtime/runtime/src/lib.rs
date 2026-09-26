@@ -11,6 +11,10 @@ pub mod console;
 pub mod oom;
 pub mod serial;
 
+/// 蓝图 76 卷一 WP-76.1.4：EL0 panic 声化全族守卫（host 测试构建专用）。
+#[cfg(test)]
+mod panic_guard;
+
 pub use console::init;
 
 /// EL0 服务 panic 声化单源（蓝图 76 卷一 WP-76.1.1；宏体逐字承 WP-75.2.3
