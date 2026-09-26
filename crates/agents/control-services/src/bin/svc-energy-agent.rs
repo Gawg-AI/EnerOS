@@ -14,8 +14,6 @@ extern crate alloc;
 
 #[cfg(target_os = "none")]
 use alloc::vec;
-#[cfg(target_os = "none")]
-use core::panic::PanicInfo;
 
 #[cfg(target_os = "none")]
 extern crate eneros_control_services;
@@ -219,15 +217,7 @@ impl eneros_control_services::ControlServiceHandler for EnergyAgentHandler<'_> {
     }
 }
 
-#[cfg(target_os = "none")]
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    // 死亡必须可见（svc-device-agent 词形先例；svc-telemetry 同款订正）。
-    eneros_runtime::println!("[svc-energy-agent] PANIC: {info}");
-    loop {
-        core::hint::spin_loop();
-    }
-}
+eneros_runtime::svc_panic!("svc-energy-agent");
 
 /// host 构建 no-op 入口。
 #[cfg(all(not(test), not(target_os = "none")))]

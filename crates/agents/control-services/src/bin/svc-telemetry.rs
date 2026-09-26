@@ -12,9 +12,6 @@
 extern crate alloc;
 
 #[cfg(target_os = "none")]
-use core::panic::PanicInfo;
-
-#[cfg(target_os = "none")]
 extern crate eneros_control_services;
 #[cfg(target_os = "none")]
 #[global_allocator]
@@ -195,16 +192,7 @@ impl eneros_control_services::ControlServiceHandler for TelemetryHandler<'_> {
     }
 }
 
-#[cfg(target_os = "none")]
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    // SPEC-E 续作：静默自旋曾把 target 侧栈溢出（win1-t2 首写挂死）藏了
-    // 整个排障周期——死亡必须可见（svc-device-agent 先例同词形）。
-    eneros_runtime::println!("[svc-telemetry] PANIC: {info}");
-    loop {
-        core::hint::spin_loop();
-    }
-}
+eneros_runtime::svc_panic!("svc-telemetry");
 
 /// host 构建 no-op 入口（与 svc-drv-* 同模式）。
 #[cfg(all(not(test), not(target_os = "none")))]

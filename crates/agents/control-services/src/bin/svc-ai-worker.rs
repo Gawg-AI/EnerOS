@@ -181,15 +181,7 @@ pub extern "C" fn _start(
     }
 }
 
-#[cfg(target_os = "none")]
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    // 死亡必须可见（svc-device-agent 词形先例；svc-telemetry 同款订正）。
-    eneros_runtime::println!("[svc-ai-worker] PANIC: {info}");
-    loop {
-        core::hint::spin_loop();
-    }
-}
+eneros_runtime::svc_panic!("svc-ai-worker");
 
 /// host 构建 no-op 入口。
 #[cfg(all(not(test), not(target_os = "none")))]

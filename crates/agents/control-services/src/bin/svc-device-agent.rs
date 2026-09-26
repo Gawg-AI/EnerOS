@@ -13,9 +13,6 @@
 extern crate alloc;
 
 #[cfg(target_os = "none")]
-use core::panic::PanicInfo;
-
-#[cfg(target_os = "none")]
 extern crate eneros_control_services;
 
 /// bin 专属堆（2026-09-18 R10 三资源手术）：蓝图 70 R10 起 device-agent
@@ -276,14 +273,7 @@ impl eneros_control_services::ControlServiceHandler for DeviceAgentHandler {
     }
 }
 
-#[cfg(target_os = "none")]
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    eneros_runtime::println!("[svc-device-agent] PANIC: {info}");
-    loop {
-        core::hint::spin_loop();
-    }
-}
+eneros_runtime::svc_panic!("svc-device-agent");
 
 #[cfg(target_os = "none")]
 #[alloc_error_handler]

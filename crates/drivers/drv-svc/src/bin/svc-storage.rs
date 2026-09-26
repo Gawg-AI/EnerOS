@@ -16,9 +16,6 @@
 #![allow(clippy::empty_loop)]
 
 #[cfg(target_os = "none")]
-use core::panic::PanicInfo;
-
-#[cfg(target_os = "none")]
 extern crate alloc;
 #[cfg(target_os = "none")]
 extern crate eneros_drv_svc;
@@ -165,16 +162,7 @@ pub extern "C" fn _start(
     )
 }
 
-#[cfg(target_os = "none")]
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    // fail-closed：panic 挂起，由 root/watchdog 复位（不伪装继续服务）。
-    // REG-70.7 排查：静默黑洞有声化（E 卷教训——无声 spin 掩盖死因）。
-    eneros_runtime::println!("[svc-storage] PANIC: {}", info);
-    loop {
-        core::hint::spin_loop();
-    }
-}
+eneros_runtime::svc_panic!("svc-storage");
 
 /// host 构建 no-op 入口（target 用 [`_start`]；与 svc-hello 同模式——
 /// 使 `cargo clippy`/`cargo build` 在 host 上能编译本 target-only bin）。
