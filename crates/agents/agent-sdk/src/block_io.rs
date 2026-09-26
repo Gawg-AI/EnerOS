@@ -715,12 +715,16 @@ mod tests {
                 if dreq.payload[0] == BLK_CMD_READ {
                     // 夹具只「应答」不「锁字节」——解请求走同一单源，本测的
                     // 字节裁判是下面的 frames 对拍（夹具自解一遍布局会自洽）。
-                    let Ok((_, n)) = blk_wire::parse_read(blk_wire::body_of(&dreq)) else {
+                    let Ok((off, n)) = blk_wire::parse_read(blk_wire::body_of(&dreq)) else {
                         return Err(());
                     };
                     let n = n as usize;
-                    for b in resp.payload[..n].iter_mut() {
-                        *b = 0x5A;
+                    for (i, b) in resp.payload[..n].iter_mut().enumerate() {
+                        // 应答字节**随请求偏移而变**：恒等填充（0x5A）会被
+                        // 任何形如"读回一堆 5A"的断言自满足，无判别力（独立
+                        // 复查轮 P2-5）。此处要求数据取决于 off ⇒ 下面的
+                        // read_into 若把偏移解错，断言即红。
+                        *b = (off as u8).wrapping_add(i as u8);
                     }
                     resp.payload_len = n as u16;
                 }
@@ -757,7 +761,11 @@ mod tests {
             &READ_FRAME[..],
             "BLK_CMD_READ 构帧逐字节（子码 + 字节偏移 8 + count 4）"
         );
-        assert_eq!(&buf, &[0x5Au8; 16], "读回的响应数据段须落在请求偏移");
+        assert_eq!(
+            buf,
+            std::array::from_fn(|i| 0x88u8.wrapping_add(i as u8)),
+            "读回段 = f(请求偏移)（OFF 低字节 0x88 起递增）——偏移解错即红"
+        );
     }
 
     /// 蓝图 76 卷二 WP-76.2.1：`probe_health` **解包方向**逐字节锁。

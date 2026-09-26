@@ -855,8 +855,11 @@ mod tests {
     // 工艺 = 与 [`blk_boot_guard_response_bytes_golden`] 同源：期望值是**现服务端
     // 跑出来的**（一次性夹具测试 `-- --nocapture` 打 hex 后固化为字面量），不是
     // 手算——手算会把「我以为的布局」当成「实际布局」，金锁就失去判别力。
-    // 本族是 WP-76.2.2~4 全部重构的**唯一字节裁判**：任何 wire 布局移动都在这里
-    // 变红（含替身收编后与 blk_wire 的对拍）。
+    // 本族是 WP-76.2.2~4 全部重构的字节裁判，但**两类成员牙齿不同，别混称**
+    // （独立复查轮 P1-1 订正）：响应/往返形驱动现服务端、单侧改动即红；两枚
+    // **请求构帧形**只冻结「夹具按字面摆出的帧」，本身既不碰服务端也不碰
+    // blk_wire——它们的牙齿来自每枚末尾新增的 `pack_* == 本帧 body 段`
+    // **配对断言**（无该配对则「两处字面各错各的」在本族内不可见）。
     //
     // 夹具事实（生成时的取值，勿"顺手改得更漂亮"——改了即换 wire）：
     //   off = 0x1122334455667788 / count = 0x99AADDBB / data 模式串 = 0xE0..0xEF
@@ -916,6 +919,12 @@ mod tests {
             &FLUSH_REQ,
             "BLK_CMD_FLUSH 请求 = 只带子码"
         );
+
+        // 配对（P1-1/P1-2 修）：单源 pack 的产出必须逐字节等于上面摆出的帧
+        // body。缺这行时本枚金锁对「布局移动」无感知——两处字面可各自分叉。
+        assert_eq!(blk_wire::pack_read(off, count), &READ_REQ[1..]);
+        assert_eq!(blk_wire::pack_boot_read(off, count), &BOOT_READ_REQ[1..]);
+        assert_eq!(blk_wire::pack_write_prefix(off), &WRITE_REQ[1..9]);
     }
 
     /// 数据面**响应**逐字节：READ 数据段（`payload_len = count`，数据从
@@ -967,6 +976,8 @@ mod tests {
         assert_eq!(resp.status, ST_OK);
         assert_eq!(resp.payload_len, 13);
         assert_eq!(&resp.payload[..13], &HEALTH_RESP, "HEALTH 13B 逐字节");
+
+        assert_eq!(blk_wire::pack_health(4096, 1, 0), HEALTH_RESP);
     }
 
     /// boot 面**请求**逐字节：TRIAL 25B（secver 8 + image_id 16）、
@@ -1004,6 +1015,12 @@ mod tests {
             &req.payload[..26],
             &CONFIRM_REQ,
             "BLK_BOOT_CONFIRM 请求逐字节"
+        );
+
+        assert_eq!(blk_wire::pack_boot_trial(secver, id), &TRIAL_REQ[1..]);
+        assert_eq!(
+            blk_wire::pack_boot_confirm(true, secver, id),
+            &CONFIRM_REQ[1..]
         );
     }
 
@@ -1071,6 +1088,9 @@ mod tests {
             &CANCEL_SEQ_RESP,
             "BLK_BOOT_CANCEL seq 响应逐字节"
         );
+
+        assert_eq!(blk_wire::pack_seq_resp(2), TRIAL_SEQ_RESP);
+        assert_eq!(blk_wire::pack_seq_resp(3), CANCEL_SEQ_RESP);
     }
     /// WP-76.2.1 §2 步 3 的**短帧负例族**：四道长度门在收编后仍逐门成立。
     /// 收编前门形是 `payload_len < 13/9/25/26`，现由 [`blk_wire`] 的 body
@@ -1123,8 +1143,10 @@ mod tests {
         svc.handle(&req, &mut resp);
         assert_eq!(resp.status, ST_INVALID, "25B CONFIRM 必须拒（旧门 <26）");
 
-        // 空 body（只带子码）同样落 ST_INVALID——`body_of` 的
-        // `payload_len == 0` 退化形在此闭合（旧形靠 <13 顺带覆盖）。
+        // 空 body（`payload_len == 1`，即只带子码）落 ST_INVALID——这是
+        // [`blk_wire::body_of`] 的 `n = 0` 退化形。**注意** `payload_len == 0`
+        // 走不到 body_of（dispatcher 先拦，见下面单独断言），故此处覆盖的是
+        // 「只带子码」而非「零长度请求」。
         for sub in [BLK_CMD_READ, BLK_CMD_WRITE] {
             let req = mk_req(sub);
             let mut resp = DriverResponse::new(1, 0, 1);
@@ -1137,6 +1159,14 @@ mod tests {
             svc.handle(&req, &mut resp);
             assert_eq!(resp.status, ST_INVALID, "{sub:#04x} 空 body 必须拒");
         }
+
+        // `payload_len == 0`（连子码都没有）：由 dispatcher 拦在长度门之前
+        // ——收编前后同序，本断言钉住「body_of 永不见 0 长请求」这一前提。
+        let mut empty = DriverRequest::new(1, super::super::runtime::OP_EXECUTE);
+        empty.payload_len = 0;
+        let mut resp = DriverResponse::new(1, 0, 1);
+        service.handle(&empty, &mut resp);
+        assert_eq!(resp.status, ST_INVALID, "零长请求由 dispatcher 拒");
 
         // 能力门先于长度门（登记既有语义，非本轮引入；若将来把长度门挪到
         // 能力门之前，本断言即红——两门次序本身也是 wire 语义的一部分）。
