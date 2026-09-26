@@ -21,6 +21,18 @@ extern crate alloc;
 use alloc::boxed::Box;
 
 use super::runtime::{DriverRequest, DriverResponse, ST_INVALID, ST_OK, ST_UNAVAILABLE};
+use crate::blk_wire;
+
+/// 信封 **body** 切片（子码 `payload[0]` 之后的请求段）。
+///
+/// `payload_len == 0` 时退化为空 body（而非 `payload[1..0]` 越界 panic）——
+/// 空 body 一律被 [`blk_wire`] 的长度门判 `Short`，与收编前「`payload_len
+/// < 13` → ST_INVALID」四道门逐案等价（收编纪律：门在、词形在、顺序在）。
+#[inline]
+fn body(req: &DriverRequest) -> &[u8] {
+    let n = (req.payload_len as usize).saturating_sub(1);
+    &req.payload[1..1 + n]
+}
 
 /// 子操作码：读（lba 8B + count 4B → data）。
 pub const BLK_CMD_READ: u8 = 0x01;
@@ -117,12 +129,14 @@ pub fn handle_boot_cmd(
 ) {
     match cmd {
         BLK_BOOT_READ => {
-            if req.payload_len < 13 {
-                resp.status = ST_INVALID;
-                return;
-            }
-            let lba = u64::from_le_bytes(req.payload[1..9].try_into().unwrap());
-            let count = u32::from_le_bytes(req.payload[9..13].try_into().unwrap()) as usize;
+            let (lba, count) = match blk_wire::parse_boot_read(body(req)) {
+                Ok(v) => v,
+                Err(_) => {
+                    resp.status = ST_INVALID;
+                    return;
+                }
+            };
+            let count = count as usize;
             // 70.14 复查修复：**拒绝而非静默截断**（与 `BLK_CMD_READ` 同律）。
             // 旧实现 `count.min(BLK_READ_MAX)` 让"请求 4096B、实收 461B"以
             // ST_OK 返回，调用方无法从状态区分截断——单发读面上的静默短读
@@ -143,12 +157,13 @@ pub fn handle_boot_cmd(
             }
         }
         BLK_BOOT_INSTALL_WRITE => {
-            if req.payload_len < 9 {
-                resp.status = ST_INVALID;
-                return;
-            }
-            let lba = u64::from_le_bytes(req.payload[1..9].try_into().unwrap());
-            let data = &req.payload[9..req.payload_len as usize];
+            let (lba, data) = match blk_wire::parse_boot_write(body(req)) {
+                Ok(v) => v,
+                Err(_) => {
+                    resp.status = ST_INVALID;
+                    return;
+                }
+            };
             // 守卫强制（WP-70.7.2 核心不变量）：非活动槽 ∪ BOOTCTRL 之外
             // 零写——活跃槽/数据盘/其他分区写请求在存储服务侧拒绝。
             //（单位换算 = `write_allowed` 单源；见其文档。）
@@ -184,17 +199,17 @@ pub fn handle_boot_cmd(
                 "[svc-storage] BOOT-TRIAL: RX req_len={} (slot 0x09)",
                 req.payload_len
             );
-            if req.payload_len < 25 {
-                resp.status = ST_INVALID;
-                return;
-            }
-            let secver = u64::from_le_bytes(req.payload[1..9].try_into().unwrap());
-            let mut image_id = [0u8; 16];
-            image_id.copy_from_slice(&req.payload[9..25]);
+            let (secver, image_id) = match blk_wire::parse_boot_trial(body(req)) {
+                Ok(v) => v,
+                Err(_) => {
+                    resp.status = ST_INVALID;
+                    return;
+                }
+            };
             let mut inst = crate::boot_install::BootInstall::new(install);
             match inst.write_bootctrl_trial(secver, image_id) {
                 Ok(seq) => {
-                    resp.payload[..8].copy_from_slice(&seq.to_le_bytes());
+                    resp.payload[..8].copy_from_slice(&blk_wire::pack_seq_resp(seq));
                     resp.payload_len = 8;
                     resp.status = ST_OK;
                 }
@@ -202,18 +217,17 @@ pub fn handle_boot_cmd(
             }
         }
         BLK_BOOT_CONFIRM => {
-            if req.payload_len < 26 {
-                resp.status = ST_INVALID;
-                return;
-            }
-            let slot_is_a = req.payload[1] == 1;
-            let secver = u64::from_le_bytes(req.payload[2..10].try_into().unwrap());
-            let mut image_id = [0u8; 16];
-            image_id.copy_from_slice(&req.payload[10..26]);
+            let (slot_is_a, secver, image_id) = match blk_wire::parse_boot_confirm(body(req)) {
+                Ok(v) => v,
+                Err(_) => {
+                    resp.status = ST_INVALID;
+                    return;
+                }
+            };
             let mut inst = crate::boot_install::BootInstall::new(install);
             match inst.confirm_running(slot_is_a, secver, image_id) {
                 Ok(seq) => {
-                    resp.payload[..8].copy_from_slice(&seq.to_le_bytes());
+                    resp.payload[..8].copy_from_slice(&blk_wire::pack_seq_resp(seq));
                     resp.payload_len = 8;
                     resp.status = ST_OK;
                 }
@@ -224,7 +238,7 @@ pub fn handle_boot_cmd(
             let mut inst = crate::boot_install::BootInstall::new(install);
             match inst.cancel_trial() {
                 Ok(seq) => {
-                    resp.payload[..8].copy_from_slice(&seq.to_le_bytes());
+                    resp.payload[..8].copy_from_slice(&blk_wire::pack_seq_resp(seq));
                     resp.payload_len = 8;
                     resp.status = ST_OK;
                 }
@@ -268,14 +282,16 @@ pub fn handle_block_cmd(
 ) {
     match cmd {
         BLK_CMD_READ => {
-            if req.payload_len < 13 {
-                resp.status = ST_INVALID;
-                return;
-            }
             // wire 字段历史名 lba，数据面语义 = 字节偏移（73 批A C9 单位
             // 契约；与 BlockBackend::read 形参同名对齐）。
-            let offset_bytes = u64::from_le_bytes(req.payload[1..9].try_into().unwrap());
-            let count = u32::from_le_bytes(req.payload[9..13].try_into().unwrap()) as usize;
+            let (offset_bytes, count) = match blk_wire::parse_read(body(req)) {
+                Ok(v) => v,
+                Err(_) => {
+                    resp.status = ST_INVALID;
+                    return;
+                }
+            };
+            let count = count as usize;
             if count == 0 || count > BLK_READ_MAX {
                 resp.status = ST_INVALID;
                 return;
@@ -293,17 +309,20 @@ pub fn handle_block_cmd(
             }
         }
         BLK_CMD_WRITE => {
-            if req.payload_len < 9 {
+            let (offset_bytes, data) = match blk_wire::parse_write(body(req)) {
+                Ok(v) => v,
+                Err(_) => {
+                    resp.status = ST_INVALID;
+                    return;
+                }
+            };
+            // 域规则留在调用方（卷二 §10）：空数据段是「写零字节」语义问题，
+            // 不是布局问题。
+            if data.is_empty() || data.len() > BLK_WRITE_MAX {
                 resp.status = ST_INVALID;
                 return;
             }
-            let offset_bytes = u64::from_le_bytes(req.payload[1..9].try_into().unwrap());
-            let data_len = (req.payload_len - 9) as usize;
-            if data_len == 0 || data_len > BLK_WRITE_MAX {
-                resp.status = ST_INVALID;
-                return;
-            }
-            match backend.write(offset_bytes, &req.payload[9..9 + data_len]) {
+            match backend.write(offset_bytes, data) {
                 Ok(()) => {
                     resp.status = ST_OK;
                 }
@@ -318,9 +337,7 @@ pub fn handle_block_cmd(
         },
         BLK_CMD_HEALTH => {
             let (blocks, block_size, health) = backend.health();
-            resp.payload[..8].copy_from_slice(&blocks.to_le_bytes());
-            resp.payload[8..12].copy_from_slice(&block_size.to_le_bytes());
-            resp.payload[12] = health;
+            resp.payload[..13].copy_from_slice(&blk_wire::pack_health(blocks, block_size, health));
             resp.payload_len = 13;
             resp.status = ST_OK;
         }

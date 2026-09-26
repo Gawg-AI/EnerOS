@@ -160,6 +160,10 @@ pub fn parse_boot_confirm(p: &[u8]) -> Result<(bool, u64, [u8; 16]), LenErr> {
     ))
 }
 
+/// boot 事务成功应答 body 定长（三臂共用；服务端 `payload_len` 与消费侧
+/// 长度判据同源于此，收编前是 `8` 字面量各写一遍）。
+pub const SEQ_RESP_LEN: usize = 8;
+
 /// boot 事务成功应答 body = seq(8)（TRIAL / CONFIRM / CANCEL 三臂共用，
 /// `payload_len = 8`）。拒绝臂是 word 文本，不在此域（`boot_word_reject`）。
 pub fn pack_seq_resp(seq: u64) -> [u8; 8] {

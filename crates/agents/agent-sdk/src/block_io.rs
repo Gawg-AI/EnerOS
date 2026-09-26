@@ -11,6 +11,7 @@
 //! fail-closed：存储能力未授予（EIPC mask 对应位为 0）→ `Unavailable`；
 //! 信封响应 status != ST_OK → 对应 `StoreError`（不伪造成功）。
 
+use eneros_drv_svc::blk_wire;
 /// 70.7（WP-70.7.2）：BLK_BOOT_* 安装面子码 re-export（svc-ota 安装
 /// 控制器消费；常量单源 = drv-svc::block_cmd）。
 pub use eneros_drv_svc::block_cmd::{
@@ -46,29 +47,21 @@ const _: () = assert!(BLK_READ_CHUNK <= eneros_drv_svc::runtime::PAYLOAD_CAP);
 pub mod boot_body {
     use alloc::vec::Vec;
 
+    use eneros_drv_svc::blk_wire;
+
     /// `BLK_BOOT_TRIAL` body = secver(8) + image_id(16)（共 24B）。
     pub fn trial(secver: u64, image_id: &[u8; 16]) -> Vec<u8> {
-        let mut p = Vec::with_capacity(24);
-        p.extend_from_slice(&secver.to_le_bytes());
-        p.extend_from_slice(image_id);
-        p
+        blk_wire::pack_boot_trial(secver, *image_id).to_vec()
     }
 
     /// `BLK_BOOT_CONFIRM` body = slot_is_a(1) + secver(8) + image_id(16)（25B）。
     pub fn confirm(slot_is_a: bool, secver: u64, image_id: &[u8; 16]) -> Vec<u8> {
-        let mut p = Vec::with_capacity(25);
-        p.push(u8::from(slot_is_a));
-        p.extend_from_slice(&secver.to_le_bytes());
-        p.extend_from_slice(image_id);
-        p
+        blk_wire::pack_boot_confirm(slot_is_a, secver, *image_id).to_vec()
     }
 
     /// `BLK_BOOT_READ` body = lba(8) + count_bytes(4)（12B）。
     pub fn read(lba: u64, count_bytes: u32) -> Vec<u8> {
-        let mut p = Vec::with_capacity(12);
-        p.extend_from_slice(&lba.to_le_bytes());
-        p.extend_from_slice(&count_bytes.to_le_bytes());
-        p
+        blk_wire::pack_boot_read(lba, count_bytes).to_vec()
     }
 }
 
@@ -172,10 +165,7 @@ impl<C: EipcSend> BlockIo<C> {
         let mut out = buf;
         while !out.is_empty() {
             let n = core::cmp::min(out.len(), BLK_READ_CHUNK);
-            let mut p = [0u8; 12];
-            p[..8].copy_from_slice(&off.to_le_bytes());
-            p[8..12].copy_from_slice(&(n as u32).to_le_bytes());
-            let resp = self.cmd(BLK_CMD_READ, &p)?;
+            let resp = self.cmd(BLK_CMD_READ, &blk_wire::pack_read(off, n as u32))?;
             let got = resp.payload_len as usize;
             if got < n {
                 return Err(StoreError::Corrupt);
@@ -194,7 +184,7 @@ impl<C: EipcSend> BlockIo<C> {
         while !src.is_empty() {
             let n = core::cmp::min(src.len(), BLK_WRITE_CHUNK);
             let mut p = [0u8; 8 + BLK_WRITE_CHUNK];
-            p[..8].copy_from_slice(&off.to_le_bytes());
+            p[..8].copy_from_slice(&blk_wire::pack_write_prefix(off));
             p[8..8 + n].copy_from_slice(&src[..n]);
             let _ = self.cmd(BLK_CMD_WRITE, &p[..8 + n])?;
             src = &src[n..];
@@ -210,13 +200,10 @@ impl<C: EipcSend> BlockIo<C> {
     /// 方，探测失败不得拖垮构造序列。
     pub fn probe_health(&mut self) -> Option<DeviceHealth> {
         let resp = self.cmd(BLK_CMD_HEALTH, &[]).ok()?;
-        if (resp.payload_len as usize) < 13 {
-            return None;
-        }
-        let total_blocks = u64::from_le_bytes(resp.payload[0..8].try_into().ok()?);
-        // resp.payload[8..12] = 服务端 block_size 回显（与本地已知的
-        // block_size 冗余；折码在 [12]）。
-        let code = resp.payload[12];
+        // 13B 定形之外一律 None（观测面零裁决）；block_size 是服务端回显，
+        // 与本地已知值冗余，不入解包结论。
+        let (total_blocks, _block_size, code) =
+            blk_wire::parse_health(&resp.payload[..resp.payload_len as usize]).ok()?;
         Some(unfold_health_code(code, total_blocks))
     }
 }

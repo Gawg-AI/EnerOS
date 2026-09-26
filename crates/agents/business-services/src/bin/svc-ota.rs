@@ -514,10 +514,9 @@ fn handle_boot_install(
     io: &mut eneros_business_services::block_io::BlockIo<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
 ) -> bool {
     use eneros_agent_sdk::block_io::{
-        BLK_BOOT_CANCEL, BLK_BOOT_CONFIRM, BLK_BOOT_FLUSH, BLK_BOOT_GUARD, BLK_BOOT_INSTALL_WRITE,
-        BLK_BOOT_READ, BLK_BOOT_STATUS, BLK_BOOT_TRIAL,
+        BLK_BOOT_CANCEL, BLK_BOOT_CONFIRM, BLK_BOOT_GUARD, BLK_BOOT_READ, BLK_BOOT_STATUS,
+        BLK_BOOT_TRIAL,
     };
-    let _ = (BLK_BOOT_INSTALL_WRITE, BLK_BOOT_FLUSH);
     // 70.7.5（事务下沉）：事务臂 = **单次** guard 式 IPC 到 svc-storage
     // 新子码（BLK_BOOT_TRIAL/CONFIRM/CANCEL/STATUS）——bootctrl 记录零
     // IPC 搬运（run16-22 实弹：多调用拆分模式稳定挂死于第二次 seL4 Call）。
@@ -613,8 +612,10 @@ fn handle_boot_install(
                         v.len(),
                         dt
                     );
-                    if v.len() == 8 {
-                        let seq = u64::from_le_bytes(v[..8].try_into().unwrap_or([0u8; 8]));
+                    if v.len() == eneros_drv_svc::blk_wire::SEQ_RESP_LEN {
+                        // 定长臂已守卫，`Err` 不可达（`unwrap_or_default` 与
+                        // 收编前 `unwrap_or([0u8; 8])` 同纪律，零新 panic 面）。
+                        let seq = eneros_drv_svc::blk_wire::parse_seq_resp(&v).unwrap_or_default();
                         eneros_runtime::println!(
                             "[svc-ota] BOOT-TRIAL: tx committed seq={seq} target_secver={}",
                             u64::from_le_bytes(secver_bytes)
@@ -655,8 +656,8 @@ fn handle_boot_install(
                 &image_id,
             );
             match io.raw_command(BLK_BOOT_CONFIRM, &p) {
-                Ok(r) if r.len() == 8 => {
-                    let seq = u64::from_le_bytes(r[..8].try_into().unwrap());
+                Ok(r) if r.len() == eneros_drv_svc::blk_wire::SEQ_RESP_LEN => {
+                    let seq = eneros_drv_svc::blk_wire::parse_seq_resp(&r).unwrap_or_default();
                     eneros_runtime::println!(
                         "[svc-ota] BOOT-CONFIRM: slot={} secver={} seq={seq}",
                         if slot_is_a { "A" } else { "B" },
@@ -680,8 +681,8 @@ fn handle_boot_install(
         // 70.7.5：取消未确认 trial（mgmt update-rollback 后端）——单次
         // BLK_BOOT_CANCEL 中继。floor 不动（未确认 = 无不可逆提交）。
         0x0D => match io.raw_command(BLK_BOOT_CANCEL, &[]) {
-            Ok(r) if r.len() == 8 => {
-                let seq = u64::from_le_bytes(r[..8].try_into().unwrap());
+            Ok(r) if r.len() == eneros_drv_svc::blk_wire::SEQ_RESP_LEN => {
+                let seq = eneros_drv_svc::blk_wire::parse_seq_resp(&r).unwrap_or_default();
                 eneros_runtime::println!("[svc-ota] BOOT-CANCEL: trial canceled seq={seq}");
                 resp.extend_from_slice(&seq.to_le_bytes());
                 true
