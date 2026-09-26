@@ -31,6 +31,7 @@ use eneros_event_store::block::BlockEventStore;
 use eneros_event_store::ingest_bridge::StoreSink;
 use eneros_event_store::scoped::open_region_scoped;
 use eneros_event_store::{EventStore, StoreConfig, WatermarkReport};
+use eneros_fs::lfs::{LFS_BLOCK_SIZE, RegionGeometry};
 use eneros_fs::{FileSystem, Lfs};
 use eneros_ingestion_core::ObservationSink;
 use eneros_ota_ab::ab_partition::DataRegion;
@@ -249,14 +250,26 @@ impl<C: EipcSend + Clone + 'static> EventFace<C> {
             self.event_base_512,
             self.event_blocks_512
         );
+        // R16-M（WP-75.3.3）：512B→4K 几何折算单源（RegionGeometry——
+        // 原 `/ 8` 算术惯用法退役）。
+        let disk_4k = RegionGeometry::from_blocks_512(
+            0,
+            eneros_ota_ab::ab_partition::DATA_DISK_BLOCKS,
+        )
+        .expect("数据盘 512B→4K 几何");
+        let event_geo = RegionGeometry::from_blocks_512(
+            self.event_base_512,
+            self.event_blocks_512,
+        )
+        .expect("事件区段 512B→4K 几何对齐");
         // R16-L（WP-75.3.2）：attach 期 health 探针构造（+1 EIPC 往返）。
         let face = EipcBlockDevice::new_probed(
             io_event,
             eneros_event_store::format::BLOCK_SIZE,
-            eneros_ota_ab::ab_partition::DATA_DISK_BLOCKS / 8,
+            disk_4k.blocks,
         );
-        let base_4k = self.event_base_512 / 8;
-        let blocks_4k = self.event_blocks_512 / 8;
+        let base_4k = event_geo.base_block;
+        let blocks_4k = event_geo.blocks;
         let cfg = event_store_config();
         let slots = (blocks_4k - 3) / (cfg.segment_bytes as u64 / 4096);
         let open = open_region_scoped(
@@ -711,19 +724,22 @@ fn open_snap_volume<C: EipcSend + Clone + 'static>(
     base_block_512: u64,
     region_blocks_512: u64,
 ) -> Option<Lfs> {
-    const FS_BLOCK_SIZE: usize = 4096;
-    assert!(
-        base_block_512 % 8 == 0 && (region_blocks_512 * 512) % FS_BLOCK_SIZE as u64 == 0,
-        "快照区段基址/长度必须与 LFS 4096B 几何对齐"
-    );
+    // R16-M（WP-75.3.3）：几何折算单源（原本地 FS_BLOCK_SIZE const +
+    // `% 8`/`/ 8` assert + 折算全部退役；expect 保持原 assert 的 panic
+    // 力度，行为等价）。
+    let snap_geo = RegionGeometry::from_blocks_512(base_block_512, region_blocks_512)
+        .expect("快照区段基址/长度必须与 LFS 4096B 几何对齐");
+    let disk_4k = RegionGeometry::from_blocks_512(
+        0,
+        eneros_ota_ab::ab_partition::DATA_DISK_BLOCKS,
+    )
+    .expect("数据盘 512B→4K 几何");
     // R16-L（WP-75.3.2）：attach 期 health 探针构造。
-    let face = EipcBlockDevice::new_probed(
-        io,
-        FS_BLOCK_SIZE,
-        eneros_ota_ab::ab_partition::DATA_DISK_BLOCKS / 8,
-    );
-    let base_4k = base_block_512 / 8;
-    let blocks_4k = (region_blocks_512 / 8).min(64);
+    let face = EipcBlockDevice::new_probed(io, LFS_BLOCK_SIZE, disk_4k.blocks);
+    // 卷几何 = min(区段 4KiB 块数, 64)——BlockDeviceStorage BLOCK_COUNT=64
+    // 编译期上限（钳制是策略，留调用方）。
+    let base_4k = snap_geo.base_block;
+    let blocks_4k = snap_geo.blocks.min(64);
     // mount-or-format 单源（2026-09-24 收口 C13）：缓存深度 4（区段直映射
     // 读缓存——本面快照读为主）与区段几何显式传入。
     eneros_fs::mount_or_format(|| {
@@ -1037,7 +1053,9 @@ mod tests {
         EipcBlockDevice::new(
             make_io(storage),
             eneros_event_store::format::BLOCK_SIZE,
-            eneros_ota_ab::ab_partition::DATA_DISK_BLOCKS / 8,
+            RegionGeometry::from_blocks_512(0, eneros_ota_ab::ab_partition::DATA_DISK_BLOCKS)
+                .expect("数据盘 512B→4K 几何")
+                .blocks,
         )
     }
 
@@ -1111,8 +1129,12 @@ mod tests {
         let dev = face_dev(&storage);
         let (_store, report) = open_region_scoped(
             || CachedBlocks::<4, _>::new(dev.clone()),
-            EVENT_BASE / 8,
-            REGION_BLOCKS_512 / 8,
+            RegionGeometry::from_blocks_512(EVENT_BASE, REGION_BLOCKS_512)
+                .expect("事件区段 512B→4K 几何")
+                .base_block,
+            RegionGeometry::from_blocks_512(EVENT_BASE, REGION_BLOCKS_512)
+                .expect("事件区段 512B→4K 几何")
+                .blocks,
             event_store_config(),
         )
         .expect("remount");
@@ -1150,8 +1172,12 @@ mod tests {
         let dev = face_dev(&storage);
         let (store, report) = open_region_scoped(
             || CachedBlocks::<4, _>::new(dev.clone()),
-            EVENT_BASE / 8,
-            REGION_BLOCKS_512 / 8,
+            RegionGeometry::from_blocks_512(EVENT_BASE, REGION_BLOCKS_512)
+                .expect("事件区段 512B→4K 几何")
+                .base_block,
+            RegionGeometry::from_blocks_512(EVENT_BASE, REGION_BLOCKS_512)
+                .expect("事件区段 512B→4K 几何")
+                .blocks,
             event_store_config(),
         )
         .expect("重开事件面");

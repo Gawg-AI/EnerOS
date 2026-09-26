@@ -22,6 +22,7 @@ use core::cell::RefCell;
 
 use eneros_agent_sdk::block_io::{BlockIo, EipcBlockDevice, EipcSend};
 use eneros_agent_sdk::history_wire::{HistPointWire, HistoryPageSource, PAGE_RECORDS};
+use eneros_fs::lfs::{LFS_BLOCK_SIZE, RegionGeometry};
 use eneros_fs::mount_or_format;
 use eneros_storage::driver::BlockDevice;
 use eneros_storage::partition::{CachedBlocks, RegionScope};
@@ -79,7 +80,8 @@ pub fn checkpoint_due(
 }
 
 /// LFS 几何：4096B 块 × 区段折算段数（16 MiB 盘 8 MiB 区段 → 2048 段）。
-const FS_BLOCK_SIZE: usize = 4096;
+/// R16-M（WP-75.3.3）：本地 `FS_BLOCK_SIZE` const 退役——块大小与折算
+/// 单源 = `eneros_fs::lfs::geometry`（LFS_BLOCK_SIZE + RegionGeometry）。
 
 /// TSDB 数据目录（区分于未来其他卷的目录规划）。
 pub const DISK_DATA_DIR: &str = "/tsdb";
@@ -89,7 +91,7 @@ pub const DISK_DATA_DIR: &str = "/tsdb";
 //
 // 全仓单件 = agent-sdk `block_io::EipcBlockDevice`（SPEC-B/C 收编：本模块
 // 曾经的 `BlockIoFace` 同构件已删，R7 候选执行；erase 零写契约测试在
-// agent-sdk 侧唯一）。TSDB 区段以 4096B 计块（FS_BLOCK_SIZE 折算）。
+// agent-sdk 侧唯一）。TSDB 区段以 4096B 计块（LFS_BLOCK_SIZE 折算）。
 // ============================================================================
 
 // ============================================================================
@@ -410,16 +412,15 @@ pub fn open_disk_history<C: EipcSend + Clone + 'static>(
     base_block_512: u64,
     region_blocks_512: u64,
 ) -> Result<(HistoryChain, TsdbHistoryReader), ()> {
-    let region_bytes = region_blocks_512 * 512;
-    assert!(
-        base_block_512 % 8 == 0 && region_bytes % FS_BLOCK_SIZE as u64 == 0,
-        "TSDB 区段基址/长度必须与 LFS 4096B 几何对齐"
-    );
+    // R16-M（WP-75.3.3）：几何折算单源（原 `% 8`/`/ 8` assert + 折算
+    // 退役；expect 保持原 assert 的 panic 力度，行为等价）。
+    let tsdb_geo = RegionGeometry::from_blocks_512(base_block_512, region_blocks_512)
+        .expect("TSDB 区段基址/长度必须与 LFS 4096B 几何对齐");
     // R16-L（WP-75.3.2）：attach 期 health 探针构造。
-    let face = EipcBlockDevice::new_probed(io, FS_BLOCK_SIZE, region_blocks_512 / 8);
+    let face = EipcBlockDevice::new_probed(io, LFS_BLOCK_SIZE, tsdb_geo.blocks);
     let fs_blocks = core::cmp::min(face.block_count(), FS_VOLUME_MAX_BLOCKS_4K);
-    // Face 以 4096B 计块；作用域基址按其口径折算（base512/8）。
-    let base_block_4k = base_block_512 / 8;
+    // Face 以 4096B 计块；作用域基址按其口径折算（单源 RegionGeometry）。
+    let base_block_4k = tsdb_geo.base_block;
 
     // mount-or-format 单源（2026-09-24 收口 C13）：先 mount（保数据），
     // 仅坏超级块才格式化重试（fresh face 保用权）——缓存深度 16 与区段
