@@ -415,7 +415,8 @@ pub fn open_disk_history<C: EipcSend + Clone + 'static>(
         base_block_512 % 8 == 0 && region_bytes % FS_BLOCK_SIZE as u64 == 0,
         "TSDB 区段基址/长度必须与 LFS 4096B 几何对齐"
     );
-    let face = EipcBlockDevice::new(io, FS_BLOCK_SIZE, region_blocks_512 / 8);
+    // R16-L（WP-75.3.2）：attach 期 health 探针构造。
+    let face = EipcBlockDevice::new_probed(io, FS_BLOCK_SIZE, region_blocks_512 / 8);
     let fs_blocks = core::cmp::min(face.block_count(), FS_VOLUME_MAX_BLOCKS_4K);
     // Face 以 4096B 计块；作用域基址按其口径折算（base512/8）。
     let base_block_4k = base_block_512 / 8;

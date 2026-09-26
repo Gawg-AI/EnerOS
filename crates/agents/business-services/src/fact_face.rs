@@ -41,7 +41,8 @@ pub fn open_fact_face<C: EipcSend + Clone + 'static>(
     io: BlockIo<C>,
     region: DataRegion,
 ) -> Result<(StoreFactEventSink<FactStore<C>>, RecoveryReport), ()> {
-    let face = EipcBlockDevice::new(
+    // R16-L（WP-75.3.2）：attach 期 health 探针构造。
+    let face = EipcBlockDevice::new_probed(
         io,
         eneros_event_store::format::BLOCK_SIZE,
         eneros_ota_ab::ab_partition::DATA_DISK_BLOCKS / 8,

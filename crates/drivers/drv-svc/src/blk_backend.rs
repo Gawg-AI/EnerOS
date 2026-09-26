@@ -254,7 +254,29 @@ where
 
     fn health(&self) -> (u64, u32, u8) {
         let d = self.driver.borrow();
-        (d.block_count(), d.block_size() as u32, 0)
+        (
+            d.block_count(),
+            d.block_size() as u32,
+            fold_health_code(d.health_status()),
+        )
+    }
+}
+
+/// R16-L（蓝图 75-03 WP-75.3.2）：驱动 [`eneros_storage::DeviceHealth`]
+/// 全包折成非零劣化码写 BLK_CMD_HEALTH 应答第三字节（wire 13B 冻结——
+/// 只传折码不传连续量，原恒 0 = 通道两端死码）。折码规则（显式可测；
+/// **阈值为初版工程判据可调**——wear>80 / life<20，非冻结 spec）：
+/// 多条件取最严重，优先级 bad_blocks > wear_level > remaining_life；
+/// 2=坏块 / 4=磨损 / 3=寿命 / 0=健康。
+fn fold_health_code(h: eneros_storage::DeviceHealth) -> u8 {
+    if h.bad_blocks > 0 {
+        2
+    } else if h.wear_level > 80 {
+        4
+    } else if h.remaining_life < 20 {
+        3
+    } else {
+        0
     }
 }
 
@@ -802,6 +824,43 @@ mod tests {
     fn handover_missing_rejected() {
         assert!(VirtioBlkBackend::try_new(0, 0, 0).is_err());
         assert!(VirtioBlkBackend::try_new(0x4000_0000, 0x4001_0000, 0).is_err());
+    }
+
+    /// R16-L（蓝图 75-03 WP-75.3.2）：health 折码规则——驱动
+    /// health_status() 全包折成非零劣化码（现状红：恒 0）。阈值（wear>80 /
+    /// life<20）为初版工程判据可调；多条件取最严重，优先级
+    /// bad_blocks > wear_level > remaining_life。
+    #[test]
+    fn health_fold_code_rules() {
+        let h = |bad: u64, wear: u8, life: u8| eneros_storage::DeviceHealth {
+            total_blocks: 64,
+            bad_blocks: bad,
+            wear_level: wear,
+            temperature: 0,
+            remaining_life: life,
+        };
+        assert_eq!(fold_health_code(h(0, 0, 100)), 0, "健康态 = 0");
+        assert_eq!(fold_health_code(h(1, 0, 100)), 2, "bad_blocks > 0 → 2");
+        assert_eq!(fold_health_code(h(0, 81, 100)), 4, "wear_level > 80 → 4");
+        assert_eq!(fold_health_code(h(0, 80, 100)), 0, "wear=80 边界不劣化");
+        assert_eq!(fold_health_code(h(0, 0, 19)), 3, "remaining_life < 20 → 3");
+        assert_eq!(fold_health_code(h(0, 0, 20)), 0, "life=20 边界不劣化");
+        // 优先级：多条件取最严重。
+        assert_eq!(fold_health_code(h(1, 90, 10)), 2, "bad_blocks 优先级最高");
+        assert_eq!(fold_health_code(h(0, 90, 10)), 4, "wear_level 次之");
+    }
+
+    /// R16-L 接线守卫：health() 必须经折码单源（漏接线死代码/恒 0 回归
+    /// 即红——75-02 漏接线教训）。token 运行期拼接防自匹配。
+    #[test]
+    fn health_is_wired_through_fold() {
+        let src = include_str!("blk_backend.rs");
+        let t = concat!("fold_health_code(d.he", "alth_status())");
+        assert_eq!(
+            src.matches(t).count(),
+            1,
+            "health() 折码接线缺失/漂移（应恰一处经 fold_health_code）"
+        );
     }
 
     /// run15 实弹回归锁：boot 面以 **512B 扇区 LBA** 寻址（boot_disk

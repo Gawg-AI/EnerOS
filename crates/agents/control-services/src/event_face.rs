@@ -249,7 +249,8 @@ impl<C: EipcSend + Clone + 'static> EventFace<C> {
             self.event_base_512,
             self.event_blocks_512
         );
-        let face = EipcBlockDevice::new(
+        // R16-L（WP-75.3.2）：attach 期 health 探针构造（+1 EIPC 往返）。
+        let face = EipcBlockDevice::new_probed(
             io_event,
             eneros_event_store::format::BLOCK_SIZE,
             eneros_ota_ab::ab_partition::DATA_DISK_BLOCKS / 8,
@@ -715,7 +716,8 @@ fn open_snap_volume<C: EipcSend + Clone + 'static>(
         base_block_512 % 8 == 0 && (region_blocks_512 * 512) % FS_BLOCK_SIZE as u64 == 0,
         "快照区段基址/长度必须与 LFS 4096B 几何对齐"
     );
-    let face = EipcBlockDevice::new(
+    // R16-L（WP-75.3.2）：attach 期 health 探针构造。
+    let face = EipcBlockDevice::new_probed(
         io,
         FS_BLOCK_SIZE,
         eneros_ota_ab::ab_partition::DATA_DISK_BLOCKS / 8,

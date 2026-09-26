@@ -18,7 +18,7 @@ pub use eneros_drv_svc::block_cmd::{
     BLK_BOOT_READ, BLK_BOOT_STATUS, BLK_BOOT_TRIAL,
 };
 use eneros_drv_svc::block_cmd::{
-    BLK_CMD_FLUSH, BLK_CMD_READ, BLK_CMD_WRITE, BLK_READ_MAX, BLK_WRITE_MAX,
+    BLK_CMD_FLUSH, BLK_CMD_HEALTH, BLK_CMD_READ, BLK_CMD_WRITE, BLK_READ_MAX, BLK_WRITE_MAX,
 };
 use eneros_drv_svc::runtime::{wire, DriverRequest, DriverResponse, OP_EXECUTE, ST_OK};
 use eneros_durable_state::{PersistIo, StoreError};
@@ -202,6 +202,39 @@ impl<C: EipcSend> BlockIo<C> {
         }
         Ok(())
     }
+
+    /// R16-L（蓝图 75-03 WP-75.3.2）：BLK_CMD_HEALTH attach 期探测。
+    /// 应答 13B：blocks(8) + block_size(4) + 折码(1)——wire 形状冻结，
+    /// 不传 bad_blocks/wear/life 连续量（若未来要连续量须扩 wire 另立卷）。
+    /// 任何失败（transport/非 ST_OK/短载荷）→ `None`：观测面零裁决消费
+    /// 方，探测失败不得拖垮构造序列。
+    pub fn probe_health(&mut self) -> Option<DeviceHealth> {
+        let resp = self.cmd(BLK_CMD_HEALTH, &[]).ok()?;
+        if (resp.payload_len as usize) < 13 {
+            return None;
+        }
+        let total_blocks = u64::from_le_bytes(resp.payload[0..8].try_into().ok()?);
+        // resp.payload[8..12] = 服务端 block_size 回显（与本地已知的
+        // block_size 冗余；折码在 [12]）。
+        let code = resp.payload[12];
+        Some(unfold_health_code(code, total_blocks))
+    }
+}
+
+/// R16-L：health 折码反卷——服务端 [`crate::block_io`] 对端折码
+///（blk_backend `fold_health_code`：2=坏块/4=磨损/3=寿命/0=健康）映射回
+/// [`DeviceHealth`] 的**语义化近似**：`bad_blocks = (code==2) as u64`、
+/// `remaining_life = if code==3 {0} else {100}`、`wear_level = if code==4
+/// {100} else {0}`。诚实取舍：wire 13B 冻结只传折码，消费侧表达
+/// 「健康/劣化」二值语义而非连续量；temperature 恒 0（wire 无域）。
+pub fn unfold_health_code(code: u8, total_blocks: u64) -> DeviceHealth {
+    DeviceHealth {
+        total_blocks,
+        bad_blocks: u64::from(code == 2),
+        wear_level: if code == 4 { 100 } else { 0 },
+        temperature: 0,
+        remaining_life: if code == 3 { 0 } else { 100 },
+    }
 }
 
 impl<C: EipcSend> PersistIo for BlockIo<C> {
@@ -245,6 +278,22 @@ pub struct EipcBlockDevice<C> {
     io: core::cell::RefCell<BlockIo<C>>,
     block_size: usize,
     block_count: u64,
+    /// R16-L（WP-75.3.2）：attach 期 health 快照。`health_status(&self)`
+    /// 不可发起 wire 调用（拨号需可变通道）⇒ attach 期快照是唯一无
+    /// trait 签名变化的形态（构造序列一次 BLK_CMD_HEALTH 往返）。
+    health: DeviceHealth,
+}
+
+/// 未探测时的缺省健康投影（历史「恒完美」行为面——mock/测试装配与
+/// 探测失败兜底共用；观测面零裁决消费方，语义保持）。
+fn default_health(block_count: u64) -> DeviceHealth {
+    DeviceHealth {
+        total_blocks: block_count,
+        bad_blocks: 0,
+        wear_level: 0,
+        temperature: 0,
+        remaining_life: 100,
+    }
 }
 
 impl<C: EipcSend> EipcBlockDevice<C> {
@@ -253,6 +302,24 @@ impl<C: EipcSend> EipcBlockDevice<C> {
             io: core::cell::RefCell::new(io),
             block_size,
             block_count,
+            health: default_health(block_count),
+        }
+    }
+
+    /// R16-L（WP-75.3.2）：attach 期探针构造——与 [`Self::new`] 同参，
+    /// 构造序列内先发一次 BLK_CMD_HEALTH（+1 EIPC 往返，open 批内微秒
+    /// 级）并把 13B 应答折码快照进缓存；探测失败 → 缺省完美兜底
+    ///（观测面零裁决消费方，构造不因观测失败而失败）。生产装配面
+    /// （event_face/fact_face/telemetry_history/svc-ota）一律走本构造。
+    pub fn new_probed(mut io: BlockIo<C>, block_size: usize, block_count: u64) -> Self {
+        let health = io
+            .probe_health()
+            .unwrap_or_else(|| default_health(block_count));
+        Self {
+            io: core::cell::RefCell::new(io),
+            block_size,
+            block_count,
+            health,
         }
     }
 }
@@ -314,13 +381,9 @@ impl<C: EipcSend> BlockDevice for EipcBlockDevice<C> {
     }
 
     fn health_status(&self) -> DeviceHealth {
-        DeviceHealth {
-            total_blocks: self.block_count,
-            bad_blocks: 0,
-            wear_level: 0,
-            temperature: 0,
-            remaining_life: 100,
-        }
+        // R16-L：attach 期快照回读（原恒伪造完美值且不发起 wire 调用——
+        // 通道两端死码；生产装配面经 new_probed 通电）。
+        self.health
     }
 }
 
@@ -527,5 +590,99 @@ mod tests {
             "已成功 chunk 的前缀必须真实落盘"
         );
         assert_eq!(d[4067], (4067 % 251) as u8, "第 10 chunk 起点前一字节已写");
+    }
+
+    /// R16-L（蓝图 75-03 WP-75.3.2）专用 mock：BLK_CMD_HEALTH 13B 折码
+    /// 应答（blocks(8)+block_size(4)+health 码(1)，wire 形状冻结）。
+    struct HealthMock {
+        blocks: u64,
+        bs: u32,
+        code: u8,
+        fail: bool,
+    }
+
+    impl EipcSend for HealthMock {
+        fn drv_call(&mut self, req: &[u8], _timeout_ns: u64) -> Result<Vec<u8>, ()> {
+            if self.fail {
+                return Err(());
+            }
+            let dreq = wire::decode_request(req).unwrap();
+            assert_eq!(
+                dreq.payload[0], BLK_CMD_HEALTH,
+                "attach 期探针只发 HEALTH 子命令"
+            );
+            let mut resp = DriverResponse::new(dreq.correlation, ST_OK, 7);
+            resp.payload[..8].copy_from_slice(&self.blocks.to_le_bytes());
+            resp.payload[8..12].copy_from_slice(&self.bs.to_le_bytes());
+            resp.payload[12] = self.code;
+            resp.payload_len = 13;
+            Ok(wire::encode_response(&resp).to_vec())
+        }
+    }
+
+    /// R16-L：attach 期 health 快照——`new_probed` 构造期一次
+    /// BLK_CMD_HEALTH 往返，`health_status()` 读缓存（现状红：恒伪造
+    /// 完美值且不发起 wire 调用）。折码反卷语义化近似（wire 13B 冻结，
+    /// 不传连续量）：2→bad_blocks=1；3→remaining_life=0；4→wear=100；
+    /// 0→完美。探测失败 → 本地缺省完美兜底（观测面零裁决消费方，
+    /// 构造不得因观测失败而失败）。
+    #[test]
+    fn health_probe_snapshot_at_attach() {
+        let mk = |code: u8, fail: bool| {
+            BlockIo::new(
+                HealthMock {
+                    blocks: 4096,
+                    bs: 512,
+                    code,
+                    fail,
+                },
+                "svc-storage",
+                0,
+                1000,
+            )
+        };
+        // 折码 2 → bad_blocks 语义化近似。
+        let dev = EipcBlockDevice::new_probed(mk(2, false), 512, 8);
+        let h = dev.health_status();
+        assert_eq!(h.total_blocks, 4096, "total_blocks 从 wire 应答取");
+        assert_eq!(h.bad_blocks, 1, "折码 2 → bad_blocks=1");
+        assert_eq!(h.remaining_life, 100, "折码 2 不动 life 位");
+        // 折码 3 / 4 / 0。
+        assert_eq!(
+            EipcBlockDevice::new_probed(mk(3, false), 512, 8)
+                .health_status()
+                .remaining_life,
+            0,
+            "折码 3 → remaining_life=0"
+        );
+        assert_eq!(
+            EipcBlockDevice::new_probed(mk(4, false), 512, 8)
+                .health_status()
+                .wear_level,
+            100,
+            "折码 4 → wear_level=100"
+        );
+        let perfect = EipcBlockDevice::new_probed(mk(0, false), 512, 8).health_status();
+        assert_eq!(
+            perfect,
+            DeviceHealth {
+                total_blocks: 4096,
+                bad_blocks: 0,
+                wear_level: 0,
+                temperature: 0,
+                remaining_life: 100,
+            },
+            "折码 0 = 完美（bad/wear/life 三位干净）"
+        );
+        // 探测失败（transport Err）→ 本地缺省兜底（total_blocks=构造参数）。
+        let dev = EipcBlockDevice::new_probed(mk(2, true), 512, 8);
+        let h = dev.health_status();
+        assert_eq!(h.total_blocks, 8, "兜底用本地 block_count");
+        assert_eq!(h.bad_blocks, 0);
+        assert_eq!(h.remaining_life, 100);
+        // 既有 `new`（未探测路径）= 完美缺省（mock/测试装配兼容）。
+        let dev = EipcBlockDevice::new(mk(2, false), 512, 8);
+        assert_eq!(dev.health_status().bad_blocks, 0, "new 不探测=缺省完美");
+        assert_eq!(dev.health_status().total_blocks, 8);
     }
 }

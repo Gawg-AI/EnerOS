@@ -268,7 +268,8 @@ impl OtaHandler {
         };
         // 69.5（WP-69.5.2）：生产块大小单源 = ota-ab OTA_PROD_BLOCK_SIZE
         // （512）；盘上块号语义按 512B 块绑定（DATA_DISK_BLOCKS 同源）。
-        let dev = eneros_agent_sdk::block_io::EipcBlockDevice::new(
+        // R16-L（WP-75.3.2）：attach 期 health 探针构造。
+        let dev = eneros_agent_sdk::block_io::EipcBlockDevice::new_probed(
             io,
             eneros_ota_ab::ab_partition::OTA_PROD_BLOCK_SIZE,
             eneros_ota_ab::ab_partition::DATA_DISK_BLOCKS,
