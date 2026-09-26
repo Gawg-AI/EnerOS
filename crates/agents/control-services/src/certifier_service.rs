@@ -190,7 +190,9 @@ pub struct EipcBlobSource {
 #[cfg(all(target_os = "none", feature = "sel4"))]
 impl SnapshotBlobSource for EipcBlobSource {
     fn blob(&mut self, snapshot_id: &[u8; 16]) -> Result<Vec<u8>, String> {
-        let mut req = alloc::vec::Vec::with_capacity(17);
+        // 帧长单源 = `tel_wire::SNAP_REQ_LEN`（WP-76.2.7，与服务端解帧同
+        // 一布局事实；裸 `17` 退役）。
+        let mut req = alloc::vec::Vec::with_capacity(eneros_agent_sdk::tel_wire::SNAP_REQ_LEN);
         req.push(eneros_agent_sdk::tel_wire::TEL_REQ_SNAPSHOT_BLOB);
         req.extend_from_slice(snapshot_id);
         let resp = self

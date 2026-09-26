@@ -1057,12 +1057,13 @@ pub fn handle_request(svc: &mut TelemetryService, req: &[u8], now_ms: u64) -> Ve
             }
         },
         // 蓝图 70.8.2/70.9.1：已冻结快照 blob（certifier 独立读取通道）。
+        // 蓝图 76 WP-76.2.7：`[op, id16]` 帧解析单源 =
+        // `tel_wire::parse_snap_request`（三臂共用长度门与 id 偏移；
+        // 应答形状各臂保形不并入）。
         eneros_agent_sdk::tel_wire::TEL_REQ_SNAPSHOT_BLOB => {
-            if req.len() != 17 {
+            let Some(id) = eneros_agent_sdk::tel_wire::parse_snap_request(req) else {
                 return vec![eneros_agent_sdk::tel_wire::TEL_RESP_ERR];
-            }
-            let mut id = [0u8; 16];
-            id.copy_from_slice(&req[1..17]);
+            };
             match svc.snapshot_blob(&id) {
                 Some(bytes) => {
                     let mut out = vec![SNAPSHOT_OK];
@@ -1075,11 +1076,9 @@ pub fn handle_request(svc: &mut TelemetryService, req: &[u8], now_ms: u64) -> Ve
         // ADR-0054:29–30：快照保留钉（dispatch 持有面）。请求 [码, id16]；
         // hold 失败 = [TEL_RESP_ERR]（调用方 fail-closed 拒绝新计划准入）。
         eneros_agent_sdk::tel_wire::TEL_REQ_SNAP_HOLD => {
-            if req.len() != 17 {
+            let Some(id) = eneros_agent_sdk::tel_wire::parse_snap_request(req) else {
                 return vec![eneros_agent_sdk::tel_wire::TEL_RESP_ERR];
-            }
-            let mut id = [0u8; 16];
-            id.copy_from_slice(&req[1..17]);
+            };
             if svc.pin_snapshot(&id) {
                 vec![eneros_agent_sdk::tel_wire::TEL_RESP_OK]
             } else {
@@ -1087,11 +1086,9 @@ pub fn handle_request(svc: &mut TelemetryService, req: &[u8], now_ms: u64) -> Ve
             }
         }
         eneros_agent_sdk::tel_wire::TEL_REQ_SNAP_RELEASE => {
-            if req.len() != 17 {
+            let Some(id) = eneros_agent_sdk::tel_wire::parse_snap_request(req) else {
                 return vec![eneros_agent_sdk::tel_wire::TEL_RESP_ERR];
-            }
-            let mut id = [0u8; 16];
-            id.copy_from_slice(&req[1..17]);
+            };
             let _ = svc.release_snapshot(&id);
             vec![eneros_agent_sdk::tel_wire::TEL_RESP_OK]
         }
@@ -2058,10 +2055,11 @@ mod tests {
         }
     }
 
-    /// 双面锁：客户端 `dispatch_wire::snap_*_request`（17B = [op, id×16]）
-    /// ↔ 服务端 `handle_request` 的 TEL_REQ_SNAP_HOLD/_RELEASE 臂（len==17
-    /// 判据 + `req[1..17]` 切片）；应答 `[TEL_RESP_OK]` ↔ 客户端
-    /// `snap_resp_ok`。任一侧布局漂移（长度/首字节/切片偏移）本测即红。
+    /// 双面锁：客户端 `dispatch_wire::snap_*_request`（`SNAP_REQ_LEN`B =
+    /// [op, id×16]）↔ 服务端 `handle_request` 的 TEL_REQ_SNAP_HOLD/_RELEASE
+    /// 臂（解帧单源 = `tel_wire::parse_snap_request`，WP-76.2.7）；应答
+    /// `[TEL_RESP_OK]` ↔ 客户端 `snap_resp_ok`。任一侧布局漂移（长度/首
+    /// 字节/切片偏移）本测即红。
     #[test]
     fn snap_wire_dual_side_lock() {
         use eneros_agent_sdk::tel_wire::{TEL_REQ_SNAP_HOLD, TEL_RESP_ERR, TEL_RESP_OK};
