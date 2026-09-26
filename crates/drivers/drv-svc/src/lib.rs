@@ -30,6 +30,10 @@ extern crate std;
 /// deadline/epoch；替代自旋占位）。
 pub mod runtime;
 
+/// 蓝图 76 卷二（WP-76.2.2）：块命令 **body 文法单源**——布局知识（哪一段在
+/// 哪几个字节）从「服务端 + 客户端 + 4 替身各手抄一遍」收敛到此。零 wire
+/// 字节移动；`block_cmd` 的 golden 族是字节裁判。
+pub mod blk_wire;
 /// 39（WP-39.12）：块设备命令面（svc-storage 真实命令集 + StorageService）。
 pub mod block_cmd;
 
