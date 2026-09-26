@@ -783,7 +783,7 @@ fn handle_boot_install(
     }
 }
 
-eneros_business_services::svc_panic!("svc-ota");
+eneros_runtime::svc_panic!("svc-ota");
 
 #[cfg(all(not(test), not(target_os = "none")))]
 fn main() {}

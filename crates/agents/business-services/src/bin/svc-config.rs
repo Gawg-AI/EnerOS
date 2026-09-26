@@ -338,7 +338,7 @@ impl eneros_control_services::ControlServiceHandler for ConfigHandler {
     }
 }
 
-eneros_business_services::svc_panic!("svc-config");
+eneros_runtime::svc_panic!("svc-config");
 
 /// host 构建 no-op 入口（与 svc-drv-* 同模式）。
 #[cfg(all(not(test), not(target_os = "none")))]

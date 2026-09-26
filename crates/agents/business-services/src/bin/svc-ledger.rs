@@ -198,7 +198,7 @@ impl eneros_control_services::ControlServiceHandler for LedgerHandler {
     }
 }
 
-eneros_business_services::svc_panic!("svc-ledger");
+eneros_runtime::svc_panic!("svc-ledger");
 
 #[cfg(all(not(test), not(target_os = "none")))]
 fn main() {}

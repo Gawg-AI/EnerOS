@@ -77,25 +77,6 @@ pub use eneros_drv_svc::instance_epoch;
 /// 单调毫秒。
 pub use eneros_drv_svc::now_ms;
 
-/// WP-75.2.3（R16-D）：business-services bin 族 panic handler 单源宏——
-/// 声化（println 死因）+ 自旋。词形 `[<svc>] PANIC: {info}` 与 svc-ota
-/// 先例（REG-70.7 排查：静默 spin 掩盖死因整排障周期）逐字一致；host
-/// 测试构建展开为零（cfg 门）。八 bin 逐一 `svc_panic!("svc-x");` 收编，
-/// 静默 handler 回流由 `bins_panic_handler_vocalized_single_source` 守卫。
-#[macro_export]
-macro_rules! svc_panic {
-    ($name:expr) => {
-        #[cfg(target_os = "none")]
-        #[panic_handler]
-        fn panic(info: &core::panic::PanicInfo) -> ! {
-            eneros_runtime::println!("[{}] PANIC: {}", $name, info);
-            loop {
-                core::hint::spin_loop();
-            }
-        }
-    };
-}
-
 /// WP-75.2.5（R16-R）守卫（红测先行）：降级词形两态分立——
 /// ① svc-market 事实区段打开失败须有独立词形（与授予缺失/绑定失败
 /// 的 FACT-FACE-UNAVAILABLE 分立）且 `.ok()` 旁路零残留；

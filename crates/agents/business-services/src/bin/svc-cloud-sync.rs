@@ -160,7 +160,7 @@ impl eneros_control_services::ControlServiceHandler for CloudHandler {
     }
 }
 
-eneros_business_services::svc_panic!("svc-cloud-sync");
+eneros_runtime::svc_panic!("svc-cloud-sync");
 
 #[cfg(all(not(test), not(target_os = "none")))]
 fn main() {}

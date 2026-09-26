@@ -1230,7 +1230,7 @@ impl MgmtHandler {
     }
 }
 
-eneros_business_services::svc_panic!("svc-mgmt");
+eneros_runtime::svc_panic!("svc-mgmt");
 
 #[cfg(all(not(test), not(target_os = "none")))]
 fn main() {}

@@ -171,7 +171,7 @@ impl eneros_control_services::ControlServiceHandler for BusHandler {
     }
 }
 
-eneros_business_services::svc_panic!("svc-agent-bus");
+eneros_runtime::svc_panic!("svc-agent-bus");
 
 #[cfg(all(not(test), not(target_os = "none")))]
 fn main() {}
