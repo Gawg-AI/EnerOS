@@ -20,6 +20,6 @@ pub mod storage_adapter;
 
 pub use config::LfsConfig;
 pub use filesystem::Lfs;
-pub use geometry::{LFS_BLOCK_SIZE, RegionGeometry};
+pub use geometry::{RegionGeometry, LFS_BLOCK_SIZE};
 pub use mount::mount_or_format;
 pub use storage_adapter::BlockDeviceStorage;

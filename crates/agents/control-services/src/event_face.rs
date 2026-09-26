@@ -31,7 +31,7 @@ use eneros_event_store::block::BlockEventStore;
 use eneros_event_store::ingest_bridge::StoreSink;
 use eneros_event_store::scoped::open_region_scoped;
 use eneros_event_store::{EventStore, StoreConfig, WatermarkReport};
-use eneros_fs::lfs::{LFS_BLOCK_SIZE, RegionGeometry};
+use eneros_fs::lfs::{RegionGeometry, LFS_BLOCK_SIZE};
 use eneros_fs::{FileSystem, Lfs};
 use eneros_ingestion_core::ObservationSink;
 use eneros_ota_ab::ab_partition::DataRegion;
@@ -252,16 +252,11 @@ impl<C: EipcSend + Clone + 'static> EventFace<C> {
         );
         // R16-M（WP-75.3.3）：512B→4K 几何折算单源（RegionGeometry——
         // 原 `/ 8` 算术惯用法退役）。
-        let disk_4k = RegionGeometry::from_blocks_512(
-            0,
-            eneros_ota_ab::ab_partition::DATA_DISK_BLOCKS,
-        )
-        .expect("数据盘 512B→4K 几何");
-        let event_geo = RegionGeometry::from_blocks_512(
-            self.event_base_512,
-            self.event_blocks_512,
-        )
-        .expect("事件区段 512B→4K 几何对齐");
+        let disk_4k =
+            RegionGeometry::from_blocks_512(0, eneros_ota_ab::ab_partition::DATA_DISK_BLOCKS)
+                .expect("数据盘 512B→4K 几何");
+        let event_geo = RegionGeometry::from_blocks_512(self.event_base_512, self.event_blocks_512)
+            .expect("事件区段 512B→4K 几何对齐");
         // R16-L（WP-75.3.2）：attach 期 health 探针构造（+1 EIPC 往返）。
         let face = EipcBlockDevice::new_probed(
             io_event,
@@ -729,11 +724,8 @@ fn open_snap_volume<C: EipcSend + Clone + 'static>(
     // 力度，行为等价）。
     let snap_geo = RegionGeometry::from_blocks_512(base_block_512, region_blocks_512)
         .expect("快照区段基址/长度必须与 LFS 4096B 几何对齐");
-    let disk_4k = RegionGeometry::from_blocks_512(
-        0,
-        eneros_ota_ab::ab_partition::DATA_DISK_BLOCKS,
-    )
-    .expect("数据盘 512B→4K 几何");
+    let disk_4k = RegionGeometry::from_blocks_512(0, eneros_ota_ab::ab_partition::DATA_DISK_BLOCKS)
+        .expect("数据盘 512B→4K 几何");
     // R16-L（WP-75.3.2）：attach 期 health 探针构造。
     let face = EipcBlockDevice::new_probed(io, LFS_BLOCK_SIZE, disk_4k.blocks);
     // 卷几何 = min(区段 4KiB 块数, 64)——BlockDeviceStorage BLOCK_COUNT=64
