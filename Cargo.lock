@@ -664,6 +664,7 @@ dependencies = [
  "eneros-drv-svc",
  "eneros-durable-state",
  "eneros-event-store",
+ "eneros-fs",
  "eneros-ingestion-core",
  "eneros-ipc-wire",
  "eneros-logging",

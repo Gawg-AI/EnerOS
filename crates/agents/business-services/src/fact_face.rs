@@ -15,6 +15,7 @@ use eneros_agent_sdk::block_io::{BlockIo, EipcBlockDevice, EipcSend};
 use eneros_event_store::block::BlockEventStore;
 use eneros_event_store::scoped::open_region_scoped;
 use eneros_event_store::RecoveryReport;
+use eneros_fs::lfs::RegionGeometry;
 use eneros_ota_ab::ab_partition::DataRegion;
 use eneros_storage::partition::{CachedBlocks, RegionScope};
 
@@ -41,16 +42,20 @@ pub fn open_fact_face<C: EipcSend + Clone + 'static>(
     io: BlockIo<C>,
     region: DataRegion,
 ) -> Result<(StoreFactEventSink<FactStore<C>>, RecoveryReport), ()> {
+    // R16-M（WP-75.3.3 复查轮补漏）：几何折算单源（原 `/ 8` 算术惯用
+    // 法三处——盘块数与区段基址/长度——收编 RegionGeometry；expect 保持
+    // 折算对齐律的 panic 力度）。
+    let fact_geo = RegionGeometry::from_blocks_512(region.base_block_512(), region.blocks_512())
+        .expect("事实区段 512B→4K 几何对齐");
+    let disk_4k = RegionGeometry::from_blocks_512(0, eneros_ota_ab::ab_partition::DATA_DISK_BLOCKS)
+        .expect("数据盘 512B→4K 几何");
     // R16-L（WP-75.3.2）：attach 期 health 探针构造。
-    let face = EipcBlockDevice::new_probed(
-        io,
-        eneros_event_store::format::BLOCK_SIZE,
-        eneros_ota_ab::ab_partition::DATA_DISK_BLOCKS / 8,
-    );
+    let face =
+        EipcBlockDevice::new_probed(io, eneros_event_store::format::BLOCK_SIZE, disk_4k.blocks);
     let (store, report) = open_region_scoped(
         || CachedBlocks::<4, _>::new(face.clone()),
-        region.base_block_512() / 8,
-        region.blocks_512() / 8,
+        fact_geo.base_block,
+        fact_geo.blocks,
         eneros_control_services::event_face::event_store_config(),
     )
     .map_err(|_| ())?;

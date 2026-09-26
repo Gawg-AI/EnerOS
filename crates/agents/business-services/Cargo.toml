@@ -16,6 +16,8 @@ eneros-agent-sdk = { path = "../../agents/agent-sdk" }
 eneros-sel4-sys = { path = "../../runtime/sel4-sys" }
 eneros-drv-svc = { path = "../../drivers/drv-svc", features = ["heap-large"] }
 eneros-storage = { path = "../../drivers/storage" }
+# R16-M（蓝图 75-03 WP-75.3.3 复查轮补漏）：fact_face 区段几何折算单源。
+eneros-fs = { path = "../../drivers/fs" }
 eneros-runtime = { path = "../../runtime/runtime" }
 # 41 基座：签名配置 bundle + 跨重启持久化。
 eneros-config-bundle = { path = "../../runtime/config-bundle", default-features = false }
