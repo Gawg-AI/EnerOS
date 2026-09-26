@@ -22,7 +22,7 @@ use core::cell::RefCell;
 
 use eneros_agent_sdk::block_io::{BlockIo, EipcBlockDevice, EipcSend};
 use eneros_agent_sdk::history_wire::{HistPointWire, HistoryPageSource, PAGE_RECORDS};
-use eneros_fs::lfs::{LFS_BLOCK_SIZE, RegionGeometry};
+use eneros_fs::lfs::{RegionGeometry, LFS_BLOCK_SIZE};
 use eneros_fs::mount_or_format;
 use eneros_storage::driver::BlockDevice;
 use eneros_storage::partition::{CachedBlocks, RegionScope};
@@ -79,9 +79,9 @@ pub fn checkpoint_due(
         || (batches_since > 0 && ms_since_last_checkpoint >= CHECKPOINT_MAX_AGE_MS)
 }
 
-/// LFS 几何：4096B 块 × 区段折算段数（16 MiB 盘 8 MiB 区段 → 2048 段）。
-/// R16-M（WP-75.3.3）：本地 `FS_BLOCK_SIZE` const 退役——块大小与折算
-/// 单源 = `eneros_fs::lfs::geometry`（LFS_BLOCK_SIZE + RegionGeometry）。
+// R16-M（WP-75.3.3）：LFS 几何（4096B 块 × 区段折算段数，16 MiB 盘
+// 8 MiB 区段 → 2048 段）——本地 `FS_BLOCK_SIZE` const 退役，块大小与
+// 折算单源 = `eneros_fs::lfs::geometry`（LFS_BLOCK_SIZE + RegionGeometry）。
 
 /// TSDB 数据目录（区分于未来其他卷的目录规划）。
 pub const DISK_DATA_DIR: &str = "/tsdb";

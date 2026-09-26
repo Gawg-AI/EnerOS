@@ -630,7 +630,7 @@ mod tests {
                 w.name
             );
             assert!(
-                !(w.miss_limit.is_some() && !w.heartbeat),
+                w.miss_limit.is_none() || w.heartbeat,
                 "{} 无心跳行不得配容忍窗（装配矛盾）",
                 w.name
             );
