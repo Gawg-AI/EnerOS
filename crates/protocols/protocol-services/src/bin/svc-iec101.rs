@@ -5,9 +5,6 @@
 #![allow(clippy::empty_loop)]
 
 #[cfg(target_os = "none")]
-use core::panic::PanicInfo;
-
-#[cfg(target_os = "none")]
 extern crate eneros_protocol_services;
 
 #[cfg(target_os = "none")]
@@ -35,13 +32,7 @@ pub extern "C" fn _start(ep: u64, ipc_buffer: u64, ready_ntfn: u64) -> ! {
     )
 }
 
-#[cfg(target_os = "none")]
-#[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    loop {
-        core::hint::spin_loop();
-    }
-}
+eneros_runtime::svc_panic!("svc-iec101");
 
 /// host 构建 no-op 入口（与 svc-drv-* 同模式）。
 #[cfg(all(not(test), not(target_os = "none")))]
