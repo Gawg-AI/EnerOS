@@ -30,10 +30,10 @@
 #   用法：DL=560 tools/run70-vol5-gate.sh
 set -uo pipefail
 source "$(dirname "$0")/gate-env.sh"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # 73 批B：判据器自举——门先验自己的判据器，再用它（S4）。
 python3 "$ROOT/tools/criterion.py" --selftest >/dev/null || {
   echo "criterion.py selftest FAIL"; exit 9; }
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 EVROOT="$ROOT/evidence/70/70.5"
 RUN="$ROOT/target/evidence70-vol5"
