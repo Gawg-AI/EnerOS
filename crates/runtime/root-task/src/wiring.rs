@@ -473,7 +473,7 @@ pub const EXPLICIT_UNWIRED: &[(&str, &str)] = &[
     ),
     (
         "svc-observability",
-        "观测出口：OBS-REPORT 服务端，root 直连（obs_handle）入队/FLUSH——无 EXECUTE 驱动语义",
+        "观测出口：OBS-REPORT 服务端，root 直连名单（service.rs DirectIndexes observability 槽）入队/FLUSH——无 EXECUTE 驱动语义",
     ),
     // —— Unassigned 能力壳协议服务（63.2.4 P1 在册）：无传输面/采集轮；
     //    接入真实协议时随 net_slot + driven 一并登记 ——

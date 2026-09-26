@@ -283,6 +283,12 @@ struct DirectIndexes {
     mgmt: Option<usize>,
     ota: Option<usize>,
     config: Option<usize>,
+    /// R16-F（WP-75.3.0）：可观测遥测上报目标（原 restart_done 内联
+    /// position / setup obs_handle 按名 find 残差收编）。
+    observability: Option<usize>,
+    /// R16-F（WP-75.3.0）：hello 探针锚点（原 run_ipc_loop by_name 闭包
+    /// 残差收编；探针缺失 = None，自定步幅语义）。
+    hello: Option<usize>,
 }
 
 #[cfg_attr(not(target_os = "none"), allow(dead_code))] // host 面死码（消费者在 cfg(none) 循环）
@@ -297,6 +303,8 @@ impl DirectIndexes {
             mgmt: None,
             ota: None,
             config: None,
+            observability: None,
+            hello: None,
         }
     }
 
@@ -312,6 +320,8 @@ impl DirectIndexes {
             mgmt: idx("svc-mgmt"),
             ota: idx("svc-ota"),
             config: idx("svc-config"),
+            observability: idx("svc-observability"),
+            hello: idx("svc-hello"),
         }
     }
 
@@ -401,15 +411,6 @@ impl Orchestration {
             probe_done: false,
             direct: DirectIndexes::empty(),
         }
-    }
-
-    /// 直驱服务句柄按名查找（原循环内五处 `.find(|h| h.name == ...)`
-    /// 手写收口；名单与查找语义零变化——不扩 SERVICE_WIRING，§4 边界）。
-    fn direct_handle(
-        handles: &[crate::spawn::SpawnedHandle],
-        name: &str,
-    ) -> Option<crate::spawn::SpawnedHandle> {
-        handles.iter().find(|h| h.name == name).cloned()
     }
 
     /// R14-C：管理裁决前奏单源——ready 投影（boot readiness Ready 且
@@ -791,10 +792,12 @@ impl Orchestration {
         // 与该槽 manifest 逐字段一致，boot-manager 下一轮绑定判据）。
         let capsule_release_id = capsule.as_ref().map(|c| c.release_id).unwrap_or([0u8; 16]);
         let settled = self.readiness.all_decided();
+        // R16-F（WP-75.3.0）：observability 索引归直连束（原内联 position
+        // 每探针步 O(n) 扫描残差收编；unwrap_or(false) = 服务不在场 =
+        // 未完成，语义保持）。
         let restart_done = || {
-            handles
-                .iter()
-                .position(|h| h.name == "svc-observability")
+            self.direct
+                .observability
                 .map(|i| self.mgmt.generation_of(i) > 0 && !self.mgmt.is_awaiting_ready(i))
                 .unwrap_or(false)
         };
@@ -937,19 +940,18 @@ pub fn run_ipc_loop(
     use eneros_ipc_wire::el0::{encode_frame, El0FrameType};
     use eneros_sel4_sys::safe::{get_mr, ipc_poll};
 
-    // 服务表：按名寻址。
-    let by_name = |name: &str| {
-        handles
-            .iter()
-            .find(|h| h.name == name)
-            .ok_or_else(|| alloc::format!("{name} not spawned"))
-    };
+    // C10 + R16-F（WP-75.3.0）：直连索引束一次构建（handles spawn 后固定
+    // ⇒ 索引全程稳定）——「root 直连名单」单点（10 槽位）。原按名三惯
+    // 用法（by_name 闭包 / setup 直驱句柄 find / restart_done 内联
+    // position）全部归一到本束。
+    let direct = DirectIndexes::build(handles);
     // 44.3（探针可选）：svc-hello/svc-fault 是探针锚点——纯产品装配
     // （qemu-prod/board-prod）不 spawn 它们。主循环探针缺失时自定步幅
     // （busy_wait+yield），故障注入跳过；fail-closed 仅针对已 spawn 服务。
-    let hello = match by_name("svc-hello") {
-        Ok(h) => Some(h.clone()),
-        Err(_) => {
+    // R16-F：按名查找经直连束（原 by_name 闭包退役）。
+    let hello = match direct.handle(handles, direct.hello) {
+        Some(h) => Some(h.clone()),
+        None => {
             eneros_runtime::println!(
                 "[eneros-root-task] DBG no svc-hello (probe absent) — self-paced supervisor"
             );
@@ -964,9 +966,9 @@ pub fn run_ipc_loop(
             eneros_sel4_sys::safe::debug_cap_identify(h.ep)
         );
     }
-    let fault = match by_name("svc-fault") {
-        Ok(h) => Some(h.clone()),
-        Err(_) => {
+    let fault = match direct.handle(handles, direct.fault) {
+        Some(h) => Some(h.clone()),
+        None => {
             eneros_runtime::println!(
                 "[eneros-root-task] DBG no svc-fault (probe absent) — fault injection disabled"
             );
@@ -1030,17 +1032,18 @@ pub fn run_ipc_loop(
     // 蓝图 40 收尾：控制链驱动 + 心跳监控（WP-40.4 隔离面 + Exit #6/#10
     // 实弹）。root 持全部服务 ep——作为采集链代理与编排触发器。
     // ============================================================================
-    // 64.2 WP-64.2.5：直驱服务句柄按名查找单点（Orchestration::direct_handle
-    // ——原五处手写 .find 收口，名单/语义零变化）。
-    let telemetry_handle = Orchestration::direct_handle(handles, "svc-telemetry");
-    let energy_handle = Orchestration::direct_handle(handles, "svc-energy-agent");
-    let hang_handle = Orchestration::direct_handle(handles, "svc-hang");
+    // 64.2 WP-64.2.5 + R16-F（WP-75.3.0）：直驱服务句柄经直连索引束投影
+    // （原五处 Orchestration::direct_handle 手写 .find 收口，再归
+    // DirectIndexes 单点——名单/语义零变化，束已在本函数入口构建）。
+    let telemetry_handle = direct.handle(handles, direct.telemetry).cloned();
+    let energy_handle = direct.handle(handles, direct.energy_agent).cloned();
+    let hang_handle = direct.handle(handles, direct.hang).cloned();
     // 41（WP-41.3 落盘）：svc-ota 经 EIPC 调 svc-storage 真落盘——
     // root 作为编排方触发一次 PERSIST+LOAD 往返验证（trial 状态写盘
     // 再读回；证据行 STORAGE-PERSIST）。
-    let ota_handle = Orchestration::direct_handle(handles, "svc-ota");
+    let ota_handle = direct.handle(handles, direct.ota).cloned();
     // 50（WP-50.1）：svc-observability 句柄（可观测遥测上报目标）。
-    let obs_handle = Orchestration::direct_handle(handles, "svc-observability");
+    let obs_handle = direct.handle(handles, direct.observability).cloned();
     if let (Some(t), Some(e)) = (&telemetry_handle, &energy_handle) {
         eneros_runtime::println!(
             "[eneros-root-task] CONTROL-CHAIN: drivers bound telemetry.ep={} energy.ep={}",
@@ -1074,8 +1077,8 @@ pub fn run_ipc_loop(
         now_ms(),
         &heartbeat_limits,
     );
-    // C10：直连索引束一次构建（handles spawn 后固定 ⇒ 索引全程稳定）。
-    orch.direct = DirectIndexes::build(handles);
+    // C10 + R16-F：直连索引束（本函数入口一次构建）移交编排状态。
+    orch.direct = direct;
     // 44.3：svc-fault 探针可选——缺失时 fault_idx=None，注入块跳过
     //（C10：直连束单源）。（2026-09-24 R14 复查轮修复：原位置在 orch
     // 绑定之前 = use-before-bind，R13 在途改动遗留、target 构建从未
@@ -2429,8 +2432,10 @@ fn send_frame(ep: u64, frame: &[u8]) -> Result<(), eneros_sel4_sys::safe::Sel4Er
 
 #[cfg(test)]
 mod tests {
-    /// C10：直连索引束 host 测——build 对 fixture handles 的 8 名单索引
-    /// 正确（缺服务 = None）、handle/ep_of 投影 O(1) 等值于按名查找。
+    /// C10 + R16-F（WP-75.3.0）：直连索引束 host 测——build 对 fixture
+    /// handles 的 10 槽位名单索引正确（缺服务 = None）、handle/ep_of 投影
+    /// O(1) 等值于按名查找。R16-F 补 observability/hello 两槽位（原三
+    /// 惯用法残差：restart_done 内联 position / by_name 闭包）。
     #[test]
     fn direct_indexes_build_and_projection() {
         use crate::spawn::SpawnedHandle;
@@ -2462,6 +2467,8 @@ mod tests {
             mk("svc-config", 15),
             mk("svc-energy-agent", 16),
             mk("svc-ai-worker", 17),
+            mk("svc-observability", 18),
+            mk("svc-hello", 19),
         ];
         let idx = DirectIndexes::build(&handles);
         assert_eq!(idx.telemetry, Some(0));
@@ -2471,6 +2478,8 @@ mod tests {
         assert_eq!(idx.config, Some(4));
         assert_eq!(idx.energy_agent, Some(5));
         assert_eq!(idx.ai_worker, Some(6));
+        assert_eq!(idx.observability, Some(7));
+        assert_eq!(idx.hello, Some(8));
         assert_eq!(
             idx.fault, None,
             "未 spawn 的直连目标 = None（探针跳过语义）"
@@ -2485,6 +2494,8 @@ mod tests {
             ("svc-energy-agent", idx.energy_agent),
             ("svc-ai-worker", idx.ai_worker),
             ("svc-fault", idx.fault),
+            ("svc-observability", idx.observability),
+            ("svc-hello", idx.hello),
         ] {
             let by_name = handles.iter().find(|h| h.name == name);
             assert_eq!(idx.handle(&handles, slot), by_name, "{name} handle 投影");
@@ -2494,6 +2505,23 @@ mod tests {
                 "{name} ep 投影"
             );
         }
+    }
+
+    /// R16-F（WP-75.3.0）：root 直连按名扫描唯一性守卫——service.rs 内
+    /// 按名 position 扫描只允许 1 处（DirectIndexes::build 的 idx 闭包
+    /// 本体）。restart_done/setup 直驱句柄改回内联 O(n) 扫描即红
+    ///（变异咬合）。token 运行期拼接防守卫字面量自匹配
+    ///（root_wire_faces_live_in_modules 先例——doc 注释亦须避开 token）。
+    #[test]
+    fn direct_indexes_is_the_single_by_name_scan() {
+        let src = include_str!("service.rs");
+        let t_pos = concat!("position(|h| h.na", "me ==");
+        assert_eq!(
+            src.matches(t_pos).count(),
+            1,
+            "root 直连按名扫描必须唯一归 DirectIndexes::build（idx 闭包本体）\
+             ——内联 position 惯用法回归（R16-F 三惯用法裂缝）"
+        );
     }
 
     use eneros_ipc_wire::el0::{decode_frame, encode_frame, El0FrameType};
