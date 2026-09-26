@@ -45,6 +45,12 @@ pub struct ServiceWiring {
     /// `driven: None` 的显式理由——对有网络槽的协议服务为必填（结构断言
     /// (a)），表达"接了线但决定不驱动"是有意识的装配决策，不是漏登。
     pub driven_none_reason: Option<&'static str>,
+    /// 心跳缺失容忍轮次覆盖（R16-K/蓝图 75-03 WP-75.3.1：原
+    /// `heartbeat_miss_limit` 函数体按名手抄 match 迁入——装配属性单源
+    /// 归表，与 heartbeat/net_slot/stack_pages/driven 同法）。
+    /// None = [`HEARTBEAT_MISS_LIMIT_DEFAULT`]；仅 `heartbeat: true` 行
+    /// 有意义（表一致性别面强制：无心跳行配窗 = 装配矛盾，测试锁）。
+    pub miss_limit: Option<i64>,
 }
 
 /// 服务装配接线表。
@@ -65,6 +71,7 @@ pub const SERVICE_WIRING: &[ServiceWiring] = &[
             offset_ticks: 10,
         }),
         driven_none_reason: None,
+        miss_limit: None,
     },
     ServiceWiring {
         name: "svc-mqtt",
@@ -83,6 +90,7 @@ pub const SERVICE_WIRING: &[ServiceWiring] = &[
             offset_ticks: 10,
         }),
         driven_none_reason: None,
+        miss_limit: None,
     },
     // D-1 修复：svc-iec104 采集轮接入默认编排。周期 15 与 modbus-tcp/mqtt
     // 同（`PROTO_EXECUTE_PERIOD` 既有值 15 迁入表，值不变）；offset 取 5
@@ -98,6 +106,7 @@ pub const SERVICE_WIRING: &[ServiceWiring] = &[
             offset_ticks: 5,
         }),
         driven_none_reason: None,
+        miss_limit: None,
     },
     ServiceWiring {
         name: "svc-mms",
@@ -108,6 +117,7 @@ pub const SERVICE_WIRING: &[ServiceWiring] = &[
         driven_none_reason: Some(
             "MMS 走 protocol_ladder 通用服务面，无自定义 OP_EXECUTE 采集路径；驱动接线待后续卷裁决",
         ),
+        miss_limit: None,
     },
     ServiceWiring {
         name: "svc-goose",
@@ -118,6 +128,7 @@ pub const SERVICE_WIRING: &[ServiceWiring] = &[
         driven_none_reason: Some(
             "46.5 平台限制：GOOSE 收归既有 G3 通道（bus.1 socket 5577），无独立 EXECUTE 采集轮",
         ),
+        miss_limit: None,
     },
     ServiceWiring {
         name: "svc-sv",
@@ -126,6 +137,7 @@ pub const SERVICE_WIRING: &[ServiceWiring] = &[
         stack_pages: None,
         driven: None,
         driven_none_reason: Some("SV 采样值流为被动订阅面，无轮询采集轮"),
+        miss_limit: None,
     },
     ServiceWiring {
         name: "svc-modbus-rtu",
@@ -136,6 +148,7 @@ pub const SERVICE_WIRING: &[ServiceWiring] = &[
         driven_none_reason: Some(
             "46.1 决策 b：QEMU 无第二串口——Unassigned 壳服务（SPEC-D UART X7 移交窗口按需驱动）",
         ),
+        miss_limit: None,
     },
     // —— 平台服务（WP-40.4 心跳监控面）——
     ServiceWiring {
@@ -145,6 +158,19 @@ pub const SERVICE_WIRING: &[ServiceWiring] = &[
         stack_pages: Some(16),
         driven: None,
         driven_none_reason: None,
+        // R16-K（WP-75.3.1）：容忍窗校准史随行（原 heartbeat_miss_limit
+        // match 臂迁入）。2026-09-14 `VOL70.5-GATE` 窗实弹：单值 150 轮把
+        // svc-telemetry 的块 I/O 长消息记成卡死——单条 OBS 消息内同步完成
+        // 事件面追加 + 快照落盘 + TSDB 提交（EVENT-STORE append /
+        // TSDB-DISK-COMMIT 逐批），耗时受介质与模拟速度支配远超缺省窗
+        // （0.2s 真实），而心跳只在消息之间 signal，"处理慢"被记成
+        // "卡死"（与蓝图 67 登记同族）。窗内 kill+restart ×5 ⇒ 每次重启
+        // 重置事件面 ⇒ SNAPSHOT-INPUT-REJECT ×2978 ⇒ EA 恒 NOACTION ⇒
+        // 方向 1–5 控制链整条停摆。处置：按最坏单条处理时长校准——
+        // 事件面/快照面/TSDB 三条块 I/O 都在单条 OBS 批处理内完成，IO
+        // 密集服务给 20× 缺省窗（≈4s 真实，TCG 下数十秒）；不是取消
+        // 看门狗（真卡死仍在秒级内被发现），其余服务维持缺省。
+        miss_limit: Some(3_000),
     },
     ServiceWiring {
         name: "svc-energy-agent",
@@ -153,6 +179,7 @@ pub const SERVICE_WIRING: &[ServiceWiring] = &[
         stack_pages: None,
         driven: None,
         driven_none_reason: None,
+        miss_limit: None,
     },
     ServiceWiring {
         name: "svc-ai-worker",
@@ -161,6 +188,7 @@ pub const SERVICE_WIRING: &[ServiceWiring] = &[
         stack_pages: None,
         driven: None,
         driven_none_reason: None,
+        miss_limit: None,
     },
     ServiceWiring {
         name: "svc-control-dispatch",
@@ -169,6 +197,7 @@ pub const SERVICE_WIRING: &[ServiceWiring] = &[
         stack_pages: None,
         driven: None,
         driven_none_reason: None,
+        miss_limit: None,
     },
     ServiceWiring {
         name: "svc-device-agent",
@@ -177,6 +206,7 @@ pub const SERVICE_WIRING: &[ServiceWiring] = &[
         stack_pages: None,
         driven: None,
         driven_none_reason: None,
+        miss_limit: None,
     },
     ServiceWiring {
         name: "svc-hang",
@@ -185,6 +215,7 @@ pub const SERVICE_WIRING: &[ServiceWiring] = &[
         stack_pages: None,
         driven: None,
         driven_none_reason: None,
+        miss_limit: None,
     },
 ];
 
@@ -211,30 +242,23 @@ pub const HEARTBEAT_MISS_LIMIT_DEFAULT: i64 = 150;
 
 /// 按服务校准的心跳缺失容忍轮次（蓝图 70.15 实弹定位的看门狗误杀面）。
 ///
+/// R16-K（蓝图 75-03 WP-75.3.1）：本函数自此为 [`SERVICE_WIRING`] 表的
+/// **纯投影**（`wiring_of(name).miss_limit`，缺省兜底）——校准史与逐服务
+/// 覆盖值在表行 `miss_limit`（svc-telemetry 行持 2026-09-14 实弹校准
+/// 3000 的完整证据链注释）；两消费点（service.rs heartbeat_limits 收集
+/// 与 HangMonitor::with_limits 面零改动）。
+///
 /// **缺陷形态（2026-09-14 `VOL70.5-GATE` 窗实测）**：`svc-telemetry` 被
 /// root 的 HangMonitor 连续 kill+restart（窗内 5 次：`HEARTBEAT-TIMEOUT:
 /// svc-telemetry no progress 150 rounds since probe … — kill+restart`）。
 /// 每次重启都重置事件面 ⇒ `SNAPSHOT-INPUT-REJECT reason=no-frozen-snapshot`
 /// ×2978（且**在首个 `SNAP-INPUT-BOUND` 之后仍有 2223 次**，故非冷启动
 /// 竞态）、EA 恒 `NOACTION` ⇒ 零 `dispatch=Committed` ⇒ 方向 1–5 的控制链
-/// 在实弹窗里**整条停摆**。
-///
-/// **根因**：`svc-telemetry` 的**单条消息内**包含同步块 I/O（OBS 事件面
-/// 追加 + 快照落盘 + TSDB 提交，`EVENT-STORE append` / `TSDB-DISK-COMMIT`
-/// 逐批），其耗时受介质与模拟速度支配，远超缺省窗（0.2s 真实）；而心跳
-/// 只在消息之间 signal，故"处理慢"被记成"卡死"。这与蓝图 67 的
-/// 登记同族（"心跳 = 消息驱动进展，上游静默误判卡死"）。
-///
-/// **处置**：按服务的**最坏单条处理时长**校准容忍窗——不是取消看门狗
-/// （真卡死仍在秒级内被发现），也不是改判据。IO 密集服务给 20× 缺省窗
-/// （≈4s 真实，TCG 下数十秒），其余服务维持缺省。
+/// 在实弹窗里**整条停摆**。根因与处置详见表行注释（miss_limit 随行）。
 pub fn heartbeat_miss_limit(name: &str) -> i64 {
-    match name {
-        // 事件面/快照面/TSDB 三条块 I/O 都在单条 OBS 批处理内完成。
-        "svc-telemetry" => 3_000,
-        // 其余在册服务：单条消息为纯计算 + 短 IPC（无同步块 I/O）。
-        _ => HEARTBEAT_MISS_LIMIT_DEFAULT,
-    }
+    wiring_of(name)
+        .and_then(|w| w.miss_limit)
+        .unwrap_or(HEARTBEAT_MISS_LIMIT_DEFAULT)
 }
 
 /// 栈页覆盖（main.rs spawn 计划面；自本表推导）。
@@ -578,6 +602,48 @@ mod tests {
                 u64::from(e.offset) + u64::from(e.period)
             ),
             "Repeat：第二个周期同样到期"
+        );
+    }
+
+    /// R16-K（蓝图 75-03 WP-75.3.1）：心跳缺失容忍窗单源入表——
+    /// `heartbeat_miss_limit` 是表投影（非按名手抄 match）；现行唯一校准
+    /// 行 svc-telemetry = Some(3_000)（2026-09-14 实弹校准值搬家，值不变）；
+    /// 配窗行必须 heartbeat: true（一致性别面——防给无心跳行配窗）。
+    #[test]
+    fn miss_limit_lives_in_the_wiring_table() {
+        let tele = wiring_of("svc-telemetry").expect("svc-telemetry 在册");
+        assert_eq!(tele.miss_limit, Some(3_000), "svc-telemetry 行覆盖窗在表");
+        assert_eq!(heartbeat_miss_limit("svc-telemetry"), 3_000);
+        // 任一其它在册服务 = 缺省窗（表行 None ⇒ 函数 DEFAULT）。
+        let hang = wiring_of("svc-hang").expect("svc-hang 在册");
+        assert_eq!(hang.miss_limit, None);
+        assert_eq!(
+            heartbeat_miss_limit("svc-hang"),
+            HEARTBEAT_MISS_LIMIT_DEFAULT
+        );
+        // 单源等值：函数 ≡ 表投影（函数改回按名手抄、或表行与函数漂移即红）。
+        for w in SERVICE_WIRING {
+            assert_eq!(
+                heartbeat_miss_limit(w.name),
+                w.miss_limit.unwrap_or(HEARTBEAT_MISS_LIMIT_DEFAULT),
+                "{} 函数值必须等于表投影",
+                w.name
+            );
+            assert!(
+                !(w.miss_limit.is_some() && !w.heartbeat),
+                "{} 无心跳行不得配容忍窗（装配矛盾）",
+                w.name
+            );
+        }
+        // 源扫描守卫（root_wire_faces/直连束先例）：函数不得回退为按名
+        // 手抄 match 臂——`"svc-…" =>` 词形在本文件清零（表行 name: 字段
+        // 无 => 词形不受扰）。token 运行期拼接防自匹配。
+        let src = include_str!("wiring.rs");
+        let t_arm = concat!("\"svc-tele", "metry\" =>");
+        assert_eq!(
+            src.matches(t_arm).count(),
+            0,
+            "heartbeat_miss_limit 回退为按名手抄 match 臂——容忍窗单源必须经表行 miss_limit"
         );
     }
 
