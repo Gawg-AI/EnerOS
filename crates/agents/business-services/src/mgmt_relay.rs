@@ -393,5 +393,30 @@ mod tests {
             format_persistence_body(false, 99),
             "ops_store=missing:storage-unbound at_ms=99"
         );
+        // 75 全局复查轮：identity 分节 body 补锁（此前唯一无 golden 的分
+        // 节 body）——bin/lib 同 package 故版本词形恒等，锁格式形而非具
+        // 体版本值（bump 不红）；接线在位性由 identity 接线守卫管。
+        assert_eq!(
+            format_identity_body(),
+            format!("product_version={}", env!("CARGO_PKG_VERSION")),
+            "identity body 词形锁"
+        );
+    }
+
+    /// 75 全局复查轮：identity 分节接线守卫——75-02 code-review 曾实锤
+    /// 「接线漏掉 = 死代码、host 测试全绿」（同 package 版本词形恒等，
+    /// 任何行为锁咬不住，唯源扫描有牙）。扫描 bin 侧生产源，单源函数
+    /// 引用恰 1 处 = 接线点本体；漏接线/内联重写即红。针运行期拼接
+    /// （守卫自匹配家族纪律——本文件非扫描目标，doc/assert 可具名）。
+    #[test]
+    fn identity_body_is_wired_in_svc_mgmt() {
+        let src = include_str!("bin/svc-mgmt.rs");
+        let needle = concat!("format_identity_", "body");
+        assert_eq!(
+            src.matches(needle).count(),
+            1,
+            "svc-mgmt identity 分节必须经 mgmt_relay 单源函数接线——漏接线\
+             （死代码）/内联重写即红"
+        );
     }
 }

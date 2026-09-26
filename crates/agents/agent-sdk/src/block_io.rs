@@ -227,6 +227,11 @@ impl<C: EipcSend> BlockIo<C> {
 /// `remaining_life = if code==3 {0} else {100}`、`wear_level = if code==4
 /// {100} else {0}`。诚实取舍：wire 13B 冻结只传折码，消费侧表达
 /// 「健康/劣化」二值语义而非连续量；temperature 恒 0（wire 无域）。
+///
+/// 单位口径（75 全局复查轮注记）：`total_blocks` 直传 wire 应答首八字节
+/// = 驱动侧 `block_count()`（512B 扇区口径），与 `EipcBlockDevice::
+/// block_count` 字段（构造传入的本地几何块口径，如 4K 区段计数）**不同
+/// 单位**——两读取端勿直接比较/混算（当前零裁决消费方）。
 pub fn unfold_health_code(code: u8, total_blocks: u64) -> DeviceHealth {
     DeviceHealth {
         total_blocks,

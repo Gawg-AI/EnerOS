@@ -2522,6 +2522,18 @@ mod tests {
             "root 直连按名扫描必须唯一归 DirectIndexes::build（idx 闭包本体）\
              ——内联 position 惯用法回归（R16-F 三惯用法裂缝）"
         );
+        // 75 全局复查轮：find 型按名扫描同权封口——R16-F 退役三惯用法中
+        // 两支（by_name 闭包/direct_handle）原为 find 形，只封 position 则
+        // find 型回潮不红。在册恰 2 处：表驱动执行循环（蓝图 62 接线表
+        // 语义——名字来自表行，非直连语境）+ 投影等值测试本体。直连语境
+        // 新增 find 扫描即红（针运行期拼接）。
+        let t_find = concat!("find(|h| h.na", "me ==");
+        assert_eq!(
+            src.matches(t_find).count(),
+            2,
+            "按名 find 扫描在册恰 2 处（表驱动循环+投影测试）——直连语境 \
+             find 惯用法回潮即红"
+        );
     }
 
     use eneros_ipc_wire::el0::{decode_frame, encode_frame, El0FrameType};

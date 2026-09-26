@@ -630,3 +630,20 @@ fn saga_reconcile_missing_journal_never_sends() {
         "readback-first must never enter the write core"
     );
 }
+
+// 75 全局复查轮：夹具默认单位集方向守卫（code-review H1 防回潮）——
+// support 默认形态恰含尾两位 Other（六套件现行域覆盖；全 Ratio 包装由
+// typed_chain 显式传参、在己文件）。H1 曾实证：unit 为评估器纯元数据，
+// 方向翻转零断言红——唯源扫描有牙。针运行期拼接（扫描目标仅 support.rs，
+// 其内完整针形恰 2 处 = 默认数组尾位本体）。
+#[test]
+fn support_default_units_keep_other_tail() {
+    let src = include_str!("support.rs");
+    let needle = concat!("PointUnit::", "Other");
+    assert_eq!(
+        src.matches(needle).count(),
+        2,
+        "support 默认单位集方向 = [Volt,Ampere,Hertz,Ratio,Other,Other]——\
+         方向翻转/顺手统一即红（H1 防回潮）"
+    );
+}
