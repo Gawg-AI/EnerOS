@@ -20,6 +20,10 @@ const MAX_EVENTS: usize = 96;
 const MAX_BATCHES: usize = 2;
 const MAX_BYTES: usize = 60_000;
 
+/// 蓝图 77 卷一 WP-77.1.1：持有计划容量（= HELD_TICK 活跃计数的值域
+/// 上界，只读协议常量——EA 接收端精确解码消费，两端不手抄数字）。
+pub const MAX_HELD_PLANS: usize = MAX_PLANS;
+
 #[derive(Clone)]
 pub(crate) struct HeldBatch {
     pub id: [u8; 16],

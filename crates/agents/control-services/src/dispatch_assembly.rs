@@ -740,26 +740,8 @@ impl DispatchHandler {
                 "[svc-control-dispatch] telemetry EP NOT granted —— 意图路径 fail-closed"
             );
         }
-        // ADR-0054:29–30：持有输入保留面装配（目标侧）。telemetry 端点在位
-        // → 真钉面（独立端点实例，与 EipcBlobSource 同款 bind_cap 先例）；
-        // 端点缺失 → NoRetention（fail-closed：一切持有计划准入被拒，不
-        // 静默放行）。host（非 sel4）装配无 EIPC telemetry 面，保持无钉面
-        // （engine 的 host 测试显式选择保留面形态）。
-        #[cfg(all(target_os = "none", feature = "sel4"))]
-        let engine = engine.map(|mut e| {
-            let retainer: alloc::boxed::Box<dyn eneros_control_dispatch::HeldInputRetainer> =
-                match telemetry_endpoint_for_retainer(eipc_mask) {
-                    Some(ep) => alloc::boxed::Box::new(TelemetrySnapRetainer { endpoint: ep }),
-                    None => {
-                        eneros_runtime::println!(
-                            "[svc-control-dispatch] SNAP-RETAINER reason=telemetry-endpoint-missing（持有计划准入 fail-closed）"
-                        );
-                        alloc::boxed::Box::new(eneros_control_dispatch::NoRetention)
-                    }
-                };
-            e.set_input_retainer(retainer);
-            e
-        });
+        // 蓝图 77 卷一 WP-77.1.2：保留面（钉面）装配移入 build_engine——
+        // 与 held store 一次性交付（HeldOwner），两步装配的次序窗口拆除。
         Self {
             engine,
             telemetry,
@@ -957,7 +939,13 @@ impl DispatchHandler {
             });
         match held {
             Ok(plans) => {
-                engine.install_held_plans(plans);
+                // 蓝图 77 卷一 WP-77.1.2：store 与保留面**一次装配**
+                // （HeldOwner::assemble —— 装配期即按存活引用重钉，读错/
+                // 解码错/钉拒绝留下显式故障态并阻断新准入）。
+                engine.install_held_owner(eneros_control_dispatch::HeldOwner::assemble(
+                    plans,
+                    build_snap_retainer(eipc_mask),
+                ));
                 eneros_runtime::println!("[svc-control-dispatch] HELD-STORE-OPEN status=OK");
             }
             Err(error) => {
@@ -1637,6 +1625,26 @@ fn telemetry_endpoint_for_retainer(
     })
 }
 
+/// 蓝图 77 卷一 WP-77.1.2：保留面构造（ADR-0054:29–30）。telemetry 端点
+/// 在位 → 真钉面（独立端点实例）；端点缺失 → NoRetention（fail-closed：
+/// 一切持有计划准入被拒，不静默放行）。host（非 sel4）装配无 EIPC
+/// telemetry 面 → 显式 NoRetention（engine 的 host 测试经 HeldOwner
+/// 显式选择保留面形态）。
+#[cfg(all(target_os = "none", feature = "sel4"))]
+fn build_snap_retainer(
+    eipc_mask: u64,
+) -> alloc::boxed::Box<dyn eneros_control_dispatch::HeldInputRetainer> {
+    match telemetry_endpoint_for_retainer(eipc_mask) {
+        Some(ep) => alloc::boxed::Box::new(TelemetrySnapRetainer { endpoint: ep }),
+        None => {
+            eneros_runtime::println!(
+                "[svc-control-dispatch] SNAP-RETAINER reason=telemetry-endpoint-missing（持有计划准入 fail-closed）"
+            );
+            alloc::boxed::Box::new(eneros_control_dispatch::NoRetention)
+        }
+    }
+}
+
 /// ADR-0054:29–30：快照钉面（svc-telemetry `TEL_REQ_SNAP_HOLD` / `_RELEASE`）。
 /// hold 失败 = 传输/容量面 → false（engine fail-closed 拒绝新准入）；
 /// release 失败 = 可重试（下个 tick 幂等重发）。
@@ -1674,5 +1682,25 @@ impl eneros_control_dispatch::HeldInputRetainer for TelemetrySnapRetainer {
             .call("svc-telemetry", &req)
             .map(|resp| crate::dispatch_wire::snap_resp_ok(&resp))
             .unwrap_or(false)
+    }
+    fn sync(&mut self, ids: &[[u8; 16]]) -> bool {
+        // 蓝图 77 卷一 WP-77.1.3：完整活跃集同步（有界帧 ≤
+        // SNAP_SYNC_MAX_IDS×16+2 B）——远端原子确认本世代钉集。
+        let req = crate::dispatch_wire::snap_sync_request(ids);
+        match self.endpoint.call("svc-telemetry", &req) {
+            Ok(resp) if crate::dispatch_wire::snap_resp_ok(&resp) => true,
+            Ok(resp) => {
+                eneros_runtime::println!(
+                    "[svc-control-dispatch] SNAP-SYNC-REJECT n={} resp={:02x?}",
+                    ids.len(),
+                    &resp[..resp.len().min(4)]
+                );
+                false
+            }
+            Err(e) => {
+                eneros_runtime::println!("[svc-control-dispatch] SNAP-SYNC-FAIL transport={e:?}");
+                false
+            }
+        }
     }
 }

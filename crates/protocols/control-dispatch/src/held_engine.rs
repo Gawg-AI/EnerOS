@@ -29,18 +29,24 @@ use crate::settle::{ExecutionCtx, SettleTrigger};
 /// hold = 新计划准入前登记（fail-closed：false ⇒ 调用方必须拒绝准入——
 /// 必要输入可能被回收时不得继续依赖该输入签发）；release = 计划终态且
 /// 无未决后解除（幂等；失败可重试——释放是回收面不是安全面）。钉集是
-/// RAM 派生态，唯一持久事实 = 持有计划本身：重启后由
-/// [`DispatchEngine::set_input_retainer`] / `install_held_plans` 按
-/// 非终态计划重派生。
+/// RAM 派生态，唯一持久事实 = 持有计划本身：重启后由 owner 装配
+/// （[`HeldOwner::assemble`] + [`DispatchEngine::install_held_owner`]）
+/// 按存活引用计划重派生。
 pub trait HeldInputRetainer {
     /// 登记快照钉（幂等）。false = 面不可用/容量满。
     fn hold(&mut self, snapshot_id: [u8; 16]) -> bool;
     /// 解除快照钉（幂等）。false = 未钉/面不可用（可重试）。
     fn release(&mut self, snapshot_id: [u8; 16]) -> bool;
+    /// 完整活跃钉集同步（蓝图 77 卷一 WP-77.1.3）：把远端本世代的钉集
+    /// **原子确认**为 `ids`（dispatch 从持久计划派生的 `!terminal ||
+    /// unresolved` 全集）。false = 同步未确认（远端验证失败/传输失败）
+    /// ——engine 置 stale 态阻断新持有准入，后续 held tick 重试。
+    fn sync(&mut self, ids: &[[u8; 16]]) -> bool;
 }
 
 /// fail-closed 保留面：一切 hold 拒绝（装配缺失时**不得**静默放行准入——
-/// ADR-0054:29–30 的反面 enforcement）。
+/// ADR-0054:29–30 的反面 enforcement）。sync 同理拒绝——若空返回 true，
+/// telemetry 侧屏障将在无任何保护的情况下解锁（远端没有任何钉集确认）。
 pub struct NoRetention;
 impl HeldInputRetainer for NoRetention {
     fn hold(&mut self, _snapshot_id: [u8; 16]) -> bool {
@@ -49,7 +55,16 @@ impl HeldInputRetainer for NoRetention {
     fn release(&mut self, _snapshot_id: [u8; 16]) -> bool {
         false
     }
+    fn sync(&mut self, _ids: &[[u8; 16]]) -> bool {
+        false
+    }
 }
+
+/// 蓝图 77 卷一 WP-77.1.1：held 回执 note 标签（[`Self::held_receipt`]
+/// note 前缀 = dispatch 对 EA 的「本 tick 曾接纳持有计划」反馈词形——
+/// EA 据此为同 tick 内直接终态的计划补记活跃史；两端共用本常量，不手抄
+/// 字符串）。
+pub const HELD_RECEIPT_NOTE_TAG: &str = "held-plan";
 
 /// R16-N（蓝图 75 WP-75.1.6）：held 计划时域预检（**纯判定**，自
 /// run_typed held 分叉下沉——原三重校验嵌在 349 行函数体中不可单测）。
@@ -82,24 +97,82 @@ pub(crate) fn held_horizon_violation(
     None
 }
 
+/// 蓝图 77 卷一 WP-77.1.2：持有计划 owner 的**单次装配单元**——durable
+/// store 与保留面一并交付，拆除 `install_held_plans` / `set_input_retainer`
+/// 两步装配的次序窗口（旧形态：store 先在、retainer 未装 ⇒
+/// `accept_held_plan` 的 `if let Some(retainer)` 允许无钉准入——ADR-0054:29–30
+/// 的反面，蓝图 §1.3 实锤的公开入口缺口）。装配期即从持久计划枚举存活
+/// 引用并重钉；store 读错、输入解码错、钉拒绝任一发生 ⇒ **显式未就绪**
+/// （engine 侧阻断新持有准入与新设备写；旧计划仍只读对账/取消）——
+/// 绝不把错误折叠成空集。
+///
+/// 替换事务：engine 侧允许整体重装 owner；被替换装配可能遗留在远端钉面
+/// 的旧 ID 由 WP-77.1.3 的完整活跃集同步收敛（每个 held tick 全量确认，
+/// 重启必重建——本单元不另设逐 ID 撤销事务）。
+pub struct HeldOwner {
+    pub(crate) plans: DurablePlans,
+    pub(crate) retainer: alloc::boxed::Box<dyn HeldInputRetainer>,
+    /// 装配就绪态：false = 恢复枚举/重钉失败（fail-closed）。
+    pub(crate) ready: bool,
+}
+
+impl HeldOwner {
+    /// 一次交付两项（store + retainer）。装配即断电恢复：按持久计划
+    /// 枚举 `!terminal || unresolved` 的快照 ID 逐 ID 重钉——**与
+    /// finalize/存活引用同一口径**（蓝图 §1.4：repin 的 `!terminal()`
+    /// 与 finalize 的 `!terminal() || unresolved()` 两套口径不得分叉，
+    /// 未决计划的输入同样必须受剪枝保护）。
+    pub fn assemble(
+        plans: DurablePlans,
+        retainer: alloc::boxed::Box<dyn HeldInputRetainer>,
+    ) -> Self {
+        let mut owner = Self {
+            plans,
+            retainer,
+            ready: true,
+        };
+        match owner.plans.plans() {
+            Ok(stored) => {
+                for plan in &stored {
+                    if plan.terminal() && !plan.unresolved() {
+                        continue;
+                    }
+                    // 解码错 = 输入身份不可证 ⇒ 未就绪（旧 filter_map 静默
+                    // 跳过 = 把损坏折成「无引用」）。
+                    let Some(input) =
+                        eneros_agent_sdk::snap_input_wire::TrustedInput::decode(&plan.input)
+                    else {
+                        owner.ready = false;
+                        continue;
+                    };
+                    if !owner.retainer.hold(input.facts().snapshot_id) {
+                        owner.ready = false;
+                    }
+                }
+            }
+            Err(_) => owner.ready = false,
+        }
+        owner
+    }
+}
+
 impl DispatchEngine {
-    /// Assembly supplies an already opened registered region. No RAM fallback
-    /// is permitted for production multi-step plans.
-    pub fn install_held_plans(&mut self, plans: DurablePlans) {
-        self.repin_held_inputs();
-        self.held_plans = Some(plans);
-        self.repin_held_inputs();
+    /// 蓝图 77 卷一 WP-77.1.2：owner 单次装配（store + 保留面一体交付；
+    /// 两步装配 API 退役）。装配期恢复失败 ⇒ `held_retention_fault`：
+    /// 新持有准入与新设备写全部阻断（只读对账仍可），证据行可观测。
+    pub fn install_held_owner(&mut self, owner: crate::held_engine::HeldOwner) {
+        self.held_retention_fault = !owner.ready;
+        self.input_retainer = Some(owner.retainer);
+        self.held_plans = Some(owner.plans);
+        if self.held_retention_fault {
+            eneros_runtime::println!(
+                "[control-dispatch] HELD-RETENTION-FAULT reason=assembly-repin-failed（新准入/新设备写阻断；只读对账继续）"
+            );
+        }
     }
 
-    /// 装配保留面（ADR-0054:29–30）。装配后立即按当前非终态计划重派生
-    /// 钉集（断电恢复：钉是 RAM 态，重启后从这里重建）。
-    pub fn set_input_retainer(&mut self, retainer: alloc::boxed::Box<dyn HeldInputRetainer>) {
-        self.input_retainer = Some(retainer);
-        self.repin_held_inputs();
-    }
-
-    /// 供装配查询：保留面是否已装配（未装配 ⇒ 生产应装 NoRetention 而非
-    /// 留空——留空仅限 host 测试）。
+    /// 供装配查询：保留面是否已装配（未装配 ⇒ 生产应装 NoRetention 而
+    /// 非留空——留空仅限 host 测试）。
     pub fn input_retainer_installed(&self) -> bool {
         self.input_retainer.is_some()
     }
@@ -107,32 +180,6 @@ impl DispatchEngine {
     /// F70-04：待重试释放数（观测面——空闲重试收敛的可观测事实）。
     pub fn pending_release_count(&self) -> usize {
         self.holds.pending_count()
-    }
-
-    /// 按当前**非终态**计划重派生钉集（安装/装配两处调用；失败计数不
-    /// 静默——已有计划的钉失败不回滚计划本身，只登记可观测事实：后续
-    /// drive 的 fail-closed 面仍是输入有效性判据）。
-    fn repin_held_inputs(&mut self) {
-        let Some(store) = &self.held_plans else {
-            return;
-        };
-        let ids: Vec<[u8; 16]> = store
-            .plans()
-            .unwrap_or_default()
-            .iter()
-            .filter(|p| !p.terminal())
-            .filter_map(|p| {
-                eneros_agent_sdk::snap_input_wire::TrustedInput::decode(&p.input)
-                    .map(|i| i.facts().snapshot_id)
-            })
-            .collect();
-        for id in ids {
-            if let Some(retainer) = self.input_retainer.as_mut() {
-                if !retainer.hold(id) {
-                    self.holds.note_pin_failure();
-                }
-            }
-        }
     }
 
     pub fn block_unavailable_held_store(&mut self) {
@@ -147,6 +194,12 @@ impl DispatchEngine {
         if self.held_store_unavailable {
             return Err(DispatchError::IntentPersistFailed(String::from(
                 "held store unavailable; control blocked",
+            )));
+        }
+        // WP-77.1.2：装配保留故障 ⇒ 一切新设备写阻断（旧计划只读对账）。
+        if self.held_retention_fault {
+            return Err(DispatchError::IntentPersistFailed(String::from(
+                "held retention fault; control blocked",
             )));
         }
         let Some(store) = &self.held_plans else {
@@ -198,7 +251,8 @@ impl DispatchEngine {
             committed_at_ms: state.is_committed().then(|| (self.now_fn)()),
             latency_ms: 0,
             note: Some(alloc::format!(
-                "held-plan batches={} state={state:?}",
+                "{} batches={} state={state:?}",
+                HELD_RECEIPT_NOTE_TAG,
                 reports.len()
             )),
         })
@@ -218,6 +272,13 @@ impl DispatchEngine {
                 "held plan storage/control mode unavailable",
             )));
         }
+        // WP-77.1.2：装配期恢复失败（枚举/重钉）⇒ 准入拒绝（fail-closed）。
+        if self.held_retention_fault {
+            return Err(DispatchError::NotAuthorized(String::from(
+                "held retention fault: assembly repin failed; admissions blocked",
+            )));
+        }
+
         let existing = self
             .held_plans
             .as_ref()
@@ -239,17 +300,31 @@ impl DispatchEngine {
                 "held admission needs reconciliation",
             )));
         }
+        // WP-77.1.3：世代同步未确认 ⇒ **新**持有准入阻断（远端钉集未确认
+        // 时准入即承诺保留——与屏障合同相悖）。置于同 ID 重放检查之后：
+        // 重放回原回执不是新投递，不受 stale 影响。
+        if self.held_sync_stale {
+            return Err(DispatchError::NotAuthorized(String::from(
+                "held snapshot sync pending: retention barrier unconfirmed",
+            )));
+        }
         // ADR-0054:29–30：准入前先钉住证书引用的冻结输入（fail-closed——
         // 钉面不可用/容量满 ⇒ 拒绝准入：必要输入可能被回收时不得继续
-        // 依赖该输入签发）。
+        // 依赖该输入签发）。WP-77.1.2：hold 门**无条件**经过——retainer
+        // 由 owner 装配保证在位（NoRetention = 显式拒绝实现）；旧
+        // `if let Some(retainer)` 在两步装配窗口期允许无钉准入（蓝图 §1.3
+        // 公开入口缺口）。
         let snapshot_id = input.facts().snapshot_id;
-        if let Some(retainer) = self.input_retainer.as_mut() {
-            if !retainer.hold(snapshot_id) {
-                self.holds.note_pin_failure();
-                return Err(DispatchError::NotAuthorized(String::from(
-                    "input retention unavailable: held plan needs pinned frozen snapshot",
-                )));
-            }
+        let Some(retainer) = self.input_retainer.as_mut() else {
+            return Err(DispatchError::Internal(String::from(
+                "held owner assembly incomplete: retainer absent",
+            )));
+        };
+        if !retainer.hold(snapshot_id) {
+            self.holds.note_pin_failure();
+            return Err(DispatchError::NotAuthorized(String::from(
+                "input retention unavailable: held plan needs pinned frozen snapshot",
+            )));
         }
         if let Err(e) = self
             .held_plans
@@ -312,8 +387,26 @@ impl DispatchEngine {
         input: Option<&TrustedInput>,
         telemetry: Option<&TrustedTelemetry>,
     ) -> Result<Vec<DriveReport>, DispatchError> {
+        self.drive_held_plans_counted(input, telemetry)
+            .map(|(reports, _, _)| reports)
+    }
+
+    /// 蓝图 77 卷一 WP-77.1.1：drive + **drive 完成后时点的活跃计数**一次
+    /// 返回。旧 `ControlDispatch::tick_held` 在 drive 后第二次 `plans()`
+    /// 读取并把失败 `unwrap_or(0)` 折叠成活跃 0——读错折零会让 EA 放行
+    /// System1（条件性故障，与 HELD_TICK 短帧同族）。现计数由
+    /// [`Self::finalize_held_plans`] 的同一读取派生（drive 完成后时点），
+    /// 读错显式传播，折叠面结构性消除（plans() 镜像读的失败源 =
+    /// poisoned ⇒ 写失败必已先传播——本重构把该防御面从「静默折零」
+    /// 收紧为「不可能折零」）。
+    #[allow(clippy::type_complexity)] // (reports, 同步集, 活跃数) 三元产物——中间聚合，无跨 fn 传播
+    pub(crate) fn drive_held_plans_counted(
+        &mut self,
+        input: Option<&TrustedInput>,
+        telemetry: Option<&TrustedTelemetry>,
+    ) -> Result<(Vec<DriveReport>, Vec<[u8; 16]>, usize), DispatchError> {
         let Some(store) = &self.held_plans else {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new(), 0));
         };
         let plans = store.plans().map_err(DispatchError::IntentPersistFailed)?;
         let mut reports = Vec::new();
@@ -323,8 +416,10 @@ impl DispatchEngine {
             // 实际调度到的周期继续重试（旧实现在此提前 return，跳过
             // `finalize_held_plans`，空闲周期内保留持续泄漏、可耗尽钉位
             // 并阻断后续准入）。
-            self.finalize_held_plans();
-            return Ok(reports);
+            let (active, live_ids) = self
+                .finalize_held_plans()
+                .map_err(DispatchError::IntentPersistFailed)?;
+            return Ok((reports, live_ids, active));
         };
         let now = (self.now_fn)();
         let allowed = !plan.recovered
@@ -442,8 +537,10 @@ impl DispatchEngine {
                 break;
             }
         }
-        self.finalize_held_plans();
-        Ok(reports)
+        let (active, live_ids) = self
+            .finalize_held_plans()
+            .map_err(DispatchError::IntentPersistFailed)?;
+        Ok((reports, live_ids, active))
     }
 
     /// 终局收尾（ADR-0054:29–30 + 15–16）：计划全部批终态后
@@ -453,14 +550,14 @@ impl DispatchEngine {
     ///    未决计划引用 ⇒ 保留；无引用才释放——不是"有一份计划结束"就
     ///    整体释放）。释放失败进有界待释放队列，空闲周期也持续重试
     ///    （§7.2.4）；快照被新一轮合法持有时队列条目撤销（§7.2.6）。
-    fn finalize_held_plans(&mut self) {
+    /// 返回 **drive 完成后时点的在途（非终态）计划数**与**存活引用的
+    /// 快照 ID 全集**（`!terminal || unresolved`——蓝图 77 卷一 WP-77.1.3
+    /// 的同步集单源；同一 plans 读取派生，读错显式传播绝不折叠）。
+    fn finalize_held_plans(&mut self) -> Result<(usize, Vec<[u8; 16]>), String> {
         let Some(store) = &self.held_plans else {
-            return;
+            return Ok((0, Vec::new()));
         };
-        let plans = match store.plans() {
-            Ok(p) => p,
-            Err(_) => return,
-        };
+        let plans = store.plans()?;
         struct PlanFinality {
             plan_id: eneros_decision_contract::PlanId,
             snapshot_id: [u8; 16],
@@ -574,6 +671,14 @@ impl DispatchEngine {
         // 待释放重试协议末步（§7.2.4 不依赖新提案 / §7.2.5 远端幂等至
         // 收敛；含收尾合并与本 pass 新失败在前的截断序）。
         self.holds.retry_pending(&mut self.input_retainer);
+        // WP-77.1.1：drive 完成后时点的在途计数（与上方同一 plans 读取
+        // 派生——释放只动钉面不动计划终态性；读错已在入口显式传播）。
+        // WP-77.1.3：live_refs 的键集 = 存活引用全集（`!terminal ||
+        // unresolved`），即同步集——BTreeMap 迭代序确定（有界 ≤ 持有
+        // 计划容量）。
+        let live_ids: Vec<[u8; 16]> = live_refs.keys().copied().collect();
+        let active = plans.iter().filter(|p| !p.terminal()).count();
+        Ok((active, live_ids))
     }
 
     /// 快照的**存活引用**数（在途 = 非终态，或未决 = 对账中；事实源 =

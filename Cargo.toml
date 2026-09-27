@@ -202,7 +202,7 @@ members = [
 # rc/1.0 标记；冲刺期一律 0.x.y（0.313 延续历史 120 版本计划顶格 v0.312）；
 # 每 WP Exit 自证后递增 patch（cargo xtask bump-version patch；
 # xtask qa gng-version 单一 owner 强制；eneros-ci 已于蓝图 67 WP-67.1.4 退役）。
-version = "0.348.0"
+version = "0.349.0"
 edition = "2021"
 authors = ["EnerOS Team"]
 license = "MIT OR Apache-2.0"

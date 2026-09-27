@@ -43,6 +43,15 @@ pub const TEL_REQ_SNAP_HOLD: u8 = 7;
 /// 请求：**解除快照保留钉**（ADR-0054:29–30）——`[码, id16]`：计划终态
 /// 且无未决后解除（幂等；失败由后续 tick 重试——释放是回收面不是安全面）。
 pub const TEL_REQ_SNAP_RELEASE: u8 = 8;
+/// 请求：**完整活跃钉集同步**（蓝图 77 卷一 WP-77.1.3 进程世代屏障）——
+/// `[码, count, id×16 ×count]`，`count ≤ [`SNAP_SYNC_MAX_IDS`]`。
+/// dispatch 从持久计划计算 `!terminal || unresolved` 全集，在每个 held
+/// tick 发送；telemetry 原子替换钉集（逐 ID 验证现存 blob），确认前不做
+/// 可能删除旧 blob/事件的修剪——telemetry 独立重启丢 RAM 钉后由此必重建。
+pub const TEL_REQ_SNAP_SYNC: u8 = 9;
+/// 同步帧活跃 ID 数上界（= `MAX_SNAP_PINS` 的单源；持有计划容量 2 +
+/// 换代余量——两端经本常量消费，不手抄数字）。
+pub const SNAP_SYNC_MAX_IDS: usize = 4;
 /// 快照钉请求**帧长**（WP-76.2.7 单源）：`TEL_REQ_SNAPSHOT_BLOB` /
 /// `TEL_REQ_SNAP_HOLD` / `TEL_REQ_SNAP_RELEASE` 三码共用的布局 pin =
 /// `[op, snapshot_id ×16]` → `1 + 16 = 17`B。构帧侧
@@ -103,6 +112,28 @@ pub fn parse_snap_request(req: &[u8]) -> Option<[u8; 16]> {
     let mut id = [0u8; 16];
     id.copy_from_slice(&req[1..SNAP_REQ_LEN]);
     Some(id)
+}
+
+/// 完整活跃钉集同步解帧（蓝图 77 卷一 WP-77.1.3）：`[码, count, id×16
+/// ×count]` → ID 集（有序）。`count > [`SNAP_SYNC_MAX_IDS`]` 或总长不符 →
+/// `None`（调用方回 [`TEL_RESP_ERR`]）——帧有界，无无长度信任面。
+/// 与 [`parse_snap_request`] 不同，op 首字节由调用方 match 消费（本函数
+/// 同样不校验 op）。
+pub fn parse_snap_sync(req: &[u8]) -> Option<alloc::vec::Vec<[u8; 16]>> {
+    if req.len() < 2 {
+        return None;
+    }
+    let count = req[1] as usize;
+    if count > SNAP_SYNC_MAX_IDS || req.len() != 2 + count * 16 {
+        return None;
+    }
+    let mut ids = alloc::vec::Vec::with_capacity(count);
+    for i in 0..count {
+        let mut id = [0u8; 16];
+        id.copy_from_slice(&req[2 + i * 16..2 + (i + 1) * 16]);
+        ids.push(id);
+    }
+    Some(ids)
 }
 
 #[cfg(test)]

@@ -380,6 +380,13 @@ pub struct DispatchEngine {
     /// C1 转正：原 held_engine 子模块直访——pub(crate) 显式化。
     pub(crate) held_plans: Option<crate::held_plan::DurablePlans>,
     pub(crate) held_store_unavailable: bool,
+    /// 蓝图 77 卷一 WP-77.1.2：owner 装配期保留恢复失败（store 读错/输入
+    /// 解码错/重钉拒绝）⇒ 显式故障态——新持有准入与新设备写阻断，旧计划
+    /// 只读对账。由 `held_engine::install_held_owner` 设置。
+    pub(crate) held_retention_fault: bool,
+    /// 蓝图 77 卷一 WP-77.1.3：最近一次 held tick 的完整活跃集同步未获
+    /// 远端确认 ⇒ 新持有准入阻断（对账/计数不受累）；后续 tick 重试。
+    pub(crate) held_sync_stale: bool,
     /// ADR-0054:29–30：持有输入保留面（None = 未装配——host 测试或
     /// fail-closed 装配由调用方以 NoRetention 显式承担）。
     /// C1 转正：原 held_engine 子模块直访——pub(crate) 显式化（访问者
@@ -762,6 +769,8 @@ impl DispatchEngine {
             last_confirmed: BTreeMap::new(),
             held_plans: None,
             held_store_unavailable: false,
+            held_retention_fault: false,
+            held_sync_stale: false,
             input_retainer: None,
             holds: crate::hold_registry::HoldRegistry::new(),
         };
@@ -2213,17 +2222,27 @@ impl ControlDispatch for DispatchEngine {
         input: Option<&eneros_agent_sdk::snap_input_wire::TrustedInput>,
         telemetry: Option<&TrustedTelemetry>,
     ) -> Result<usize, DispatchError> {
-        self.drive_held_plans(input, telemetry)?;
-        let active = self
-            .held_plans
-            .as_ref()
-            .map(|store| {
-                store
-                    .plans()
-                    .map(|plans| plans.iter().filter(|p| !p.terminal()).count())
-                    .unwrap_or(0)
-            })
-            .unwrap_or(0);
+        // 蓝图 77 卷一 WP-77.1.1：活跃计数单读化——drive 内部收尾的同一
+        // 读取派生（drive 完成后时点），读错显式传播。旧实现 drive 后
+        // 第二次 `plans()` 读取把失败 `unwrap_or(0)` 折叠成活跃 0（EA 将
+        // 据此放行 System1 的条件性故障）——折叠面结构性消除。
+        let (_, live_ids, active) = self.drive_held_plans_counted(input, telemetry)?;
+        // 蓝图 77 卷一 WP-77.1.3：完整活跃集同步（进程世代屏障）——每个
+        // held tick 全量确认（重启必重建；不冒用发送方 epoch 充当服务
+        // 世代）。失败 ⇒ stale：新持有准入阻断（对账/计数不受累——
+        // 只读面与 System1 合同不因远端确认缺失而折叠），后续 tick 重试。
+        let synced = self
+            .input_retainer
+            .as_mut()
+            .map(|r| r.sync(&live_ids))
+            .unwrap_or(true);
+        self.held_sync_stale = !synced;
+        if !synced {
+            eneros_runtime::println!(
+                "[control-dispatch] HELD-SYNC-STALE n={}（远端世代钉集未确认——新持有准入阻断）",
+                live_ids.len()
+            );
+        }
         Ok(active)
     }
 

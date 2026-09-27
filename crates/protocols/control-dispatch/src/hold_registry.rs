@@ -262,6 +262,9 @@ mod tests {
         fn release(&mut self, _snapshot_id: [u8; 16]) -> bool {
             self.release_ok
         }
+        fn sync(&mut self, _ids: &[[u8; 16]]) -> bool {
+            true
+        }
     }
 
     /// 装配保留面：`ok = true` 释放成功、`false` 恒失败（触发出队路径）。

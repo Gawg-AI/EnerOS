@@ -95,9 +95,6 @@ pub trait ObsEventFace {
     /// /70.9.1——certifier 独立读取可信输入的唯一通道）。ID 不匹配当前
     /// 冻结快照 → `None`（绝不返回"另一代"的字节）。
     fn snapshot_blob(&mut self, id: &[u8; 16]) -> Option<Vec<u8>>;
-    /// 登记保留持有（蓝图 70.8.2：被证书/执行证据引用的计划输入不得先
-    /// 删）。`offset` = 该分区仍需保留的最小 offset（含）。
-    fn hold_offset(&mut self, partition: u32, offset: u64);
     /// 快照保留钉（ADR-0054:29–30）：被持有计划证书引用的冻结快照
     /// （完整观测 blob）在持有期内不得被剪枝回收。幂等；false = 容量
     /// 满/面不可用（调用方 fail-closed：拒绝新计划准入）。
@@ -105,6 +102,14 @@ pub trait ObsEventFace {
     /// 解除快照保留钉（计划终态且无未决后）。幂等；false = 未钉/面不可
     /// 用（释放是回收面不是安全面，可重试）。
     fn release_snapshot(&mut self, id: &[u8; 16]) -> bool;
+    /// 完整活跃钉集同步（蓝图 77 卷一 WP-77.1.3 进程世代屏障）：原子
+    /// 替换本进程钉集为 `ids`（逐 ID 验证现存 blob；任一失败 ⇒ 整体
+    /// 拒绝）。成功前本进程不做可能删除旧 blob/事件的修剪。空集 = 显式
+    /// 「无活跃持有」，同样解锁屏障。
+    // 错误类型留空刻意为之（与 store_snap_blob 同族——失败面二元，细节走
+    // 证据行）。
+    #[allow(clippy::result_unit_err)]
+    fn sync_snap_pins(&mut self, ids: &[[u8; 16]]) -> Result<(), ()>;
     /// 保留背压：容量水位越线且受保护记录阻塞删除（消费落后）→ 调用方
     /// 必须停发新决策（不得继续发新证书）。
     fn retention_blocked(&self) -> bool;
@@ -182,16 +187,31 @@ pub struct EventFace<C: EipcSend + Clone + 'static> {
     pub retention_hold_limited: u64,
     /// 保留背压标志（容量越线 + 本轮删除未释放任何段）。
     retention_blocked: bool,
-    /// 计划输入保留持有（分区 → 需保留的最小 offset；`hold_offset` 登记）。
-    holds: Vec<(u32, u64)>,
+    /// WP-77.1.4：钉住的来源区间缓存（id → 每分区最早需保留 offset；
+    /// `None` = 旧格式 blob 无 meta ⇒ 全保护）。pin/sync 时从 meta 文件
+    /// 读入；释放/同步替换随之重算——保护界由存活钉集派生，释放后上移。
+    pin_ranges: Vec<SnapPinEntry>,
     /// 快照保留钉（ADR-0054:29–30：持有计划证书引用的冻结快照 ID 集合
     /// ——剪枝跳过；重启后由 dispatch 按非终态计划重派生）。
     snap_pins: Vec<[u8; 16]>,
+    /// 蓝图 77 卷一 WP-77.1.3：进程世代同步屏障——本进程尚未收到 dispatch
+    /// 对本世代**完整活跃钉集**的全量同步确认前，不做可能删除旧 blob/
+    /// 事件的修剪（RAM 钉随进程消失；恢复唯一途径 = `sync_snap_pins`）。
+    pin_synced: bool,
 }
 
-/// 快照钉容量（= 持有计划容量 MAX_PLANS(2) + 换代余量 2；超出 = 调用方
-/// fail-closed 拒绝新准入——不留无限增长面）。
-pub const MAX_SNAP_PINS: usize = 4;
+/// 快照钉容量（单源 = agent-sdk `tel_wire::SNAP_SYNC_MAX_IDS`：持有计划
+/// 容量 MAX_PLANS(2) + 换代余量 2；超出 = 调用方 fail-closed 拒绝新准入
+/// ——不留无限增长面）。
+pub const MAX_SNAP_PINS: usize = eneros_agent_sdk::tel_wire::SNAP_SYNC_MAX_IDS;
+
+/// 快照 ID。
+pub type SnapId = [u8; 16];
+/// 来源区间（每分区最早仍需事件 offset）——`None` = 旧格式 blob 无 meta
+/// （fail-closed 全保护）。
+pub type SnapRanges = Option<Vec<(u32, u64)>>;
+/// 钉住集条目（ID → 来源区间缓存）。
+pub type SnapPinEntry = (SnapId, SnapRanges);
 
 enum FaceState<C: EipcSend + Clone + 'static> {
     /// 未打开（构造期/lazy）。
@@ -229,8 +249,9 @@ impl<C: EipcSend + Clone + 'static> EventFace<C> {
             retention_prune_passes: 0,
             retention_hold_limited: 0,
             retention_blocked: false,
-            holds: Vec::new(),
+            pin_ranges: Vec::new(),
             snap_pins: Vec::new(),
+            pin_synced: false,
         }
     }
 
@@ -337,14 +358,14 @@ impl<C: EipcSend + Clone + 'static> ObsEventFace for EventFace<C> {
                 Ok(ack) => {
                     ok += 1;
                     self.appended += 1;
+                    let part = eneros_event_store::ingest_bridge::partition_of(ev);
                     if let Some(core) = face.module.as_mut() {
-                        core.module.apply_event(*ev);
+                        // WP-77.1.4：带日志落点流入（投影落点镜像 = 快照
+                        // 来源区间的事实源）。
+                        core.module.apply_event_at(*ev, part, ack.offset);
                         // 蓝图 70.8.2：消费位置只记「真的进了快照模块」的
                         // offset（apply_event 之后）——提交位点即由此派生。
-                        core.mark_consumed(
-                            eneros_event_store::ingest_bridge::partition_of(ev),
-                            ack.offset,
-                        );
+                        core.mark_consumed(part, ack.offset);
                     }
                 }
                 Err(_) => {
@@ -379,8 +400,9 @@ impl<C: EipcSend + Clone + 'static> ObsEventFace for EventFace<C> {
                 &mut self.retention_prune_passes,
                 &mut self.retention_hold_limited,
                 &mut self.retention_blocked,
-                &self.holds,
+                &self.pin_ranges,
                 &self.snap_pins,
+                self.pin_synced,
                 now_ms,
             );
         }
@@ -421,30 +443,36 @@ impl<C: EipcSend + Clone + 'static> ObsEventFace for EventFace<C> {
         // 性来自**身份复核**（解码后 snapshot_id 必须等于请求 ID）：绝不
         // 返回另一代的字节，也绝不返回解不开的字节。当前冻结代次由
         // `current_input` 单独承担（opcode 5 只服务最新一代）。
-        let path = alloc::format!("{}/{}.snap", SNAP_DIR, snapshot_file_stem(id));
-        let bytes = read_snap_file(fs, &path).ok()?;
-        match eneros_snapshot_service::decode_snapshot_v1(&bytes) {
-            Ok(snap) if snap.snapshot_id == *id => Some(bytes),
-            _ => {
-                eneros_runtime::println!("[svc-telemetry] SNAP-BLOB-REJECT id-mismatch-or-corrupt");
-                None
-            }
-        }
+        read_and_verify_snap(fs, id)
     }
 
-    fn hold_offset(&mut self, partition: u32, offset: u64) {
-        match self.holds.iter_mut().find(|(p, _)| *p == partition) {
-            Some((_, o)) => {
-                // 持有只收紧（保留更强的一侧）——登记更小 offset 才生效。
-                if offset < *o {
-                    *o = offset;
-                }
-            }
-            None => self.holds.push((partition, offset)),
-        }
-    }
-
+    /// 快照保留钉（ADR-0054:29–30）：被持有计划证书引用的冻结快照
+    /// （完整观测 blob）在持有期内不得被剪枝回收。幂等；false = 容量
+    /// 满/面不可用/验证失败（调用方 fail-closed：拒绝新计划准入）。
     fn pin_snapshot(&mut self, id: &[u8; 16]) -> bool {
+        // 蓝图 77 卷一 WP-77.1.3：入钉前**验证现存文件**（同 snapshot_blob
+        // 的读、解码、ID 对比语义）——「认证已拿 blob → 中间剪枝 → hold」
+        // 不再产出幽灵钉；重复 ID 也重新确认现存文件（文件已失 ⇒ false）。
+        // 校验与入集在同一请求内完成（telemetry 单线程服务：请求间不可
+        // 插队，本服务的剪枝不会落在本函数的校验与入集之间）。
+        {
+            let FaceState::Open(face) = &mut self.state else {
+                eneros_runtime::println!("[svc-telemetry] SNAP-PIN-REJECT reason=face-not-open");
+                return false;
+            };
+            let Some(fs) = face.snap_fs.as_mut() else {
+                eneros_runtime::println!(
+                    "[svc-telemetry] SNAP-PIN-REJECT reason=snap-volume-unavailable"
+                );
+                return false;
+            };
+            if read_and_verify_snap(fs, id).is_none() {
+                eneros_runtime::println!(
+                    "[svc-telemetry] SNAP-PIN-REJECT reason=blob-missing-or-corrupt"
+                );
+                return false;
+            }
+        }
         if self.snap_pins.contains(id) {
             return true;
         }
@@ -455,6 +483,26 @@ impl<C: EipcSend + Clone + 'static> ObsEventFace for EventFace<C> {
             );
             return false;
         }
+        // WP-77.1.4：来源区间入账——meta 在场 = 区间缓存（保护界由此
+        // 重算）；缺 meta = 旧格式 blob（接受钉，全保护——双版本兼容，
+        // fail-closed 过度保留）；meta 损坏 = 身份不可证 ⇒ 拒绝。
+        let ranges = {
+            let FaceState::Open(face) = &mut self.state else {
+                return false;
+            };
+            let Some(fs) = face.snap_fs.as_mut() else {
+                return false;
+            };
+            match probe_snap_meta(fs, id) {
+                MetaProbe::Ranges(r) => Some(r),
+                MetaProbe::Absent => None,
+                MetaProbe::Corrupt => {
+                    eneros_runtime::println!("[svc-telemetry] SNAP-PIN-REJECT reason=meta-corrupt");
+                    return false;
+                }
+            }
+        };
+        self.pin_ranges.push((*id, ranges));
         self.snap_pins.push(*id);
         eneros_runtime::println!(
             "[svc-telemetry] SNAP-PIN-HELD id={:02x}{:02x} pins={}",
@@ -465,10 +513,73 @@ impl<C: EipcSend + Clone + 'static> ObsEventFace for EventFace<C> {
         true
     }
 
+    fn sync_snap_pins(&mut self, ids: &[[u8; 16]]) -> Result<(), ()> {
+        // 蓝图 77 卷一 WP-77.1.3：进程世代屏障的唯一解锁面——原子替换
+        // 钉集（逐 ID 验证现存 blob，任一失败 ⇒ 整体拒绝、钉集保持原样
+        // ——过度保留安全，误清不安全）。成功（含空集）后本进程视为已
+        // 同步，剪枝屏障解除。
+        {
+            let FaceState::Open(face) = &mut self.state else {
+                return Err(());
+            };
+            let Some(fs) = face.snap_fs.as_mut() else {
+                return Err(());
+            };
+            for id in ids {
+                if read_and_verify_snap(fs, id).is_none() {
+                    eneros_runtime::println!(
+                        "[svc-telemetry] SNAP-PIN-SYNC-REJECT reason=blob-missing-or-corrupt ids={}",
+                        ids.len()
+                    );
+                    return Err(());
+                }
+            }
+        }
+        // WP-77.1.4：同步集的来源区间一并原子替换（任一 meta 损坏 ⇒
+        // 整体拒绝；缺 meta = 旧格式 ⇒ 全保护条目）。
+        let new_ranges = {
+            let FaceState::Open(face) = &mut self.state else {
+                return Err(());
+            };
+            let Some(fs) = face.snap_fs.as_mut() else {
+                return Err(());
+            };
+            let mut ranges = Vec::with_capacity(ids.len());
+            for id in ids {
+                ranges.push(match probe_snap_meta(fs, id) {
+                    MetaProbe::Ranges(r) => (*id, Some(r)),
+                    MetaProbe::Absent => (*id, None),
+                    MetaProbe::Corrupt => {
+                        eneros_runtime::println!(
+                            "[svc-telemetry] SNAP-PIN-SYNC-REJECT reason=meta-corrupt"
+                        );
+                        return Err(());
+                    }
+                });
+            }
+            ranges
+        };
+        self.snap_pins.clear();
+        for id in ids {
+            if !self.snap_pins.contains(id) {
+                self.snap_pins.push(*id);
+            }
+        }
+        self.pin_ranges = new_ranges;
+        self.pin_synced = true;
+        eneros_runtime::println!(
+            "[svc-telemetry] SNAP-PIN-SYNC n={} pins={}",
+            ids.len(),
+            self.snap_pins.len()
+        );
+        Ok(())
+    }
+
     fn release_snapshot(&mut self, id: &[u8; 16]) -> bool {
         match self.snap_pins.iter().position(|p| p == id) {
             Some(idx) => {
                 self.snap_pins.swap_remove(idx);
+                self.pin_ranges.remove(idx);
                 eneros_runtime::println!(
                     "[svc-telemetry] SNAP-PIN-RELEASED id={:02x}{:02x} pins={}",
                     id[0],
@@ -516,8 +627,9 @@ impl<C: EipcSend + Clone + 'static> EventFace<C> {
         retention_prune_passes: &mut u64,
         retention_hold_limited: &mut u64,
         retention_blocked: &mut bool,
-        holds: &[(u32, u64)],
+        pin_ranges: &[SnapPinEntry],
         snap_pins: &[[u8; 16]],
+        pin_synced: bool,
         now_ms: u64,
     ) {
         // 1. 快照构建（owned 产出后立刻释放 module 借用）。
@@ -545,7 +657,10 @@ impl<C: EipcSend + Clone + 'static> EventFace<C> {
                     crate::telemetry::DEFAULT_CONTROL_HORIZON_MS,
                 );
                 let consumed = core.consumed.clone();
-                (Some((snap, input)), consumed)
+                // 蓝图 77 卷一 WP-77.1.4：本快照的来源区间（每分区最早仍需
+                // 事件 offset）——出自在驻事件落点镜像，非消费位点。
+                let floors: Vec<(u32, u64)> = core.module.provenance_floors().into_iter().collect();
+                (Some((snap, input, floors)), consumed)
             }
             Some(Err(e)) => {
                 *snap_skipped += 1;
@@ -560,7 +675,7 @@ impl<C: EipcSend + Clone + 'static> EventFace<C> {
         // 冻结产物。落盘失败 ⇒ 本窗口不发布输入、不提交位点（保留判据
         // 因此不会越过"无工件"的记录——蓝图 70.8.2 失败语义）。
         let stored = match &snap {
-            Some((snap, _)) => {
+            Some((snap, _, floors)) => {
                 let bytes = eneros_snapshot_service::encode_snapshot_v1(snap);
                 eneros_runtime::println!(
                     "[svc-telemetry] SNAP-BUILT pts={} bytes={}",
@@ -568,18 +683,28 @@ impl<C: EipcSend + Clone + 'static> EventFace<C> {
                     bytes.len()
                 );
                 match face.snap_fs.as_mut() {
-                    Some(fs) => match store_snap_blob(fs, snap, &bytes, snap_pins) {
-                        Ok(kept) => {
-                            *snap_stored += 1;
-                            eneros_runtime::println!("[svc-telemetry] SNAP-STORED kept={}", kept);
-                            true
+                    Some(fs) => {
+                        // WP-77.1.4 发布次序：blob → meta → 发布/位点提交——
+                        // 「可被 pin 的 ID 必有可查来源区间」；meta 失败 =
+                        // 本窗不发布（与 blob store-fail 同一失败语义）。
+                        match store_snap_blob(fs, snap, &bytes, snap_pins, pin_synced).and_then(
+                            |kept| store_snap_meta(fs, &snap.snapshot_id, floors).map(|_| kept),
+                        ) {
+                            Ok(kept) => {
+                                *snap_stored += 1;
+                                eneros_runtime::println!(
+                                    "[svc-telemetry] SNAP-STORED kept={}",
+                                    kept
+                                );
+                                true
+                            }
+                            Err(()) => {
+                                *snap_skipped += 1;
+                                eneros_runtime::println!("[svc-telemetry] SNAP-SKIP store-fail");
+                                false
+                            }
                         }
-                        Err(()) => {
-                            *snap_skipped += 1;
-                            eneros_runtime::println!("[svc-telemetry] SNAP-SKIP store-fail");
-                            false
-                        }
-                    },
+                    }
                     None => {
                         *snap_skipped += 1;
                         eneros_runtime::println!("[svc-telemetry] SNAP-SKIP store-unavailable");
@@ -592,7 +717,7 @@ impl<C: EipcSend + Clone + 'static> EventFace<C> {
         // 3. 发布冻结输入 + 4. 消费位点提交（**仅当工件已落盘**——位点即
         // "已被可检索的冻结产物吸收"）。
         if stored {
-            let (_, input) = snap.expect("stored ⇒ snap 存在");
+            let (_, input, _) = snap.expect("stored ⇒ snap 存在");
             if let Some(core) = face.module.as_mut() {
                 core.last_input = Some(input);
             }
@@ -628,7 +753,22 @@ impl<C: EipcSend + Clone + 'static> EventFace<C> {
             }
         }
         // 5. 受保护保留修剪：keep_after_offset = min(消费位点, 计划输入持有)。
+        // 蓝图 77 卷一 WP-77.1.3：进程世代同步屏障——本进程未收到完整活跃
+        // 钉集的全量确认前，不做可能删除旧事件段的修剪（钉集未知 ⇒ 任何
+        // 删除都不安全）；水位越线时显式背压（调用方停发新决策），不以
+        // "钉集可能没丢"为赌注。
         let wm_before: WatermarkReport = face.sink.store_mut().watermarks();
+        if wm_before.used_permille >= RETAIN_PERMILLE && !pin_synced {
+            *retention_prune_passes += 1;
+            if !*retention_blocked {
+                eneros_runtime::println!(
+                    "[svc-telemetry] EVENT-RETENTION blocked=1 reason=pin-sync-pending permille={}",
+                    wm_before.used_permille
+                );
+            }
+            *retention_blocked = true;
+            return;
+        }
         if wm_before.used_permille >= RETAIN_PERMILLE {
             *retention_prune_passes += 1;
             // 冷启动/复用盘保护：本会话尚未物化任何冻结工件时**零删除**——
@@ -653,15 +793,14 @@ impl<C: EipcSend + Clone + 'static> EventFace<C> {
                 } else {
                     0
                 };
-                let hold = holds
-                    .iter()
-                    .filter(|(hp, _)| *hp == p)
-                    .map(|(_, o)| *o)
-                    .min()
-                    .unwrap_or(u64::MAX);
+                // WP-77.1.4：事件保留界 = 当前存活钉集来源区间的每分区
+                // 最早 offset（**重算**——释放后上移；不再复用只紧不松的
+                // hold_offset）。旧格式 blob（无 meta）钉在场 ⇒ 全保护
+                // （fail-closed 过度保留，可恢复）。
+                let hold = event_floor(pin_ranges, p);
                 let keep = core::cmp::min(committed, hold);
                 if hold < committed {
-                    hold_limited += 1; // 计划输入持有是此刻的约束方（证据）
+                    hold_limited += 1; // 计划来源持有是此刻的约束方（证据）
                 }
                 match face.sink.store_mut().delete_full_segments_before(
                     p,
@@ -752,11 +891,18 @@ fn count_snap_blobs(fs: &mut Lfs) -> usize {
 
 /// blob 落盘：tmp 写 + rename 原子替换（tsdb 同款），随后按 produced_at
 /// 保留最新 [`SNAP_KEEP_BLOBS`] 份。返回保留后的 blob 总数。
+///
+/// 蓝图 77 卷一 WP-77.1.3：`synced = false`（进程世代屏障未解锁）时
+/// **跳过一切剪枝删除**（腾位剪枝与终剪）——钉集未知 ⇒ 任何 blob 删除
+/// 都可能吃掉 dispatch 在途计划的冻结输入；代价 = 满卷时新 blob 写失败
+/// （SNAP-SKIP store-fail，控制链安全饿等同步），符合"安全条件优先于
+/// 可用性"。
 fn store_snap_blob(
     fs: &mut Lfs,
     snap: &eneros_snapshot_service::TrustedSnapshot,
     bytes: &[u8],
     pins: &[[u8; 16]],
+    synced: bool,
 ) -> Result<usize, ()> {
     let _ = fs.mkdir(SNAP_DIR);
     let name = snapshot_file_stem(&snap.snapshot_id);
@@ -790,7 +936,9 @@ fn store_snap_blob(
     };
     let mut keep = SNAP_KEEP_BLOBS.saturating_sub(1);
     loop {
-        let _ = prune_snap_blobs_keep(fs, keep, pins);
+        if synced {
+            let _ = prune_snap_blobs_keep(fs, keep, pins);
+        }
         if attempt(fs).is_ok() {
             break;
         }
@@ -801,6 +949,10 @@ fn store_snap_blob(
         }
         keep /= 2;
     }
+    if !synced {
+        // 屏障未解锁：不删除，返回现存计数（kept 仅作证据打印）。
+        return Ok(count_snap_blobs(fs));
+    }
     prune_snap_blobs_keep(fs, SNAP_KEEP_BLOBS, pins)
 }
 
@@ -809,10 +961,19 @@ fn store_snap_blob(
 fn prune_snap_blobs_keep(fs: &mut Lfs, keep: usize, pins: &[[u8; 16]]) -> Result<usize, ()> {
     let entries = fs.readdir(SNAP_DIR).map_err(|_| ())?;
     let mut metas: Vec<(String, u64)> = Vec::new();
+    // WP-77.1.4：meta 与 blob 同生命周期——被删 blob 的 meta 一并删除，
+    // 孤儿 meta（blob 已不在，如掉电于两步删除之间）随 prune 清理，
+    // 否则快照卷被无形积累撑满（SNAP-SKIP store-fail 重现）。
+    let mut orphan_meta_paths: Vec<String> = Vec::new();
     for e in entries.iter().filter(|e| !e.is_dir) {
         let path = format!("{}/{}", SNAP_DIR, e.name);
         if e.name.ends_with(".tmp") {
             let _ = fs.remove(&path);
+            continue;
+        }
+        if e.name.ends_with(".meta") {
+            // 先记候选：blob 侧扫完后按存在性裁决。
+            orphan_meta_paths.push(path);
             continue;
         }
         if !e.name.ends_with(".snap") {
@@ -830,6 +991,13 @@ fn prune_snap_blobs_keep(fs: &mut Lfs, keep: usize, pins: &[[u8; 16]]) -> Result
             }
         }
     }
+    let snap_paths: Vec<String> = metas.iter().map(|(p, _)| p.clone()).collect();
+    for mpath in orphan_meta_paths {
+        let counterpart = mpath.trim_end_matches(".meta");
+        if !snap_paths.iter().any(|p| p.as_str() == counterpart) {
+            let _ = fs.remove(&mpath);
+        }
+    }
     // ADR-0054:29–30：持有计划证书引用的冻结快照（钉集）不参与剪枝
     // ——钉住者越过 keep 线也保留（回收面的最终裁决在 release）。
     let pinned_paths: Vec<String> = pins
@@ -845,6 +1013,7 @@ fn prune_snap_blobs_keep(fs: &mut Lfs, keep: usize, pins: &[[u8; 16]]) -> Result
             continue;
         }
         let _ = fs.remove(path);
+        let _ = fs.remove(&format!("{path}.meta"));
     }
     Ok(keep)
 }
@@ -868,6 +1037,121 @@ fn read_snap_file(fs: &mut Lfs, path: &str) -> Result<Vec<u8>, ()> {
     Ok(buf)
 }
 
+/// 来源区间元数据 magic/版本（蓝图 77 卷一 WP-77.1.4；格式变更须升版
+/// 并做双版本读取判定）。
+const SNAP_META_MAGIC: &[u8; 4] = b"SRM1";
+const SNAP_META_PATH_SUFFIX: &str = ".meta";
+
+/// 来源区间元数据编码：`"SRM1" | count u8 | {partition u32 LE, start u64
+/// LE, end u64 LE} ×count`——start = 每分区最早仍需事件 offset（provenance
+/// 下界），end = 构建时已消费位点（取证边界）。小端定长，无变长域。
+fn encode_snap_meta(ranges: &[(u32, u64, u64)]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + 1 + ranges.len() * 20);
+    out.extend_from_slice(SNAP_META_MAGIC);
+    out.push(ranges.len() as u8);
+    for (p, start, end) in ranges {
+        out.extend_from_slice(&p.to_le_bytes());
+        out.extend_from_slice(&start.to_le_bytes());
+        out.extend_from_slice(&end.to_le_bytes());
+    }
+    out
+}
+
+/// 来源区间元数据解码：形态不符 → `None`（调用方按损坏拒绝）。
+fn decode_snap_meta(bytes: &[u8]) -> Option<Vec<(u32, u64, u64)>> {
+    if bytes.len() < 5 || &bytes[..4] != SNAP_META_MAGIC {
+        return None;
+    }
+    let count = bytes[4] as usize;
+    if bytes.len() != 5 + count * 20 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let at = 5 + i * 20;
+        let p = u32::from_le_bytes(bytes[at..at + 4].try_into().ok()?);
+        let start = u64::from_le_bytes(bytes[at + 4..at + 12].try_into().ok()?);
+        let end = u64::from_le_bytes(bytes[at + 12..at + 20].try_into().ok()?);
+        if start > end {
+            return None;
+        }
+        out.push((p, start, end));
+    }
+    Some(out)
+}
+
+/// meta 落盘（tmp + rename 原子替换，blob 同款）。失败 = 本窗不发布
+/// （「可被 pin 的 ID 必有可查来源区间」的发布次序保障）。
+fn store_snap_meta(fs: &mut Lfs, id: &[u8; 16], floors: &[(u32, u64)]) -> Result<(), ()> {
+    let _ = fs.mkdir(SNAP_DIR);
+    let name = snapshot_file_stem(id);
+    let tmp = format!("{}/{}{}.tmp", SNAP_DIR, name, SNAP_META_PATH_SUFFIX);
+    let path = format!("{}/{}{}", SNAP_DIR, name, SNAP_META_PATH_SUFFIX);
+    let bytes = encode_snap_meta(
+        &floors
+            .iter()
+            .map(|&(p, start)| (p, start, start))
+            .collect::<Vec<_>>(),
+    );
+    let mut attempt = || -> Result<(), ()> {
+        let mut f = fs
+            .create(&tmp, eneros_fs::types::FileMode::default_file())
+            .map_err(|_| ())?;
+        f.write(fs, &bytes).map_err(|_| ())?;
+        let _ = f.close();
+        fs.rename(&tmp, &path).map_err(|_| ())
+    };
+    attempt()
+}
+
+/// meta 探针（pin/sync 时消费）。
+enum MetaProbe {
+    /// 无 meta 文件 = 旧格式 blob（双版本兼容：接受钉，全保护）。
+    Absent,
+    /// 每分区最早仍需事件 offset。
+    Ranges(Vec<(u32, u64)>),
+    /// 在场但不可解 = 身份不可证（拒绝）。
+    Corrupt,
+}
+
+/// 按 ID 读 meta（`/snaps/<stem>.meta`）。
+fn probe_snap_meta(fs: &mut Lfs, id: &[u8; 16]) -> MetaProbe {
+    let path = format!(
+        "{}/{}{}",
+        SNAP_DIR,
+        snapshot_file_stem(id),
+        SNAP_META_PATH_SUFFIX
+    );
+    let bytes = match read_snap_file(fs, &path) {
+        Ok(b) => b,
+        Err(_) => return MetaProbe::Absent,
+    };
+    match decode_snap_meta(&bytes) {
+        Some(ranges) => MetaProbe::Ranges(ranges.into_iter().map(|(p, s, _)| (p, s)).collect()),
+        None => MetaProbe::Corrupt,
+    }
+}
+
+/// 存活钉集的每分区事件保护界（蓝图 77 卷一 WP-77.1.4：由**当前**钉集
+/// 重算——释放后上移；旧格式钉（无 meta）在场 ⇒ 0 = 全保护；无钉 =
+/// u64::MAX = 不约束（退化为消费位点判据））。
+fn event_floor(pin_ranges: &[SnapPinEntry], partition: u32) -> u64 {
+    let mut floor = u64::MAX;
+    for (_, ranges) in pin_ranges {
+        match ranges {
+            None => return 0,
+            Some(rs) => {
+                for &(p, start) in rs.iter() {
+                    if p == partition && start < floor {
+                        floor = start;
+                    }
+                }
+            }
+        }
+    }
+    floor
+}
+
 /// snapshot_id → 文件名干（32 hex）。
 fn snapshot_file_stem(id: &[u8; 16]) -> String {
     let mut s = String::with_capacity(32);
@@ -875,6 +1159,22 @@ fn snapshot_file_stem(id: &[u8; 16]) -> String {
         s.push_str(&format!("{:02x}", b));
     }
     s
+}
+
+/// 按 ID 读回并**验证**现存 blob（蓝图 77 卷一 WP-77.1.3 单源半边）：
+/// 文件读取 + `decode_snapshot_v1` 解码 + snapshot_id 逐字节一致。任一
+/// 失败 → `None`（证据行一次）——`snapshot_blob` 取回、`pin_snapshot`
+/// 入钉前确认、`sync_snap_pins` 全集验证共用本判据。
+fn read_and_verify_snap(fs: &mut Lfs, id: &[u8; 16]) -> Option<Vec<u8>> {
+    let path = alloc::format!("{}/{}.snap", SNAP_DIR, snapshot_file_stem(id));
+    let bytes = read_snap_file(fs, &path).ok()?;
+    match eneros_snapshot_service::decode_snapshot_v1(&bytes) {
+        Ok(snap) if snap.snapshot_id == *id => Some(bytes),
+        _ => {
+            eneros_runtime::println!("[svc-telemetry] SNAP-BLOB-REJECT id-mismatch-or-corrupt");
+            None
+        }
+    }
 }
 
 // ============================================================================
@@ -1283,6 +1583,11 @@ mod tests {
                 events.push(obs(100 + (i % 4) as u32, seq, now, i as f64));
             }
             face.on_obs_batch(&events, now);
+            if round == 0 {
+                // WP-77.1.3 协议：dispatch 每 held tick 全量同步（此处无钉
+                // = 空集）——屏障解锁后保留判据才生效（首批已触发 open）。
+                face.sync_snap_pins(&[]).expect("空集同步");
+            }
         }
         assert!(
             face.append_failures == 0,
@@ -1321,6 +1626,17 @@ mod tests {
         let mut face = make_face(&storage);
         face.set_snapshot_catalog(prod_module_catalog(), 1_000);
         let mut seq = 0u64;
+        // 首批触发 open 后立刻空集同步（WP-77.1.3 协议）——解锁腾位剪枝。
+        {
+            let events: Vec<ObservationEvent> = coverage_fixture_points()
+                .map(|p| {
+                    seq += 1;
+                    obs(p, seq, 2_000, fixture_value(p, 0))
+                })
+                .collect();
+            face.on_obs_batch(&events, 2_000);
+            face.sync_snap_pins(&[]).expect("空集同步");
+        }
         // 30 个快照窗（窗 = SNAP_EVERY_BATCHES 批）> 区段实际容量（≈6 份）
         // 与配置保留（16 份）——旧实现必在第 7 个窗起连续 store-fail。
         let windows = 30u64;
@@ -1382,16 +1698,23 @@ mod tests {
             .facts()
             .snapshot_id;
         assert!(face.pin_snapshot(&id1), "钉面容量内必须成功");
-        // 30 窗存储压力（区段实际容量 ≈6 份 > 配置保留 16——压力剪枝必发生）。
-        run_windows(&mut face, 8, 30, &mut seq);
+        // WP-77.1.3 协议：dispatch 以完整活跃集同步（此处 = {id1}）。
+        face.sync_snap_pins(&[id1]).expect("活跃集同步");
+        // 持有期压力（4 窗）：钉住的 blob 必须按 ID 可取，落盘不停摆。
+        // （WP-77.1.4 起持有同时保护来源事件段——前缀删除模型下长持
+        // 有 + 持续摄入会渐进冻结事件区（蓝图验收：满卷只背压），
+        // 故压力窗数有界；释放后恢复有界剪枝由本测尾段证明。）
+        run_windows(&mut face, 8, 4, &mut seq);
         assert_eq!(face.snap_skipped, 0, "钉住单份不得造成落盘停摆");
         assert!(
             face.snapshot_blob(&id1).is_some(),
             "被钉住的冻结输入必须可在持有期内按 ID 取回（ADR-0054:29–30）"
         );
-        // 解除（计划终态）→ 后续压力剪枝可回收。
+        // 解除（计划终态）→ 同步集更新为空（dispatch 侧集合重算）→
+        // 后续压力剪枝可回收（blob 与来源事件段同律）。
         assert!(face.release_snapshot(&id1));
-        run_windows(&mut face, 8 + 30 * 8, 12, &mut seq);
+        face.sync_snap_pins(&[]).expect("空集同步");
+        run_windows(&mut face, 8 + 4 * 8, 12, &mut seq);
         assert!(
             face.snapshot_blob(&id1).is_none(),
             "解除后的旧快照必须可被回收（释放面真实——只收紧不释放即违约）"
@@ -1489,6 +1812,228 @@ mod tests {
         assert!(face.snapshot_blob(&[0xEE; 16]).is_none(), "未知 ID 拒绝");
     }
 
+    /// 蓝图 77 卷一 WP-77.1.3：`pin_snapshot` **入钉前必须验证现存文件**
+    /// （同 [`Self::snapshot_blob`] 的读、解码、ID 对比语义）——旧实现只查
+    /// 重复 ID 与容量（`event_face.rs:447-465`），「认证已拿 blob → 中间
+    /// 剪枝 → hold」产出**幽灵钉**（ADR-0054 持有承诺落空）。文件缺失、
+    /// 解码失败、ID 不符一律拒绝；重复 ID 也重新确认现存文件。
+    /// 变异靶：恢复"只按 ID 入 Vec"→ 本测红。
+    #[test]
+    fn t9_pin_verifies_existing_blob_no_ghost_pins() {
+        let disk_len = (DISK_END * 512) as usize;
+        let storage = FakeStorage::new(disk_len);
+        let mut face = make_face(&storage);
+        face.set_snapshot_catalog(prod_module_catalog(), 1_000);
+        // 冷启动（卷未打开/无文件）：未知 ID 不得入钉。
+        assert!(
+            !face.pin_snapshot(&[0xEE; 16]),
+            "文件缺失的 hold 必须拒绝（幽灵钉）"
+        );
+        // 产出一代冻结快照 → 真实 ID 可钉。
+        let mut seq = 0u64;
+        for round in 0..SNAP_EVERY_BATCHES {
+            let now = 2_000 + round * 46_000;
+            let events: Vec<ObservationEvent> = coverage_fixture_points()
+                .map(|p| {
+                    seq += 1;
+                    obs(p, seq, now, fixture_value(p, 0))
+                })
+                .collect();
+            face.on_obs_batch(&events, now);
+        }
+        let id = face.current_input().expect("冻结输入").facts().snapshot_id;
+        assert!(face.pin_snapshot(&id), "现存文件的 hold 必须成功");
+        // 重复 ID：重新确认现存文件（仍在）→ 仍成功。
+        assert!(face.pin_snapshot(&id), "重复 ID 且文件在 ⇒ 幂等成功");
+    }
+
+    /// 蓝图 77 卷一 WP-77.1.3：**进程世代同步屏障**——未收到完整活跃集
+    /// 全量同步前，高水位下零删除 + 显式背压；含未知 ID 的同步被整体
+    /// 拒绝（原子性，屏障不解除）；合法全量同步解锁；被钉 blob 在恢复
+    /// 剪枝后仍按 ID 可取。变异靶：删屏障分支/同步改逐 ID 部分接受 →
+    /// 本测红。
+    #[test]
+    fn t10_generation_barrier_blocks_prune_until_full_set_sync() {
+        let disk_len = (DISK_END * 512) as usize;
+        let storage = FakeStorage::new(disk_len);
+        let mut face = make_face(&storage);
+        face.set_snapshot_catalog(prod_module_catalog(), 1_000);
+        let mut seq = 0u64;
+        // 压力窗（不同步）：屏障下高水位零删除 + 背压。
+        for round in 0..8u64 {
+            let now = 2_000 + round * 46_000;
+            let mut events: Vec<ObservationEvent> = coverage_fixture_points()
+                .map(|p| {
+                    seq += 1;
+                    obs(p, seq, now, fixture_value(p, 0))
+                })
+                .collect();
+            for i in 0..56u64 {
+                seq += 1;
+                events.push(obs(100 + (i % 4) as u32, seq, now, i as f64));
+            }
+            face.on_obs_batch(&events, now);
+        }
+        let id1 = face
+            .current_input()
+            .expect("窗满批必有冻结输入")
+            .facts()
+            .snapshot_id;
+        assert_eq!(face.pruned_segments, 0, "未同步（屏障）⇒ 高水位也零删除");
+        assert!(
+            face.retention_blocked(),
+            "屏障 + 高水位 ⇒ 背压（调用方停发新决策）"
+        );
+        // 混入未知 ID 的同步 = 整体拒绝（原子替换——不得部分接受后解锁）。
+        assert!(
+            face.sync_snap_pins(&[id1, [0xEE; 16]]).is_err(),
+            "含未知 ID 的全量同步必须整体拒绝"
+        );
+        assert!(
+            face.retention_blocked(),
+            "同步失败 ⇒ 屏障保持（背压不解除）"
+        );
+        // 合法全量同步（{id1}）⇒ 解锁；恢复剪枝后被钉 blob 仍按 ID 可取。
+        face.sync_snap_pins(&[id1]).expect("合法全量同步");
+        // 再压 8 窗：水位维持高位，删除恢复。
+        for round in 8..16u64 {
+            let now = 2_000 + round * 46_000;
+            let mut events: Vec<ObservationEvent> = coverage_fixture_points()
+                .map(|p| {
+                    seq += 1;
+                    obs(p, seq, now, fixture_value(p, round as usize))
+                })
+                .collect();
+            for i in 0..56u64 {
+                seq += 1;
+                events.push(obs(100 + (i % 4) as u32, seq, now, i as f64));
+            }
+            face.on_obs_batch(&events, now);
+        }
+        assert!(
+            face.pruned_segments >= 1,
+            "同步解锁后修剪恢复（pruned={}）",
+            face.pruned_segments
+        );
+        assert!(!face.retention_blocked(), "删除恢复 ⇒ 背压解除");
+        assert!(
+            face.snapshot_blob(&id1).is_some(),
+            "被同步钉住的冻结输入在恢复剪枝后必须按 ID 可取（ADR-0054）"
+        );
+    }
+
+    /// 蓝图 77 卷一 WP-77.1.4：**计划钉住快照的来源事件段在持有期受
+    /// 保护**——保护界出自快照 meta 的来源区间（在驻事件落点镜像），
+    /// 不是消费位点。取证链 = blob + 来源事件段 + meta 三件在持有期
+    /// 同 ID 可查；释放后剪枝恢复。
+    /// 旧代码红：keep = 消费位点（对来源区间一无所知）→ 压力下来源段
+    /// 被删（重放读缺失）+ meta 无从谈起。
+    #[test]
+    fn t11_pinned_snapshot_source_events_survive_pressure() {
+        let disk_len = (DISK_END * 512) as usize;
+        let storage = FakeStorage::new(disk_len);
+        let mut face = make_face(&storage);
+        face.set_snapshot_catalog(prod_module_catalog(), 1_000);
+        let mut seq = 0u64;
+        // 窗 1：8 批覆盖点 → 快照 id1（provenance 选中事件 = 最末批的
+        // 在驻事件，offset ≈ 56..63）。
+        for round in 0..8u64 {
+            let now = 2_000 + round * 46_000;
+            let events: Vec<ObservationEvent> = coverage_fixture_points()
+                .map(|p| {
+                    seq += 1;
+                    obs(p, seq, now, fixture_value(p, 0))
+                })
+                .collect();
+            face.on_obs_batch(&events, now);
+        }
+        let id1 = face
+            .current_input()
+            .expect("窗 1 必有冻结输入")
+            .facts()
+            .snapshot_id;
+        let batch7_time_ns: u64 = (2_000u64 + 7 * 46_000).saturating_mul(1_000_000);
+        // 钉住 + 全量同步（dispatch 协议同形）。
+        assert!(face.pin_snapshot(&id1), "id1 可钉（blob + meta 齐备）");
+        face.sync_snap_pins(&[id1]).expect("活跃集同步");
+        // meta 落盘事实：可被 pin 的 ID 必有可查来源区间（发布次序保障）。
+        {
+            let mut snap_fs =
+                open_snap_volume(make_io(&storage), SNAP_BASE, SNAP_BLOCKS_512).expect("snap vol");
+            let path = format!(
+                "{}/{}{}",
+                SNAP_DIR,
+                snapshot_file_stem(&id1),
+                SNAP_META_PATH_SUFFIX
+            );
+            let bytes = read_snap_file(&mut snap_fs, &path).expect("meta file");
+            let ranges = decode_snap_meta(&bytes).expect("meta decodes");
+            assert!(!ranges.is_empty(), "来源区间非空（非承诺空 offset）");
+        }
+        // 持有期压力（56 批 = 7 窗；总量逼近满卷 ≥850‰ ⇒ 修剪 pass 真实
+        // 发生）：删除界被钉住 floor 收紧 ⇒ 零删除（非真空通过）。
+        for round in 8..64u64 {
+            let now = 2_000 + round * 46_000;
+            let events: Vec<ObservationEvent> = coverage_fixture_points()
+                .map(|p| {
+                    seq += 1;
+                    obs(p, seq, now, fixture_value(p, round as usize))
+                })
+                .collect();
+            face.on_obs_batch(&events, now);
+        }
+        assert_eq!(
+            face.pruned_segments, 0,
+            "持有期：provenance floor 是约束方 ⇒ 事件段零删除（旧代码按消费位点删除 → 本断言前已红）"
+        );
+        // 取证读：来源事件（末批 event_time）仍可重放。
+        {
+            let dev = face_dev(&storage);
+            let (store, _report) = open_region_scoped(
+                || CachedBlocks::<4, _>::new(dev.clone()),
+                RegionGeometry::from_blocks_512(EVENT_BASE, REGION_BLOCKS_512)
+                    .expect("事件区段几何")
+                    .base_block,
+                RegionGeometry::from_blocks_512(EVENT_BASE, REGION_BLOCKS_512)
+                    .expect("事件区段几何")
+                    .blocks,
+                event_store_config(),
+            )
+            .expect("重开事件面");
+            let mut replayed: Vec<ObservationEvent> = Vec::new();
+            for p in store.partitions() {
+                let mut c = FrameCollector {
+                    frames: &mut replayed,
+                };
+                let _ = store.read(p, 0, &mut c);
+            }
+            assert!(
+                replayed.iter().any(|e| e.event_time_ns == batch7_time_ns),
+                "被钉快照的来源事件必须仍在（取证重放链）：replayed={}",
+                replayed.len()
+            );
+        }
+        // 释放 + 空集同步（保护界重算上移）→ 剪枝恢复（末窗提交位点
+        // 前进 + 水位高位 ⇒ 删除判据全开）。
+        assert!(face.release_snapshot(&id1));
+        face.sync_snap_pins(&[]).expect("空集同步");
+        for round in 64..72u64 {
+            let now = 2_000 + round * 46_000;
+            let events: Vec<ObservationEvent> = coverage_fixture_points()
+                .map(|p| {
+                    seq += 1;
+                    obs(p, seq, now, fixture_value(p, round as usize))
+                })
+                .collect();
+            face.on_obs_batch(&events, now);
+        }
+        assert!(
+            face.pruned_segments >= 1,
+            "释放后剪枝恢复（pruned={}）",
+            face.pruned_segments
+        );
+    }
+
     /// 70.8.2：未物化（无有效快照）时保留不释放——记录留在盘上；
     /// 计划输入持有同样阻塞删除；两者都不得造成"删了还声称可追溯"。
     #[test]
@@ -1517,14 +2062,42 @@ mod tests {
             "高水位 + 无物化 → 背压（调用方必须停发新决策）"
         );
 
-        // —— 持有阻塞：物化路径下登记更早的持有 → 删除界收紧 ——
+        // —— 钉住阻塞：物化路径下钉住早期快照（其来源区间覆盖低
+        // offset）→ 删除界收紧 ——（WP-77.1.4 重写：hold_offset 只紧不松
+        // 的旧 API 退役，保护界改由存活钉集的来源区间重算。）
         let storage2 = FakeStorage::new(disk_len);
         let mut face2 = make_face(&storage2);
         face2.set_snapshot_catalog(prod_module_catalog(), 1_000);
-        // 持有该分区 offset 0（保护一切）——即使快照物化也不得删。
-        // 分区键 = event-store 单源 `partition_of`（tenant/site/source 散列）。
-        let part = eneros_event_store::ingest_bridge::partition_of(&obs(1, 1, 2_000, 0.0));
-        face2.hold_offset(part, 0);
+        // 首窗产出快照 id_early：批 0 = 覆盖点（offset 0..7，此后不再
+        // 有同点新事件 ⇒ 其落点始终在驻）→ 快照来源区间起点 = 0。
+        let mut seq2 = 0u64;
+        {
+            let events: Vec<ObservationEvent> = coverage_fixture_points()
+                .map(|p| {
+                    seq2 += 1;
+                    obs(p, seq2, 2_000, fixture_value(p, 0))
+                })
+                .collect();
+            face2.on_obs_batch(&events, 2_000);
+            for round in 1..8u64 {
+                let now = 2_000 + round * 46_000;
+                let fillers: Vec<ObservationEvent> = (0..56u64)
+                    .map(|i| {
+                        seq2 += 1;
+                        obs(100 + (i % 4) as u32, seq2, now, i as f64)
+                    })
+                    .collect();
+                face2.on_obs_batch(&fillers, now);
+            }
+        }
+        let id_early = face2
+            .current_input()
+            .expect("窗满批必有冻结输入")
+            .facts()
+            .snapshot_id;
+        assert!(face2.pin_snapshot(&id_early), "早期快照可钉");
+        // WP-77.1.3 协议：以存活集 {id_early} 全量同步解锁屏障。
+        face2.sync_snap_pins(&[id_early]).expect("活跃集同步");
         let mut seq = 0u64;
         for round in 0..8u64 {
             let now = 2_000 + round * 46_000;

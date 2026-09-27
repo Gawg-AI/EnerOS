@@ -279,6 +279,25 @@ impl SnapshotModule {
         self.latest.insert(ev.point_id, ev);
     }
 
+    /// 带日志落点的流入（蓝图 77 卷一 WP-77.1.4：事件面 OBS 追加 ACK
+    /// 后调用——投影的落点镜像由此维护，快照来源区间随之可证）。
+    pub fn apply_event_at(&mut self, ev: ObservationEvent, partition: u32, offset: u64) {
+        self.watermarks.observe(
+            ev.source_id,
+            ev.event_time_ns,
+            ev.ingest_time_ns,
+            ev.source_epoch,
+            ev.sequence,
+        );
+        self.projector.observe_tracked(ev, partition, offset);
+        self.latest.insert(ev.point_id, ev);
+    }
+
+    /// 每分区最早仍被在驻事件引用的日志 offset（来源区间下界单源）。
+    pub fn provenance_floors(&self) -> alloc::collections::BTreeMap<u32, u64> {
+        self.projector.provenance_floors()
+    }
+
     /// 批量流入（重放/批次）。
     pub fn apply_events(&mut self, events: &[ObservationEvent]) {
         for ev in events {

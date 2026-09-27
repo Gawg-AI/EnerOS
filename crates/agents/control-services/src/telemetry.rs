@@ -706,14 +706,6 @@ impl TelemetryService {
         self.event_face.as_mut().and_then(|f| f.snapshot_blob(id))
     }
 
-    /// 蓝图 70.8.2：登记计划输入保留持有（被证书/执行证据引用的记录
-    /// 不得先删）。
-    pub fn hold_input_offset(&mut self, partition: u32, offset: u64) {
-        if let Some(f) = self.event_face.as_mut() {
-            f.hold_offset(partition, offset);
-        }
-    }
-
     /// ADR-0054:29–30：快照保留钉（被持有计划证书引用的冻结快照在持有
     /// 期内不得被剪枝回收；事件面缺失/容量满 → false = fail-closed 面）。
     pub fn pin_snapshot(&mut self, id: &[u8; 16]) -> bool {
@@ -729,6 +721,17 @@ impl TelemetryService {
             .as_mut()
             .map(|f| f.release_snapshot(id))
             .unwrap_or(false)
+    }
+
+    /// 蓝图 77 卷一 WP-77.1.3：完整活跃钉集同步（进程世代屏障唯一解锁
+    /// 面——原子替换钉集，逐 ID 验证现存 blob；确认前本服务不做可能删除
+    /// 旧 blob/事件的修剪）。面缺失/任一 ID 验证失败 → Err。
+    #[allow(clippy::result_unit_err)] // 二元失败面（细节走证据行），同族先例
+    pub fn sync_snap_pins(&mut self, ids: &[[u8; 16]]) -> Result<(), ()> {
+        match self.event_face.as_mut() {
+            Some(f) => f.sync_snap_pins(ids),
+            None => Err(()),
+        }
     }
 }
 
@@ -1089,8 +1092,27 @@ pub fn handle_request(svc: &mut TelemetryService, req: &[u8], now_ms: u64) -> Ve
             let Some(id) = eneros_agent_sdk::tel_wire::parse_snap_request(req) else {
                 return vec![eneros_agent_sdk::tel_wire::TEL_RESP_ERR];
             };
-            let _ = svc.release_snapshot(&id);
-            vec![eneros_agent_sdk::tel_wire::TEL_RESP_OK]
+            // 蓝图 77 卷一 WP-77.1.3：释放失败（面缺失/面故障）必须透传
+            // ERR——dispatch 的 HoldRegistry 据此在下个 tick 重试（旧实现
+            // 忽略真值恒回 OK，释放重试协议被假成功短路）。
+            if svc.release_snapshot(&id) {
+                vec![eneros_agent_sdk::tel_wire::TEL_RESP_OK]
+            } else {
+                vec![eneros_agent_sdk::tel_wire::TEL_RESP_ERR]
+            }
+        }
+        // 蓝图 77 卷一 WP-77.1.3：完整活跃钉集同步（进程世代屏障）。
+        // 请求 [码, count, id×16 ×count]（有界）；原子替换钉集，任一 ID
+        // 验证失败 → [TEL_RESP_ERR]（dispatch 侧阻断新持有准入并在后续
+        // held tick 重试）。
+        eneros_agent_sdk::tel_wire::TEL_REQ_SNAP_SYNC => {
+            match eneros_agent_sdk::tel_wire::parse_snap_sync(req)
+                .ok_or(())
+                .and_then(|ids| svc.sync_snap_pins(&ids))
+            {
+                Ok(()) => vec![eneros_agent_sdk::tel_wire::TEL_RESP_OK],
+                Err(()) => vec![eneros_agent_sdk::tel_wire::TEL_RESP_ERR],
+            }
         }
         TEL_INGEST_OBS => {
             // 蓝图 61 v0.314.27；蓝图 62 卷 62.2（WP-62.2.2）：请求解析
@@ -1139,12 +1161,14 @@ mod tests {
         fn snapshot_blob(&mut self, _id: &[u8; 16]) -> Option<Vec<u8>> {
             None
         }
-        fn hold_offset(&mut self, _partition: u32, _offset: u64) {}
         fn pin_snapshot(&mut self, _id: &[u8; 16]) -> bool {
             false
         }
         fn release_snapshot(&mut self, _id: &[u8; 16]) -> bool {
             false
+        }
+        fn sync_snap_pins(&mut self, _ids: &[[u8; 16]]) -> Result<(), ()> {
+            Err(())
         }
         fn retention_blocked(&self) -> bool {
             self.blocked
@@ -2043,12 +2067,14 @@ mod tests {
         fn snapshot_blob(&mut self, _id: &[u8; 16]) -> Option<Vec<u8>> {
             None
         }
-        fn hold_offset(&mut self, _partition: u32, _offset: u64) {}
         fn pin_snapshot(&mut self, _id: &[u8; 16]) -> bool {
             true
         }
         fn release_snapshot(&mut self, _id: &[u8; 16]) -> bool {
             true
+        }
+        fn sync_snap_pins(&mut self, _ids: &[[u8; 16]]) -> Result<(), ()> {
+            Ok(())
         }
         fn retention_blocked(&self) -> bool {
             false
@@ -2093,5 +2119,75 @@ mod tests {
         let resp = handle_request(&mut no_face, &hold, now);
         assert_eq!(resp, vec![TEL_RESP_ERR]);
         assert!(!crate::dispatch_wire::snap_resp_ok(&resp));
+    }
+
+    /// 蓝图 77 卷一 WP-77.1.3：release 应答依据 `release_snapshot` **真
+    /// bool**——旧实现忽略该值恒回 OK（`telemetry.rs:1092` 缺陷），dispatch
+    /// 据 OK 判释放成功、不再走 HoldRegistry 失败重试。真实 false（无事件
+    /// 面/面故障）必须透传为 `[TEL_RESP_ERR]`；已确认缺席的幂等 true 保留。
+    /// 变异靶：恢复恒 OK → 本测红。
+    #[test]
+    fn snap_release_false_propagates_err() {
+        use eneros_agent_sdk::tel_wire::{TEL_RESP_ERR, TEL_RESP_OK};
+        let id = [0x5Au8; 16];
+        let now = 10_000;
+
+        // ① 无事件面（release_snapshot=false）→ ERR。
+        let mut no_face = service();
+        let release = crate::dispatch_wire::snap_release_request(id);
+        let resp = handle_request(&mut no_face, &release, now);
+        assert_eq!(
+            resp,
+            vec![TEL_RESP_ERR],
+            "无事件面的释放失败必须透传 ERR（不可伪装成功——HoldRegistry 需据此重试）"
+        );
+
+        // ② 面在场但释放失败 → ERR。
+        let mut svc = service();
+        svc.set_event_face(alloc::boxed::Box::new(ReleaseFailFace));
+        let resp = handle_request(&mut svc, &release, now);
+        assert_eq!(resp, vec![TEL_RESP_ERR], "释放失败 → ERR");
+
+        // ③ 幂等确认（release_snapshot=true）→ OK（既有合同不变）。
+        let mut ok = service();
+        ok.set_event_face(alloc::boxed::Box::new(PinOkFace));
+        let resp = handle_request(&mut ok, &release, now);
+        assert_eq!(resp, vec![TEL_RESP_OK]);
+    }
+
+    /// 释放失败替身（WP-77.1.3 红测：面故障形态）。
+    struct ReleaseFailFace;
+
+    impl crate::event_face::ObsEventFace for ReleaseFailFace {
+        fn on_obs_batch(
+            &mut self,
+            _events: &[eneros_telemetry_model::event::ObservationEvent],
+            _now_ms: u64,
+        ) {
+        }
+        fn set_snapshot_catalog(
+            &mut self,
+            _repo: eneros_semantic_catalog::CatalogRepository,
+            _now_ms: u64,
+        ) {
+        }
+        fn current_input(&self) -> Option<eneros_agent_sdk::snap_input_wire::TrustedInput> {
+            None
+        }
+        fn snapshot_blob(&mut self, _id: &[u8; 16]) -> Option<Vec<u8>> {
+            None
+        }
+        fn pin_snapshot(&mut self, _id: &[u8; 16]) -> bool {
+            true
+        }
+        fn release_snapshot(&mut self, _id: &[u8; 16]) -> bool {
+            false
+        }
+        fn sync_snap_pins(&mut self, _ids: &[[u8; 16]]) -> Result<(), ()> {
+            Err(())
+        }
+        fn retention_blocked(&self) -> bool {
+            false
+        }
     }
 }

@@ -1134,20 +1134,83 @@ fn held_fixture_fault(
     delivered: Rc<RefCell<u64>>,
     lose_ack: bool,
 ) -> DispatchEngine {
-    held_fixture_channels(
+    held_fixture_retained_fault(
+        media,
+        delivered,
+        lose_ack,
+        Rc::new(RefCell::new(RetainerLog::default())),
+    )
+}
+/// 蓝图 77 卷一 WP-77.1.2：夹具默认注入**有记录的真 retainer**——持有
+/// 路径不再经「store 先在、retainer 缺席」的装配窗口（该窗口曾允许无钉
+/// 准入）。需要检视钉账的测试传入自己的 log。
+fn held_fixture_retained(
+    media: HeldMedia,
+    delivered: Rc<RefCell<u64>>,
+    log: Rc<RefCell<RetainerLog>>,
+) -> DispatchEngine {
+    held_fixture_retained_fault(media, delivered, false, log)
+}
+fn held_fixture_retained_fault(
+    media: HeldMedia,
+    delivered: Rc<RefCell<u64>>,
+    lose_ack: bool,
+    log: Rc<RefCell<RetainerLog>>,
+) -> DispatchEngine {
+    held_fixture_with_retainer_fault(media, delivered, lose_ack, Box::new(RecordingRetainer(log)))
+}
+/// 自定义 retainer 变体（FailingRelease / FlickerRelease / RefuseHold 等
+/// 专项替身——负例按行为显式注入）。
+fn held_fixture_with_retainer(
+    media: HeldMedia,
+    delivered: Rc<RefCell<u64>>,
+    retainer: Box<dyn eneros_control_dispatch::HeldInputRetainer>,
+) -> DispatchEngine {
+    held_fixture_with_retainer_fault(media, delivered, false, retainer)
+}
+fn held_fixture_with_retainer_fault(
+    media: HeldMedia,
+    delivered: Rc<RefCell<u64>>,
+    lose_ack: bool,
+    retainer: Box<dyn eneros_control_dispatch::HeldInputRetainer>,
+) -> DispatchEngine {
+    held_fixture_channels_retained(
         media,
         delivered,
         lose_ack,
         Rc::new(std::cell::Cell::new(0.0)),
         Box::new(InMemoryIntentStore::new(64)),
+        retainer,
     )
 }
+/// 5 参直通变体（FaultWrites/Cut 等自定义介质夹具用；默认记录 retainer）。
 fn held_fixture_channels<Io: eneros_durable_state::PersistIo + 'static>(
     media: Io,
     delivered: Rc<RefCell<u64>>,
     lose_ack: bool,
     actual: Rc<std::cell::Cell<f64>>,
     intent_log: Box<dyn IntentStore>,
+) -> DispatchEngine {
+    held_fixture_channels_retained(
+        media,
+        delivered,
+        lose_ack,
+        actual,
+        intent_log,
+        Box::new(RecordingRetainer(Rc::new(RefCell::new(
+            RetainerLog::default(),
+        )))),
+    )
+}
+/// WP-77.1.2：store 与保留面**一次交付**（`HeldOwner::assemble` →
+/// `install_held_owner`）——两步装配 API 已退役。
+fn held_fixture_channels_retained<Io: eneros_durable_state::PersistIo + 'static>(
+    media: Io,
+    delivered: Rc<RefCell<u64>>,
+    lose_ack: bool,
+    actual: Rc<std::cell::Cell<f64>>,
+    intent_log: Box<dyn IntentStore>,
+    retainer: Box<dyn eneros_control_dispatch::HeldInputRetainer>,
 ) -> DispatchEngine {
     let (ingress, devices) = device_side();
     let config = support::test_config(support::TestConfigSeed {
@@ -1169,9 +1232,10 @@ fn held_fixture_channels<Io: eneros_durable_state::PersistIo + 'static>(
         }),
     });
     let mut engine = DispatchEngine::new(support::with_fixture_certifier(config));
-    engine.install_held_plans(
-        eneros_control_dispatch::held_plan::DurablePlans::open(media, 0, 131_072).unwrap(),
-    );
+    let plans = eneros_control_dispatch::held_plan::DurablePlans::open(media, 0, 131_072).unwrap();
+    engine.install_held_owner(eneros_control_dispatch::HeldOwner::assemble(
+        plans, retainer,
+    ));
     engine
 }
 fn held_candidate() -> (
@@ -1183,6 +1247,19 @@ fn held_candidate() -> (
 
 /// 参数化持有候选（步长 ns / ttl ms）——时域合同红绿测共用夹具。
 fn held_candidate_tuned(
+    step_ns: u64,
+    ttl_ms: u64,
+) -> (
+    eneros_decision_contract::CandidatePlan,
+    eneros_agent_sdk::snap_input_wire::TrustedInput,
+) {
+    held_candidate_steps(4, step_ns, ttl_ms)
+}
+
+/// WP-77.1.2：步数可变候选（1 步 = legacy 单命令轨——held_device_busy
+/// 判据的注入面）。
+fn held_candidate_steps(
+    steps: u32,
     step_ns: u64,
     ttl_ms: u64,
 ) -> (
@@ -1212,12 +1289,12 @@ fn held_candidate_tuned(
             1,
             now_ms(),
             step_ns,
-            4,
+            steps,
         ),
         resource_catalog_version: 1,
         horizon_start_ms: now_ms(),
         step_ns,
-        step_count: 4,
+        step_count: steps,
         solver_status: SolveStatusKind::Optimal,
         objective_value: 1.0,
         relative_gap: 0.0,
@@ -1225,7 +1302,7 @@ fn held_candidate_tuned(
         elapsed_ms: 10,
         model_digest: [0xBB; 32],
         input_digest: facts.provenance_root,
-        assignments: (1..=4)
+        assignments: (1..=steps)
             .map(|step| Assignment {
                 asset_id: 1,
                 device_id: 1,
@@ -1490,6 +1567,10 @@ struct RetainerLog {
     held: Vec<[u8; 16]>,
     released: Vec<[u8; 16]>,
     refuse_hold: bool,
+    /// WP-77.1.3：全量同步账（调用次数 + 最近一次确认集）。
+    sync_calls: usize,
+    last_sync_set: Vec<[u8; 16]>,
+    sync_ok: bool,
 }
 struct RecordingRetainer(Rc<RefCell<RetainerLog>>);
 impl eneros_control_dispatch::HeldInputRetainer for RecordingRetainer {
@@ -1509,6 +1590,23 @@ impl eneros_control_dispatch::HeldInputRetainer for RecordingRetainer {
         log.held.retain(|h| *h != snapshot_id);
         true
     }
+    fn sync(&mut self, ids: &[[u8; 16]]) -> bool {
+        // WP-77.1.3：同步 = 钉集原子确认（测试替身：记账并按 sync_ok 表达
+        // 远端确认成败）。
+        let mut log = self.0.borrow_mut();
+        log.sync_calls += 1;
+        log.last_sync_set = ids.to_vec();
+        let ok = log.sync_ok;
+        if ok {
+            log.held.clear();
+            for id in ids {
+                if !log.held.contains(id) {
+                    log.held.push(*id);
+                }
+            }
+        }
+        ok
+    }
 }
 
 /// ADR-0054:29–30 红绿测（引擎侧保留面）：
@@ -1525,8 +1623,7 @@ fn held_plan_pins_input_and_releases_on_completion() {
         131_072,
     ))));
     let delivered = Rc::new(RefCell::new(0));
-    let mut engine = held_fixture(media, delivered.clone());
-    engine.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
+    let mut engine = held_fixture_retained(media, delivered.clone(), log.clone());
     let (plan, input) = held_candidate();
     let expected_id = input.facts().snapshot_id;
     engine
@@ -1559,8 +1656,7 @@ fn held_admission_fails_closed_when_retention_refuses() {
         131_072,
     ))));
     let delivered = Rc::new(RefCell::new(0));
-    let mut engine = held_fixture(media, delivered.clone());
-    engine.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
+    let mut engine = held_fixture_retained(media, delivered.clone(), log.clone());
     let (plan, input) = held_candidate();
     let err = engine
         .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
@@ -1576,6 +1672,11 @@ fn held_admission_fails_closed_when_retention_refuses() {
     );
 }
 
+/// 蓝图 77 卷一 WP-77.1.2 重写（原「先 store 后 retainer 的装配顺序变体」
+/// 历史回归——旧期待"无钉先成功提交"正是蓝图 §1.3 的公开入口缺口）：
+/// **完整装配（store+retainer 一体）下提交 → 钉住；掉电（RAM 钉丢失）→
+/// 重开同介质 → 完整装配 → 非终态计划按存活引用重钉；同 ID 重放回原
+/// 回执、零新投递。**
 #[test]
 fn held_input_repin_after_restart() {
     let log = Rc::new(RefCell::new(RetainerLog::default()));
@@ -1587,22 +1688,205 @@ fn held_input_repin_after_restart() {
     let (plan, input) = held_candidate();
     let expected_id = input.facts().snapshot_id;
     {
-        let mut engine = held_fixture(media.clone(), delivered.clone());
-        // 装配顺序变体：install 先于 set_input_retainer（生产装配序）。
+        let mut engine = held_fixture_retained(media.clone(), delivered.clone(), log.clone());
         engine
             .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
             .unwrap();
+        assert_eq!(log.borrow().held, vec![expected_id], "准入即钉");
     }
     log.borrow_mut().held.clear(); // 模拟掉电：RAM 钉集丢失
-    let reopened = held_fixture(media, delivered.clone());
+    let mut reopened = held_fixture_retained(media, delivered.clone(), log.clone());
     assert!(reopened.held_plan_reports().is_ok(), "非终态计划在介质上");
-    let mut reopened = reopened;
-    reopened.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
     assert_eq!(
         log.borrow().held,
         vec![expected_id],
-        "重启 + 装配保留面 ⇒ 非终态计划引用的快照被重新钉住"
+        "重启 + owner 完整装配 ⇒ 非终态计划引用的快照被重新钉住"
     );
+    // 既有同 ID 重放：不重新执行、不产生第二次物理投递。
+    let sent_before = *delivered.borrow();
+    let receipt = reopened
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
+        .unwrap();
+    assert_eq!(
+        receipt.final_state,
+        eneros_control_dispatch::DispatchState::Persisted,
+        "重放回原回执（accepted 计划不重复投递）"
+    );
+    assert_eq!(*delivered.borrow(), sent_before, "重放零新投递");
+}
+
+/// 蓝图 77 卷一 WP-77.1.3（dispatch 侧）：每个 held tick 发送**完整活跃
+/// 集**同步（`!terminal || unresolved` 全集）；远端未确认 ⇒ stale ⇒ 新
+/// 持有准入阻断（同 ID 重放不受累）；确认恢复后准入恢复。
+/// 变异靶：删 tick_held 同步调用 / stale 门 → 本测红。
+#[test]
+fn held_tick_syncs_full_live_set_and_stale_blocks_admission() {
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let delivered = Rc::new(RefCell::new(0));
+    let log = Rc::new(RefCell::new(RetainerLog::default()));
+    let (plan, input) = held_candidate();
+    let sid = input.facts().snapshot_id;
+    let mut engine = held_fixture_retained(media.clone(), delivered.clone(), log.clone());
+    engine
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
+        .unwrap();
+    // held tick：全量活跃集同步（在途计划 ⇒ {sid}）。
+    let active = engine
+        .tick_held(Some(&input), Some(&trusted_telemetry()))
+        .unwrap();
+    assert_eq!(active, 1);
+    let l = log.borrow();
+    assert_eq!(l.sync_calls, 1, "held tick 必须发送全量同步");
+    assert_eq!(l.last_sync_set, vec![sid], "同步集 = 存活引用全集");
+    drop(l);
+
+    // 空载 tick（计划全部终态后）⇒ 空集同步（冷启动屏障解除语义）。
+    for step in 1..=3u64 {
+        HELD_CLOCK.with(|clock| clock.set(now_ms() + step * 5_000));
+        engine
+            .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+            .unwrap();
+    }
+    HELD_CLOCK.with(|clock| clock.set(now_ms() + 16_000));
+    let active = engine
+        .tick_held(Some(&input), Some(&trusted_telemetry()))
+        .unwrap();
+    assert_eq!(active, 0);
+    let l = log.borrow();
+    assert_eq!(l.sync_calls, 2);
+    assert!(l.last_sync_set.is_empty(), "无活跃计划 ⇒ 空集同步");
+    drop(l);
+
+    // 远端未确认（sync_ok=false）⇒ stale ⇒ 新准入被拒；同 ID 重放不受累。
+    // （时间保持 < 计划 TTL 20s——过期拒绝先于 stale 门，会掩蔽判据。）
+    log.borrow_mut().sync_ok = false;
+    HELD_CLOCK.with(|clock| clock.set(now_ms() + 17_000));
+    let active = engine
+        .tick_held(Some(&input), Some(&trusted_telemetry()))
+        .unwrap();
+    assert_eq!(active, 0, "stale 不折零——计数/对账照常");
+    // 新计划（不同 id）⇒ stale 拒绝。
+    let err = engine
+        .submit_trusted(
+            &renamed_plan(&plan, 0x7E),
+            &input,
+            &trusted_telemetry(),
+            &actor(),
+        )
+        .expect_err("同步未确认 ⇒ 新持有准入必须被拒");
+    assert!(
+        format!("{err:?}").contains("held snapshot sync pending"),
+        "stale 拒绝面：{err:?}"
+    );
+    // 同 ID 重放（原计划已终态在册）不受 stale 影响——重放回原回执。
+    let receipt = engine
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
+        .expect("重放不受 stale 影响");
+    assert_eq!(
+        receipt.final_state,
+        eneros_control_dispatch::DispatchState::Committed
+    );
+    // 同步恢复 ⇒ 新准入恢复（容量语义：终态在册计划被换代挤出）。
+    log.borrow_mut().sync_ok = true;
+    HELD_CLOCK.with(|clock| clock.set(now_ms() + 18_000));
+    engine
+        .tick_held(Some(&input), Some(&trusted_telemetry()))
+        .unwrap();
+    let receipt = engine
+        .submit_trusted(
+            &renamed_plan(&plan, 0x7E),
+            &input,
+            &trusted_telemetry(),
+            &actor(),
+        )
+        .expect("同步确认后新准入恢复");
+    assert!(
+        matches!(
+            receipt.final_state,
+            eneros_control_dispatch::DispatchState::Persisted
+                | eneros_control_dispatch::DispatchState::Committed
+        ),
+        "准入恢复（晚时钟提交可能同 tick 终态）：{:?}",
+        receipt.final_state
+    );
+}
+
+/// 蓝图 77 卷一 WP-77.1.2：**装配未完成 ⇒ 提交被拒，完成后可恢复并重钉**。
+/// 未完成形态 = 介质上已有存活计划、而钉面在**装配期重钉**时拒绝 ⇒
+/// owner 未就绪 ⇒ 新准入 fail-closed（store 计划数与设备写计数均不增加）；
+/// 完整装配重开同介质 ⇒ 恢复重钉 + 同 ID 重放回原回执。
+/// 变异靶：HeldOwner::assemble 折叠重钉失败（照常 ready）或删除
+/// `held_retention_fault` 准入门 → 本测红。
+#[test]
+fn held_assembly_incomplete_rejects_submission_until_ready() {
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let delivered = Rc::new(RefCell::new(0));
+    let (plan, input) = held_candidate();
+    let sid = input.facts().snapshot_id;
+    {
+        // 健康装配：计划入持久 store（装配期重钉成功）。
+        let log = Rc::new(RefCell::new(RetainerLog::default()));
+        let mut engine = held_fixture_retained(media.clone(), delivered.clone(), log);
+        engine
+            .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
+            .unwrap();
+        assert_eq!(*delivered.borrow(), 1);
+    }
+    {
+        // 装配未就绪：存活计划在场而装配期重钉被拒 ⇒ 故障态。
+        let log = Rc::new(RefCell::new(RetainerLog {
+            refuse_hold: true,
+            ..RetainerLog::default()
+        }));
+        let mut engine = held_fixture_with_retainer(
+            media.clone(),
+            delivered.clone(),
+            Box::new(RecordingRetainer(log)),
+        );
+        let err = engine
+            .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
+            .expect_err("装配未就绪 ⇒ 提交必须被拒");
+        assert!(
+            format!("{err:?}").contains("held retention fault"),
+            "显式保留故障拒绝面：{err:?}"
+        );
+        // 遗留单命令轨（System1 兜底/协议写同链）同样被保留故障阻断——
+        // 钉失败阻断的不只是计划准入，还有一切新设备写。
+        let (single, single_input) = held_candidate_steps(1, 5_000_000_000, 20_000);
+        let err2 = engine
+            .submit_trusted(&single, &single_input, &trusted_telemetry(), &actor())
+            .expect_err("单命令轨同样被保留故障阻断");
+        assert!(
+            format!("{err2:?}").contains("held retention fault"),
+            "单命令轨阻断面：{err2:?}"
+        );
+        assert_eq!(*delivered.borrow(), 1, "设备写计数不增加（无新投递）");
+        let reports = engine.held_plan_reports().unwrap();
+        assert_eq!(reports.len(), 1, "store 计划数不增加（仅重启前那份）");
+    }
+    // 完整装配（可钉）⇒ 重开同介质：装配期恢复重钉 + 提交可恢复。
+    let ok_log = Rc::new(RefCell::new(RetainerLog::default()));
+    let mut ready = held_fixture_retained(media, delivered.clone(), ok_log.clone());
+    assert_eq!(
+        ok_log.borrow().held,
+        vec![sid],
+        "完整装配 ⇒ 存活计划的快照在装配期被重钉"
+    );
+    let sent_before = *delivered.borrow();
+    let receipt = ready
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
+        .expect("装配完成后可恢复提交（同 ID 重放）");
+    assert_eq!(
+        receipt.final_state,
+        eneros_control_dispatch::DispatchState::Persisted
+    );
+    assert_eq!(*delivered.borrow(), sent_before, "重放零新投递");
 }
 
 // ============================================================
@@ -1630,8 +1914,7 @@ fn h01_capacity_rejection_keeps_live_plans_pinned() {
     let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
         131_072,
     ))));
-    let mut engine = held_fixture(media, Rc::new(RefCell::new(0)));
-    engine.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
+    let mut engine = held_fixture_retained(media, Rc::new(RefCell::new(0)), log.clone());
     let (plan, input) = held_candidate();
     engine
         .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
@@ -1712,14 +1995,14 @@ fn h02_real_persist_failure_preserves_existing_pin() {
         )))),
         fail_writes: Rc::new(std::cell::Cell::new(false)),
     };
-    let mut engine = held_fixture_channels(
+    let mut engine = held_fixture_channels_retained(
         media.clone(),
         Rc::new(RefCell::new(0)),
         false,
         Rc::new(std::cell::Cell::new(0.0)),
         Box::new(InMemoryIntentStore::new(64)),
+        Box::new(RecordingRetainer(log.clone())),
     );
-    engine.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
     let (plan, input) = held_candidate();
     engine
         .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
@@ -1760,6 +2043,55 @@ fn h02_real_persist_failure_preserves_existing_pin() {
     );
 }
 
+/// 蓝图 77 卷一 WP-77.1.1（引擎侧判据回归锁）：held store poisoned ⇒
+/// `tick_held` 必须传播 Err——**绝不折叠成活跃 0**（EA 据此放行 System1
+/// 的条件性故障面）。注：plans() 镜像读的失败源 = poisoned ⇒ 写失败必已
+/// 先传播，旧 `unwrap_or(0)` 折叠在现结构下不可达；本重构（finalize 单读
+/// 化 + 显式传播）把该面从「静默折零」收紧为「不可能折零」，本测锁
+/// poisoned 后 tick_held ≠ Ok(_) 的接口事实。
+#[test]
+fn held_store_poison_fails_held_tick_not_active_zero() {
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = FailWritesHeldMedia {
+        inner: HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+            131_072,
+        )))),
+        fail_writes: Rc::new(std::cell::Cell::new(false)),
+    };
+    let delivered = Rc::new(RefCell::new(0));
+    let mut engine = held_fixture_channels_retained(
+        media.clone(),
+        delivered,
+        false,
+        Rc::new(std::cell::Cell::new(0.0)),
+        Box::new(InMemoryIntentStore::new(64)),
+        Box::new(RecordingRetainer(Rc::new(RefCell::new(
+            RetainerLog::default(),
+        )))),
+    );
+    let (plan, input) = held_candidate();
+    engine
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
+        .unwrap();
+    // 武装介质写失败：任何持久写失败都会 poison store（fail-closed）。
+    media.fail_writes.set(true);
+    let poisoned = engine
+        .submit_trusted(
+            &renamed_plan(&plan, 0x9A),
+            &input,
+            &trusted_telemetry(),
+            &actor(),
+        )
+        .is_err();
+    assert!(poisoned, "写失败必须使提交失败（poison 前置）");
+    // poisoned 后：活跃查询面必须 Err（读错不折零）。
+    let tick = engine.tick_held(Some(&input), Some(&trusted_telemetry()));
+    assert!(
+        tick.is_err(),
+        "store 读失败必须传播 Err——不得折叠成活跃 0，实得 {tick:?}"
+    );
+}
+
 /// H02（容量面回归保留）：第三份容量拒绝的回滚不解除前两份在途计划的
 /// 保留（H01 同族；与上面的真实写失败路径互补）。
 #[test]
@@ -1769,8 +2101,7 @@ fn h02_capacity_rollback_keeps_owners() {
     let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
         131_072,
     ))));
-    let mut engine = held_fixture(media, Rc::new(RefCell::new(0)));
-    engine.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
+    let mut engine = held_fixture_retained(media, Rc::new(RefCell::new(0)), log.clone());
     let (plan, input) = held_candidate();
     engine
         .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
@@ -1808,8 +2139,7 @@ fn h03_shared_snapshot_released_only_after_last_plan_finishes() {
         131_072,
     ))));
     let delivered = Rc::new(RefCell::new(0));
-    let mut engine = held_fixture(media, delivered.clone());
-    engine.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
+    let mut engine = held_fixture_retained(media, delivered.clone(), log.clone());
     let (plan, input) = held_candidate();
     let sid = input.facts().snapshot_id;
     let plan2 = renamed_plan(&plan, 0x55);
@@ -1853,6 +2183,9 @@ impl eneros_control_dispatch::HeldInputRetainer for FailingRelease {
         *self.0.borrow_mut() += 1;
         *self.0.borrow() > 1
     }
+    fn sync(&mut self, _: &[[u8; 16]]) -> bool {
+        true
+    }
 }
 
 #[test]
@@ -1862,8 +2195,12 @@ fn h04_release_failure_retries_on_idle_ticks() {
     let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
         131_072,
     ))));
-    let mut engine = held_fixture(media, Rc::new(RefCell::new(0)));
-    engine.set_input_retainer(Box::new(FailingRelease(count.clone())));
+    let mut engine = held_fixture_with_retainer(
+        media,
+        Rc::new(RefCell::new(0)),
+        Box::new(FailingRelease(count.clone())),
+    );
+
     let (plan, input) = held_candidate();
     engine
         .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
@@ -1913,6 +2250,10 @@ impl eneros_control_dispatch::HeldInputRetainer for FlickerRelease {
             None => true,
         }
     }
+    fn sync(&mut self, ids: &[[u8; 16]]) -> bool {
+        *self.pins.borrow_mut() = ids.to_vec();
+        true
+    }
 }
 
 #[test]
@@ -1925,8 +2266,12 @@ fn h05_release_reply_lost_converges_idempotently() {
     let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
         131_072,
     ))));
-    let mut engine = held_fixture(media, Rc::new(RefCell::new(0)));
-    engine.set_input_retainer(Box::new(flicker_hoist(&flicker)));
+    let mut engine = held_fixture_with_retainer(
+        media,
+        Rc::new(RefCell::new(0)),
+        Box::new(flicker_hoist(&flicker)),
+    );
+
     let (plan, input) = held_candidate();
     let sid = input.facts().snapshot_id;
     engine
@@ -1977,8 +2322,7 @@ fn h06_reheld_snapshot_releases_each_round() {
     let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
         131_072,
     ))));
-    let mut engine = held_fixture(media, Rc::new(RefCell::new(0)));
-    engine.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
+    let mut engine = held_fixture_retained(media, Rc::new(RefCell::new(0)), log.clone());
     let (plan, input) = held_candidate();
     let sid = input.facts().snapshot_id;
     // 第一轮：提交→完成→释放。
@@ -2037,8 +2381,7 @@ fn h08_restart_rebuilds_shared_pins_without_resend() {
     let (plan, input) = held_candidate();
     let sid = input.facts().snapshot_id;
     {
-        let mut engine = held_fixture(media.clone(), delivered.clone());
-        engine.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
+        let mut engine = held_fixture_retained(media.clone(), delivered.clone(), log.clone());
         engine
             .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
             .unwrap();
@@ -2053,8 +2396,7 @@ fn h08_restart_rebuilds_shared_pins_without_resend() {
     }
     let sent_before = *delivered.borrow();
     log.borrow_mut().held.clear(); // 掉电：RAM 钉集丢失
-    let mut reopened = held_fixture(media, delivered.clone());
-    reopened.set_input_retainer(Box::new(RecordingRetainer(log.clone())));
+    let mut reopened = held_fixture_retained(media, delivered.clone(), log.clone());
     assert_eq!(
         log.borrow().held.iter().filter(|h| **h == sid).count(),
         1,

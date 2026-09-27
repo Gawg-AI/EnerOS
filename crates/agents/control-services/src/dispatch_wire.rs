@@ -133,6 +133,20 @@ fn snap_request(op: u8, snapshot_id: [u8; 16]) -> alloc::vec::Vec<u8> {
     req
 }
 
+/// 完整活跃钉集同步请求（蓝图 77 卷一 WP-77.1.3）：`[SYNC, count,
+/// id×16 ×count]`——调用方（engine tick_held）保证 `ids.len() ≤
+/// SNAP_SYNC_MAX_IDS`（持有计划容量界的派生集）；服务端解帧
+/// `tel_wire::parse_snap_sync` 对 count/总长双重门。
+pub fn snap_sync_request(ids: &[[u8; 16]]) -> alloc::vec::Vec<u8> {
+    let mut req = alloc::vec::Vec::with_capacity(2 + ids.len() * 16);
+    req.push(eneros_agent_sdk::tel_wire::TEL_REQ_SNAP_SYNC);
+    req.push(ids.len() as u8);
+    for id in ids {
+        req.extend_from_slice(id);
+    }
+    req
+}
+
 /// 钉面应答判真（首字节 `TEL_RESP_OK`——hold/release 服务端应答形状
 /// `[TEL_RESP_OK]` / `[TEL_RESP_ERR]` 的客户端判据）。
 pub fn snap_resp_ok(resp: &[u8]) -> bool {
