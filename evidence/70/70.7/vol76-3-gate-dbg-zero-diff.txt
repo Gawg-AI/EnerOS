@@ -1,0 +1,59 @@
+蓝图 76 卷三 · QEMU 门义务留档（WP-76.3.2 / WP-76.3.3）
+=====================================================
+日期：2026-09-27  基线 HEAD：7da193ec（v0.347.0，卷二终态）  本轮收口 HEAD 族：见 git log
+门：`DL=700 bash tools/run70-vol7-gate.sh`  →  `VOL70.7-GATE: PASS`（R1~R16 全绿，零红）
+门 stdout：evidence/70/70.7/VOL70.7-gate-20260927-76vol3.log（*.log 被 .gitignore 第 103 行
+排除，只此文件登记结论；判据行 17 条 = 16 判据 + 末行 PASS）
+盘指纹：evidence/70/70.7/combined.sha256（本轮 PASS 轮）
+源指纹（本卷改动两文件，门跑前后一致）：
+  boot_install.rs  md5 af7a52886afa665d97652190f5a2cd87
+  spawn.rs         md5 9bbbde5d4ce7f699bce969af592013e8
+
+一、WP-76.3.2 面证（bootctrl 双副本提交单源 + 高序列副本先写不变量）
+  R4  `BOOT-TRIAL: tx committed seq=`（svc-ota 侧，trial 事务提交）…… ✓ PASS
+  R9  `BOOT-CONFIRM: slot=B`（svc-ota 侧，自适应确认）…………………… ✓ PASS
+  R10 `BOOT-CONFIRM: slot=B secver=`（确认持久化、序列推进）………… ✓ PASS
+  本卷新增对称插桩在窗内实际显形（svc-storage 侧，门判据不 grep 它们，
+  §1A.5 盘点复证——词形含 `write0 lba=` 等，不含 `slot=`，与 R9/R10 零冲突）：
+    t1: [svc-storage] BOOT-TRIAL: write0 lba=18432 len=4096 rec_lba=18432
+        [svc-storage] BOOT-TRIAL: write1 lba=18440
+        [svc-storage] BOOT-TRIAL: flush
+        [svc-storage] BOOT-TRIAL: done seq=2
+    t2: [svc-storage] BOOT-CONFIRM: write0 lba=18432 len=4096 rec_lba=18432
+        [svc-storage] BOOT-CONFIRM: write1 lba=18440
+        [svc-storage] BOOT-CONFIRM: flush
+        [svc-storage] BOOT-CONFIRM: done seq=6
+  trial 四行与收编前逐字节同形（tag 参数化的本义）；confirm 四行是本卷新增。
+  两窗首写均落 copy0（lba 18432）= `high_copy==0` 平局分支（同盘双副本等序），
+  与不变量「高序列副本先写（平局取 copy0）」一致，非退化。
+
+二、WP-76.3.3 实弹零变化证明（untyped freeIndex 记账重排 = 分配落点零漂移）
+  判据：串口 `DBG dma-alloc pick/skip untyped paddr=… size_bits=… aligned=… phys=…`
+  基线 = 卷二 vol7 PASS 轮（2026-09-27 03:28 同门同盘族）留档日志的 DBG 抽取。
+  结果：t1/t2 各 8 行，**四份抽取 sha256 全等**（基线 t1 = 本轮 t1 = 基线 t2 = 本轮 t2）：
+    709dbe6e15abf410f2e8e590d055f583fd043866c97b447b4b23f36ecdc11418
+  本轮 t1 抽取内容（8 行逐字节）：
+    DBG dma-alloc pick untyped paddr=0x40800000 size_bits=23 aligned=0x2ab000 phys=0x40aab000
+    DBG dma-alloc pick untyped paddr=0x40800000 size_bits=23 aligned=0x2b5000 phys=0x40ab5000
+    DBG dma-alloc pick untyped paddr=0x40800000 size_bits=23 aligned=0x401000 phys=0x40c01000
+    DBG dma-alloc pick untyped paddr=0x40800000 size_bits=23 aligned=0x48e000 phys=0x40c8e000
+    DBG dma-alloc pick untyped paddr=0x40800000 size_bits=23 aligned=0x50f000 phys=0x40d0f000
+    DBG dma-alloc pick untyped paddr=0x40800000 size_bits=23 aligned=0x570000 phys=0x40d70000
+    DBG dma-alloc pick untyped paddr=0x40800000 size_bits=23 aligned=0x5d2000 phys=0x40dd2000
+    DBG dma-alloc pick untyped paddr=0x40800000 size_bits=23 aligned=0x633000 phys=0x40e33000
+  ⇒ `align_up`/`fit` 重排 + DMA 路径补红线 6 守卫 = 落点零变化的直接实弹证据
+  （该行是分配落点的串口打印，任一字节漂移都会暴露；无 skip 行 = RAM-top 判据
+  在本盘形态下未触发，与基线同）。
+
+三、WP-76.3.4 / WP-76.3.5 门义务处置（按卷三 §0.4 control-dispatch 惯例）
+  vol7 三窗为 OTA/引导面：串口内控制投递链证据行仅
+  `EXEC-JOURNAL recovered pending=1 → reconciling`（恢复对账半边），**不含**
+  Applied 结算/`run_typed` 投递窗 ⇒ 本卷两项无门可搭车，按 §0.4「无则 host
+  收口+登记」处置：全量 host 9345/0 + 表序锁 + 源结构针 + 变异实跑（表行两臂
+  换位 → 端到端因果门红，实证「表获得牙齿」）。
+
+四、cfg(none) 编译纪律（§0.5）
+  `bash third_party/sel4-build-rust.sh` → EXIT=0（elfloader/Rust root task 全建，
+  覆盖 spawn.rs 的 no_std 形态；注：该脚本不覆盖服务 bin）
+  `cargo check -p eneros-drv-svc --target aarch64-unknown-none --bins` → EXIT=0
+  （覆盖 svc-storage 的 `commit()` 新增 cfg(target_os="none") 插桩行）
