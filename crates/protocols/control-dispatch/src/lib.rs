@@ -47,6 +47,9 @@ pub mod feedback;
 pub mod held_engine;
 pub mod held_plan;
 pub(crate) mod hold_registry;
+/// 蓝图 76 卷三 WP-76.3.5：`run_typed` 分类单源（幂等键/涉备集/时态
+/// 一遍派生，host 可表测）。
+pub(crate) mod prepared;
 pub use held_engine::{HeldInputRetainer, NoRetention};
 pub mod intent;
 pub mod journal;

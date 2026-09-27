@@ -1334,37 +1334,31 @@ impl DispatchEngine {
         // WP-5.3（[10] §4.1）：投递前唯一 Arbiter 裁决——按批内涉备逐一
         // 裁决并登记在途（蓝图 70 R10 多资产：在途登记按设备键，各键
         // 独立成立；任一设备拒绝 = 整批不投递，语义与单资产一致）。
-        let mut involved: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
-        for batch in &outcome.batches {
-            for intent in batch.intents() {
-                let d = u32::from(intent.device_id());
-                if !involved.contains(&d) {
-                    involved.push(d);
-                }
-            }
-        }
+        //
+        // 蓝图 76 卷三 WP-76.3.5：收编前的扫①涉备集 / 扫②未决普查 /
+        // 扫③逐设备重放判定**三遍扫描**合成一遍分类
+        // （[`crate::prepared::classify`]，纯函数）。幂等键（correlation +
+        // SHA-256 语义摘要）每 intent 只派生一次（原 2 遍摘要 + 3 处
+        // correlation），涉备集/冲突/未决回执/replay_only/投递时态同源。
+        // 次序保形：冲突拒绝 → 未决回执早返回 → 逐设备仲裁（原三处即此序）。
         let legacy_single = crate::compiler::is_legacy_single_command_plan(plan);
+        let prepared = crate::prepared::classify(
+            outcome.batches.iter().map(|b| b.intents()),
+            plan.id(),
+            legacy_single,
+            &self.journal,
+            (self.now_fn)(),
+        );
+        if prepared.conflict {
+            return Err(DispatchError::IdempotencyConflict(String::from(
+                "batch replay semantic mismatch",
+            )));
+        }
         // A repeated partial batch must return its unresolved receipt before
         // attempting to reserve devices belonging to still-unsent successors.
-        let mut unresolved = None;
-        for intent in outcome.batches.iter().flat_map(|batch| batch.intents()) {
-            let (key, digest) =
-                crate::compiler::intent_journal_identity(plan.id(), intent, legacy_single);
-            match self.journal.lookup(&key, &digest) {
-                Some(JournalHit::Conflict) => {
-                    return Err(DispatchError::IdempotencyConflict(String::from(
-                        "batch replay semantic mismatch",
-                    )))
-                }
-                Some(JournalHit::Current(record)) if !record.status.is_terminal() => {
-                    unresolved.get_or_insert(record);
-                }
-                _ => {}
-            }
-        }
-        if let Some(record) = unresolved {
+        if let Some(record) = &prepared.unresolved {
             return Ok(Self::receipt_from_journal(
-                &record,
+                record,
                 record.command_id,
                 record.key,
                 started,
@@ -1372,24 +1366,11 @@ impl DispatchEngine {
                 "batch replay: reconciliation pending",
             ));
         }
-        for &d in &involved {
+        for &d in &prepared.involved {
             // A known command may query its journal while the resource is held.
             // This bypass is only for matching semantic digests; a new command
             // still goes through arbitration and cannot overwrite an unknown effect.
-            let replay_only = outcome
-                .batches
-                .iter()
-                .flat_map(|b| b.intents())
-                .filter(|i| u32::from(i.device_id()) == d)
-                .all(|i| {
-                    let (key, digest) =
-                        crate::compiler::intent_journal_identity(plan.id(), i, legacy_single);
-                    matches!(
-                        self.journal.lookup(&key, &digest),
-                        Some(JournalHit::Current(_))
-                    )
-                });
-            if !replay_only {
+            if !prepared.replay_only(d) {
                 self.arbitrate_owned(crate::arbiter::CommandSource::SiteOptimizer, true, d, None)?;
             }
         }
@@ -1409,22 +1390,28 @@ impl DispatchEngine {
         let mut last_receipt = None;
         let mut deferred_steps = 0u32;
         let mut expired_steps = 0u32;
-        for batch in &outcome.batches {
-            for intent in batch.intents() {
-                let now = (self.now_fn)();
-                if now < intent.valid_from_ms() {
+        for step in &prepared.steps {
+            let intent = step.intent;
+            let now = (self.now_fn)();
+            // 时态判据单源 = `prepared::kind_at`（收编前此处的两行 `if` 即
+            // 判据本体）。分类为 Expired 的步单调不回退，其余按投递时点
+            // fresh now 复检一次——`execute_core` 走真实 IPC，窗口可在
+            // 分类与投递之间关闭，「到期即不投」不得因一次化而漂移
+            // （蓝图 76 卷三 §6 红线④）。
+            match step.kind_at(now) {
+                crate::prepared::StepKind::Deferred { until_ms } => {
                     deferred_steps = deferred_steps.saturating_add(1);
                     // 词形单源 = evidence 表（WP-75.1.2）。
                     eneros_runtime::println!(
                         "{}",
                         crate::evidence::plan_command_deferred(
                             &intent.intent_id().0[..4],
-                            intent.valid_from_ms().saturating_sub(now),
+                            until_ms.saturating_sub(now),
                         )
                     );
                     continue;
                 }
-                if now >= intent.valid_until_ms() {
+                crate::prepared::StepKind::Expired => {
                     expired_steps = expired_steps.saturating_add(1);
                     eneros_runtime::println!(
                         "{}",
@@ -1432,52 +1419,55 @@ impl DispatchEngine {
                     );
                     continue;
                 }
-                let correlation = crate::compiler::plan_command_correlation(
-                    plan.id(),
-                    intent.intent_id(),
-                    legacy_single,
-                );
-                // typed 路径能量预算估算（WP-64.3.2.3 单源）。
-                let (window_secs, energy_est) = intent_window_estimate(intent, now, plan.ttl_ms());
-                let energy = energy_kwh.or(Some(energy_est));
-                // 蓝图 70 R10：逐命令按其绑定路由执行（预检已保证命中）。
-                let route_idx = self
-                    .route_index_for(u32::from(intent.device_id()), intent.point_id())
-                    .expect("预检已保证 (device,point) 命中路由表");
-                let receipt = self.execute_core(
-                    CoreCommand {
-                        identity: CoreIdentity::PlanCommand { correlation },
-                        ttl_secs: window_secs.max(1),
-                        power_kw: intent.power_kw(),
-                        target_device: target_device.clone(),
-                        input_digest: Some(*plan.input_digest()),
-                        energy_kwh: energy,
-                        plan_sha: Some(plan_sha),
-                        idem_note: IdemNote::PlanReplay,
-                    },
-                    telemetry,
-                    actor,
-                    started,
-                    states.clone(),
-                    deadline_ms,
-                    route_idx,
-                )?;
-                delivered_any = true;
-                // 物理结果未知/拒绝是 Ok(receipt)，并不等于命令成功。
-                // 必须阻断后继，不能让末条 Committed 覆盖前项失败；未知
-                // 目标保留仲裁在途登记，其他尚未投递目标释放登记。
-                if !receipt.final_state.is_committed() {
-                    for &d in &involved {
-                        if d != u32::from(intent.device_id())
-                            || receipt.final_state != DispatchState::Indeterminate
-                        {
-                            self.arbiter.clear_in_flight(d);
-                        }
-                    }
-                    return Ok(receipt);
-                }
-                last_receipt = Some(receipt);
+                crate::prepared::StepKind::Due => {}
             }
+            // 幂等键单源 = 分类产物（correlation 即 identity 前 16B；收编前
+            // 此处是第三处 correlation 派生）。
+            let correlation = step.correlation();
+            // typed 路径能量预算估算（WP-64.3.2.3 单源）：仍吃**投递时刻**
+            // 的窗长——分类时点前移不得顺带把窗长冻结在分类瞬间。
+            let (window_secs, energy_est) = intent_window_estimate(intent, now, plan.ttl_ms());
+            let energy = energy_kwh.or(Some(energy_est));
+            // 蓝图 70 R10：逐命令按其绑定路由执行（预检已保证命中）。
+            // 二查刻意保留：预检是 fail-closed **拒绝面**（编译期语义、先于
+            // held-plan 分支），本查是执行面取用点——合并会改拒绝次序
+            // （蓝图 76 卷三 §8 同族行已注明）。
+            let route_idx = self
+                .route_index_for(u32::from(intent.device_id()), intent.point_id())
+                .expect("预检已保证 (device,point) 命中路由表");
+            let receipt = self.execute_core(
+                CoreCommand {
+                    identity: CoreIdentity::PlanCommand { correlation },
+                    ttl_secs: window_secs.max(1),
+                    power_kw: intent.power_kw(),
+                    target_device: target_device.clone(),
+                    input_digest: Some(*plan.input_digest()),
+                    energy_kwh: energy,
+                    plan_sha: Some(plan_sha),
+                    idem_note: IdemNote::PlanReplay,
+                },
+                telemetry,
+                actor,
+                started,
+                states.clone(),
+                deadline_ms,
+                route_idx,
+            )?;
+            delivered_any = true;
+            // 物理结果未知/拒绝是 Ok(receipt)，并不等于命令成功。
+            // 必须阻断后继，不能让末条 Committed 覆盖前项失败；未知
+            // 目标保留仲裁在途登记，其他尚未投递目标释放登记。
+            if !receipt.final_state.is_committed() {
+                for &d in &prepared.involved {
+                    if d != u32::from(intent.device_id())
+                        || receipt.final_state != DispatchState::Indeterminate
+                    {
+                        self.arbiter.clear_in_flight(d);
+                    }
+                }
+                return Ok(receipt);
+            }
+            last_receipt = Some(receipt);
         }
         // 延期/过期步数一次性对账（0/0 也打印：缺行与"无延期"必须可区分）。
         // 词形单源 = evidence 表（WP-75.1.2）。
@@ -1489,8 +1479,9 @@ impl DispatchEngine {
                 u32::from(delivered_any),
             )
         );
-        // 蓝图 70 R10：在途登记按涉备逐一清账（与仲裁登记同键集）。
-        for &d in &involved {
+        // 蓝图 70 R10：在途登记按涉备逐一清账（与仲裁登记同键集——键集单源
+        // = 分类产物 `prepared.involved`）。
+        for &d in &prepared.involved {
             self.arbiter.clear_in_flight(d);
         }
         if !delivered_any {
