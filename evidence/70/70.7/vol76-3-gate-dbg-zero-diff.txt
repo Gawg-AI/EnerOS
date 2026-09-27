@@ -1,13 +1,17 @@
 蓝图 76 卷三 · QEMU 门义务留档（WP-76.3.2 / WP-76.3.3）
 =====================================================
 日期：2026-09-27  基线 HEAD：7da193ec（v0.347.0，卷二终态）  本轮收口 HEAD 族：见 git log
-门：`DL=700 bash tools/run70-vol7-gate.sh`  →  `VOL70.7-GATE: PASS`（R1~R16 全绿，零红）
-门 stdout：evidence/70/70.7/VOL70.7-gate-20260927-76vol3.log（*.log 被 .gitignore 第 103 行
-排除，只此文件登记结论；判据行 17 条 = 16 判据 + 末行 PASS）
-盘指纹：evidence/70/70.7/combined.sha256（本轮 PASS 轮）
-源指纹（本卷改动两文件，门跑前后一致）：
-  boot_install.rs  md5 af7a52886afa665d97652190f5a2cd87
-  spawn.rs         md5 9bbbde5d4ce7f699bce969af592013e8
+门：`DL=700 bash tools/run70-vol7-gate.sh`  →  **两轮均 `VOL70.7-GATE: PASS`（R1~R16 全绿，零红）**
+  · 轮1（05:08–05:15，收口提交 cbc7cfa6 后）：源指纹 boot_install.rs md5
+    `af7a52886afa665d97652190f5a2cd87` / spawn.rs md5 `9bbbde5d4ce7f699bce969af592013e8`
+  · 轮2（05:46–05:53，复查轮修正 406302aa 之后重跑，因 boot_install.rs 写序判据改了、
+    轮1 的证据不再可归因到出货源码）：源指纹 boot_install.rs md5
+    `2a527ff527710dfd5a81a2b13990d198` / spawn.rs md5 与轮1 同值（本文件所在 commit 树）
+  两轮结论一致：PASS + DBG 零漂移。
+门 stdout：/tmp/vol76-3-vol7-gate{,2}.log → 副本 evidence/70/70.7/VOL70.7-gate-20260927-76vol3.log
+  （**注意 `*.log` 被 .gitignore:103 排除 ⇒ 门 stdout 与 t*.qemu-serial.log 都不入库**，
+  本文件是唯一的仓内结论载体）
+盘指纹：evidence/70/70.7/combined.sha256（轮2 PASS 轮，轮1 值已被覆）
 
 一、WP-76.3.2 面证（bootctrl 双副本提交单源 + 高序列副本先写不变量）
   R4  `BOOT-TRIAL: tx committed seq=`（svc-ota 侧，trial 事务提交）…… ✓ PASS
@@ -29,8 +33,13 @@
 
 二、WP-76.3.3 实弹零变化证明（untyped freeIndex 记账重排 = 分配落点零漂移）
   判据：串口 `DBG dma-alloc pick/skip untyped paddr=… size_bits=… aligned=… phys=…`
-  基线 = 卷二 vol7 PASS 轮（2026-09-27 03:28 同门同盘族）留档日志的 DBG 抽取。
-  结果：t1/t2 各 8 行，**四份抽取 sha256 全等**（基线 t1 = 本轮 t1 = 基线 t2 = 本轮 t2）：
+  基线 = 卷二 vol7 PASS 轮（2026-09-27 03:28 同门同盘族）盘上日志的 DBG 抽取——
+  **本会话在轮1 门跑启动前（05:07）抓取**，其 8 行内容与 sha256 已抄进下方，故本文件
+  对基线一侧是自证的；但基线**原件**（t1/t2.qemu-serial.log）被轮1 就地覆写且 `*.log`
+  不入库 ⇒ 基线不再是仓库内可独立复核的物件（复查轮登记为取证链强度缺陷；
+  下轮同类比对须先把基线抽取落成仓内 .txt 再启门）。
+  结果：轮1 与轮2 各 t1/t2/t3 均 8 行，**五份抽取 sha256 全等**（基线 t1 = 基线 t2 =
+  轮1 t1/t2 = 轮2 t1/t2/t3）：
     709dbe6e15abf410f2e8e590d055f583fd043866c97b447b4b23f36ecdc11418
   本轮 t1 抽取内容（8 行逐字节）：
     DBG dma-alloc pick untyped paddr=0x40800000 size_bits=23 aligned=0x2ab000 phys=0x40aab000
@@ -45,14 +54,23 @@
   （该行是分配落点的串口打印，任一字节漂移都会暴露；无 skip 行 = RAM-top 判据
   在本盘形态下未触发，与基线同）。
 
-三、WP-76.3.4 / WP-76.3.5 门义务处置（按卷三 §0.4 control-dispatch 惯例）
+三、门覆盖面如实登记（轮1/轮2 同）
+  vol7 两窗内盘上双副本序列相等 ⇒ `write_first` 取平局臂 0，首写落 copy0
+  （`write0 lba=18432`/`write1 lba=18440`）。即：**本门证的是「收编前后词形与落点
+  零漂移 + 功能等价」，不证 copy1-先写那一臂**——后者由 host 锁承担
+  （`confirm_and_cancel_write_high_seq_copy_first` /
+  `power_loss_between_writes_preserves_anchor_match` /
+  `commit_writes_undecodable_copy_first_when_one_side_is_sole_survivor`，
+  三臂掉电重放均喂**真实** `resolve_boot_control`）。不得把本门当写序两臂的实弹覆盖。
+
+四、WP-76.3.4 / WP-76.3.5 门义务处置（按卷三 §0.4 control-dispatch 惯例）
   vol7 三窗为 OTA/引导面：串口内控制投递链证据行仅
   `EXEC-JOURNAL recovered pending=1 → reconciling`（恢复对账半边），**不含**
   Applied 结算/`run_typed` 投递窗 ⇒ 本卷两项无门可搭车，按 §0.4「无则 host
   收口+登记」处置：全量 host 9345/0 + 表序锁 + 源结构针 + 变异实跑（表行两臂
   换位 → 端到端因果门红，实证「表获得牙齿」）。
 
-四、cfg(none) 编译纪律（§0.5）
+五、cfg(none) 编译纪律（§0.5）
   `bash third_party/sel4-build-rust.sh` → EXIT=0（elfloader/Rust root task 全建，
   覆盖 spawn.rs 的 no_std 形态；注：该脚本不覆盖服务 bin）
   `cargo check -p eneros-drv-svc --target aarch64-unknown-none --bins` → EXIT=0
