@@ -88,6 +88,11 @@ impl PreparedStep<'_> {
 
     /// 投递时点的时态复检（判据同源 [`kind_at`]）。
     ///
+    /// **前提**：`now_fn` 单调不回退（引擎时钟契约；`DispatchConfig::now_fn`
+    /// 生产值 = 单调毫秒）。回拨时钟会让「分类即 Expired 的步免重判」与
+    /// 「Due 步重判后可能转 Deferred」两半都偏离——前者刻意不重判（过期是
+    /// 单调事实），后者按 fresh now 如实重判。
+    ///
     /// **为什么不能省这一次重查**：分类与投递之间 `execute_core` 走真实
     /// IPC（ms 级），窗口可在期间关闭；`Expired` 单调不回退故免检，其余按
     /// fresh now 重判——「到期即不投」语义与收编前逐 intent 现取 `now` 的

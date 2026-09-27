@@ -66,10 +66,19 @@ impl<'a> BootInstall<'a> {
 
     /// 读当前 bootctrl（双副本高序列解析；任一副本有效即取该副本）。
     ///
-    /// 第二返回值 `high_copy` = **持有较高序列的副本序号**（0/1，平局取
-    /// copy0）。它是提交写序的输入（[`Self::commit`] 高序列副本先写），
-    /// 事务侧**不得丢弃**——丢弃即回到「文档化不变量被实现违反」的形态
-    /// （蓝图 76 卷三 §1A，WP-76.3.1 两测为此而设）。
+    /// 第二返回值 `write_first` = **提交时应先写的副本序号**（0/1），它是
+    /// [`Self::commit`] 的写序输入，事务侧**不得丢弃**。判据三条（不变量的
+    /// 准确形态，比固件注释那句「高序列副本先写」更严——独立复查轮坐实，
+    /// 登记 REG-76-M）：
+    /// 1. **双副本均可解码** → 先写较高序列一侧（较低侧通常正是锚匹配副本，
+    ///    中断时锚存留；平局取 copy0）；
+    /// 2. **仅一侧可解码** → 先写**不可解码那一侧**。可解码侧是当前唯一可
+    ///    引导事实，先覆它 = 任一中断点全盲（双副本皆不可解 → 固件侧
+    ///    `bootctrl-both-invalid`；或锚不再匹配 → `AnchorMismatch` 引导失败）。
+    ///    把「较高序列」直译成写序输入在本形态下会指向幸存副本本身——
+    ///    蓝图 76 卷三 §1A.4 对同一形态的判定是「首写落无效副本、锚匹配
+    ///    幸存，安全」，故本条以该判定为准；
+    /// 3. 双副本均不可解码 → `Err("bootctrl-both-invalid")`（读面即拒）。
     pub fn read_current(&mut self) -> Result<(BootControl, usize), &'static str> {
         let bc_lba = Self::bootctrl_lba();
         // 单缓冲复用（栈峰值 -4KB；REG-70.7 排查：IPC 处理链栈深贴线，
@@ -94,22 +103,26 @@ impl<'a> BootInstall<'a> {
                     Ok((b, 1))
                 }
             }
-            (Ok(a), Err(_)) => Ok((a, 0)),
-            (Err(_), Ok(b)) => Ok((b, 1)),
+            // 判据 2：幸存侧不可动，先写另一侧。
+            (Ok(a), Err(_)) => Ok((a, 1)),
+            (Err(_), Ok(b)) => Ok((b, 0)),
             _ => Err("bootctrl-both-invalid"),
         }
     }
 
-    /// 双副本提交单源（WP-76.3.2）：编码 → **高序列副本先写** → 低序列副本
-    /// → flush。三事务（trial/confirm/cancel）的介质写半边全部经本函数——
+    /// 双副本提交单源（WP-76.3.2）：编码 → **先写 `write_first` 副本** → 另一
+    /// 副本 → flush。三事务（trial/confirm/cancel）的介质写半边全部经本函数——
     /// 写序分派在类型面上不再可表达为「按调用方记得的顺序」。
     ///
-    /// 不变量定义处 = 固件侧 `resolve_boot_control` 的采纳规则与其注释断言
-    /// （「任一中断点都保留锚定旧副本（精确匹配优先命中）……运行时写序
-    /// （高序列副本 → 低序列副本 → flush）」）。违反者曾在 confirm/cancel
-    /// 两处手写形态下潜伏（体检 R17 候选 3；实证锁 = 本文件测试区
+    /// 不变量 = 「任一中断点都保留锚定旧副本（固件侧 `resolve_boot_control`
+    /// 精确匹配优先命中）」，其运行时形态由 [`Self::read_current`] 的三条判据
+    /// 给出（双可解 → 高序列先写；单可解 → 损败侧先写）。固件侧注释那句
+    /// 「高序列副本 → 低序列副本 → flush」是双可解情形的表述，不覆盖单侧
+    /// 损败形态——该处曾按字面收编，独立复查轮证伪并改正（REG-76-M）。
+    /// 实证锁 = 本文件测试区
     /// `confirm_and_cancel_write_high_seq_copy_first` /
-    /// `power_loss_between_writes_preserves_anchor_match`）。
+    /// `power_loss_between_writes_preserves_anchor_match` /
+    /// `commit_writes_undecodable_copy_first_when_one_side_is_sole_survivor`。
     ///
     /// 设计裁决（偏离体检报告原案、登记 REG-76-M）：报告建议 `BootctrlMedia`
     /// adapter 类型；本卷落为 `BootInstall` 私有方法——无第二消费者（三事务
@@ -122,7 +135,7 @@ impl<'a> BootInstall<'a> {
     /// 「首写=write0」的语义自洽，词形本身一字未改。
     fn commit(
         &mut self,
-        high_copy: usize,
+        write_first: usize,
         next: BootControl,
         tag: &'static str,
     ) -> Result<u64, &'static str> {
@@ -138,9 +151,9 @@ impl<'a> BootInstall<'a> {
         let _ = tag;
         let mut rec: alloc::boxed::Box<[u8; BC_RECORD]> = alloc::boxed::Box::new([0u8; BC_RECORD]);
         next.encode_into(&mut rec).map_err(|_| "encode")?;
-        // 写序：高序列副本先写（掉电窗口任一时刻 resolve 仍取新块 / 保留锚定
-        // 旧副本）；再写低副本。
-        let (first, second) = if high_copy == 0 {
+        // 写序：先写 `write_first` 副本（判据三条见 [`Self::read_current`]），
+        // 再写另一副本——掉电窗口任一时刻 resolve 仍握有锚定/可解码副本。
+        let (first, second) = if write_first == 0 {
             (
                 (bc_lba, &rec[..]),
                 (bc_lba + BOOTCTRL_COPY_STRIDE_LBAS, &rec[..]),
@@ -194,7 +207,7 @@ impl<'a> BootInstall<'a> {
         target_security_version: u64,
         target_image_id: [u8; 16],
     ) -> Result<u64, &'static str> {
-        let (current, high_copy) = self.read_current()?;
+        let (current, write_first) = self.read_current()?;
         // **trial 目标槽 = 守卫的非活动槽**（70.14 复查修复，单源 = 安装写面）。
         //
         // 为什么不能再用 `select()`：`select()` 是「下一引导槽」，首次 trial
@@ -241,7 +254,7 @@ impl<'a> BootInstall<'a> {
             );
         }
         next.sequence = current.sequence + 1;
-        self.commit(high_copy, next, "BOOT-TRIAL")
+        self.commit(write_first, next, "BOOT-TRIAL")
     }
 
     /// 启动确认（WP-70.7.4）：目标槽 successful=true（不再消耗 tries），
@@ -281,7 +294,7 @@ impl<'a> BootInstall<'a> {
         if ident.release_id != image_id {
             return Err("confirm-image-mismatch");
         }
-        let (current, high_copy) = self.read_current()?;
+        let (current, write_first) = self.read_current()?;
         let mut next = current; // BootControl: Copy
         if slot_is_a {
             next.slot_a = eneros_boot_protocol::SlotState::successful(
@@ -299,8 +312,8 @@ impl<'a> BootInstall<'a> {
         next.security_floor = next.security_floor.max(security_version);
         next.sequence = current.sequence + 1;
         // 写序半边单源 = [`Self::commit`]（收编前此处手写恒 copy0→copy1，
-        // 并把 read_current 的 high_copy 丢弃为 `_`——WP-76.3.1 红臂即此）。
-        self.commit(high_copy, next, "BOOT-CONFIRM")
+        // 并把 read_current 的写序输入丢弃为 `_`——WP-76.3.1 红臂即此）。
+        self.commit(write_first, next, "BOOT-CONFIRM")
     }
 
     /// 取消未确认 trial（WP-70.7.5 mgmt `update-rollback` 后端）：trial 槽
@@ -310,7 +323,7 @@ impl<'a> BootInstall<'a> {
     /// Err("no-pending-trial")——确认后回退 = 新更新事务（floor 之下不可
     /// 达，70.7.4 语义）。
     pub fn cancel_trial(&mut self) -> Result<u64, &'static str> {
-        let (current, high_copy) = self.read_current()?;
+        let (current, write_first) = self.read_current()?;
         // pending trial 判槽单源 = [`is_pending_trial`]（**非**按优先级高低——
         // trial 写后 trial 槽优先级更高，高低判据会认反）。
         let mut next = current; // BootControl: Copy
@@ -335,8 +348,8 @@ impl<'a> BootInstall<'a> {
         }
         next.sequence = current.sequence + 1;
         // 写序半边单源 = [`Self::commit`]（收编前与 confirm 同型：手写恒
-        // copy0→copy1 + high_copy 丢弃，WP-76.3.1 红臂即此）。
-        self.commit(high_copy, next, "BOOT-CANCEL")
+        // copy0→copy1 + 写序输入丢弃，WP-76.3.1 红臂即此）。
+        self.commit(write_first, next, "BOOT-CANCEL")
     }
 }
 
@@ -1035,7 +1048,7 @@ mod boot_install_tests {
     ///
     /// 不变量定义处 = 固件侧 `resolve_boot_control` 的采纳规则与其注释断言
     /// （「运行时写序：高序列副本 → 低序列副本 → flush」）。trial 满足；
-    /// confirm/cancel 手写恒 copy0→copy1（`read_current` 的 high_copy 被
+    /// confirm/cancel 手写恒 copy0→copy1（`read_current` 的写序输入被
     /// `_` 丢弃）= 违反文档化不变量的潜伏防御缺口。红的是缺陷实证，
     /// WP-76.3.2（commit 单源）转绿——**禁止为合入而注释掉红臂**。
     #[test]
@@ -1107,6 +1120,88 @@ mod boot_install_tests {
             violations.is_empty(),
             "掉电窗口丢失锚定副本的臂：{violations:?}"
         );
+    }
+
+    /// 独立复查轮坐实（2026-09-27，登记 REG-76-M）：**单侧可解码**形态下的
+    /// 写序半边——前两测只覆盖「双副本均可解码」（平局/异序），本测补另一轴。
+    ///
+    /// 把「较高序列副本先写」直译成通用判据，在 {copy0 不可解码, copy1 有效}
+    /// （及镜像）下会指向**唯一幸存副本**：先覆它，则任一中断点全盲——双副本
+    /// 皆不可解（固件 `bootctrl-both-invalid`）或锚不再匹配（`AnchorMismatch`），
+    /// 两条都通向引导失败。而蓝图 76 卷三 §1A.4 对同一形态的判定恰是「首写落
+    /// 无效副本、copy1=锚匹配幸存，**安全**」⇒ 采该判定：单可解 ⇒ 先写损败侧
+    /// （判据全文见 [`read_current`] 三条）。该形态真实可达：上一次事务的次写
+    /// 被撕（torn write）即留下「一侧可解 / 一侧不可解」。
+    #[test]
+    fn commit_writes_undecodable_copy_first_when_one_side_is_sole_survivor() {
+        let mut violations: alloc::vec::Vec<alloc::string::String> = alloc::vec::Vec::new();
+        for good_copy in [0usize, 1usize] {
+            let (survivor, anchor) = survivor_seed();
+            let zeros = [0u8; BC_RECORD];
+            let (seed0, seed1) = if good_copy == 0 {
+                (&survivor, &zeros)
+            } else {
+                (&zeros, &survivor)
+            };
+            // 损败侧基址：好侧在 copy0 → 坏的是 copy1（+STRIDE），反之亦然。
+            let broken_lba = BOOTCTRL_START_LBA
+                + if good_copy == 0 {
+                    BOOTCTRL_COPY_STRIDE_LBAS
+                } else {
+                    0
+                };
+            for name in ["trial", "confirm", "cancel"] {
+                let mut face = MockFace::new();
+                face.seed_bootctrl(seed0, 0);
+                face.seed_bootctrl(seed1, 1);
+                {
+                    let mut inst = BootInstall::new(&mut face);
+                    if let Err(e) = run_transaction(name, &mut inst) {
+                        violations.push(alloc::format!("{name}/copy{good_copy}: 事务被拒 {e}"));
+                        continue;
+                    }
+                }
+                let log = core::mem::take(&mut *face.log.borrow_mut());
+                if log.first().map(|w| w.0) != Some(broken_lba) {
+                    violations.push(alloc::format!(
+                        "{name}/copy{good_copy}: 首写落点 {:?} 应为损败侧 {broken_lba}（先覆唯一幸存副本 = 全盲）",
+                        log.first().map(|w| w.0)
+                    ));
+                }
+                let (first, second) = replay_writes(&log, 1, seed0, seed1);
+                match eneros_boot_protocol::resolve_boot_control(&first, &second, Some(&anchor)) {
+                    Ok(res) if res.control.sequence == 1 && !res.needs_anchor_initialization => {}
+                    Ok(res) => violations.push(alloc::format!(
+                        "{name}/copy{good_copy}: 掉电后未回退幸存记录（seq={} 重锚={:?}）",
+                        res.control.sequence,
+                        res.needs_anchor_initialization
+                    )),
+                    Err(e) => violations.push(alloc::format!(
+                        "{name}/copy{good_copy}: 首写后掉电 ⇒ 固件侧解析失败 {e:?}（引导失败）"
+                    )),
+                }
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "单侧幸存形态写序违规的臂：{violations:?}"
+        );
+    }
+
+    /// 单侧幸存种子：仅一条记录（seq=1，A successful=运行身份、B pending
+    /// trial ⇒ 三事务在此形态下都可跑），锚由该记录精确导出。
+    fn survivor_seed() -> (
+        [u8; BOOT_CONTROL_RECORD_SIZE],
+        eneros_boot_protocol::BootControlAnchor,
+    ) {
+        let id = [9u8; 16];
+        let mut c = BootControl::factory(id, 1, id);
+        c.slot_a = eneros_boot_protocol::SlotState::successful(15, 1, id);
+        c.slot_b = eneros_boot_protocol::SlotState::trial(15, 3, 2, [3u8; 16]);
+        c.sequence = 1;
+        let bytes = c.encode().expect("encode survivor");
+        let anchor = eneros_boot_protocol::BootControlAnchor::new(&c, &bytes).expect("anchor");
+        (bytes, anchor)
     }
 
     /// WP-76.3.2 变异咬合：`commit` 两笔写之后必须落 flush。恒 Ok 的 mock
