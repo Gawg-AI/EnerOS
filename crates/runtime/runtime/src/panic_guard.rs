@@ -175,6 +175,9 @@ const TABLE: &[(&str, &str)] = &[
 /// - oom-probe / panic-probe：panic/OOM 靶；
 /// - hello / fault / hog / pi / pie：A 族，`eneros-services` 审计链
 ///   （ADR-026 §1 全文语义 = 审计 + 打印 + 挂起），本卷不收编；
+///   （此处 hello = `services/src/bin/svc-hello`；`crates/runtime/hello`
+///   是另一个独立 demo bin——自有非 A 族 handler（`[PANIC]` 词形），
+///   不在四族扫描域，同属豁免，勿与 svc-hello 混淆）；
 /// - root-task：内核侧自身分层 handler；hal/board：非 bin。
 const EXEMPT_AUDIT_FAMILY: &[(&str, &str)] = &[
     (

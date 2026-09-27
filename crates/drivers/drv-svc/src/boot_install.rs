@@ -190,8 +190,10 @@ impl<'a> BootInstall<'a> {
 
     /// 写 bootctrl trial 事务（WP-70.7.3）：目标 = **非活动槽** trial
     /// （优先级 15；tries=3；security_version = 目标值），序列 +1；双副本写
-    /// （高序列副本先写，低序列后写——掉电窗口任一时刻 resolve 均取更高
-    /// 有效序列）+ flush。**写序半边三事务单源 = [`Self::commit`]**。
+    /// + flush。**写序半边三事务单源 = [`Self::commit`]**；首写落点判据
+    /// 三条（双可解→高序列侧；单侧可解→损败侧；双败即拒）单源在
+    /// [`Self::read_current`]——REG-76-M 复查轮收紧后「高序列副本先写」
+    /// 不再是普适表述，此处不复述写序（教义只留一处）。
     /// `target_image_id`/`target_security_version` 来自 70.5 验签描述。
     /// 返回新序列号。
     ///

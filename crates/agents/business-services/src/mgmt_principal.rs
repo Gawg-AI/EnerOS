@@ -7,8 +7,9 @@
 //! svc-mgmt 以部署期嵌入的 station 公钥验签——**wire 携带的角色字节仅
 //! 在签名验证通过后进入授权**，伪造 Role/Admin = 签名失配拒绝。
 //!
-//! wire（MGT1 v2）：session 块由 48B 扩展为 `48B ‖ token 64B ‖ sig 64B`
-//! （112B；其余布局不变）。部署侧嵌入 station 公钥（build.rs 嵌入面，
+//! wire（MGT1 v2）：session 块由 48B 扩展为 `48B ‖ token 64B ‖ sig 字段
+//! 74B`（186B；常量单源 = `mgt1_frame::SESSION_V2_LEN`，其余布局不变）。
+//! 部署侧嵌入 station 公钥（build.rs 嵌入面，
 //! 公钥非机密——轮换 = 重构建/换包）后，**旧 48B 无签会话一律拒绝**
 //! （ERR:principal-unverified——不降级）；未部署 station 公钥 = 显式
 //! 开发模式（启动日志明示，48B 旧面保留——qemu-test 兼容探针同纪律）。
@@ -167,7 +168,8 @@ fn role_chain(code: u8) -> Option<&'static [&'static str]> {
     }
 }
 
-/// 验证 v2 会话尾段（token 64B ‖ sig 字段 72B），解出可信 principal。
+/// 验证 v2 会话尾段（token 64B ‖ sig 字段 74B = u16 实长 ‖ DER ≤72 ‖
+/// 零填充），解出可信 principal。
 ///
 /// `station_pubkey_der` = station 公钥 SEC1 未压缩点（65B）。
 /// `now_unix_ms`：过期判据基准（X6 墙钟链派生；时间不可信时由调用方
