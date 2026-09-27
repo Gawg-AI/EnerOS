@@ -284,6 +284,12 @@ impl EnergyAgentService {
                 self.settle(outcome, full, now_ms)
             }
             Err(e) => {
+                // WP-77.1.1 复查轮补口（全局对抗 A1）：提交传输失败 = 回执
+                // 丢失、受理状态未知——dispatch 可能已受理并在 accept 内
+                // 同 tick 终态（held 标签随回执丢失）。保守补记活跃史：
+                // 误窗 = 3s 多抑制（安全方向），漏窗 = run4 实弹振荡前提。
+                // 纯拒绝路径不经此处（拒绝以 Ok 回执承载，无 held 标签）。
+                self.note_held_submission();
                 let resp = self.noaction(&e);
                 self.settle(
                     TickOutcome::PreDispatchError { detail: e.clone() },
@@ -569,6 +575,8 @@ mod tests {
         held_active: std::rc::Rc<std::cell::Cell<u8>>,
         held_raw: std::rc::Rc<std::cell::RefCell<Option<Vec<u8>>>>,
         receipt_note: Option<String>,
+        /// 提交传输失败注入（回执丢失——受理状态未知）。
+        fail_submit: bool,
     }
     impl ScriptedDispatch {
         fn new(committed: bool, held_active: std::rc::Rc<std::cell::Cell<u8>>) -> Self {
@@ -577,6 +585,7 @@ mod tests {
                 held_active,
                 held_raw: std::rc::Rc::new(std::cell::RefCell::new(None)),
                 receipt_note: None,
+                fail_submit: false,
             }
         }
     }
@@ -596,6 +605,9 @@ mod tests {
                 Some(&DISP_SUBMIT_TRUSTED),
                 "EA 必须以可信输入入口提交（蓝图 70.8 WP-70.8.4）"
             );
+            if self.fail_submit {
+                return Err(String::from("transport-lost"));
+            }
             let state = if self.committed {
                 eneros_control_dispatch::DispatchState::Committed
             } else {
@@ -788,6 +800,87 @@ mod tests {
         assert_eq!(calls.get(), 1);
     }
 
+    /// WP-77.1.1 复查轮补口（全局对抗 A1）：提交**传输失败**（回执丢失，
+    /// 受理状态未知）时 held 标签不可达——若 dispatch 实际已受理并在
+    /// accept 内同 tick 终态（run4 形态），EA 从未观察正数也未收到反馈，
+    /// 下个 tick 1→0 不起窗 ⇒ System1 立即写 = 振荡前提复现。
+    /// 修复：提交 Err = 受理未知 ⇒ 保守补记活跃史（误窗 = 3s 多抑制，
+    /// 安全方向；漏窗 = 实弹振荡）。变异靶：删该补记 → 本测红。
+    #[test]
+    fn submit_transport_err_still_arms_post_plan_hold_window() {
+        let held = std::rc::Rc::new(std::cell::Cell::new(0u8));
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let mut dispatch = ScriptedDispatch::new(true, held.clone());
+        dispatch.receipt_note = Some(alloc::format!(
+            "{} batches=1 state=Committed",
+            eneros_control_dispatch::held_engine::HELD_RECEIPT_NOTE_TAG
+        ));
+        dispatch.fail_submit = true;
+        let mut svc = EnergyAgentService::new(
+            alloc::boxed::Box::new(StubTelemetry { ok: true }),
+            alloc::boxed::Box::new(CountingWorker {
+                calls: calls.clone(),
+            }),
+            alloc::boxed::Box::new(dispatch),
+        );
+        // tick0：提交传输失败（受理未知——计划可能已同 tick 终态）。
+        let resp = svc.tick(0);
+        assert_eq!(resp.first(), Some(&EA_NOACTION));
+        assert!(calls.get() >= 1, "worker 已运行（提交已发出）");
+        // tick1：HELD_TICK 观察活跃 0——受理未知 ⇒ 保持窗必须开启。
+        let resp = svc.tick(100);
+        assert!(
+            String::from_utf8_lossy(&resp).contains("post-plan-ramp-hold"),
+            "提交 Err（受理未知）必须保守起窗：{:?}",
+            String::from_utf8_lossy(&resp)
+        );
+        assert_eq!(calls.get(), 1, "窗内 worker 零调用");
+        // 窗后恢复（传输恢复 → 提交成功）。
+        svc.dispatch.0 = {
+            // 重建 dispatch：关闭传输失败注入（receipt_note 同形无害）。
+            let mut d = ScriptedDispatch::new(true, held.clone());
+            d.receipt_note = Some(alloc::format!(
+                "{} batches=1 state=Committed",
+                eneros_control_dispatch::held_engine::HELD_RECEIPT_NOTE_TAG
+            ));
+            alloc::boxed::Box::new(d)
+        };
+        let after = svc.tick(100 + SYSTEM1_POST_PLAN_HOLD_MS + 1);
+        assert_eq!(after[0], EA_OK);
+        assert_eq!(calls.get(), 2);
+    }
+
+    /// WP-77.1.1 复查轮补口（全局对抗 A4）：`active == MAX_HELD_PLANS`
+    /// 的**容量边界**必须被解码接受（合同「active ≤ 上界」的边界半边；
+    /// 存活变异证明 `<=` 退化为 `<` 时无测试红）——响应词 = held-plan-
+    /// active（抑制），绝非 held-plan-tick-malformed。
+    #[test]
+    fn held_tick_active_at_capacity_boundary_is_accepted() {
+        let held = std::rc::Rc::new(std::cell::Cell::new(
+            eneros_control_dispatch::held_plan::MAX_HELD_PLANS as u8,
+        ));
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let mut svc = EnergyAgentService::new(
+            alloc::boxed::Box::new(StubTelemetry { ok: true }),
+            alloc::boxed::Box::new(CountingWorker {
+                calls: calls.clone(),
+            }),
+            alloc::boxed::Box::new(ScriptedDispatch::new(true, held.clone())),
+        );
+        let resp = svc.tick(0);
+        assert!(
+            String::from_utf8_lossy(&resp).contains("held-plan-active"),
+            "容量边界值必须被解码接受并按在途抑制：{:?}",
+            String::from_utf8_lossy(&resp)
+        );
+        assert!(
+            !String::from_utf8_lossy(&resp).contains("held-plan-tick-malformed"),
+            "边界值不得折成 malformed：{:?}",
+            String::from_utf8_lossy(&resp)
+        );
+        assert_eq!(calls.get(), 0);
+    }
+
     /// WP-77.1.1：HELD_TICK 错误应答不清零抑制历史——错误 tick 后恢复
     /// 正常应答时，先前的活跃史仍驱动 1→0 迁移起窗。
     #[test]
@@ -903,7 +996,16 @@ mod tests {
             String::from_utf8_lossy(&resp)
         );
         assert_eq!(calls.get(), 1);
-        // 窗后恢复。
+        // 窗后恢复（传输恢复 → 提交成功）。
+        svc.dispatch.0 = {
+            // 重建 dispatch：关闭传输失败注入（receipt_note 同形无害）。
+            let mut d = ScriptedDispatch::new(true, held.clone());
+            d.receipt_note = Some(alloc::format!(
+                "{} batches=1 state=Committed",
+                eneros_control_dispatch::held_engine::HELD_RECEIPT_NOTE_TAG
+            ));
+            alloc::boxed::Box::new(d)
+        };
         let after = svc.tick(100 + SYSTEM1_POST_PLAN_HOLD_MS + 1);
         assert_eq!(after[0], EA_OK);
         assert_eq!(calls.get(), 2);

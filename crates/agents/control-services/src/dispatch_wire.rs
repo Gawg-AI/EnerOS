@@ -276,6 +276,33 @@ mod tests {
         );
     }
 
+    /// 蓝图 77 卷一 WP-77.1.3：SYNC 帧构帧 ↔ `tel_wire::parse_snap_sync`
+    /// 解帧往返（此前 SYNC 帧双侧零测试）；count/总长双门负例。
+    #[test]
+    fn snap_sync_frame_roundtrip_and_bounds() {
+        use eneros_agent_sdk::tel_wire::{parse_snap_sync, SNAP_SYNC_MAX_IDS};
+        let ids: alloc::vec::Vec<[u8; 16]> =
+            (0..SNAP_SYNC_MAX_IDS).map(|i| [i as u8; 16]).collect();
+        let frame = snap_sync_request(&ids);
+        assert_eq!(frame[0], eneros_agent_sdk::tel_wire::TEL_REQ_SNAP_SYNC);
+        assert_eq!(frame[1], SNAP_SYNC_MAX_IDS as u8);
+        assert_eq!(parse_snap_sync(&frame), Some(ids.clone()));
+        // 空集（冷启动屏障解锁语义）。
+        let empty = snap_sync_request(&[]);
+        assert_eq!(parse_snap_sync(&empty), Some(alloc::vec::Vec::new()));
+        // 负例：count 超界（构造 5 id 帧）与总长不符。
+        let mut over = alloc::vec::Vec::new();
+        over.push(eneros_agent_sdk::tel_wire::TEL_REQ_SNAP_SYNC);
+        over.push((SNAP_SYNC_MAX_IDS + 1) as u8);
+        for i in 0..(SNAP_SYNC_MAX_IDS + 1) {
+            over.extend_from_slice(&[i as u8; 16]);
+        }
+        assert_eq!(parse_snap_sync(&over), None, "count 超界必须拒绝");
+        let mut short = frame.clone();
+        short.pop();
+        assert_eq!(parse_snap_sync(&short), None, "总长不符必须拒绝");
+    }
+
     /// 钉面 17B 字节形状 + 客户端判真（服务端往返半边在 telemetry.rs
     /// `snap_wire_dual_side_lock`——两侧共用本模块编码器）。
     #[test]

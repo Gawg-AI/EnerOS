@@ -2222,15 +2222,17 @@ impl ControlDispatch for DispatchEngine {
         input: Option<&eneros_agent_sdk::snap_input_wire::TrustedInput>,
         telemetry: Option<&TrustedTelemetry>,
     ) -> Result<usize, DispatchError> {
-        // 蓝图 77 卷一 WP-77.1.1：活跃计数单读化——drive 内部收尾的同一
-        // 读取派生（drive 完成后时点），读错显式传播。旧实现 drive 后
-        // 第二次 `plans()` 读取把失败 `unwrap_or(0)` 折叠成活跃 0（EA 将
-        // 据此放行 System1 的条件性故障）——折叠面结构性消除。
-        let (_, live_ids, active) = self.drive_held_plans_counted(input, telemetry)?;
-        // 蓝图 77 卷一 WP-77.1.3：完整活跃集同步（进程世代屏障）——每个
-        // held tick 全量确认（重启必重建；不冒用发送方 epoch 充当服务
-        // 世代）。失败 ⇒ stale：新持有准入阻断（对账/计数不受累——
-        // 只读面与 System1 合同不因远端确认缺失而折叠），后续 tick 重试。
+        // 蓝图 77 卷一 WP-77.1.3（复查轮 B3 重构）：**同步先行**——drive
+        // 的 allowed 判据消费**本 tick** 的同步结果（同步失败 = 本 tick 即
+        // 只读，不滞后一拍）；同步集 = drive 前的存活引用（drive 终态化
+        // 引发的释放由下一 tick 收敛——过保留方向）。每个 held tick 全量
+        // 确认（重启必重建；不冒用发送方 epoch 充当服务世代）。失败 ⇒
+        // stale：新持有准入阻断 + 在途计划只读对账/取消（蓝图 §2.4）。
+        // WP-77.1.2 复查轮补口（B4）：装配保留故障逐 tick 重评（先于
+        // 同步——恢复后本 tick 的 stale 判据即用新状态）。
+
+        self.re_evaluate_held_retention();
+        let live_ids = self.live_held_snapshot_ids()?;
         // retainer 缺席 = owner 未装配 = held 路径整体不可达（accept 在
         // 「held store absent」先拒）——此处 true 只是无对象可同步的空
         // 事实，不是把未知折成已确认（无后续消费方依赖它放行任何动作）。
@@ -2242,10 +2244,13 @@ impl ControlDispatch for DispatchEngine {
         self.held_sync_stale = !synced;
         if !synced {
             eneros_runtime::println!(
-                "[control-dispatch] HELD-SYNC-STALE n={}（远端世代钉集未确认——新持有准入阻断）",
+                "[control-dispatch] HELD-SYNC-STALE n={}（远端世代钉集未确认——新准入阻断+在途只读）",
                 live_ids.len()
             );
         }
+        // 蓝图 77 卷一 WP-77.1.1：活跃计数单读化——drive 内部收尾的同一
+        // 读取派生（drive 完成后时点），读错显式传播。
+        let (_, active) = self.drive_held_plans_counted(input, telemetry)?;
         Ok(active)
     }
 

@@ -1562,7 +1562,6 @@ fn applied_commands_carry_independent_readback_not_setpoint() {
     }
 }
 
-#[derive(Default)]
 struct RetainerLog {
     held: Vec<[u8; 16]>,
     released: Vec<[u8; 16]>,
@@ -1570,7 +1569,20 @@ struct RetainerLog {
     /// WP-77.1.3：全量同步账（调用次数 + 最近一次确认集）。
     sync_calls: usize,
     last_sync_set: Vec<[u8; 16]>,
+    /// 缺省 true = 正常远端（install 首发 sync 不致误置 stale）。
     sync_ok: bool,
+}
+impl Default for RetainerLog {
+    fn default() -> Self {
+        Self {
+            held: Vec::new(),
+            released: Vec::new(),
+            refuse_hold: false,
+            sync_calls: 0,
+            last_sync_set: Vec::new(),
+            sync_ok: true,
+        }
+    }
 }
 struct RecordingRetainer(Rc<RefCell<RetainerLog>>);
 impl eneros_control_dispatch::HeldInputRetainer for RecordingRetainer {
@@ -1712,7 +1724,177 @@ fn held_input_repin_after_restart() {
         eneros_control_dispatch::DispatchState::Persisted,
         "重放回原回执（accepted 计划不重复投递）"
     );
+    // WP-77.1.1 复查轮牙：EA 的「本 tick 曾接纳持有计划」反馈依赖回执
+    // note 标签——真实 held_receipt 的 note 必须以单源常量开头（格式
+    // 漂移会静默停用同 tick 终态保持窗）。
+    assert!(
+        receipt
+            .note
+            .as_deref()
+            .map(|n| n.starts_with(eneros_control_dispatch::held_engine::HELD_RECEIPT_NOTE_TAG))
+            .unwrap_or(false),
+        "held 回执 note 必须以单源标签开头：{:?}",
+        receipt.note
+    );
     assert_eq!(*delivered.borrow(), sent_before, "重放零新投递");
+}
+
+/// 蓝图 77 卷一 WP-77.1.2 复查轮补口（全局对抗 B4）：装配保留故障有
+/// **重评通道**——每个 held tick 重试存活引用重钉，全数成功（且 store
+/// 可读、输入可解）⇒ 故障清除、准入恢复。boot 次序瞬态（telemetry 面
+/// 未开 ⇒ hold 被拒）不得永久砖死全部新控制写。
+/// 变异靶：删 re_evaluate_held_retention（fault 一次性）→ 本测红。
+#[test]
+fn assembly_fault_recovers_when_retainer_becomes_ready() {
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let delivered = Rc::new(RefCell::new(0));
+    let (plan, input) = held_candidate();
+    // 引擎1（健康装配）提交 → 计划入持久 store（存活引用在场）。
+    {
+        let ok_log = Rc::new(RefCell::new(RetainerLog::default()));
+        let mut engine = held_fixture_retained(media.clone(), delivered.clone(), ok_log);
+        engine
+            .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
+            .unwrap();
+    }
+    // 引擎2：装配期重钉被拒（refuse）⇒ 故障态（新准入/新设备写阻断）。
+    let log = Rc::new(RefCell::new(RetainerLog {
+        refuse_hold: true,
+        ..RetainerLog::default()
+    }));
+    let mut engine = held_fixture_with_retainer(
+        media.clone(),
+        delivered.clone(),
+        Box::new(RecordingRetainer(log.clone())),
+    );
+    let err = engine
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
+        .expect_err("装配期重钉被拒 ⇒ 故障态");
+    assert!(format!("{err:?}").contains("held retention fault"));
+    // 钉面恢复（refuse 解除）⇒ 下个 held tick 重评 ⇒ 故障清除 ⇒ 准入恢复。
+    log.borrow_mut().refuse_hold = false;
+    HELD_CLOCK.with(|clock| clock.set(now_ms() + 1_000));
+    engine
+        .tick_held(Some(&input), Some(&trusted_telemetry()))
+        .unwrap();
+    let sent_before = *delivered.borrow();
+    // 重放不再被 fault 拒绝（回执状态 = 恢复路径已取消的既成终态 Failed
+    // ——重启后旧单调窗取消是既有合同，非本测关注点）。
+    let receipt = engine
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
+        .expect("重评清除故障 ⇒ 准入恢复（同 ID 重放不再被 fault 拒）");
+    assert_eq!(
+        receipt.final_state,
+        eneros_control_dispatch::DispatchState::Failed
+    );
+    assert_eq!(*delivered.borrow(), sent_before, "重放零新投递");
+}
+
+/// 蓝图 77 卷一 WP-77.1.3 复查轮补口（全局对抗 B3）：同步失败 ⇒ **在途
+/// 计划只允许安全的只读对账/取消**（蓝图 §2.4 原句）——未发步被取消、
+/// 零新投递、取消理由可观测；同步恢复后新计划可再准入。
+/// 变异靶：drive 的 allowed 判据不含 stale → 本测红（batch 步照常实弹）。
+#[test]
+fn held_sync_stale_forces_read_only_drive_for_live_plan() {
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let delivered = Rc::new(RefCell::new(0));
+    let log = Rc::new(RefCell::new(RetainerLog::default()));
+    let (plan, input) = held_candidate();
+    let mut engine = held_fixture_retained(media.clone(), delivered.clone(), log.clone());
+    engine
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
+        .unwrap();
+    assert_eq!(*delivered.borrow(), 1, "首步投递");
+    // 同步正常：驱动一步。
+    HELD_CLOCK.with(|clock| clock.set(now_ms() + 5_000));
+    assert_eq!(
+        engine
+            .tick_held(Some(&input), Some(&trusted_telemetry()))
+            .unwrap(),
+        1
+    );
+    assert_eq!(*delivered.borrow(), 2, "同步确认下正常驱动");
+    // 同步转败 ⇒ stale：本 tick 起驱动只读——未发步取消、零新投递。
+    log.borrow_mut().sync_ok = false;
+    HELD_CLOCK.with(|clock| clock.set(now_ms() + 10_000));
+    engine
+        .tick_held(Some(&input), Some(&trusted_telemetry()))
+        .unwrap();
+    assert_eq!(*delivered.borrow(), 2, "stale ⇒ 驱动只读（零新设备写）");
+    // 下一 tick：取消生效落定（在途计划终态化）。
+    HELD_CLOCK.with(|clock| clock.set(now_ms() + 15_000));
+    let active = engine
+        .tick_held(Some(&input), Some(&trusted_telemetry()))
+        .unwrap();
+    assert_eq!(active, 0, "未发步被取消 ⇒ 计划终态");
+    let report = engine.held_plan_reports().unwrap().remove(0);
+    assert!(
+        report.commands.iter().any(|c| {
+            c.reason
+                .as_deref()
+                .map(|r| r.contains("retention sync pending"))
+                .unwrap_or(false)
+        }),
+        "取消理由可观测（新词形锁）：{:?}",
+        report
+            .commands
+            .iter()
+            .map(|c| c.reason.clone().unwrap_or_default())
+            .collect::<Vec<_>>()
+    );
+    // 同步恢复 ⇒ stale 清除 ⇒ 新计划可准入。
+    log.borrow_mut().sync_ok = true;
+    HELD_CLOCK.with(|clock| clock.set(now_ms() + 16_000));
+    engine
+        .tick_held(Some(&input), Some(&trusted_telemetry()))
+        .unwrap();
+    let receipt = engine
+        .submit_trusted(
+            &renamed_plan(&plan, 0x7D),
+            &input,
+            &trusted_telemetry(),
+            &actor(),
+        )
+        .expect("同步恢复 ⇒ 新准入恢复");
+    let _ = receipt;
+}
+
+/// 蓝图 77 卷一 WP-77.1.3 复查轮补口（全局对抗 B1）：**启动同步点**——
+/// owner 装配（含重启重钉）必须首发完整活跃集同步（蓝图「在启动及每次
+/// held tick 的同步点重试」的启动半边）。变异靶：删 install 首发同步 →
+/// 本测红（重启到首个 held tick 之间新准入不被 stale 阻断）。
+#[test]
+fn install_sends_first_full_sync_with_assembled_live_ids() {
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let delivered = Rc::new(RefCell::new(0));
+    let (plan, input) = held_candidate();
+    let sid = input.facts().snapshot_id;
+    {
+        let log1 = Rc::new(RefCell::new(RetainerLog::default()));
+        let mut engine = held_fixture_retained(media.clone(), delivered.clone(), log1);
+        engine
+            .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
+            .unwrap();
+    }
+    // 掉电重开：装配期重钉 + install 首发**全量**同步（集 = 存活计划）。
+    let log2 = Rc::new(RefCell::new(RetainerLog::default()));
+    let _reopened = held_fixture_retained(media, delivered.clone(), log2.clone());
+    let l = log2.borrow();
+    assert_eq!(l.sync_calls, 1, "install 必须首发全量同步（首 tick 之前）");
+    assert_eq!(
+        l.last_sync_set,
+        vec![sid],
+        "启动同步集 = 装配期枚举的存活引用全集"
+    );
 }
 
 /// 蓝图 77 卷一 WP-77.1.3（dispatch 侧）：每个 held tick 发送**完整活跃
@@ -1739,7 +1921,10 @@ fn held_tick_syncs_full_live_set_and_stale_blocks_admission() {
         .unwrap();
     assert_eq!(active, 1);
     let l = log.borrow();
-    assert_eq!(l.sync_calls, 1, "held tick 必须发送全量同步");
+    assert_eq!(
+        l.sync_calls, 2,
+        "held tick 必须发送全量同步（install 首发 + 本 tick）"
+    );
     assert_eq!(l.last_sync_set, vec![sid], "同步集 = 存活引用全集");
     drop(l);
 
@@ -1756,7 +1941,7 @@ fn held_tick_syncs_full_live_set_and_stale_blocks_admission() {
         .unwrap();
     assert_eq!(active, 0);
     let l = log.borrow();
-    assert_eq!(l.sync_calls, 2);
+    assert_eq!(l.sync_calls, 3);
     assert!(l.last_sync_set.is_empty(), "无活跃计划 ⇒ 空集同步");
     drop(l);
 

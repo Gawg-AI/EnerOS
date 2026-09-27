@@ -138,16 +138,6 @@ impl HeldOwner {
         };
         match owner.plans.plans() {
             Ok(stored) => {
-                let mut live: Vec<[u8; 16]> = Vec::new();
-                let mut note_live =
-                    |owner: &mut Self, input: &eneros_agent_sdk::snap_input_wire::TrustedInput| {
-                        let id = input.facts().snapshot_id;
-                        if !owner.live_ids.contains(&id) {
-                            owner.live_ids.push(id);
-                        }
-                        live.push(id);
-                    };
-                let _ = &mut note_live;
                 for plan in &stored {
                     if plan.terminal() && !plan.unresolved() {
                         continue;
@@ -160,7 +150,13 @@ impl HeldOwner {
                         owner.ready = false;
                         continue;
                     };
-                    if !owner.retainer.hold(input.facts().snapshot_id) {
+                    let id = input.facts().snapshot_id;
+                    // WP-77.1.3 启动同步集：装配期枚举的存活引用全集
+                    //（install 首发全量同步的输入）。
+                    if !owner.live_ids.contains(&id) {
+                        owner.live_ids.push(id);
+                    }
+                    if !owner.retainer.hold(id) {
                         owner.ready = false;
                     }
                 }
@@ -182,6 +178,24 @@ impl DispatchEngine {
         if self.held_retention_fault {
             eneros_runtime::println!(
                 "[control-dispatch] HELD-RETENTION-FAULT reason=assembly-repin-failed（新准入/新设备写阻断；只读对账继续）"
+            );
+        }
+        // WP-77.1.3 复查轮补口（全局对抗 B1）：**启动同步点**——蓝图「在
+        // 启动及每次 held tick 的同步点重试」的启动半边。install 首发全量
+        // 同步（集 = 装配期枚举的存活引用全集）；失败置 stale（与 tick 同
+        // 口径：只阻新持有准入），首个 held tick 起重试收敛。原 1c49e590
+        // 声称此机制但未落盘（分批应用断点）——本提交补齐并订正登记。
+        let live_ids = owner.live_ids.clone();
+        let synced = self
+            .input_retainer
+            .as_mut()
+            .map(|r| r.sync(&live_ids))
+            .unwrap_or(true);
+        self.held_sync_stale = !synced;
+        if !synced {
+            eneros_runtime::println!(
+                "[control-dispatch] HELD-SYNC-STALE n={} reason=install（启动同步未确认——新持有准入阻断）",
+                live_ids.len()
             );
         }
     }
@@ -403,7 +417,7 @@ impl DispatchEngine {
         telemetry: Option<&TrustedTelemetry>,
     ) -> Result<Vec<DriveReport>, DispatchError> {
         self.drive_held_plans_counted(input, telemetry)
-            .map(|(reports, _, _)| reports)
+            .map(|(reports, _)| reports)
     }
 
     /// 蓝图 77 卷一 WP-77.1.1：drive + **drive 完成后时点的活跃计数**一次
@@ -419,9 +433,9 @@ impl DispatchEngine {
         &mut self,
         input: Option<&TrustedInput>,
         telemetry: Option<&TrustedTelemetry>,
-    ) -> Result<(Vec<DriveReport>, Vec<[u8; 16]>, usize), DispatchError> {
+    ) -> Result<(Vec<DriveReport>, usize), DispatchError> {
         let Some(store) = &self.held_plans else {
-            return Ok((Vec::new(), Vec::new(), 0));
+            return Ok((Vec::new(), 0));
         };
         let plans = store.plans().map_err(DispatchError::IntentPersistFailed)?;
         let mut reports = Vec::new();
@@ -431,13 +445,17 @@ impl DispatchEngine {
             // 实际调度到的周期继续重试（旧实现在此提前 return，跳过
             // `finalize_held_plans`，空闲周期内保留持续泄漏、可耗尽钉位
             // 并阻断后续准入）。
-            let (active, live_ids) = self
+            let active = self
                 .finalize_held_plans()
                 .map_err(DispatchError::IntentPersistFailed)?;
-            return Ok((reports, live_ids, active));
+            return Ok((reports, active));
         };
         let now = (self.now_fn)();
+        // WP-77.1.3 复查轮补口（全局对抗 B3）：同步未确认 ⇒ 在途计划只
+        // 允许安全的只读对账/取消（蓝图 §2.4 原句）——未发步 cancel、
+        // 零新投递；恢复后新计划再准入。
         let allowed = !plan.recovered
+            && !self.held_sync_stale
             && input
                 .zip(telemetry)
                 .map(|(input, telemetry)| {
@@ -477,6 +495,8 @@ impl DispatchEngine {
                     "restart: old monotonic window cancelled; replan requires fresh certification"
                 } else if earlier_failed {
                     "earlier batch failed"
+                } else if self.held_sync_stale {
+                    "retention sync pending; pending steps cancelled (replan after sync recovers)"
                 } else {
                     "trusted input or certificate no longer valid"
                 };
@@ -552,10 +572,81 @@ impl DispatchEngine {
                 break;
             }
         }
-        let (active, live_ids) = self
+        let active = self
             .finalize_held_plans()
             .map_err(DispatchError::IntentPersistFailed)?;
-        Ok((reports, live_ids, active))
+        Ok((reports, active))
+    }
+
+    /// WP-77.1.2 复查轮补口（全局对抗 B4）：装配保留故障的**重评通道**。
+    /// 故障只在 install 置位且无复位路径——boot 次序瞬态（telemetry 面
+    /// lazy-open 未完成 ⇒ hold 被拒）即可永久砖死全部新控制写（其余每个
+    /// 失败面都有重试至收敛通道：release→pending 队列、sync→每 tick）。
+    /// 每个 held tick 调用一次：存活引用逐一重钉全数成功（且 store 可读、
+    /// 输入可解；无存活引用亦然——保留已无关）⇒ 故障清除。真介质故障
+    /// 重试持续失败 ⇒ 故障保持（fail-closed 方向不变）。
+    pub(crate) fn re_evaluate_held_retention(&mut self) {
+        if !self.held_retention_fault {
+            return;
+        }
+        let Some(store) = &self.held_plans else {
+            return;
+        };
+        let Ok(stored) = store.plans() else {
+            return; // store 读错 = 状态未知 = 故障保持
+        };
+        let mut all_pinned = true;
+        for plan in &stored {
+            if plan.terminal() && !plan.unresolved() {
+                continue;
+            }
+            let Some(input) = eneros_agent_sdk::snap_input_wire::TrustedInput::decode(&plan.input)
+            else {
+                all_pinned = false;
+                break;
+            };
+            let pinned = match self.input_retainer.as_mut() {
+                Some(r) => r.hold(input.facts().snapshot_id),
+                None => false,
+            };
+            if !pinned {
+                all_pinned = false;
+                break;
+            }
+        }
+        if all_pinned {
+            self.held_retention_fault = false;
+            eneros_runtime::println!(
+                "[control-dispatch] HELD-RETENTION-RECOVERED reason=repin-retry-ok（装配保留故障清除——准入/设备写恢复）"
+            );
+        }
+    }
+
+    /// 当前存活引用的快照 ID 集（蓝图 77 卷一 WP-77.1.3 复查轮补口：tick
+    /// 的**同步先行**输入——drive 前快照；drive 终态化引发的释放由下一
+    /// tick 收敛，过保留方向）。读错显式传播（不折空集）。
+    pub(crate) fn live_held_snapshot_ids(&self) -> Result<Vec<[u8; 16]>, DispatchError> {
+        let Some(store) = &self.held_plans else {
+            return Ok(Vec::new());
+        };
+        let plans = store.plans().map_err(DispatchError::IntentPersistFailed)?;
+        let mut ids: Vec<[u8; 16]> = Vec::new();
+        for plan in &plans {
+            if plan.terminal() && !plan.unresolved() {
+                continue;
+            }
+            // 解码失败跳过与 live_refs/finalize 同口径（不可达面：装载期
+            // 已验 + RAM 镜像仅经验证提交变异——REG-77-I 登记）。
+            if let Some(input) =
+                eneros_agent_sdk::snap_input_wire::TrustedInput::decode(&plan.input)
+            {
+                let id = input.facts().snapshot_id;
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+        }
+        Ok(ids)
     }
 
     /// 终局收尾（ADR-0054:29–30 + 15–16）：计划全部批终态后
@@ -565,12 +656,13 @@ impl DispatchEngine {
     ///    未决计划引用 ⇒ 保留；无引用才释放——不是"有一份计划结束"就
     ///    整体释放）。释放失败进有界待释放队列，空闲周期也持续重试
     ///    （§7.2.4）；快照被新一轮合法持有时队列条目撤销（§7.2.6）。
-    /// 返回 **drive 完成后时点的在途（非终态）计划数**与**存活引用的
-    /// 快照 ID 全集**（`!terminal || unresolved`——蓝图 77 卷一 WP-77.1.3
-    /// 的同步集单源；同一 plans 读取派生，读错显式传播绝不折叠）。
-    fn finalize_held_plans(&mut self) -> Result<(usize, Vec<[u8; 16]>), String> {
+    /// 返回 **drive 完成后时点的在途（非终态）计划数**（蓝图 77 卷一
+    /// WP-77.1.1：HELD_TICK 活跃计数单源——plans 读取失败显式传播，
+    /// 绝不折叠成 0。同步集改由 [`Self::live_held_snapshot_ids`] 在
+    /// drive 前派生——同步先行，见 `ControlDispatch::tick_held`）。
+    fn finalize_held_plans(&mut self) -> Result<usize, String> {
         let Some(store) = &self.held_plans else {
-            return Ok((0, Vec::new()));
+            return Ok(0);
         };
         let plans = store.plans()?;
         struct PlanFinality {
@@ -688,12 +780,7 @@ impl DispatchEngine {
         self.holds.retry_pending(&mut self.input_retainer);
         // WP-77.1.1：drive 完成后时点的在途计数（与上方同一 plans 读取
         // 派生——释放只动钉面不动计划终态性；读错已在入口显式传播）。
-        // WP-77.1.3：live_refs 的键集 = 存活引用全集（`!terminal ||
-        // unresolved`），即同步集——BTreeMap 迭代序确定（有界 ≤ 持有
-        // 计划容量）。
-        let live_ids: Vec<[u8; 16]> = live_refs.keys().copied().collect();
-        let active = plans.iter().filter(|p| !p.terminal()).count();
-        Ok((active, live_ids))
+        Ok(plans.iter().filter(|p| !p.terminal()).count())
     }
 
     /// 快照的**存活引用**数（在途 = 非终态，或未决 = 对账中；事实源 =

@@ -24,6 +24,12 @@ const MAX_BYTES: usize = 60_000;
 /// 上界，只读协议常量——EA 接收端精确解码消费，两端不手抄数字）。
 pub const MAX_HELD_PLANS: usize = MAX_PLANS;
 
+// 蓝图 77 卷一 WP-77.1.3（全局对抗 B2 补口，1c49e590 声称但未落盘——
+// 分批应用断点事故，本提交订正）：同步帧活跃数上界必须容纳持有计划
+// 容量——MAX_PLANS 涨破 SNAP_SYNC_MAX_IDS 时这里是编译期红，而不是
+// 「同步恒拒 ⇒ stale 恒真 ⇒ 新持有准入永久停摆」的运行期形态。
+const _: () = assert!(MAX_HELD_PLANS <= eneros_agent_sdk::tel_wire::SNAP_SYNC_MAX_IDS);
+
 #[derive(Clone)]
 pub(crate) struct HeldBatch {
     pub id: [u8; 16],
