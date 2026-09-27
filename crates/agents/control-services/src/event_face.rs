@@ -484,8 +484,11 @@ impl<C: EipcSend + Clone + 'static> ObsEventFace for EventFace<C> {
             return false;
         }
         // WP-77.1.4：来源区间入账——meta 在场 = 区间缓存（保护界由此
-        // 重算）；缺 meta = 旧格式 blob（接受钉，全保护——双版本兼容，
-        // fail-closed 过度保留）；meta 损坏 = 身份不可证 ⇒ 拒绝。
+        // 重算）+ **确认引用的事件段仍在**（蓝图「缺少范围或相应事件已
+        // 不存在时拒绝新持有，而非承诺一个空 offset」——区间位点不可读
+        // = 承诺已失 ⇒ 拒绝）；缺 meta = 旧格式 blob（接受钉，全保护
+        // ——双版本兼容，fail-closed 过度保留，REG-77-F）；meta 损坏 =
+        // 身份不可证 ⇒ 拒绝。
         let ranges = {
             let FaceState::Open(face) = &mut self.state else {
                 return false;
@@ -502,6 +505,17 @@ impl<C: EipcSend + Clone + 'static> ObsEventFace for EventFace<C> {
                 }
             }
         };
+        if let Some(rs) = &ranges {
+            let FaceState::Open(face) = &mut self.state else {
+                return false;
+            };
+            if !ranges_present_in_store(face.sink.store_mut(), rs) {
+                eneros_runtime::println!(
+                    "[svc-telemetry] SNAP-PIN-REJECT reason=source-events-gone"
+                );
+                return false;
+            }
+        }
         self.pin_ranges.push((*id, ranges));
         self.snap_pins.push(*id);
         eneros_runtime::println!(
@@ -518,6 +532,16 @@ impl<C: EipcSend + Clone + 'static> ObsEventFace for EventFace<C> {
         // 钉集（逐 ID 验证现存 blob，任一失败 ⇒ 整体拒绝、钉集保持原样
         // ——过度保留安全，误清不安全）。成功（含空集）后本进程视为已
         // 同步，剪枝屏障解除。
+        // 单趟核验（blob + meta + 来源事件段在位），任一失败 ⇒ 整体拒绝、
+        // 钉集与区间缓存保持原样（过度保留安全，误清不安全）。先去重再
+        // 逐条收集——pins 与 pin_ranges 严格同序同长（release 按位删除）。
+        let mut deduped: Vec<[u8; 16]> = Vec::with_capacity(ids.len());
+        for id in ids {
+            if !deduped.contains(id) {
+                deduped.push(*id);
+            }
+        }
+        let mut new_entries: Vec<SnapPinEntry> = Vec::with_capacity(deduped.len());
         {
             let FaceState::Open(face) = &mut self.state else {
                 return Err(());
@@ -525,7 +549,7 @@ impl<C: EipcSend + Clone + 'static> ObsEventFace for EventFace<C> {
             let Some(fs) = face.snap_fs.as_mut() else {
                 return Err(());
             };
-            for id in ids {
+            for id in &deduped {
                 if read_and_verify_snap(fs, id).is_none() {
                     eneros_runtime::println!(
                         "[svc-telemetry] SNAP-PIN-SYNC-REJECT reason=blob-missing-or-corrupt ids={}",
@@ -533,21 +557,17 @@ impl<C: EipcSend + Clone + 'static> ObsEventFace for EventFace<C> {
                     );
                     return Err(());
                 }
-            }
-        }
-        // WP-77.1.4：同步集的来源区间一并原子替换（任一 meta 损坏 ⇒
-        // 整体拒绝；缺 meta = 旧格式 ⇒ 全保护条目）。
-        let new_ranges = {
-            let FaceState::Open(face) = &mut self.state else {
-                return Err(());
-            };
-            let Some(fs) = face.snap_fs.as_mut() else {
-                return Err(());
-            };
-            let mut ranges = Vec::with_capacity(ids.len());
-            for id in ids {
-                ranges.push(match probe_snap_meta(fs, id) {
-                    MetaProbe::Ranges(r) => (*id, Some(r)),
+                // WP-77.1.4：meta + 来源事件段在位（同 pin_snapshot 判据）。
+                let entry = match probe_snap_meta(fs, id) {
+                    MetaProbe::Ranges(r) => {
+                        if !ranges_present_in_store(face.sink.store_mut(), &r) {
+                            eneros_runtime::println!(
+                                "[svc-telemetry] SNAP-PIN-SYNC-REJECT reason=source-events-gone"
+                            );
+                            return Err(());
+                        }
+                        (*id, Some(r))
+                    }
                     MetaProbe::Absent => (*id, None),
                     MetaProbe::Corrupt => {
                         eneros_runtime::println!(
@@ -555,17 +575,12 @@ impl<C: EipcSend + Clone + 'static> ObsEventFace for EventFace<C> {
                         );
                         return Err(());
                     }
-                });
-            }
-            ranges
-        };
-        self.snap_pins.clear();
-        for id in ids {
-            if !self.snap_pins.contains(id) {
-                self.snap_pins.push(*id);
+                };
+                new_entries.push(entry);
             }
         }
-        self.pin_ranges = new_ranges;
+        self.snap_pins = deduped;
+        self.pin_ranges = new_entries;
         self.pin_synced = true;
         eneros_runtime::println!(
             "[svc-telemetry] SNAP-PIN-SYNC n={} pins={}",
@@ -687,8 +702,17 @@ impl<C: EipcSend + Clone + 'static> EventFace<C> {
                         // WP-77.1.4 发布次序：blob → meta → 发布/位点提交——
                         // 「可被 pin 的 ID 必有可查来源区间」；meta 失败 =
                         // 本窗不发布（与 blob store-fail 同一失败语义）。
+                        // end = 构建时每分区已消费位点（真实取证边界）。
+                        let ends: alloc::collections::BTreeMap<u32, u64> =
+                            consumed.iter().copied().collect();
+                        let meta_ranges: Vec<(u32, u64, u64)> = floors
+                            .iter()
+                            .map(|&(p, start)| (p, start, ends.get(&p).copied().unwrap_or(start)))
+                            .collect();
                         match store_snap_blob(fs, snap, &bytes, snap_pins, pin_synced).and_then(
-                            |kept| store_snap_meta(fs, &snap.snapshot_id, floors).map(|_| kept),
+                            |kept| {
+                                store_snap_meta(fs, &snap.snapshot_id, &meta_ranges).map(|_| kept)
+                            },
                         ) {
                             Ok(kept) => {
                                 *snap_stored += 1;
@@ -1082,17 +1106,12 @@ fn decode_snap_meta(bytes: &[u8]) -> Option<Vec<(u32, u64, u64)>> {
 
 /// meta 落盘（tmp + rename 原子替换，blob 同款）。失败 = 本窗不发布
 /// （「可被 pin 的 ID 必有可查来源区间」的发布次序保障）。
-fn store_snap_meta(fs: &mut Lfs, id: &[u8; 16], floors: &[(u32, u64)]) -> Result<(), ()> {
+fn store_snap_meta(fs: &mut Lfs, id: &[u8; 16], ranges: &[(u32, u64, u64)]) -> Result<(), ()> {
     let _ = fs.mkdir(SNAP_DIR);
     let name = snapshot_file_stem(id);
     let tmp = format!("{}/{}{}.tmp", SNAP_DIR, name, SNAP_META_PATH_SUFFIX);
     let path = format!("{}/{}{}", SNAP_DIR, name, SNAP_META_PATH_SUFFIX);
-    let bytes = encode_snap_meta(
-        &floors
-            .iter()
-            .map(|&(p, start)| (p, start, start))
-            .collect::<Vec<_>>(),
-    );
+    let bytes = encode_snap_meta(ranges);
     let mut attempt = || -> Result<(), ()> {
         let mut f = fs
             .create(&tmp, eneros_fs::types::FileMode::default_file())
@@ -1130,6 +1149,34 @@ fn probe_snap_meta(fs: &mut Lfs, id: &[u8; 16]) -> MetaProbe {
         Some(ranges) => MetaProbe::Ranges(ranges.into_iter().map(|(p, s, _)| (p, s)).collect()),
         None => MetaProbe::Corrupt,
     }
+}
+
+/// 来源区间在位性核验（蓝图 77 卷一 WP-77.1.4 复查轮补口）：每个
+/// (partition, floor) 位点必须仍可读——`OffsetGone`（保留删除吃掉）/
+/// `OffsetOutOfRange`（位点从未写入 = 身份不可证）/ 任何 I/O 错误一律
+/// 视为「相应事件已不存在」⇒ 拒绝新持有。读到首条记录即停（存在性
+/// 判定，非重放）。
+fn ranges_present_in_store<D: eneros_event_store::EventStore>(
+    store: &mut D,
+    ranges: &[(u32, u64)],
+) -> bool {
+    struct FirstRecord;
+    impl eneros_event_store::RecordVisitor for FirstRecord {
+        fn record(&mut self, _: eneros_event_store::RecordRef<'_>) -> bool {
+            false
+        }
+    }
+    for &(partition, floor) in ranges {
+        match store.read(partition, floor, &mut FirstRecord) {
+            Ok(_) => {}
+            Err(eneros_event_store::StoreError::OffsetOutOfRange)
+            | Err(eneros_event_store::StoreError::OffsetGone)
+            | Err(eneros_event_store::StoreError::Io)
+            | Err(eneros_event_store::StoreError::Corrupt) => return false,
+            Err(_) => return false,
+        }
+    }
+    true
 }
 
 /// 存活钉集的每分区事件保护界（蓝图 77 卷一 WP-77.1.4：由**当前**钉集
@@ -2032,6 +2079,79 @@ mod tests {
             "释放后剪枝恢复（pruned={}）",
             face.pruned_segments
         );
+    }
+
+    /// 蓝图 77 卷一 WP-77.1.4 复查轮补口：「缺少范围**或相应事件已不
+    /// 存在**时拒绝新持有，而非承诺一个空 offset」——meta 区间位点不可
+    /// 读（保留删除吃掉/位点从未写入）⇒ pin 拒绝、sync 整体拒绝。
+    /// 变异靶：删 `ranges_present_in_store` 核验 → 本测红（幽灵区间钉）。
+    /// 注：face 持有自己的 Lfs 实例（元数据在实例内），测试注入 meta
+    /// 必须「写盘 → 丢弃面 → 重开」才能被 face 的实例看见。
+    #[test]
+    fn t12_pin_rejects_when_source_events_gone() {
+        let write_meta = |storage: &FakeStorage, id: &[u8; 16], part: u32, floor: u64| {
+            let mut fs =
+                open_snap_volume(make_io(storage), SNAP_BASE, SNAP_BLOCKS_512).expect("vol");
+            let name = snapshot_file_stem(id);
+            let tmp = format!("{}/{}{}.tmp", SNAP_DIR, name, SNAP_META_PATH_SUFFIX);
+            let path = format!("{}/{}{}", SNAP_DIR, name, SNAP_META_PATH_SUFFIX);
+            let bytes = encode_snap_meta(&[(part, floor, floor)]);
+            let mut f = fs
+                .create(&tmp, eneros_fs::types::FileMode::default_file())
+                .expect("create tmp meta");
+            f.write(&mut fs, &bytes).expect("write meta");
+            let _ = f.close();
+            fs.rename(&tmp, &path).expect("publish meta");
+        };
+        let run_window1 = |storage: &FakeStorage| -> [u8; 16] {
+            let mut face = make_face(storage);
+            face.set_snapshot_catalog(prod_module_catalog(), 1_000);
+            let mut seq = 0u64;
+            for round in 0..8u64 {
+                let now = 2_000 + round * 46_000;
+                let events: Vec<ObservationEvent> = coverage_fixture_points()
+                    .map(|p| {
+                        seq += 1;
+                        obs(p, seq, now, fixture_value(p, 0))
+                    })
+                    .collect();
+                face.on_obs_batch(&events, now);
+            }
+            face.current_input()
+                .expect("窗 1 必有冻结输入")
+                .facts()
+                .snapshot_id
+        };
+        let disk_len = (DISK_END * 512) as usize;
+        let storage = FakeStorage::new(disk_len);
+        let part = eneros_event_store::ingest_bridge::partition_of(&obs(1, 1, 2_000, 0.0));
+        // —— 负臂：blob 在、来源事件位点不在 ⇒ pin/sync 拒绝 ——
+        let id1 = run_window1(&storage);
+        write_meta(&storage, &id1, part, 10_000_000);
+        let mut face2 = make_face(&storage);
+        face2.set_snapshot_catalog(prod_module_catalog(), 1_000);
+        // 一批触发 lazy-open（事件继续追加，不影响 blob/meta 断言）。
+        let warm: Vec<ObservationEvent> = coverage_fixture_points()
+            .map(|p| obs(p, 9_999, 9_000, fixture_value(p, 0)))
+            .collect();
+        face2.on_obs_batch(&warm, 9_000);
+        assert!(face2.is_open(), "暖批后事件面必须已打开");
+        assert!(
+            !face2.pin_snapshot(&id1),
+            "来源事件不在 ⇒ 必须拒绝新持有（不承诺空 offset）"
+        );
+        assert!(
+            face2.sync_snap_pins(&[id1]).is_err(),
+            "同步面同判据：来源事件不在 ⇒ 整体拒绝"
+        );
+        drop(face2);
+        // —— 正臂：真实区间（0..63 在位）⇒ 核验通过、钉住成功 ——
+        write_meta(&storage, &id1, part, 0);
+        let mut face3 = make_face(&storage);
+        face3.set_snapshot_catalog(prod_module_catalog(), 1_000);
+        face3.on_obs_batch(&warm, 9_100);
+        assert!(face3.is_open());
+        assert!(face3.pin_snapshot(&id1), "来源事件在位 ⇒ 钉住成功");
     }
 
     /// 70.8.2：未物化（无有效快照）时保留不释放——记录留在盘上；

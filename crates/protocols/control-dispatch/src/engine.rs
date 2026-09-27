@@ -2231,6 +2231,9 @@ impl ControlDispatch for DispatchEngine {
         // held tick 全量确认（重启必重建；不冒用发送方 epoch 充当服务
         // 世代）。失败 ⇒ stale：新持有准入阻断（对账/计数不受累——
         // 只读面与 System1 合同不因远端确认缺失而折叠），后续 tick 重试。
+        // retainer 缺席 = owner 未装配 = held 路径整体不可达（accept 在
+        // 「held store absent」先拒）——此处 true 只是无对象可同步的空
+        // 事实，不是把未知折成已确认（无后续消费方依赖它放行任何动作）。
         let synced = self
             .input_retainer
             .as_mut()

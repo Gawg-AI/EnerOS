@@ -114,6 +114,10 @@ pub struct HeldOwner {
     pub(crate) retainer: alloc::boxed::Box<dyn HeldInputRetainer>,
     /// 装配就绪态：false = 恢复枚举/重钉失败（fail-closed）。
     pub(crate) ready: bool,
+    /// 装配期枚举的存活引用集（`!terminal \|\| unresolved`）——install 时
+    /// 首发 [`HeldInputRetainer::sync`]（蓝图「启动及每次 held tick」的
+    /// 启动半边）。
+    pub(crate) live_ids: Vec<[u8; 16]>,
 }
 
 impl HeldOwner {
@@ -130,9 +134,20 @@ impl HeldOwner {
             plans,
             retainer,
             ready: true,
+            live_ids: Vec::new(),
         };
         match owner.plans.plans() {
             Ok(stored) => {
+                let mut live: Vec<[u8; 16]> = Vec::new();
+                let mut note_live =
+                    |owner: &mut Self, input: &eneros_agent_sdk::snap_input_wire::TrustedInput| {
+                        let id = input.facts().snapshot_id;
+                        if !owner.live_ids.contains(&id) {
+                            owner.live_ids.push(id);
+                        }
+                        live.push(id);
+                    };
+                let _ = &mut note_live;
                 for plan in &stored {
                     if plan.terminal() && !plan.unresolved() {
                         continue;
