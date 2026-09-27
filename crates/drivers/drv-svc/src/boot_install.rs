@@ -997,6 +997,39 @@ mod boot_install_tests {
         (first, second)
     }
 
+    /// 单臂写序检查。**返回违规描述而非 panic**——三臂必须各自跑完再汇总，
+    /// 否则第一臂的红会短路遮蔽后两臂的形态（收编前实测即如此：`for` +
+    /// `assert` 停在 confirm，cancel 臂从未被观察到）。
+    fn write_order_violation(
+        name: &str,
+        r1: &[u8; BC_RECORD],
+        r2: &[u8; BC_RECORD],
+    ) -> Option<alloc::string::String> {
+        let mut face = MockFace::new();
+        face.seed_bootctrl(r1, 0);
+        face.seed_bootctrl(r2, 1);
+        {
+            let mut inst = BootInstall::new(&mut face);
+            run_transaction(name, &mut inst).expect(name);
+        }
+        let log = core::mem::take(&mut *face.log.borrow_mut());
+        let hi = BOOTCTRL_START_LBA + BOOTCTRL_COPY_STRIDE_LBAS;
+        if log.len() != 2 {
+            return Some(alloc::format!(
+                "{name}: 期望双副本恰两笔写，实得 {}",
+                log.len()
+            ));
+        }
+        if log[0].0 != hi || log[1].0 != BOOTCTRL_START_LBA {
+            return Some(alloc::format!(
+                "{name}: 写序违规 首写 lba={} 次写 lba={}（不变量：首写落高序列副本 {hi}）",
+                log[0].0,
+                log[1].0
+            ));
+        }
+        None
+    }
+
     /// WP-76.3.1 红测①（**现状：trial 臂绿、confirm/cancel 臂红**）：
     /// 三事务在「copy1 序列更高」形态下必须一律**高序列副本先写**。
     ///
@@ -1007,25 +1040,56 @@ mod boot_install_tests {
     /// WP-76.3.2（commit 单源）转绿——**禁止为合入而注释掉红臂**。
     #[test]
     fn confirm_and_cancel_write_high_seq_copy_first() {
+        let (r1, r2, _) = anchor_split_seed();
+        let mut violations: alloc::vec::Vec<alloc::string::String> = alloc::vec::Vec::new();
         for name in ["trial", "confirm", "cancel"] {
-            let (r1, r2, _) = anchor_split_seed();
-            let mut face = MockFace::new();
-            face.seed_bootctrl(&r1, 0);
-            face.seed_bootctrl(&r2, 1);
-            {
-                let mut inst = BootInstall::new(&mut face);
-                let seq = run_transaction(name, &mut inst).expect(name);
-                assert_eq!(seq, 3, "{name}: 序列 = 高副本 +1");
-            }
-            let log = core::mem::take(&mut *face.log.borrow_mut());
-            assert_eq!(log.len(), 2, "{name}: 双副本恰两笔写");
-            assert_eq!(
-                log[0].0,
-                BOOTCTRL_START_LBA + BOOTCTRL_COPY_STRIDE_LBAS,
-                "{name}: 首写必须落**高序列副本**（copy1）——掉电任一中断点保留锚定旧副本"
-            );
-            assert_eq!(log[1].0, BOOTCTRL_START_LBA, "{name}: 次写落低序列副本");
+            violations.extend(write_order_violation(name, &r1, &r2));
         }
+        assert!(
+            violations.is_empty(),
+            "高序列副本先写不变量被违反的臂：{violations:?}"
+        );
+    }
+
+    /// 单臂掉电重放检查（同样返回描述而非 panic，三臂全跑）。
+    fn power_loss_violation(
+        name: &str,
+        r1: &[u8; BC_RECORD],
+        r2: &[u8; BC_RECORD],
+        anchor: &eneros_boot_protocol::BootControlAnchor,
+    ) -> Option<alloc::string::String> {
+        let mut face = MockFace::new();
+        face.seed_bootctrl(r1, 0);
+        face.seed_bootctrl(r2, 1);
+        {
+            let mut inst = BootInstall::new(&mut face);
+            run_transaction(name, &mut inst).expect(name);
+        }
+        let log = core::mem::take(&mut *face.log.borrow_mut());
+        // 只重放首写 = 第二笔写之前掉电。
+        let (first, second) = replay_writes(&log, 1, r1, r2);
+        let resolved = eneros_boot_protocol::resolve_boot_control(&first, &second, Some(anchor));
+        let resolved = match resolved {
+            Ok(r) => r,
+            Err(e) => {
+                return Some(alloc::format!(
+                    "{name}: 首写后掉电 ⇒ 固件侧解析失败 {e:?}（引导失败）"
+                ))
+            }
+        };
+        if resolved.control.sequence != 1 {
+            return Some(alloc::format!(
+                "{name}: 掉电未回退锚定旧记录（seq={} 期望 1）",
+                resolved.control.sequence
+            ));
+        }
+        if resolved.source != eneros_boot_protocol::BootControlCopy::First {
+            return Some(alloc::format!("{name}: 锚匹配副本应为 copy0"));
+        }
+        if resolved.needs_anchor_initialization {
+            return Some(alloc::format!("{name}: 精确匹配半边不得重锚"));
+        }
+        None
     }
 
     /// WP-76.3.1 红测②（与①对偶的**介质后果**）：两写之间掉电后，固件侧
@@ -1034,37 +1098,15 @@ mod boot_install_tests {
     /// `BootFailure::BootControl`）。
     #[test]
     fn power_loss_between_writes_preserves_anchor_match() {
+        let (r1, r2, anchor) = anchor_split_seed();
+        let mut violations: alloc::vec::Vec<alloc::string::String> = alloc::vec::Vec::new();
         for name in ["trial", "confirm", "cancel"] {
-            let (r1, r2, anchor) = anchor_split_seed();
-            let mut face = MockFace::new();
-            face.seed_bootctrl(&r1, 0);
-            face.seed_bootctrl(&r2, 1);
-            {
-                let mut inst = BootInstall::new(&mut face);
-                run_transaction(name, &mut inst).expect(name);
-            }
-            let log = core::mem::take(&mut *face.log.borrow_mut());
-            let (first, second) = replay_writes(&log, 1, &r1, &r2);
-            let resolved =
-                eneros_boot_protocol::resolve_boot_control(&first, &second, Some(&anchor))
-                    .map_err(|e| {
-                        alloc::format!("{name}: 首写后掉电 ⇒ 固件侧解析失败 {e:?}（引导失败）")
-                    })
-                    .expect("resolve_boot_control 必须精确匹配锚");
-            assert_eq!(
-                resolved.control.sequence, 1,
-                "{name}: 掉电必须回退到锚定的旧记录（seq=1），不得采纳半提交态"
-            );
-            assert_eq!(
-                resolved.source,
-                eneros_boot_protocol::BootControlCopy::First,
-                "{name}: 锚匹配副本 = copy0"
-            );
-            assert!(
-                !resolved.needs_anchor_initialization,
-                "{name}: 精确匹配半边不得重锚"
-            );
+            violations.extend(power_loss_violation(name, &r1, &r2, &anchor));
         }
+        assert!(
+            violations.is_empty(),
+            "掉电窗口丢失锚定副本的臂：{violations:?}"
+        );
     }
 
     /// WP-76.3.2 变异咬合：`commit` 两笔写之后必须落 flush。恒 Ok 的 mock
