@@ -1302,6 +1302,53 @@ impl UntypedAllocator {
         self.blocked.get(i).copied().unwrap_or(true)
     }
 
+    /// `alignUp(used[i], obj_size)`（seL4 freeIndex 先按对象大小对齐再递增）。
+    ///
+    /// 与 [`Self::fit`] 共用**红线 6 守卫**（`size_bits ≥ 64` 时
+    /// `1u64 << size_bits` 在 debug 下 panic、release 下按 64 取模回绕）。
+    /// 对齐半边单独可取，是因为 DMA 路径的 RAM-top 跳过判据必须在**提交
+    /// 记账之前**看到落点（`phys = paddr + aligned`）——定义点仍唯一，
+    /// 两处调用之间 `used[i]` 不变，故 [`Self::fit`] 重算结果与本函数恒等。
+    fn align_up(&self, i: usize, obj_size: u64) -> Option<u64> {
+        if self.descs[i].size_bits >= u64::BITS as u64 {
+            return None; // 超 64 位的对象不存在；防移位溢出（红线 6）
+        }
+        self.used[i]
+            .checked_add(obj_size - 1)
+            .map(|v| v & !(obj_size - 1))
+    }
+
+    /// freeIndex 记账单源（seL4 `decodeUntypedInvocation` 对齐律；蓝图 76
+    /// 卷三 WP-76.3.3）：capacity 计算（含红线 6 守卫）→ `alignUp(used,
+    /// obj_size)` → `aligned + need ≤ capacity` → `used` 递增，返回对齐后
+    /// 的字节偏移。
+    ///
+    /// 收编前三处（`alloc`/`alloc_contiguous_pages`/`alloc_cap_table`）各抄
+    /// 一遍同型记账，其中 `alloc_contiguous_pages` **漏了红线 6 守卫**
+    /// （体检 R17 候选 7 坐实；`alloc`/`alloc_cap_table` 的 `continue` 分支
+    /// 在收编前由守卫兜住，故缺口只在 DMA 路径）。守卫进本函数后，「漏写
+    /// 守卫」在结构上不再可表示。
+    ///
+    /// `obj_size` = 对齐粒度、`need` = 实际占用量——两参数分离是 contiguous
+    /// 的本义（粒度 = 页、占用 = count × 页）；bump 型单对象调用给
+    /// `need == obj_size`。
+    ///
+    /// **跳过判据留在调用方**（`is_blocked` / `is_device` / `size_bits`
+    /// 充分性 / RAM-top / 物理覆盖 / CNode 槽位 bits）——它们是各分配点的
+    /// 策略，不是记账模型。[`Self::alloc_device_at`] 同样不并入：它做的是
+    /// 「标记已用」（`used = max(used, off+size)`，物理定位分配），不是
+    /// 「切下一块」（蓝图 76 卷三 §8 登记不修项）。
+    fn fit(&mut self, i: usize, obj_size: u64, need: u64) -> Option<u64> {
+        let aligned = self.align_up(i, obj_size)?;
+        let capacity = 1u64 << self.descs[i].size_bits;
+        if aligned.checked_add(need).is_some_and(|end| end <= capacity) {
+            self.used[i] = aligned + need;
+            Some(aligned)
+        } else {
+            None
+        }
+    }
+
     /// 分配覆盖指定物理地址的 **device** 对象（FIX-BUGS-0810 B2 两件套之二）。
     ///
     /// [`alloc_device`]（first-fit）**不校验物理地址**——MMIO 映射若用它，
@@ -1311,6 +1358,11 @@ impl UntypedAllocator {
     /// 物理区间内；条件反转为 `is_device` 必须为真），
     /// 返回 `(untyped_cap, byte_offset)`；找不到覆盖 `phys` 的 device untyped
     /// 返回 `None`（调用方 fail-closed 走软件模式兜底）。
+    ///
+    /// 与 [`Self::fit`] 同属 freeIndex 记账面但**不同模**：本函数按物理定位
+    /// 分配、把 `used` 抬到 `max(used, off+size)`（「标记已用」），fit 是
+    /// bump 型「切下一块」。强行同槽 = 错抽象（蓝图 76 卷三 §8 登记不修项；
+    /// 出现第二个「定位+标记」分配点时另抽 `mark_used_at`）。
     pub fn alloc_device_at(&mut self, phys: u64, size_bits: u64) -> Option<(u64, u64)> {
         for i in 0..self.descs.len() {
             let desc = self.descs[i];
@@ -1346,6 +1398,9 @@ impl UntypedAllocator {
     /// 32 B notification 在 80 B 处对齐到 96 B，Rust 记 112 而 seL4 记 128，
     /// 之后 endpoint `Insufficient memory (16 bytes needed, 0 available)`）。
     pub fn alloc(&mut self, size_bits: u64) -> Option<(u64, u64)> {
+        if size_bits >= u64::BITS as u64 {
+            return None; // 请求侧对象不存在（循环不变量，故提到循环外）
+        }
         for i in 0..self.descs.len() {
             let desc = self.descs[i];
             if self.is_blocked(i) {
@@ -1354,21 +1409,10 @@ impl UntypedAllocator {
             if desc.is_device || desc.size_bits < size_bits {
                 continue;
             }
-            if desc.size_bits >= u64::BITS as u64 {
-                continue; // 超 64 位的对象不存在；防移位溢出（红线 6）
-            }
-            let capacity = 1u64 << desc.size_bits;
             let obj_size = 1u64 << size_bits;
-            let used = self.used[i];
-            // seL4 freeIndex 语义：alignUp(used, obj_size) + obj_size。
-            let aligned = used
-                .checked_add(obj_size - 1)
-                .map(|v| v & !(obj_size - 1))?;
-            if aligned
-                .checked_add(obj_size)
-                .is_some_and(|end| end <= capacity)
-            {
-                self.used[i] = aligned + obj_size;
+            // 记账单源 = [`Self::fit`]（seL4 freeIndex：alignUp(used, obj) +
+            // obj ≤ capacity；红线 6 守卫同处）。
+            if let Some(aligned) = self.fit(i, obj_size, obj_size) {
                 return Some((self.cap_base + i as u64, aligned));
             }
         }
@@ -1392,11 +1436,15 @@ impl UntypedAllocator {
             if desc.is_device || desc.size_bits < OBJ_BITS_SMALL_PAGE {
                 continue;
             }
-            let capacity = 1u64 << desc.size_bits;
-            let used = self.used[i];
-            let aligned = used
-                .checked_add(obj_size - 1)
-                .map(|v| v & !(obj_size - 1))?;
+            // 落点判据先于记账：RAM-top 跳过要在 `used` 递增之前看到 phys。
+            // [`Self::align_up`] 与随后的 [`Self::fit`] 之间 `used[i]` 不变
+            // （两者之间无任何写），故 fit 重算的对齐值与此恒等——对齐算术
+            // 的唯一定义点在 align_up，记账的唯一定义点在 fit。
+            // 收编前此处是**无守卫**的 `1u64 << desc.size_bits`（红线 6 缺口，
+            // 体检 R17 候选 7）：守卫进 align_up/fit 后本函数与另两口同侧。
+            let Some(aligned) = self.align_up(i, obj_size) else {
+                continue; // size_bits ≥ 64 → 该 untyped 不可用，换下一个
+            };
             let phys = desc.paddr.checked_add(aligned)?;
             // 41 存储句柄移交修复：DMA 帧必须落在平台 RAM 内（QEMU
             // 1GB = [0, 0x40000000)）——bootinfo 的 untyped 列表可能含
@@ -1407,13 +1455,12 @@ impl UntypedAllocator {
                     "[eneros-root-task] DBG dma-alloc skip untyped paddr=0x{:x} size_bits={} used=0x{:x} phys=0x{:x} (>= RAM top)",
                     desc.paddr,
                     desc.size_bits,
-                    used,
+                    self.used[i],
                     phys
                 );
                 continue;
             }
-            if aligned.checked_add(need).is_some_and(|end| end <= capacity) {
-                self.used[i] = aligned + need;
+            if let Some(aligned) = self.fit(i, obj_size, need) {
                 crate::println!(
                     "[eneros-root-task] DBG dma-alloc pick untyped paddr=0x{:x} size_bits={} aligned=0x{:x} phys=0x{:x}",
                     desc.paddr,
@@ -1434,6 +1481,14 @@ impl UntypedAllocator {
     /// `Insufficient memory (1 * 16 bytes needed, 0 bytes available)`：
     /// CNode 实际占 4 KiB 但 Rust 只记 128 B，之后 3968 B 被 seL4 判满）。
     pub fn alloc_cap_table(&mut self, size_bits: u64) -> Option<(u64, u64)> {
+        // FIX-BUGS-0810 B4：CNode 槽数 = 2^size_bits、每槽 2^5 字节，故
+        // size_bits + 5 必须 < 64，否则移位按 64 取模回绕（release 得到错误
+        // obj_size，debug 下 panic）——红线 6 的**请求侧**半边（desc 侧半边
+        // 单源在 [`Self::align_up`]，随 fit 一同生效）。判据与循环变量无关，
+        // 故提到循环外。
+        if size_bits.checked_add(5).map_or(true, |b| b >= 64) {
+            return None;
+        }
         for i in 0..self.descs.len() {
             let desc = self.descs[i];
             if self.is_blocked(i) {
@@ -1442,30 +1497,12 @@ impl UntypedAllocator {
             if desc.is_device || desc.size_bits < size_bits {
                 continue;
             }
-            if desc.size_bits >= u64::BITS as u64 {
-                continue;
-            }
-            // FIX-BUGS-0810 B4：CNode 槽数 = 2^size_bits、每槽 2^5 字节，
-            // 故 size_bits + 5 必须 < 64，否则移位按 64 取模回绕（release
-            // 得到错误 obj_size，debug 下 panic）——红线 6 守卫。
-            if size_bits.checked_add(5).map_or(true, |b| b >= 64) {
-                return None;
-            }
-            let capacity = 1u64 << desc.size_bits;
             // CNode 实际大小：槽数 × 每槽字节 = 2^size_bits × 2^SlotBits。
             let obj_size = (1u64 << size_bits) << 5; // seL4_SlotBits = 5
-            let used = self.used[i];
-            // FIX-BUGS-0810 B4：与 [`alloc`] 完全一致的 alignUp 记账
-            // （seL4 freeIndex 按对象大小对齐）——CNode 记账同样必须对齐，
-            // 否则与内核 freeIndex 脱节（QEMU 实测事故见 [`alloc`] 注释）。
-            let aligned = used
-                .checked_add(obj_size - 1)
-                .map(|v| v & !(obj_size - 1))?;
-            if aligned
-                .checked_add(obj_size)
-                .is_some_and(|end| end <= capacity)
-            {
-                self.used[i] = aligned + obj_size;
+                                                     // 记账单源 = [`Self::fit`]：与 [`Self::alloc`] 同一条 alignUp
+                                                     // 律（收编前两处各抄一遍、靠注释声称「完全一致」——现由结构兑现，
+                                                     // 分歧只剩 obj_size 推导：页对象 vs CNode 槽）。
+            if let Some(aligned) = self.fit(i, obj_size, obj_size) {
                 return Some((self.cap_base + i as u64, aligned));
             }
         }
@@ -4231,6 +4268,118 @@ mod tests {
         let mut alloc = UntypedAllocator::new(50, descs);
         let (cap, off) = alloc.alloc(12).expect("必须跳过 device untyped");
         assert_eq!((cap, off), (51, 0));
+    }
+
+    // ---- WP-76.3.3（蓝图 76 卷三）：freeIndex 记账单源 = align_up/fit ----
+
+    /// 守卫负例（**收编前 contiguous 臂红**）：`size_bits ≥ 64` 的病态 desc
+    /// 不得让任何 bump 型分配口 panic 或按 64 取模回绕出错值。收编前
+    /// `alloc_contiguous_pages` 的 `1u64 << desc.size_bits` 是唯一无守卫的
+    /// 一处（debug 移位 panic / release capacity=1 错值）；另两口的既有
+    /// 守卫随之吸收进 fit，本测同时是「守卫吸收」的回归锁。
+    #[test]
+    fn fit_guard_rejects_oversized_untyped_descs() {
+        for bits in [64u64, 65, 128] {
+            let descs = vec![UntypedDesc {
+                paddr: 0x4100_0000,
+                size_bits: bits,
+                is_device: false,
+            }];
+            let mut alloc = UntypedAllocator::new(30, descs);
+            assert_eq!(alloc.alloc(12), None, "bits={bits}: alloc 必须 None");
+            assert_eq!(
+                alloc.alloc_contiguous_pages(4),
+                None,
+                "bits={bits}: 缺口臂必须 None（不得 panic/错值）"
+            );
+            assert_eq!(
+                alloc.alloc_cap_table(8),
+                None,
+                "bits={bits}: cap_table 必须 None"
+            );
+            assert_eq!(alloc.allocated(), 0, "bits={bits}: 拒绝面零记账");
+        }
+    }
+
+    /// 守卫必须是「跳过该 untyped」而非「中止整轮分配」——否则一处病态
+    /// bootinfo 描述会把后面合法 untyped 一并饿死。
+    #[test]
+    fn fit_guard_skips_oversized_desc_and_continues() {
+        let descs = vec![
+            UntypedDesc {
+                paddr: 0x4100_0000,
+                size_bits: 64, // 病态：守卫项
+                is_device: false,
+            },
+            UntypedDesc {
+                paddr: 0x4200_0000,
+                size_bits: 20, // 1 MiB：唯一可分配候选
+                is_device: false,
+            },
+        ];
+        let mut alloc = UntypedAllocator::new(30, descs);
+        assert_eq!(alloc.alloc(12), Some((31, 0)), "守卫跳过索引 0 → 索引 1");
+        assert_eq!(
+            alloc.alloc_contiguous_pages(2),
+            Some((31, 4096, 0x4200_1000)),
+            "contiguous 同样必须继续扫（used=4096 → aligned 4096）"
+        );
+        // used=12288 → CNode 粒度 8192 → alignUp=16384（不是 12288 直接累加）。
+        assert_eq!(
+            alloc.alloc_cap_table(8),
+            Some((31, 16384)),
+            "cap_table 同侧"
+        );
+    }
+
+    /// 对齐矩阵：`used` 不在 obj 粒度边界上时，三 bump 口必须一律 alignUp
+    /// （记账单源迁移零漂移的行为锁）+ capacity 恰好/差一双侧界。
+    #[test]
+    fn fit_alignment_matrix_across_three_bump_sites() {
+        let mk = |bits: u64| {
+            vec![UntypedDesc {
+                paddr: 0x4100_0000,
+                size_bits: bits,
+                is_device: false,
+            }]
+        };
+        // 造 used=4097：一页 4 KiB（used=4096）+ 一 1 B 对象（alignUp 粒度 1）。
+        let warm = |a: &mut UntypedAllocator| {
+            assert_eq!(a.alloc(12), Some((30, 0)));
+            assert_eq!(a.alloc(0), Some((30, 4096)), "1 B 对象落 4096");
+        };
+        let mut a = UntypedAllocator::new(30, mk(20));
+        warm(&mut a);
+        assert_eq!(
+            a.alloc(12),
+            Some((30, 8192)),
+            "used=4097 → alignUp(4097,4096)=8192（非简单累加的 4097）"
+        );
+        let mut b = UntypedAllocator::new(30, mk(20));
+        warm(&mut b);
+        assert_eq!(
+            b.alloc_contiguous_pages(1),
+            Some((30, 8192, 0x4100_2000)),
+            "DMA 页粒度同样 alignUp 上取整"
+        );
+        let mut c = UntypedAllocator::new(30, mk(20));
+        warm(&mut c);
+        // CNode size_bits=12 → 4096 槽 × 32 B = 128 KiB 粒度（≠ 页粒度）。
+        assert_eq!(
+            c.alloc_cap_table(12),
+            Some((30, 131072)),
+            "CNode 按自身粒度对齐（alignUp(4097,131072)=131072）"
+        );
+        // capacity 界：恰好铺满 → 再差一字节也不给。
+        let mut d = UntypedAllocator::new(30, mk(12));
+        assert_eq!(d.alloc_contiguous_pages(1), Some((30, 0, 0x4100_0000)));
+        assert_eq!(d.alloc(0), None, "capacity 已满 ⇒ 1 B 也拒");
+        let mut e = UntypedAllocator::new(30, mk(13));
+        assert_eq!(
+            e.alloc_contiguous_pages(4),
+            None,
+            "16 KiB 需求 > 8 KiB capacity"
+        );
     }
 
     #[test]
