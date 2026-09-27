@@ -28,6 +28,16 @@ use eneros_boot_protocol::BootControl;
 
 const BC_RECORD: usize = BOOT_CONTROL_RECORD_SIZE;
 
+/// 双副本间距的**单位恒等**编译期锁（蓝图 76 卷三 WP-76.3.2）：boot-protocol
+/// 侧以**字节**偏移表达副本（`BOOT_CONTROL_COPY_OFFSETS` = [0, 4096]），
+/// drv-svc 侧以**512B 扇区**表达（`BOOTCTRL_COPY_STRIDE_LBAS`）。两处单位
+/// 分裂只允许在「同一算术」上成立——字面双源由本断言钉死，任一侧改单位即
+/// 编译错。
+const _: () = assert!(
+    crate::boot_guard::BOOTCTRL_COPY_STRIDE_LBAS * 512
+        == eneros_boot_protocol::boot_control::BOOT_CONTROL_COPY_OFFSETS[1]
+);
+
 /// 槽是否处于 **pending trial**（未确认、可参与启动）态。
 ///
 /// 口径（70.7 复查 + 70.14 复查单源化）：`pending = 非 successful 且
@@ -48,11 +58,20 @@ impl<'a> BootInstall<'a> {
         BootInstall { face }
     }
 
+    /// BOOTCTRL 分区起始 LBA（单源 = `boot_disk` 介质图；本文件生产侧唯一
+    /// 取值点——事务写序与读面共用）。
+    fn bootctrl_lba() -> u64 {
+        eneros_ota_ab::boot_disk::lba_range_of(eneros_ota_ab::boot_disk::BootPartition::BootCtrl).0
+    }
+
     /// 读当前 bootctrl（双副本高序列解析；任一副本有效即取该副本）。
+    ///
+    /// 第二返回值 `high_copy` = **持有较高序列的副本序号**（0/1，平局取
+    /// copy0）。它是提交写序的输入（[`Self::commit`] 高序列副本先写），
+    /// 事务侧**不得丢弃**——丢弃即回到「文档化不变量被实现违反」的形态
+    /// （蓝图 76 卷三 §1A，WP-76.3.1 两测为此而设）。
     pub fn read_current(&mut self) -> Result<(BootControl, usize), &'static str> {
-        let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
-            eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
-        );
+        let bc_lba = Self::bootctrl_lba();
         // 单缓冲复用（栈峰值 -4KB；REG-70.7 排查：IPC 处理链栈深贴线，
         // 双 4KiB 记录缓冲 + 驱动 4KiB 块缓冲叠加曾致静默冻结形态）。
         // 70.14（REG-70.12-PROBE-BOOT-TRIAL-STALL 候选根因）：记录缓冲走**堆**——
@@ -81,10 +100,85 @@ impl<'a> BootInstall<'a> {
         }
     }
 
+    /// 双副本提交单源（WP-76.3.2）：编码 → **高序列副本先写** → 低序列副本
+    /// → flush。三事务（trial/confirm/cancel）的介质写半边全部经本函数——
+    /// 写序分派在类型面上不再可表达为「按调用方记得的顺序」。
+    ///
+    /// 不变量定义处 = 固件侧 `resolve_boot_control` 的采纳规则与其注释断言
+    /// （「任一中断点都保留锚定旧副本（精确匹配优先命中）……运行时写序
+    /// （高序列副本 → 低序列副本 → flush）」）。违反者曾在 confirm/cancel
+    /// 两处手写形态下潜伏（体检 R17 候选 3；实证锁 = 本文件测试区
+    /// `confirm_and_cancel_write_high_seq_copy_first` /
+    /// `power_loss_between_writes_preserves_anchor_match`）。
+    ///
+    /// 设计裁决（偏离体检报告原案、登记 REG-76-M）：报告建议 `BootctrlMedia`
+    /// adapter 类型；本卷落为 `BootInstall` 私有方法——无第二消费者（三事务
+    /// 都在本类型内）、介质访问已由 [`InstallBackend`] face 承载、新类型零增益。
+    ///
+    /// `tag` 仅用于 70.14 式排障插桩的词形前缀：`"BOOT-TRIAL"` 与收编前
+    /// 逐字节一致；`"BOOT-CONFIRM"`/`"BOOT-CANCEL"` 为本卷新增对称插桩
+    /// （成功半边此前零插桩，零门 grep 已盘点——见卷三 §1A.5）。
+    /// 错误词形 `encode`/`write0`/`write1`/`flush` 是 positional 的：换序后
+    /// 「首写=write0」的语义自洽，词形本身一字未改。
+    fn commit(
+        &mut self,
+        high_copy: usize,
+        next: BootControl,
+        tag: &'static str,
+    ) -> Result<u64, &'static str> {
+        // 单缓冲编码（栈预算：复用一棵 4 KiB 缓冲；`encode()` 按值返回会在
+        // 本帧再叠一份 4 KiB 临时——70.7 目标侧 32 KiB 栈实弹 16 KiB 帧）。
+        // 70.14（REG-70.12-PROBE-BOOT-TRIAL-STALL 候选根因）：记录缓冲走**堆**——
+        // 栈上 4 KiB 局部会在 boot 安装长链上叠加（实弹反汇编：`BootSlotBackend::write`
+        // 的 prologue 即 `sub sp,#0x1000`），逼近 svc-storage 的 64 KiB 栈上限。
+        // （收编前三事务各抄一份同段注释——蓝图 76 卷三 §1A 数出的「4 段逐字
+        // 重复」；现由本函数承载一份。）
+        let bc_lba = Self::bootctrl_lba();
+        // tag 只被 cfg(target_os="none") 的插桩消费——host 构建不编译那些行。
+        let _ = tag;
+        let mut rec: alloc::boxed::Box<[u8; BC_RECORD]> = alloc::boxed::Box::new([0u8; BC_RECORD]);
+        next.encode_into(&mut rec).map_err(|_| "encode")?;
+        // 写序：高序列副本先写（掉电窗口任一时刻 resolve 仍取新块 / 保留锚定
+        // 旧副本）；再写低副本。
+        let (first, second) = if high_copy == 0 {
+            (
+                (bc_lba, &rec[..]),
+                (bc_lba + BOOTCTRL_COPY_STRIDE_LBAS, &rec[..]),
+            )
+        } else {
+            (
+                (bc_lba + BOOTCTRL_COPY_STRIDE_LBAS, &rec[..]),
+                (bc_lba, &rec[..]),
+            )
+        };
+        // 70.14 插桩：事务三步各自可见（阻塞点定位：write0 / write1 / flush）。
+        #[cfg(target_os = "none")]
+        eneros_runtime::println!(
+            "[svc-storage] {tag}: write0 lba={} len={} rec_lba={}",
+            first.0,
+            first.1.len(),
+            bc_lba
+        );
+        self.face
+            .write_sectors(first.0, first.1)
+            .map_err(|_| "write0")?;
+        #[cfg(target_os = "none")]
+        eneros_runtime::println!("[svc-storage] {tag}: write1 lba={}", second.0);
+        self.face
+            .write_sectors(second.0, second.1)
+            .map_err(|_| "write1")?;
+        #[cfg(target_os = "none")]
+        eneros_runtime::println!("[svc-storage] {tag}: flush");
+        self.face.flush().map_err(|_| "flush")?;
+        #[cfg(target_os = "none")]
+        eneros_runtime::println!("[svc-storage] {tag}: done seq={}", next.sequence);
+        Ok(next.sequence)
+    }
+
     /// 写 bootctrl trial 事务（WP-70.7.3）：目标 = **非活动槽** trial
     /// （优先级 15；tries=3；security_version = 目标值），序列 +1；双副本写
     /// （高序列副本先写，低序列后写——掉电窗口任一时刻 resolve 均取更高
-    /// 有效序列）+ flush。
+    /// 有效序列）+ flush。**写序半边三事务单源 = [`Self::commit`]**。
     /// `target_image_id`/`target_security_version` 来自 70.5 验签描述。
     /// 返回新序列号。
     ///
@@ -125,9 +219,6 @@ impl<'a> BootInstall<'a> {
             // 拒绝（fail-closed，不猜目标）。
             return Err("install-range-not-a-slot");
         };
-        let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
-            eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
-        );
         // 下一控制块：非活动槽 = trial，**严格高于**活跃槽（平局规则
         // "successful 胜 trial" 会使平局永远回旧槽——trial 永不启动）。
         // 策略 = 降活跃 1（≥1 保留回退资格）+ 非活动 = 15 封顶。
@@ -150,47 +241,7 @@ impl<'a> BootInstall<'a> {
             );
         }
         next.sequence = current.sequence + 1;
-        // 单缓冲编码（栈预算：复用一棵 4 KiB 缓冲；`encode()` 按值返回会在
-        // 本帧再叠一份 4 KiB 临时——70.7 目标侧 32 KiB 栈实弹 16 KiB 帧）。
-        // 70.14（REG-70.12-PROBE-BOOT-TRIAL-STALL 候选根因）：记录缓冲走**堆**——
-        // 栈上 4 KiB 局部会在 boot 安装长链上叠加（实弹反汇编：`BootSlotBackend::write`
-        // 的 prologue 即 `sub sp,#0x1000`），逼近 svc-storage 的 64 KiB 栈上限。
-        let mut rec: alloc::boxed::Box<[u8; BC_RECORD]> = alloc::boxed::Box::new([0u8; BC_RECORD]);
-        next.encode_into(&mut rec).map_err(|_| "encode")?;
-        // 写序：高序列副本先写（掉电后 resolve 仍取新块）；再写低副本。
-        let (first, second) = if high_copy == 0 {
-            (
-                (bc_lba, &rec[..]),
-                (bc_lba + BOOTCTRL_COPY_STRIDE_LBAS, &rec[..]),
-            )
-        } else {
-            (
-                (bc_lba + BOOTCTRL_COPY_STRIDE_LBAS, &rec[..]),
-                (bc_lba, &rec[..]),
-            )
-        };
-        // 70.14 插桩：事务三步各自可见（阻塞点定位：write0 / write1 / flush）。
-        #[cfg(target_os = "none")]
-        eneros_runtime::println!(
-            "[svc-storage] BOOT-TRIAL: write0 lba={} len={} rec_lba={}",
-            first.0,
-            first.1.len(),
-            bc_lba
-        );
-        self.face
-            .write_sectors(first.0, first.1)
-            .map_err(|_| "write0")?;
-        #[cfg(target_os = "none")]
-        eneros_runtime::println!("[svc-storage] BOOT-TRIAL: write1 lba={}", second.0);
-        self.face
-            .write_sectors(second.0, second.1)
-            .map_err(|_| "write1")?;
-        #[cfg(target_os = "none")]
-        eneros_runtime::println!("[svc-storage] BOOT-TRIAL: flush");
-        self.face.flush().map_err(|_| "flush")?;
-        #[cfg(target_os = "none")]
-        eneros_runtime::println!("[svc-storage] BOOT-TRIAL: done seq={}", next.sequence);
-        Ok(next.sequence)
+        self.commit(high_copy, next, "BOOT-TRIAL")
     }
 
     /// 启动确认（WP-70.7.4）：目标槽 successful=true（不再消耗 tries），
@@ -230,7 +281,7 @@ impl<'a> BootInstall<'a> {
         if ident.release_id != image_id {
             return Err("confirm-image-mismatch");
         }
-        let (current, _) = self.read_current()?;
+        let (current, high_copy) = self.read_current()?;
         let mut next = current; // BootControl: Copy
         if slot_is_a {
             next.slot_a = eneros_boot_protocol::SlotState::successful(
@@ -247,24 +298,9 @@ impl<'a> BootInstall<'a> {
         }
         next.security_floor = next.security_floor.max(security_version);
         next.sequence = current.sequence + 1;
-        // 单缓冲编码（栈预算：复用一棵 4 KiB 缓冲；`encode()` 按值返回会在
-        // 本帧再叠一份 4 KiB 临时——70.7 目标侧 32 KiB 栈实弹 16 KiB 帧）。
-        // 70.14（REG-70.12-PROBE-BOOT-TRIAL-STALL 候选根因）：记录缓冲走**堆**——
-        // 栈上 4 KiB 局部会在 boot 安装长链上叠加（实弹反汇编：`BootSlotBackend::write`
-        // 的 prologue 即 `sub sp,#0x1000`），逼近 svc-storage 的 64 KiB 栈上限。
-        let mut rec: alloc::boxed::Box<[u8; BC_RECORD]> = alloc::boxed::Box::new([0u8; BC_RECORD]);
-        next.encode_into(&mut rec).map_err(|_| "encode")?;
-        let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
-            eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
-        );
-        self.face
-            .write_sectors(bc_lba, &rec[..])
-            .map_err(|_| "write0")?;
-        self.face
-            .write_sectors(bc_lba + BOOTCTRL_COPY_STRIDE_LBAS, &rec[..])
-            .map_err(|_| "write1")?;
-        self.face.flush().map_err(|_| "flush")?;
-        Ok(next.sequence)
+        // 写序半边单源 = [`Self::commit`]（收编前此处手写恒 copy0→copy1，
+        // 并把 read_current 的 high_copy 丢弃为 `_`——WP-76.3.1 红臂即此）。
+        self.commit(high_copy, next, "BOOT-CONFIRM")
     }
 
     /// 取消未确认 trial（WP-70.7.5 mgmt `update-rollback` 后端）：trial 槽
@@ -274,7 +310,7 @@ impl<'a> BootInstall<'a> {
     /// Err("no-pending-trial")——确认后回退 = 新更新事务（floor 之下不可
     /// 达，70.7.4 语义）。
     pub fn cancel_trial(&mut self) -> Result<u64, &'static str> {
-        let (current, _) = self.read_current()?;
+        let (current, high_copy) = self.read_current()?;
         // pending trial 判槽单源 = [`is_pending_trial`]（**非**按优先级高低——
         // trial 写后 trial 槽优先级更高，高低判据会认反）。
         let mut next = current; // BootControl: Copy
@@ -298,24 +334,9 @@ impl<'a> BootInstall<'a> {
             _ => return Err("no-pending-trial"),
         }
         next.sequence = current.sequence + 1;
-        // 单缓冲编码（栈预算：复用一棵 4 KiB 缓冲；`encode()` 按值返回会在
-        // 本帧再叠一份 4 KiB 临时——70.7 目标侧 32 KiB 栈实弹 16 KiB 帧）。
-        // 70.14（REG-70.12-PROBE-BOOT-TRIAL-STALL 候选根因）：记录缓冲走**堆**——
-        // 栈上 4 KiB 局部会在 boot 安装长链上叠加（实弹反汇编：`BootSlotBackend::write`
-        // 的 prologue 即 `sub sp,#0x1000`），逼近 svc-storage 的 64 KiB 栈上限。
-        let mut rec: alloc::boxed::Box<[u8; BC_RECORD]> = alloc::boxed::Box::new([0u8; BC_RECORD]);
-        next.encode_into(&mut rec).map_err(|_| "encode")?;
-        let (bc_lba, _) = eneros_ota_ab::boot_disk::lba_range_of(
-            eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
-        );
-        self.face
-            .write_sectors(bc_lba, &rec[..])
-            .map_err(|_| "write0")?;
-        self.face
-            .write_sectors(bc_lba + BOOTCTRL_COPY_STRIDE_LBAS, &rec[..])
-            .map_err(|_| "write1")?;
-        self.face.flush().map_err(|_| "flush")?;
-        Ok(next.sequence)
+        // 写序半边单源 = [`Self::commit`]（收编前与 confirm 同型：手写恒
+        // copy0→copy1 + high_copy 丢弃，WP-76.3.1 红臂即此）。
+        self.commit(high_copy, next, "BOOT-CANCEL")
     }
 }
 
@@ -384,6 +405,9 @@ mod boot_install_tests {
         /// **写序记录**（WP-76.3.1）：每笔 `(lba, 字节)` 按调用顺序入表——
         /// 掉电窗口推演的实证面（首写落哪个副本只能从介质写入次序读出）。
         log: core::cell::RefCell<alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)>>,
+        /// flush 失败注入（WP-76.3.2 变异咬合）：`commit` 的两笔写之后必须
+        /// 落 flush——恒 Ok 的 mock 咬不住「删掉 flush」这一刀，本 latch 补牙。
+        flush_fail: bool,
         /// 守卫**冻结**缓存（生产 = init 期解析一次、boot 内不变）。
         /// 不缓存就等于"守卫随介质漂移"，与生产语义不符（会掩盖
         /// trial 目标与安装面分叉）。
@@ -411,6 +435,7 @@ mod boot_install_tests {
                 media: alloc::vec![0u8; 18480 * LBA],
                 writes: 0,
                 log: core::cell::RefCell::new(alloc::vec::Vec::new()),
+                flush_fail: false,
                 guard: core::cell::RefCell::new(None),
                 running: Some(ident_a()),
             }
@@ -486,8 +511,12 @@ mod boot_install_tests {
             Ok(())
         }
 
-        /// mock flush：内存介质无写缓存，事务持久化承诺天然成立。
+        /// mock flush：内存介质无写缓存，事务持久化承诺天然成立；
+        /// `flush_fail` latch 例外（WP-76.3.2 变异咬合面）。
         fn flush(&mut self) -> Result<(), ()> {
+            if self.flush_fail {
+                return Err(());
+            }
             Ok(())
         }
 
@@ -1018,9 +1047,10 @@ mod boot_install_tests {
             let (first, second) = replay_writes(&log, 1, &r1, &r2);
             let resolved =
                 eneros_boot_protocol::resolve_boot_control(&first, &second, Some(&anchor))
-                    .unwrap_or_else(|e| {
-                        panic!("{name}: 首写后掉电 ⇒ 固件侧解析失败 {e:?}（引导失败）")
-                    });
+                    .map_err(|e| {
+                        alloc::format!("{name}: 首写后掉电 ⇒ 固件侧解析失败 {e:?}（引导失败）")
+                    })
+                    .expect("resolve_boot_control 必须精确匹配锚");
             assert_eq!(
                 resolved.control.sequence, 1,
                 "{name}: 掉电必须回退到锚定的旧记录（seq=1），不得采纳半提交态"
@@ -1034,6 +1064,31 @@ mod boot_install_tests {
                 !resolved.needs_anchor_initialization,
                 "{name}: 精确匹配半边不得重锚"
             );
+        }
+    }
+
+    /// WP-76.3.2 变异咬合：`commit` 两笔写之后必须落 flush。恒 Ok 的 mock
+    /// flush 咬不住「删掉 flush」这一刀，故给 `MockFace` 加 `flush_fail`
+    /// latch——三事务一律以 `"flush"` 失败上抛（不得静默成功、不得吞成
+    /// 其它词形），且两笔介质写已发生（写序半边与 flush 半边各自可见）。
+    #[test]
+    fn commit_propagates_flush_failure() {
+        for name in ["trial", "confirm", "cancel"] {
+            let (r1, r2, _) = anchor_split_seed();
+            let mut face = MockFace::new();
+            face.seed_bootctrl(&r1, 0);
+            face.seed_bootctrl(&r2, 1);
+            face.flush_fail = true;
+            {
+                let mut inst = BootInstall::new(&mut face);
+                assert_eq!(
+                    run_transaction(name, &mut inst),
+                    Err("flush"),
+                    "{name}: flush 失败必须以 \"flush\" 上抛"
+                );
+            }
+            let log = core::mem::take(&mut *face.log.borrow_mut());
+            assert_eq!(log.len(), 2, "{name}: 双副本两笔写先于 flush");
         }
     }
 }
