@@ -381,6 +381,9 @@ mod boot_install_tests {
     struct MockFace {
         media: alloc::vec::Vec<u8>,
         writes: u32,
+        /// **写序记录**（WP-76.3.1）：每笔 `(lba, 字节)` 按调用顺序入表——
+        /// 掉电窗口推演的实证面（首写落哪个副本只能从介质写入次序读出）。
+        log: core::cell::RefCell<alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)>>,
         /// 守卫**冻结**缓存（生产 = init 期解析一次、boot 内不变）。
         /// 不缓存就等于"守卫随介质漂移"，与生产语义不符（会掩盖
         /// trial 目标与安装面分叉）。
@@ -407,6 +410,7 @@ mod boot_install_tests {
             MockFace {
                 media: alloc::vec![0u8; 18480 * LBA],
                 writes: 0,
+                log: core::cell::RefCell::new(alloc::vec::Vec::new()),
                 guard: core::cell::RefCell::new(None),
                 running: Some(ident_a()),
             }
@@ -476,6 +480,9 @@ mod boot_install_tests {
             }
             self.media[off..end].copy_from_slice(data);
             self.writes += 1;
+            self.log
+                .borrow_mut()
+                .push((lba, alloc::vec::Vec::from(data)));
             Ok(())
         }
 
@@ -890,5 +897,143 @@ mod boot_install_tests {
             format_update_status(&c, &mut buf[..8]),
             Err("status-overflow")
         );
+    }
+
+    // ==================== WP-76.3.1 · 写序对偶实证（体检 R17 候选 3） ====================
+
+    /// 掉电推演种子对（本卷立卷时的一次性探针永久化）。
+    ///
+    /// 形态 = `copy0 = R1`（seq=1，**与受保护锚精确匹配**）+
+    /// `copy1 = R2`（seq=2，A 降 1 / B = pending trial）——即「copy1 序列
+    /// 高于 copy0」的运行期形态。§1A.4 可达性裁决：当前系统不可达（固件
+    /// 事务在移交内核前必完成、运行期中断产生的高副本形态恒为 copy0 侧），
+    /// 故本测是**防御性不变量锁**而非现行故障复现；任何未来路径造出该形态
+    /// （固件写序调整、新增 copy1-first 写点、copy0 损败形态变化）时，
+    /// 本锁决定行为。
+    ///
+    /// 返回 `(copy0 字节, copy1 字节, 由 copy0 精确导出的锚)`。
+    fn anchor_split_seed() -> (
+        [u8; BOOT_CONTROL_RECORD_SIZE],
+        [u8; BOOT_CONTROL_RECORD_SIZE],
+        eneros_boot_protocol::BootControlAnchor,
+    ) {
+        let id = [9u8; 16];
+        let mut r1 = BootControl::factory(id, 1, id);
+        r1.slot_a = eneros_boot_protocol::SlotState::successful(15, 1, id);
+        r1.slot_b = eneros_boot_protocol::SlotState::successful(14, 1, id);
+        r1.sequence = 1;
+        let r1_bytes = r1.encode().expect("encode R1");
+        let anchor =
+            eneros_boot_protocol::BootControlAnchor::new(&r1, &r1_bytes).expect("anchor from R1");
+        let mut r2 = r1;
+        r2.slot_a.priority = 14;
+        r2.slot_b = eneros_boot_protocol::SlotState::trial(15, 3, 2, [3u8; 16]);
+        r2.sequence = 2;
+        let r2_bytes = r2.encode().expect("encode R2");
+        (r1_bytes, r2_bytes, anchor)
+    }
+
+    /// 三事务统一入口（写序对偶锁按名驱动，避免夹具三份手写）。
+    fn run_transaction(name: &str, inst: &mut BootInstall<'_>) -> Result<u64, &'static str> {
+        match name {
+            "trial" => inst.write_bootctrl_trial(2, [3u8; 16]),
+            "confirm" => inst.confirm_running(true, 1, [9u8; 16]),
+            _ => inst.cancel_trial(),
+        }
+    }
+
+    /// 掉电重放：以种子介质为起点，只重放事务的**前 `n` 笔写**（= 第
+    /// `n+1` 笔之前掉电），返回重放后的双副本字节形。
+    fn replay_writes(
+        log: &[(u64, alloc::vec::Vec<u8>)],
+        n: usize,
+        seed0: &[u8; BOOT_CONTROL_RECORD_SIZE],
+        seed1: &[u8; BOOT_CONTROL_RECORD_SIZE],
+    ) -> (
+        [u8; BOOT_CONTROL_RECORD_SIZE],
+        [u8; BOOT_CONTROL_RECORD_SIZE],
+    ) {
+        let mut face = MockFace::new();
+        face.seed_bootctrl(seed0, 0);
+        face.seed_bootctrl(seed1, 1);
+        for (lba, data) in log.iter().take(n) {
+            face.write_sectors(*lba, data).expect("replay write");
+        }
+        let mut first = [0u8; BOOT_CONTROL_RECORD_SIZE];
+        let mut second = [0u8; BOOT_CONTROL_RECORD_SIZE];
+        face.read_sectors(BOOTCTRL_START_LBA, &mut first)
+            .expect("replay read copy0");
+        face.read_sectors(BOOTCTRL_START_LBA + BOOTCTRL_COPY_STRIDE_LBAS, &mut second)
+            .expect("replay read copy1");
+        (first, second)
+    }
+
+    /// WP-76.3.1 红测①（**现状：trial 臂绿、confirm/cancel 臂红**）：
+    /// 三事务在「copy1 序列更高」形态下必须一律**高序列副本先写**。
+    ///
+    /// 不变量定义处 = 固件侧 `resolve_boot_control` 的采纳规则与其注释断言
+    /// （「运行时写序：高序列副本 → 低序列副本 → flush」）。trial 满足；
+    /// confirm/cancel 手写恒 copy0→copy1（`read_current` 的 high_copy 被
+    /// `_` 丢弃）= 违反文档化不变量的潜伏防御缺口。红的是缺陷实证，
+    /// WP-76.3.2（commit 单源）转绿——**禁止为合入而注释掉红臂**。
+    #[test]
+    fn confirm_and_cancel_write_high_seq_copy_first() {
+        for name in ["trial", "confirm", "cancel"] {
+            let (r1, r2, _) = anchor_split_seed();
+            let mut face = MockFace::new();
+            face.seed_bootctrl(&r1, 0);
+            face.seed_bootctrl(&r2, 1);
+            {
+                let mut inst = BootInstall::new(&mut face);
+                let seq = run_transaction(name, &mut inst).expect(name);
+                assert_eq!(seq, 3, "{name}: 序列 = 高副本 +1");
+            }
+            let log = core::mem::take(&mut *face.log.borrow_mut());
+            assert_eq!(log.len(), 2, "{name}: 双副本恰两笔写");
+            assert_eq!(
+                log[0].0,
+                BOOTCTRL_START_LBA + BOOTCTRL_COPY_STRIDE_LBAS,
+                "{name}: 首写必须落**高序列副本**（copy1）——掉电任一中断点保留锚定旧副本"
+            );
+            assert_eq!(log[1].0, BOOTCTRL_START_LBA, "{name}: 次写落低序列副本");
+        }
+    }
+
+    /// WP-76.3.1 红测②（与①对偶的**介质后果**）：两写之间掉电后，固件侧
+    /// 真实 `resolve_boot_control` 必须仍精确匹配锚并回退旧记录（安全回旧态），
+    /// 不得落 `AnchorMismatch`（= 引导失败，boot-manager-uefi 的
+    /// `BootFailure::BootControl`）。
+    #[test]
+    fn power_loss_between_writes_preserves_anchor_match() {
+        for name in ["trial", "confirm", "cancel"] {
+            let (r1, r2, anchor) = anchor_split_seed();
+            let mut face = MockFace::new();
+            face.seed_bootctrl(&r1, 0);
+            face.seed_bootctrl(&r2, 1);
+            {
+                let mut inst = BootInstall::new(&mut face);
+                run_transaction(name, &mut inst).expect(name);
+            }
+            let log = core::mem::take(&mut *face.log.borrow_mut());
+            let (first, second) = replay_writes(&log, 1, &r1, &r2);
+            let resolved =
+                eneros_boot_protocol::resolve_boot_control(&first, &second, Some(&anchor))
+                    .unwrap_or_else(|e| {
+                        panic!("{name}: 首写后掉电 ⇒ 固件侧解析失败 {e:?}（引导失败）")
+                    });
+            assert_eq!(
+                resolved.control.sequence, 1,
+                "{name}: 掉电必须回退到锚定的旧记录（seq=1），不得采纳半提交态"
+            );
+            assert_eq!(
+                resolved.source,
+                eneros_boot_protocol::BootControlCopy::First,
+                "{name}: 锚匹配副本 = copy0"
+            );
+            assert!(
+                !resolved.needs_anchor_initialization,
+                "{name}: 精确匹配半边不得重锚"
+            );
+        }
     }
 }
