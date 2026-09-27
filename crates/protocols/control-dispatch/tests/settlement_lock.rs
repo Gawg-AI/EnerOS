@@ -540,12 +540,17 @@ fn unreachable_delivery_appends_exactly_one_persisted_record() {
     assert_eq!(final_rec, Some(DispatchState::Failed));
 }
 
-/// 62 复查（62.1-A）Applied 写序端到端锁：settle_command 的 Applied 分支
-/// 是**手写两相**（intent Committed → journal AppliedConfirmed），表内
-/// durable 序只是并行表示——表级单测锁不住手写分支。本测试锁真实执行：
-/// durable 终态 ack（intent 置 Committed）失败时，journal **不得**被推至
-/// AppliedConfirmed（外部不得见 Committed/成功）——v0.314.24 写序不变量
-/// "durable 终态 ack 先行，成功后才 journal AppliedConfirmed" 的因果门。
+/// 62 复查（62.1-A）Applied 写序端到端锁：durable 终态 ack（intent 置
+/// Committed）失败时，journal **不得**被推至 AppliedConfirmed（外部不得见
+/// Committed/成功）——v0.314.24 写序不变量 "durable 终态 ack 先行，成功后才
+/// journal AppliedConfirmed" 的因果门。
+///
+/// **62.1-A 缺口已闭合**（蓝图 76 卷三 WP-76.3.4）：Applied 分支不再手写两相，
+/// 而是遍历 settle 表行的 `durable` 序——表行即写序权威。本测试因此转为
+/// **端到端双保险**（与源结构锁 `engine.rs::applied_write_order_follows_table_row`
+/// 配对：后者咬「写序从哪读」的形态，本只咬「失败不得推进 journal」的因果）。
+/// 表驱动化的最终实证 = 把 Applied 行两臂换位：本测试立即红（收编前该变异
+/// 零行为变化，因为分支不读表）。
 #[test]
 fn applied_write_order_durable_ack_failure_never_confirms_journal() {
     // 负控制：ack 成功 → 正常 Committed。

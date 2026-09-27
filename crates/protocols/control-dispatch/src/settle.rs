@@ -20,6 +20,13 @@ use crate::journal::ExecutionStatus;
 // 与 45–47/61 冻结证据链依赖）。写序不变量（61 v0.314.24：Applied =
 // durable 终态 ack 先行，成功后才 journal AppliedConfirmed）由表内
 // `durable` 序表达，表级单测 `settle_table_*` 锁定。
+//
+// **表 = 写序权威**（蓝图 76 卷三 WP-76.3.4）：`settle_command` 的三条
+// durable 路径（RecoveredApplied / Applied / 其余终局触发与 settle_nested）
+// 一律遍历表序执行。此前 Applied 臂手写、表行只是并行表示（62.1-A 缺口，
+// 自蓝图 62 复查登记在案）——「改表不改行为、改行为要记得改两处」的形态
+// 就此闭合；防回潮锁 = `engine.rs` 的 `applied_write_order_follows_table_row`
+// （表序断言 + Applied 臂必须含 durable 遍历的源结构针）。
 // ==========================================================================
 
 /// 结算触发事件（execute_core 前置拒绝 + deliver_and_settle 全部分类臂）。
@@ -81,7 +88,10 @@ pub(crate) enum SettleTrigger {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum SettleOp {
     /// journal 转移（Applied 行的 journal 写携带 sm3(回执) 摘要——
-    /// 由 `settle_command` 的 Applied 分支供给；其余行摘要恒 None）。
+    /// 由 `settle_command` 的 Applied 分支在**运行期**供给（表是模板、
+    /// 摘要不可静态入表）；该触发下 Journal 臂统一带 digest，其余行摘要
+    /// 恒 None。耦合边界登记：若 Applied 行将来出现第二个不该带 digest 的
+    /// Journal op，须在 op 上另加标注——蓝图 76 卷三 §5）。
     Journal {
         from: ExecutionStatus,
         to: ExecutionStatus,
@@ -333,6 +343,10 @@ pub(crate) fn settle(trigger: &SettleTrigger) -> Settlement {
         SettleTrigger::Applied => (
             // 写序不变量：durable 终态 ack 先行，成功后才
             // AppliedConfirmed → 外部 Committed（61 v0.314.24）。
+            // **本行序 = 写序权威**（蓝图 76 卷三 WP-76.3.4）：settle_command
+            // 遍历本序执行两笔 durable 写，换序即换行为——端到端锁
+            // `applied_write_order_durable_ack_failure_never_confirms_journal`
+            // 会在此行两臂换位后立即红（收编前该变异零行为变化）。
             alloc::vec![
                 SettleOp::Intent {
                     state: DispatchState::Committed,

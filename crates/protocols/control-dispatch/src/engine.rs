@@ -528,38 +528,53 @@ impl SettleDispatch for DispatchEngine {
             );
         }
         if matches!(trigger, SettleTrigger::Applied) {
-            // 61 v0.314.24 写序（表内 durable 序 [Intent, Journal]）：
-            // durable 终态 ack 先行（持久确认成功），成功后才 journal
-            // AppliedConfirmed → 外部 Committed。durable ack 失败 →
+            // 61 v0.314.24 写序（durable 终态 ack 先行，成功后才 journal
+            // AppliedConfirmed → 外部 Committed）现由**表行驱动**
+            // （蓝图 76 卷三 WP-76.3.4，62.1-A 缺口闭合）：Applied 行的
+            // `durable` 序即写序权威——改表行即改行为，改行为必改表行，
+            // 「互为平行宇宙」的形态不再可表示。durable ack 失败 →
             // Indeterminate（确认无法持久 = 未确认）。
-            if self
-                .intent_log
-                .update_state(&command_id, DispatchState::Committed)
-                .is_err()
-            {
-                return self.settle_nested(
-                    &settle(&SettleTrigger::AppliedDurableFailed),
-                    states,
-                    ctx,
-                );
-            }
+            //
+            // 运行期供给：Applied 行的 Journal 臂携带 `sm3(回执原文)`
+            // （表是模板、摘要不可能静态入表）。耦合边界：Applied 触发的
+            // Journal 臂**统一**带 digest——该触发下行内只有一个 Journal op，
+            // 若未来出现第二个且不该带 digest，需在 op 上另加标注
+            // （蓝图 76 卷三 §5 观测面红线）。
             let response = ctx.response.expect("Applied 结算必须携带回执原文");
-            let receipt_digest = eneros_crypto::sm3_hash(response);
-            if let Err(e) = self.journal.transition(
-                &correlation,
-                ExecutionStatus::TransportAcked,
-                ExecutionStatus::AppliedConfirmed,
-                started,
-                Some(receipt_digest),
-            ) {
-                return self.settle_nested(
-                    &settle(&SettleTrigger::AppliedAdvanceFailed {
-                        err: alloc::format!("{e:?}"),
-                    }),
-                    states,
-                    ctx,
-                );
+            for op in &settlement.durable {
+                match op {
+                    SettleOp::Intent { state } => {
+                        if self.intent_log.update_state(&command_id, *state).is_err() {
+                            return self.settle_nested(
+                                &settle(&SettleTrigger::AppliedDurableFailed),
+                                states,
+                                ctx,
+                            );
+                        }
+                    }
+                    SettleOp::Journal { from, to } => {
+                        if let Err(e) = self.journal.transition(
+                            &correlation,
+                            *from,
+                            *to,
+                            started,
+                            Some(eneros_crypto::sm3_hash(response)),
+                        ) {
+                            return self.settle_nested(
+                                &settle(&SettleTrigger::AppliedAdvanceFailed {
+                                    err: alloc::format!("{e:?}"),
+                                }),
+                                states,
+                                ctx,
+                            );
+                        }
+                    }
+                }
             }
+            // —— 观测面六步（顺序红线，与表驱动化前逐字节同序）：durable 两写
+            // → push(ReadbackVerified) → 证据行 → last_confirmed → gate.record
+            // → push(Committed) → count。只改「写序从哪读」，不改任何一步的
+            // 相对位置（audit_chain 冻结面 + 端到端锁依赖此序）。
             states.push(DispatchState::ReadbackVerified);
             // 61 v0.314.24：E4 证据 token——串口必须出现 applied-confirmed
             //（唯一 Committed 前置事实；readback 前禁止出现该行）。词形
@@ -2678,6 +2693,60 @@ mod tests {
                 .count(),
             2,
             "typed/trusted 两入口标签必须经单源常量自派生"
+        );
+    }
+
+    /// WP-76.3.4 防回潮锁（62.1-A 闭合的牙齿）：Applied 的写序**必须由表行
+    /// 驱动**，两半——
+    /// ① 表序断言 = Applied 行 durable 为 `[Intent(Committed),
+    ///    Journal(TransportAcked→AppliedConfirmed)]`（durable 终态 ack 先行）；
+    /// ② 源结构针 = `settle_command` 的 Applied 臂必须遍历 `settlement.durable`
+    ///    （收编前是手写两相 + 手抄状态对 ⇒ 臂内无遍历 → ②红）。
+    /// 行为半边由端到端锁
+    /// `applied_write_order_durable_ack_failure_never_confirms_journal`
+    /// （tests/settlement_lock.rs）承载；**最终实证 = 把表行两臂换位**，该
+    /// 端到端锁立即红（收编前同一变异零行为变化——平行宇宙实证）。
+    #[test]
+    fn applied_write_order_follows_table_row() {
+        let row = super::settle(&super::SettleTrigger::Applied).durable;
+        assert_eq!(
+            row.len(),
+            2,
+            "Applied 行两笔 durable 写（intent 终态 ack + journal AppliedConfirmed）"
+        );
+        assert!(
+            matches!(
+                &row[0],
+                super::SettleOp::Intent {
+                    state: super::DispatchState::Committed
+                }
+            ),
+            "首臂必须 durable 终态 ack（{row:?}）"
+        );
+        assert!(
+            matches!(
+                &row[1],
+                super::SettleOp::Journal {
+                    from: super::ExecutionStatus::TransportAcked,
+                    to: super::ExecutionStatus::AppliedConfirmed
+                }
+            ),
+            "次臂 journal TransportAcked→AppliedConfirmed（{row:?}）"
+        );
+        // ② 针形经运行期拼接——本测源文本不含完整针形（守卫自咬纪律）。
+        let src = include_str!("engine.rs");
+        let arm_start = "if matches!(trigger, SettleTrigger::Applied) {";
+        let arm_end = "states.push(DispatchState::ReadbackVerified);";
+        let start = src.find(arm_start).expect("Applied 臂在位");
+        let rest = &src[start..];
+        let arm = &rest[..rest.find(arm_end).expect("Applied 观测面首步在位")];
+        assert!(
+            arm.contains(concat!("for op in &settlement", ".durable")),
+            "Applied 臂必须遍历表序取写序——回到手写两相即 62.1-A 回潮"
+        );
+        assert!(
+            !arm.contains("ExecutionStatus::Applied"),
+            "Applied 臂不得再手抄 journal 状态对——状态只在表行一处"
         );
     }
 
