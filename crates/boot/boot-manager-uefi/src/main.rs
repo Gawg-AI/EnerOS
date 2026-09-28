@@ -313,7 +313,7 @@ fn eneros_fault_inject_stale_capsule() -> bool {
 #[cfg(feature = "fault-inject")]
 fn stale_inject_capsule() -> IdentityCapsule {
     let mut sku = [0u8; 16];
-    sku[..4].copy_from_slice(b"stale");
+    sku[..4].copy_from_slice(b"stl4");
     let mut c = IdentityCapsule::new(
         2,          // slot B（错槽形态）
         [0xEE; 16], // boot_id（上次 boot 模式字节——必与本次见证失配）
@@ -396,9 +396,11 @@ fn prepare_boot() -> Result<LoadedBoot, BootFailure> {
         #[cfg(feature = "fault-inject")]
         if eneros_fault_inject_occupy_capsule_page() {
             // 占住固定页 + 写入上次 CRC 合法 capsule（模拟暖重启残留）。
+            // 分配类型 = LOADER_DATA（RESERVED 类型的 Address 分配在
+            // AAVMF 上会被拒——占页必须真实成功才能建模冲突前提）。
             match boot::allocate_pages(
                 AllocateType::Address(IDENTITY_CAPSULE_PHYS),
-                MemoryType::RESERVED,
+                MemoryType::LOADER_DATA,
                 1,
             ) {
                 Ok(page) => {
@@ -611,7 +613,7 @@ fn prepare_boot() -> Result<LoadedBoot, BootFailure> {
         // WP-77.2.2（ABI minor 1）：本次 boot 的可信水位投影——来源 =
         // active_control（anchor 匹配的 BootControl），**不得**从 capsule
         // 回读来填（见证的独立性本体）。root 六字段身份比较面之一。
-        info.security_floor = active_control.security_floor;
+        info.set_security_floor(active_control.security_floor);
         // BOOT-001：从 UEFI 配置表注入设备树（DTB）——旧实现 dtb_phys/dtb_len
         // 恒为 0，内核无设备树（无法初始化真实外设）。QEMU virt / 飞腾 D2000
         // 的 UEFI 均通过 DEVICE_TREE_GUID 配置表项暴露 DTB。

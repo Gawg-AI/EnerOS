@@ -1,6 +1,6 @@
 --- src/arch/arm/kernel/boot.c
 +++ src/arch/arm/kernel/boot.c
-@@ -331,6 +331,69 @@
+@@ -331,6 +331,75 @@
  
  /* Main kernel initialisation function. */
  
@@ -35,6 +35,10 @@
 +
 +static word_t eneros_witness_state; /* 0 = absent, 1 = snapshot taken */
 +static unsigned char eneros_witness_copy[ENEROS_WITNESS_PAYLOAD_LEN];
++/* Snapshot diag for post-console report (entry-time printf runs before the
++ * kernel console is up): 0 = taken, 1 = bad magic, 2 = bad version,
++ * 3 = bad length. */
++static word_t eneros_witness_snapshot_status = 99;
 +
 +static void eneros_witness_snapshot(void)
 +{
@@ -49,28 +53,30 @@
 +    /* magic "ENRWIT1\0" */
 +    if (buf[0] != 'E' || buf[1] != 'N' || buf[2] != 'R' || buf[3] != 'W' ||
 +        buf[4] != 'I' || buf[5] != 'T' || buf[6] != '1' || buf[7] != '\0') {
++        eneros_witness_snapshot_status = 1;
 +        return;
 +    }
 +    /* version u32 LE == 1 */
 +    if (buf[8] != 1 || buf[9] != 0 || buf[10] != 0 || buf[11] != 0) {
++        eneros_witness_snapshot_status = 2;
 +        return;
 +    }
 +    /* len u32 LE == 256 */
 +    if (buf[12] != 0 || buf[13] != 1 || buf[14] != 0 || buf[15] != 0) {
++        eneros_witness_snapshot_status = 3;
 +        return;
 +    }
 +    for (i = 0; i < ENEROS_WITNESS_PAYLOAD_LEN; i++) {
 +        eneros_witness_copy[i] = buf[16 + i];
 +    }
 +    eneros_witness_state = 1;
-+    printf("EnerOS: boot witness snapshot taken (%u bytes)\n",
-+           (unsigned int)ENEROS_WITNESS_PAYLOAD_LEN);
++    eneros_witness_snapshot_status = 0;
 +}
 +
  static BOOT_CODE bool_t try_init_kernel(
      paddr_t ui_p_reg_start,
      paddr_t ui_p_reg_end,
-@@ -356,6 +419,12 @@
+@@ -356,6 +425,12 @@
      create_frames_of_region_ret_t create_frames_ret;
      create_frames_of_region_ret_t extra_bi_ret;
  
@@ -83,7 +89,16 @@
      /* convert from physical addresses to userland vptrs */
      v_region_t ui_v_reg = {
          .start = ui_p_reg_start - pv_offset,
-@@ -412,6 +481,12 @@
+@@ -377,6 +452,8 @@
+ 
+     /* debug output via serial port is only available from here */
+     printf("Bootstrapping kernel\n");
++    printf("EnerOS: boot witness snapshot status=%lu\n",
++           (unsigned long)eneros_witness_snapshot_status);
+ 
+     /* initialise the platform */
+     init_plat();
+@@ -412,7 +489,16 @@
          };
      }
  
@@ -94,9 +109,13 @@
 +    }
 +
      /* The region of the initial thread is the user image + ipcbuf and boot info */
++    printf("EnerOS: witness sizing state=%lu extra_bi_size=%lu dtb=%lu\n",
++           (unsigned long)eneros_witness_state,
++           (unsigned long)extra_bi_size, (unsigned long)dtb_size);
      word_t extra_bi_size_bits = calculate_extra_bi_size_bits(extra_bi_size);
      v_region_t it_v_reg = {
-@@ -470,6 +545,20 @@
+         .start = ui_v_reg.start,
+@@ -470,6 +556,20 @@
          extra_bi_offset += dtb_size;
      }
  

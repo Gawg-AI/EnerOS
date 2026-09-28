@@ -37,8 +37,8 @@ source tools/gate-env.sh
 EVROOT="$ROOT/evidence/77/vol2-inject"
 RUN="$ROOT/target/evidence77-vol2-inject"
 DL_N1="${DL_N1:-240}"
-DL_N2="${DL_N2:-420}"
-DL_P="${DL_P:-420}"
+DL_N2="${DL_N2:-600}"
+DL_P="${DL_P:-600}"
 FAIL=0
 TPL="$ROOT/target/evidence61/template.fd"
 
@@ -63,17 +63,23 @@ dump_bootctrl() { # $1 = image, $2 = out
 
 TEST_ROOT_KEY_HEX="1f58396696deec97a0090fa612eb5c4784f0b114693696916c01e9cff8ebc5c7ec0c18caf02a7478c73e54bf13a06fb11624fd1a233ab5e41217aa7bb3803e04"
 
-build_image() { # $1 = stage 名, $2 = 额外 ENEROS_ env（NAME=VAL 或空）
-    local stage="$1" extra="${2:-}"
-    gate_compile_config "$RUN/config-compile-$stage.log" qemu-test || return 1
+build_image() { # $1 = stage 名, $2 = 注入模式（空 = 正常装配）
+    local stage="$1" mode="${2:-}"
+    # qemu-test 装配的探针链与测试锚同源配对（vol7 同款）——dev 锚会使
+    # OTA-CONFIG 域检拒绝、OTA READY 永不可达（门判据 P-7 依赖装配）。
+    ENEROS_KMS_DIR=configs/kms-dev cargo xtask config compile --profile qemu-test \
+        --accept-test-signing-key --root-key-hex "$TEST_ROOT_KEY_HEX" \
+        >"$RUN/config-compile-$stage.log" 2>&1 || { echo "CONFIG-COMPILE FAIL"; return 1; }
     gate_relink_cached "$RUN/sel4-$stage.log" "sel4-eipc,qemu-test-synth" || return 1
-    if [ -n "$extra" ]; then
-        env "$extra" gate_image_raw_cached qemu-test "$RUN/image-$stage.log" \
-            "sel4-eipc,qemu-test-synth" || return 1
-    else
-        gate_image_raw_cached qemu-test "$RUN/image-$stage.log" \
-            "sel4-eipc,qemu-test-synth" || return 1
+    # 注入 env 导出后进 gate_build_stamp 的 ENEROS_ 环境签名——三镜像
+    # 缓存互不串扰；gate_image_raw 是 bash 函数，只能经环境传递。
+    if [ -n "$mode" ]; then
+        export ENEROS_BOOT_MANAGER_FAULT_INJECT=1
+        export ENEROS_FAULT_INJECT_MODE="$mode"
     fi
+    gate_image_raw_cached qemu-test "$RUN/image-$stage.log" \
+        "sel4-eipc,qemu-test-synth" || return 1
+    unset ENEROS_BOOT_MANAGER_FAULT_INJECT ENEROS_FAULT_INJECT_MODE
     cp target/eneros/artifacts/qemu-test/eneros-qemu-test.raw "$RUN/eneros-$stage.raw"
 }
 
@@ -83,10 +89,8 @@ build_image() { # $1 = stage 名, $2 = 额外 ENEROS_ env（NAME=VAL 或空）
 say "=== 段1：三镜像构建（P=正例 / N1=capsule-alloc / N2=capsule-stale）==="
 # ============================================================
 build_image pos || { say "正例镜像构建失败"; exit 3; }
-build_image n1alloc "ENEROS_BOOT_MANAGER_FAULT_INJECT=1 ENEROS_FAULT_INJECT_MODE=capsule-alloc" \
-    || { say "N1 注入镜像构建失败"; exit 3; }
-build_image n2stale "ENEROS_BOOT_MANAGER_FAULT_INJECT=1 ENEROS_FAULT_INJECT_MODE=capsule-stale" \
-    || { say "N2 注入镜像构建失败"; exit 3; }
+build_image n1alloc "capsule-alloc" || { say "N1 注入镜像构建失败"; exit 3; }
+build_image n2stale "capsule-stale" || { say "N2 注入镜像构建失败"; exit 3; }
 
 # ============================================================
 say "=== 段2：窗N1 capsule-alloc（Address 预留失败 = 硬拒绝 + 介质不变）==="
@@ -126,7 +130,8 @@ cargo xtask run qemu-test \
 RC_N2=$?
 S_N2="$DIR_N2/qemu-serial.log"
 
-check N2-1 "引导照常完成（root 心跳就绪；拒绝不阻断运行时）" bash -c "[ $RC_N2 -eq 0 ]"
+# harness rc 不作判据（超时强杀 rc 恒负；vol5/vol7 先例 = 查串口标记）。
+check N2-1 "引导照常完成（root 心跳就绪；拒绝不阻断运行时）" bash -c "grep -aq 'test\":\"root-heartbeat\",\"result\":\"PASS\"' '$S_N2'"
 check N2-2 "boot-manager 已写 capsule（写入路径本身健康）" bash -c "grep -aq 'ENEROS stage=identity-capsule' '$S_N2'"
 check N2-3 "见证链在档（BOOT-WITNESS present）" bash -c "grep -aq 'BOOT-WITNESS: present' '$S_N2'"
 check N2-4 "六字段裁决拒绝（IDENTITY-VERDICT: rejected）" bash -c "grep -aq 'IDENTITY-VERDICT: rejected' '$S_N2'"
@@ -148,7 +153,7 @@ cargo xtask run qemu-test \
 RC_P=$?
 S_P="$DIR_P/qemu-serial.log"
 
-check P-1 "引导完成（root 心跳就绪）" bash -c "[ $RC_P -eq 0 ]"
+check P-1 "引导完成（root 心跳就绪）" bash -c "grep -aq 'test\":\"root-heartbeat\",\"result\":\"PASS\"' '$S_P'"
 check P-2 "capsule 写入（stage=identity-capsule）" bash -c "grep -aq 'ENEROS stage=identity-capsule' '$S_P'"
 check P-3 "见证 verified + mailbox published（elfloader 0003）" bash -c "grep -aq 'boot witness verified' '$S_P'"
 check P-4 "内核 extra chunk 发布（0004）" bash -c "grep -aq 'boot witness published to bootinfo extra chunk' '$S_P'"

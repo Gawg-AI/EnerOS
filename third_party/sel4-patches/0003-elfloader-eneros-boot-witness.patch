@@ -1,6 +1,6 @@
 --- src/arch-arm/sys_boot.c
 +++ src/arch-arm/sys_boot.c
-@@ -95,6 +95,157 @@
+@@ -95,6 +95,177 @@
  }
  
  /*
@@ -44,6 +44,15 @@
 +/* Loader-owned verified copy (custody/diagnostics; the mailbox is the
 + * kernel-facing channel). */
 +static unsigned char eneros_witness_copy[ENEROS_WITNESS_PAYLOAD_LEN];
++/* Witness outcome for post-console diagnostics (0 = published; 1..6 =
++ * failure stage; the entry-time printf runs before the UART driver is up
++ * and is silently lost -- report from main() after the welcome banner). */
++static unsigned int eneros_witness_status = 99; /* 99 = not run */
++static unsigned int eneros_witness_abi_major;
++static unsigned int eneros_witness_abi_minor;
++static unsigned int eneros_witness_stored_crc;
++static unsigned int eneros_witness_computed_crc;
++static unsigned char eneros_witness_head[8];
 +
 +/* CRC32 (IEEE 802.3, reflected, poly 0xEDB88320) -- bitwise, table-free.
 + * Must match boot-protocol crc32 (eneros_ipc_wire) bit-for-bit; known vector
@@ -94,29 +103,38 @@
 +    unsigned long i;
 +
 +    if (arg == NULL) {
++        eneros_witness_status = 1;
 +        goto fail;
 +    }
 +    for (i = 0; i < ENEROS_WITNESS_PAYLOAD_LEN; i++) {
 +        buf[i] = ((volatile const unsigned char *)arg)[i];
 +    }
 +    for (i = 0; i < 8; i++) {
++        eneros_witness_head[i] = buf[i];
++    }
++    for (i = 0; i < 8; i++) {
 +        if (buf[i] != rec_magic[i]) {
++            eneros_witness_status = 2;
 +            goto fail;
 +        }
 +    }
 +    abi_major = (unsigned int)buf[8] | ((unsigned int)buf[9] << 8);
 +    abi_minor = (unsigned int)buf[10] | ((unsigned int)buf[11] << 8);
 +    if (abi_major != 1u || abi_minor > 1u) {
++        eneros_witness_status = 3;
 +        goto fail;
 +    }
 +    struct_size = eneros_le32(&buf[12]);
 +    if (struct_size != ENEROS_WITNESS_PAYLOAD_LEN) {
++        eneros_witness_status = 4;
 +        goto fail;
 +    }
 +    /* CRC covers the whole record with the 4 CRC bytes zeroed (boot-protocol
 +     * BootInfo::seal semantics; CRC_OFFSET = 240). */
 +    stored_crc = eneros_le32(&buf[240]);
++    eneros_witness_stored_crc = stored_crc;
 +    if (stored_crc == 0u) {
++        eneros_witness_status = 5;
 +        goto fail;
 +    }
 +    buf[240] = 0;
@@ -124,7 +142,9 @@
 +    buf[242] = 0;
 +    buf[243] = 0;
 +    computed_crc = eneros_crc32(buf, ENEROS_WITNESS_PAYLOAD_LEN);
++    eneros_witness_computed_crc = computed_crc;
 +    if (computed_crc != stored_crc) {
++        eneros_witness_status = 6;
 +        goto fail;
 +    }
 +    buf[240] = (unsigned char)(stored_crc & 0xFFu);
@@ -146,19 +166,19 @@
 +    mbox[13] = 1;
 +    mbox[14] = 0;
 +    mbox[15] = 0; /* len = 256 (u32 LE) */
-+    printf("EnerOS: boot witness verified (abi=%lu.%lu), mailbox published\n",
-+           (unsigned long)abi_major, (unsigned long)abi_minor);
++    eneros_witness_abi_major = abi_major;
++    eneros_witness_abi_minor = abi_minor;
++    eneros_witness_status = 0;
 +    return;
 +fail:
 +    eneros_witness_poison();
-+    printf("EnerOS: boot witness absent or invalid -- mailbox zeroed\n");
 +}
 +
 +/*
   * Entry point.
   *
   * Unpack images, setup the MMU, jump to the kernel.
-@@ -103,6 +254,12 @@
+@@ -103,6 +274,12 @@
  {
      void *bootloader_dtb = NULL;
  
@@ -171,3 +191,26 @@
      /* initialize platform to a state where we can print to a UART */
      if (initialise_devices()) {
          printf("ERROR: Did not successfully return from initialise_devices()\n");
+@@ -115,6 +292,22 @@
+     printf("\nELF-loader started on ");
+     print_cpuid();
+     printf("  paddr=[%p..%p]\n", _text, (uintptr_t)_end - 1);
++    /* EnerOS 77.2 (WP-77.2.2): entry-time outcome is only reportable now
++     * (the consume print ran before the UART driver was up). */
++    if (eneros_witness_status == 0u) {
++        printf("EnerOS: boot witness verified (abi=%lu.%lu), mailbox published\n",
++               (unsigned long)eneros_witness_abi_major,
++               (unsigned long)eneros_witness_abi_minor);
++    } else {
++        printf("EnerOS: boot witness absent or invalid (status=%lu) -- mailbox zeroed\n",
++               (unsigned long)eneros_witness_status);
++        printf("EnerOS: witness diag head=%02x%02x%02x%02x%02x%02x%02x%02x stored=%08x computed=%08x\n",
++               eneros_witness_head[0], eneros_witness_head[1],
++               eneros_witness_head[2], eneros_witness_head[3],
++               eneros_witness_head[4], eneros_witness_head[5],
++               eneros_witness_head[6], eneros_witness_head[7],
++               eneros_witness_stored_crc, eneros_witness_computed_crc);
++    }
+ 
+ #if defined(CONFIG_IMAGE_UIMAGE)
+ 

@@ -50,6 +50,10 @@ fn main() {
     // 未设置时回退默认开发 GUID 并打印 warning（生产构建必须显式注入，
     // 避免与镜像工厂 GUID 漂移）。
     println!("cargo:rerun-if-env-changed=ENEROS_DISK_GUID_HEX");
+    // WP-77.2.1 fault-inject：option_env! 不被 cargo 追踪——注入模式/开关
+    // 变化必须显式声明重编（否则缓存吞掉模式切换，注入窗失真）。
+    println!("cargo:rerun-if-env-changed=ENEROS_BOOT_MANAGER_FAULT_INJECT");
+    println!("cargo:rerun-if-env-changed=ENEROS_FAULT_INJECT_MODE");
     let disk_guid = match env::var("ENEROS_DISK_GUID_HEX") {
         Ok(_v) => decode_hex::<16>("ENEROS_DISK_GUID_HEX"),
         Err(_) => {

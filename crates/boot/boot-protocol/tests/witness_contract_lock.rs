@@ -21,7 +21,10 @@ const CONVERGE: &str = include_str!("../../../../third_party/sel4-converge-patch
 
 /// `#define NAME 0x...UL` 形态的字面提取（剥除注释后按名定位）。
 fn define_value(src: &str, name: &str) -> u64 {
-    let line = match src.lines().find(|l| l.contains(&format!("#define {name} "))) {
+    let line = match src
+        .lines()
+        .find(|l| l.contains(&format!("#define {name} ")))
+    {
         Some(l) => l.to_string(),
         None => format!("#define {name} 0xMISSING"),
     };
@@ -95,6 +98,30 @@ fn converge_chain_manages_both_patches() {
     // 强锁在 converge 的 sha256 校验本体）。
     assert!(CONVERGE.contains("BOOT_C_SHA="));
     assert!(CONVERGE.contains("SYS_BOOT_C_SHA="));
+}
+
+/// WP-77.2.2 次生缺陷回归锁（QEMU 实弹 2026-09-28）：BootInfo 结构体
+/// 的**内存字节**必须与 wire 编码逐字节一致——boot-manager 把结构体
+/// write 到页上、elfloader/kernel 按 wire 布局直接读。repr(C) 与
+/// to_le_bytes 一旦分裂（floor 曾用 u64 字段被 8 对齐挪到 240、crc32
+/// 被推到 248），本测即红。置于集成测试面（lib forbid(unsafe)）。
+#[test]
+fn boot_info_struct_memory_layout_matches_wire() {
+    use eneros_boot_protocol::boot_info::{BootInfo, BootReason, BootSlot, BOOT_INFO_SIZE};
+    let mut info = BootInfo::new(BootSlot::A, BootReason::Cold);
+    info.boot_id = [0x11; 16];
+    info.manifest_digest = [0x22; 32];
+    info.bootctrl_generation = 7;
+    info.security_version = 3;
+    info.set_security_floor(2);
+    info.kernel_entry = 0x4100_0000;
+    info.seal();
+    let mem: [u8; BOOT_INFO_SIZE] =
+        unsafe { core::ptr::read(&info as *const BootInfo as *const [u8; BOOT_INFO_SIZE]) };
+    assert_eq!(mem, info.to_le_bytes(), "BootInfo 内存布局 ≠ wire 布局");
+    // wire 侧 CRC 域位置复核（elfloader 按 240 域校验）。
+    let stored = u32::from_le_bytes(mem[240..244].try_into().unwrap());
+    assert_ne!(stored, 0);
 }
 
 #[test]

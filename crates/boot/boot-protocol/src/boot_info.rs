@@ -287,8 +287,15 @@ pub struct BootInfo {
     pub security_version: u64,
     /// 本次 boot 的可信水位（WP-77.2.2，ABI minor 1——旧布局
     /// reserved1[244..252] 版本化；六字段身份比较面之一）。
-    pub security_floor: u64,
+    /// **存储形态 = LE 字节数组**：u64 需 8 对齐，repr(C) 会把它挪到
+    /// 240 并把 crc32 推到 248——内存布局与 wire 布局（crc@240/
+    /// floor@244）分裂，elfloader 直接读页字节即 CRC 失配（QEMU 实弹
+    /// 2026-09-28 实证）。repr==wire 由 `struct_memory_layout_matches_wire`
+    /// 测试互锁。
     pub crc32: u32,
+    /// wire 偏移 244..252（repr(C) 同位——[u8;8] 无对齐要求，紧跟
+    /// crc32 之后恰好落 244）。
+    pub security_floor_le: [u8; 8],
     pub reserved1: [u8; 4],
 }
 
@@ -344,10 +351,20 @@ impl BootInfo {
             manifest_digest: [0; 32],
             bootctrl_generation: 0,
             security_version: 0,
-            security_floor: 0,
             crc32: 0,
+            security_floor_le: [0; 8],
             reserved1: [0; 4],
         }
+    }
+
+    /// 可信水位读取（LE 字节域 → u64；wire/内存双面同值）。
+    pub fn security_floor(&self) -> u64 {
+        u64::from_le_bytes(self.security_floor_le)
+    }
+
+    /// 可信水位写入（boot-manager 唯一生产写点）。
+    pub fn set_security_floor(&mut self, value: u64) {
+        self.security_floor_le = value.to_le_bytes();
     }
 
     pub fn seal(&mut self) {
@@ -373,7 +390,7 @@ impl BootInfo {
         }
         // WP-77.2.2 旧 minor 兼容判定：minor 0 无 floor 域——floor 字节
         // 必须为零（旧 reserved 语义）；非零 = 布局外写放，fail-closed。
-        if self.abi_minor < 1 && self.security_floor != 0 {
+        if self.abi_minor < 1 && self.security_floor_le != [0; 8] {
             return Err(BootInfoError::Reserved);
         }
         if self.kernel_entry == 0 || self.kernel_entry & 0x3 != 0 {
@@ -480,7 +497,7 @@ impl BootInfo {
         bytes[192..224].copy_from_slice(&self.manifest_digest);
         put_u64(&mut bytes, 224, self.bootctrl_generation);
         put_u64(&mut bytes, 232, self.security_version);
-        put_u64(&mut bytes, 244, self.security_floor);
+        bytes[244..252].copy_from_slice(&self.security_floor_le);
         put_u32(&mut bytes, CRC_OFFSET, self.crc32);
         bytes[252..256].copy_from_slice(&self.reserved1);
         bytes
@@ -518,7 +535,7 @@ impl BootInfo {
         info.manifest_digest.copy_from_slice(&fixed[192..224]);
         info.bootctrl_generation = get_u64(&fixed, 224);
         info.security_version = get_u64(&fixed, 232);
-        info.security_floor = get_u64(&fixed, 244);
+        info.security_floor_le.copy_from_slice(&fixed[244..252]);
         info.crc32 = get_u32(&fixed, CRC_OFFSET);
         info.reserved1.copy_from_slice(&fixed[252..256]);
         info.validate()?;
@@ -607,7 +624,7 @@ mod tests {
         info.manifest_digest = [0xA5; 32];
         info.bootctrl_generation = 7;
         info.security_version = 3;
-        info.security_floor = 4;
+        info.set_security_floor(4);
         info.seal();
         info
     }
@@ -621,15 +638,18 @@ mod tests {
         assert_eq!(offset_of!(BootInfo, kernel_entry), 48);
         assert_eq!(offset_of!(BootInfo, entropy_seed), 128);
         assert_eq!(offset_of!(BootInfo, manifest_digest), 192);
-        // repr(C) 字段序 ≠ wire 偏移（wire 单源 = to_le_bytes/decode）：
-        // u64 floor 需 8 对齐，repr(C) 落 240；wire ABI 上 floor 占旧
-        // reserved1 前 8B（244..252，u64 无对齐要求——字节编解码），
-        // crc32 wire 偏移恒 240（CRC_OFFSET）。
-        assert_eq!(offset_of!(BootInfo, security_floor), 240);
-        assert_eq!(offset_of!(BootInfo, crc32), 248);
+        // repr(C) 偏移必须与 wire 偏移全等（elfloader/kernel 直接读页
+        // 字节——内存即 wire）；floor 用 [u8;8] 承载（u64 需 8 对齐会
+        // 破坏该不变量，见字段 doc 的 QEMU 实弹记录）。
+        assert_eq!(offset_of!(BootInfo, crc32), CRC_OFFSET);
+        assert_eq!(offset_of!(BootInfo, security_floor_le), 244);
         assert_eq!(offset_of!(BootInfo, reserved1), 252);
         assert_eq!(size_of::<MemoryMapEntry>(), 32);
     }
+
+    // WP-77.2.2 次生缺陷回归锁（QEMU 实弹 2026-09-28）：内存↔wire 逐
+    // 字节互锁在 tests/witness_contract_lock.rs（本 crate forbid(unsafe)，
+    // 指针级字节读取放集成测试面）。
 
     #[test]
     fn golden_little_endian_roundtrip() {
@@ -645,6 +665,7 @@ mod tests {
             &4u64.to_le_bytes(),
             "security_floor 域（minor 1）"
         );
+        assert_eq!(info.security_floor(), 4, "accessor 与 wire 字节同值");
         assert_eq!(BootInfo::decode(&bytes), Ok(info));
     }
 
@@ -691,7 +712,7 @@ mod tests {
         // minor 0 + 非零 floor 字节 = 布局外写放 → Reserved（fail-closed）。
         let mut old = valid_info();
         old.abi_minor = 0;
-        old.security_floor = 2;
+        old.set_security_floor(2);
         old.seal();
         assert_eq!(old.validate(), Err(BootInfoError::Reserved));
 
@@ -699,7 +720,7 @@ mod tests {
         // 与真实 capsule 失配 → 拒身份，不是猜测）。
         let mut legacy = valid_info();
         legacy.abi_minor = 0;
-        legacy.security_floor = 0;
+        legacy.set_security_floor(0);
         legacy.seal();
         assert_eq!(legacy.validate(), Ok(()));
 

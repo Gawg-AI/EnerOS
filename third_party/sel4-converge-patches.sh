@@ -42,9 +42,9 @@ TOOLS_TB="$CACHE/seL4_tools.tar.gz"
 # sys_boot.c 终态 = 原件 + 0003。升版补丁后重算：
 #   干净树 → patch 0001 → patch 0004 → sha256sum boot.c
 #   干净树 → patch 0003 → sha256sum sys_boot.c
-BOOT_C_SHA=7d2b57dc29d57e73eb44934c3f1b9a88d064d6f9c3733ec555916a46933feb72
+BOOT_C_SHA=6c1799a6a6dbce54dece3b347e2a2c8d6d242deb6ee8da08dbe9b19b036bcb7f
 VSPACE_C_SHA=1a29efe4750a42e20e8f06339a4ec3f60334b8ec70c4001ee8bceab2460dcfc2
-SYS_BOOT_C_SHA=a79819a872dbf13943a0f07ecc29abbadf7ca0df16c14afaa355dd1854b2232e
+SYS_BOOT_C_SHA=5416afbd1963e2bc70fe79a68a4b19b54de7c2ab65f38bab616e7ea285ef4157
 LINKER_LDS_SHA=722c55f4bfe0d650c8788549a0f7b389ae34f17967e8830a30b05d27257f2a50
 
 sha_of() { sha256sum "$1" | awk '{print $1}'; }

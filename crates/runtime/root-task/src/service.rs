@@ -1866,7 +1866,7 @@ pub(crate) fn adjudicate_identity(
                 IdentityVerdict::Rejected("generation-mismatch")
             } else if w.security_version != c.security_version {
                 IdentityVerdict::Rejected("security-version-mismatch")
-            } else if w.security_floor != c.security_floor {
+            } else if w.security_floor() != c.security_floor {
                 IdentityVerdict::Rejected("security-floor-mismatch")
             } else {
                 IdentityVerdict::Validated(c)
@@ -1883,24 +1883,29 @@ static IDENTITY_VERDICT: spin::Once<IdentityVerdict> = spin::Once::new();
 /// [`validated_identity`] 引用本结果，不再各自读物理页。
 #[cfg(target_os = "none")]
 pub(crate) fn identity_freeze(bi: *const eneros_sel4_sys::types::BootInfo) {
-    use eneros_boot_protocol::witness::{
-        parse_witness_extra_chunk, SEL4_BOOTINFO_EXTRA_CHUNK_ENEROS_WITNESS,
-    };
-    let witness_chunk = eneros_sel4_sys::safe::extra_bi_slice(bi).and_then(|extra| {
+    use eneros_boot_protocol::witness::SEL4_BOOTINFO_EXTRA_CHUNK_ENEROS_WITNESS;
+    let extra = eneros_sel4_sys::safe::extra_bi_slice(bi);
+    // find_extra_chunk 已提取具名 chunk 的 payload（= 256B 记录本体），
+    // 直接 decode——不得再走一遍 chunk 链解析（双重解析曾致 witness 恒
+    // absent，QEMU 实弹 2026-09-28）。
+    let witness_chunk = extra.and_then(|extra| {
         eneros_sel4_sys::safe::find_extra_chunk(extra, SEL4_BOOTINFO_EXTRA_CHUNK_ENEROS_WITNESS)
             .and_then(|(off, len)| extra.get(off..off + len))
     });
-    let witness = witness_chunk
-        .map(parse_witness_extra_chunk)
-        .and_then(|r| r)
-        .and_then(|raw| crate::boot::consume_boot_info(&raw).ok());
+    let witness = witness_chunk.and_then(|raw| match crate::boot::consume_boot_info(raw) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            eneros_runtime::println!("[eneros-root-task] BOOT-WITNESS-DBG: consume failed {e:?}");
+            None
+        }
+    });
     match &witness {
         Some(w) => {
             eneros_runtime::println!(
                 "[eneros-root-task] BOOT-WITNESS: present gen={} secver={} floor={}",
                 w.bootctrl_generation,
                 w.security_version,
-                w.security_floor
+                w.security_floor()
             );
         }
         None => {
@@ -1998,7 +2003,7 @@ mod identity_verdict_tests {
         w.manifest_digest = [0x22; 32];
         w.bootctrl_generation = 7;
         w.security_version = 3;
-        w.security_floor = 2;
+        w.set_security_floor(2);
         w.kernel_entry = 0x4100_0000;
         w.seal();
         let mut c = eneros_boot_protocol::IdentityCapsule::new(
@@ -2078,7 +2083,7 @@ mod identity_verdict_tests {
         // floor 错配（含旧 ABI minor 0 witness：floor 恒 0 vs capsule>0
         // = 新旧混配拒身份，不是猜测）。
         let (mut w, c) = witness_pair();
-        w.security_floor = 1;
+        w.set_security_floor(1);
         w.seal();
         assert!(matches!(
             adjudicate_identity(Some(w), Some(c)),
@@ -2086,7 +2091,7 @@ mod identity_verdict_tests {
         ));
         let (mut w, c) = witness_pair();
         w.abi_minor = 0;
-        w.security_floor = 0;
+        w.set_security_floor(0);
         w.seal();
         assert!(matches!(
             adjudicate_identity(Some(w), Some(c)),

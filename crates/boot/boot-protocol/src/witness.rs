@@ -105,7 +105,7 @@ mod tests {
         let mut info = BootInfo::new(BootSlot::A, BootReason::Cold);
         info.boot_id = [0x11; 16];
         info.security_version = 3;
-        info.security_floor = 2;
+        info.set_security_floor(2);
         info.bootctrl_generation = 7;
         info.kernel_entry = 0x4100_0000;
         info.seal();
