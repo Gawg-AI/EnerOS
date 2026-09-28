@@ -255,8 +255,10 @@ pub fn handle_boot_cmd(
 }
 
 /// 事务拒绝（ST_INVALID + payload = word 文本；调用方据词形取证）。
-fn boot_word_reject(word: &'static str, resp: &mut DriverResponse) {
-    let w = word.as_bytes();
+/// 词形单源 = [`crate::boot_install::BootReject`]（蓝图 77 卷二
+/// WP-77.2.3）：wire 字节与收编前逐字节一致，仅来源类型化。
+fn boot_word_reject(word: crate::boot_install::BootReject, resp: &mut DriverResponse) {
+    let w = word.as_word().as_bytes();
     let n = core::cmp::min(w.len(), resp.payload.len());
     resp.payload[..n].copy_from_slice(&w[..n]);
     resp.payload_len = n as u16;

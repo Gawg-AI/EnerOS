@@ -18,9 +18,97 @@
 //! | `BLK_BOOT_STATUS` (0x0c) | — | [`format_update_status`] 文本 |
 //!
 //! 拒绝 = ST_INVALID + payload 携 word 文本（`no-pending-trial` 等）。
+//! 词形全集由 [`BootReject`] 枚举承载（蓝图 77 卷二 WP-77.2.3：调用方
+//! 据枚举判错误阶段，字面逐字节维持 wire golden）。
 
 use crate::block_cmd::InstallBackend;
 use crate::boot_guard::BOOTCTRL_COPY_STRIDE_LBAS;
+
+/// BootInstall 拒绝词全集（蓝图 77 卷二 WP-77.2.3 单源）。14 个词形与
+/// 收编前的 `&'static str` 逐字节一致——wire（ST_INVALID + payload word）
+/// 不变，只有**返回类型**从裸串变为具名枚举：
+///
+/// - 服务端（`block_cmd::boot_word_reject`）仍发送 `as_word()` 原字节；
+/// - 客户端（agent-sdk `BlockIo`）仅对四个事务子码（TRIAL/CONFIRM/
+///   CANCEL/STATUS）+ `ST_INVALID` + 完整已知词构造 `Rejected`；
+///   未知词/空载/其他状态/坏信封一律不进本枚举（诊断/管理语义面，
+///   越权分类 = `ERR:` 假成功面被打开，蓝图 §2.5）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootReject {
+    /// bootctrl 副本 0 读失败（`read_current`）。
+    Read0,
+    /// bootctrl 副本 1 读失败（`read_current`）。
+    Read1,
+    /// 双副本均不可解码（读面即拒）。
+    BootctrlBothInvalid,
+    /// 记录重编码失败（`commit`）。
+    Encode,
+    /// 首写副本失败（`commit`；positional——copy0/copy1 皆可能，只报阶段）。
+    Write0,
+    /// 次写副本失败（`commit`；**介质可能已部分更新**——copy0 可能已写入，
+    /// 不得解释成"未写入"，不得自动重试）。
+    Write1,
+    /// flush 失败（`commit`；同上：双副本写已发生）。
+    Flush,
+    /// 守卫导出的非活动区间不是任一 BOOT 槽（安装面自相矛盾，fail-closed）。
+    InstallRangeNotASlot,
+    /// 运行身份缺失（确认面拒绝 + 写面关闭）。
+    NoRunningIdentity,
+    /// 确认槽 ≠ 本次实际运行槽。
+    ConfirmSlotNotRunning,
+    /// 确认 security_version ≠ 运行载荷身份。
+    ConfirmSecverMismatch,
+    /// 确认 image_id ≠ 运行载荷身份。
+    ConfirmImageMismatch,
+    /// 无 pending trial（幂等拒绝；已确认回退 = 新更新事务）。
+    NoPendingTrial,
+    /// 状态投影溢出（缓冲不足，fail-closed 不裁剪）。
+    StatusOverflow,
+}
+
+impl BootReject {
+    /// wire 词形（与收编前 `&'static str` 逐字节一致）。
+    pub const fn as_word(self) -> &'static str {
+        match self {
+            BootReject::Read0 => "read0",
+            BootReject::Read1 => "read1",
+            BootReject::BootctrlBothInvalid => "bootctrl-both-invalid",
+            BootReject::Encode => "encode",
+            BootReject::Write0 => "write0",
+            BootReject::Write1 => "write1",
+            BootReject::Flush => "flush",
+            BootReject::InstallRangeNotASlot => "install-range-not-a-slot",
+            BootReject::NoRunningIdentity => "no-running-identity",
+            BootReject::ConfirmSlotNotRunning => "confirm-slot-not-running",
+            BootReject::ConfirmSecverMismatch => "confirm-secver-mismatch",
+            BootReject::ConfirmImageMismatch => "confirm-image-mismatch",
+            BootReject::NoPendingTrial => "no-pending-trial",
+            BootReject::StatusOverflow => "status-overflow",
+        }
+    }
+
+    /// 完整已知词 → 枚举（客户端分类唯一入口；非完整词形/未知词 → None）。
+    pub fn from_word(word: &[u8]) -> Option<Self> {
+        let w = core::str::from_utf8(word).ok()?;
+        Some(match w {
+            "read0" => BootReject::Read0,
+            "read1" => BootReject::Read1,
+            "bootctrl-both-invalid" => BootReject::BootctrlBothInvalid,
+            "encode" => BootReject::Encode,
+            "write0" => BootReject::Write0,
+            "write1" => BootReject::Write1,
+            "flush" => BootReject::Flush,
+            "install-range-not-a-slot" => BootReject::InstallRangeNotASlot,
+            "no-running-identity" => BootReject::NoRunningIdentity,
+            "confirm-slot-not-running" => BootReject::ConfirmSlotNotRunning,
+            "confirm-secver-mismatch" => BootReject::ConfirmSecverMismatch,
+            "confirm-image-mismatch" => BootReject::ConfirmImageMismatch,
+            "no-pending-trial" => BootReject::NoPendingTrial,
+            "status-overflow" => BootReject::StatusOverflow,
+            _ => return None,
+        })
+    }
+}
 
 extern crate alloc;
 use eneros_boot_protocol::boot_control::BOOT_CONTROL_RECORD_SIZE;
@@ -79,7 +167,7 @@ impl<'a> BootInstall<'a> {
     ///    蓝图 76 卷三 §1A.4 对同一形态的判定是「首写落无效副本、锚匹配
     ///    幸存，安全」，故本条以该判定为准；
     /// 3. 双副本均不可解码 → `Err("bootctrl-both-invalid")`（读面即拒）。
-    pub fn read_current(&mut self) -> Result<(BootControl, usize), &'static str> {
+    pub fn read_current(&mut self) -> Result<(BootControl, usize), BootReject> {
         let bc_lba = Self::bootctrl_lba();
         // 单缓冲复用（栈峰值 -4KB；REG-70.7 排查：IPC 处理链栈深贴线，
         // 双 4KiB 记录缓冲 + 驱动 4KiB 块缓冲叠加曾致静默冻结形态）。
@@ -89,11 +177,11 @@ impl<'a> BootInstall<'a> {
         let mut rec: alloc::boxed::Box<[u8; BC_RECORD]> = alloc::boxed::Box::new([0u8; BC_RECORD]);
         self.face
             .read_sectors(bc_lba, &mut rec[..])
-            .map_err(|_| "read0")?;
+            .map_err(|_| BootReject::Read0)?;
         let d0 = BootControl::decode(&rec[..]);
         self.face
             .read_sectors(bc_lba + BOOTCTRL_COPY_STRIDE_LBAS, &mut rec[..])
-            .map_err(|_| "read1")?;
+            .map_err(|_| BootReject::Read1)?;
         let d1 = BootControl::decode(&rec[..]);
         match (d0, d1) {
             (Ok(a), Ok(b)) => {
@@ -106,7 +194,7 @@ impl<'a> BootInstall<'a> {
             // 判据 2：幸存侧不可动，先写另一侧。
             (Ok(a), Err(_)) => Ok((a, 1)),
             (Err(_), Ok(b)) => Ok((b, 0)),
-            _ => Err("bootctrl-both-invalid"),
+            _ => Err(BootReject::BootctrlBothInvalid),
         }
     }
 
@@ -138,7 +226,7 @@ impl<'a> BootInstall<'a> {
         write_first: usize,
         next: BootControl,
         tag: &'static str,
-    ) -> Result<u64, &'static str> {
+    ) -> Result<u64, BootReject> {
         // 单缓冲编码（栈预算：复用一棵 4 KiB 缓冲；`encode()` 按值返回会在
         // 本帧再叠一份 4 KiB 临时——70.7 目标侧 32 KiB 栈实弹 16 KiB 帧）。
         // 70.14（REG-70.12-PROBE-BOOT-TRIAL-STALL 候选根因）：记录缓冲走**堆**——
@@ -150,7 +238,7 @@ impl<'a> BootInstall<'a> {
         // tag 只被 cfg(target_os="none") 的插桩消费——host 构建不编译那些行。
         let _ = tag;
         let mut rec: alloc::boxed::Box<[u8; BC_RECORD]> = alloc::boxed::Box::new([0u8; BC_RECORD]);
-        next.encode_into(&mut rec).map_err(|_| "encode")?;
+        next.encode_into(&mut rec).map_err(|_| BootReject::Encode)?;
         // 写序：先写 `write_first` 副本（判据三条见 [`Self::read_current`]），
         // 再写另一副本——掉电窗口任一时刻 resolve 仍握有锚定/可解码副本。
         let (first, second) = if write_first == 0 {
@@ -174,15 +262,15 @@ impl<'a> BootInstall<'a> {
         );
         self.face
             .write_sectors(first.0, first.1)
-            .map_err(|_| "write0")?;
+            .map_err(|_| BootReject::Write0)?;
         #[cfg(target_os = "none")]
         eneros_runtime::println!("[svc-storage] {tag}: write1 lba={}", second.0);
         self.face
             .write_sectors(second.0, second.1)
-            .map_err(|_| "write1")?;
+            .map_err(|_| BootReject::Write1)?;
         #[cfg(target_os = "none")]
         eneros_runtime::println!("[svc-storage] {tag}: flush");
-        self.face.flush().map_err(|_| "flush")?;
+        self.face.flush().map_err(|_| BootReject::Flush)?;
         #[cfg(target_os = "none")]
         eneros_runtime::println!("[svc-storage] {tag}: done seq={}", next.sequence);
         Ok(next.sequence)
@@ -208,7 +296,7 @@ impl<'a> BootInstall<'a> {
         &mut self,
         target_security_version: u64,
         target_image_id: [u8; 16],
-    ) -> Result<u64, &'static str> {
+    ) -> Result<u64, BootReject> {
         let (current, write_first) = self.read_current()?;
         // **trial 目标槽 = 守卫的非活动槽**（70.14 复查修复，单源 = 安装写面）。
         //
@@ -232,7 +320,7 @@ impl<'a> BootInstall<'a> {
         } else {
             // 守卫导出的非活动区间不是任一 BOOT 槽 → 安装面自相矛盾，
             // 拒绝（fail-closed，不猜目标）。
-            return Err("install-range-not-a-slot");
+            return Err(BootReject::InstallRangeNotASlot);
         };
         // 下一控制块：非活动槽 = trial，**严格高于**活跃槽（平局规则
         // "successful 胜 trial" 会使平局永远回旧槽——trial 永不启动）。
@@ -285,16 +373,19 @@ impl<'a> BootInstall<'a> {
         slot_is_a: bool,
         security_version: u64,
         image_id: [u8; 16],
-    ) -> Result<u64, &'static str> {
-        let ident = self.face.running_identity().ok_or("no-running-identity")?;
+    ) -> Result<u64, BootReject> {
+        let ident = self
+            .face
+            .running_identity()
+            .ok_or(BootReject::NoRunningIdentity)?;
         if ident.is_a != slot_is_a {
-            return Err("confirm-slot-not-running");
+            return Err(BootReject::ConfirmSlotNotRunning);
         }
         if ident.security_version != security_version {
-            return Err("confirm-secver-mismatch");
+            return Err(BootReject::ConfirmSecverMismatch);
         }
         if ident.release_id != image_id {
-            return Err("confirm-image-mismatch");
+            return Err(BootReject::ConfirmImageMismatch);
         }
         let (current, write_first) = self.read_current()?;
         let mut next = current; // BootControl: Copy
@@ -324,7 +415,7 @@ impl<'a> BootInstall<'a> {
     /// 活跃槽回退资格完整）。序列 +1 双副本写 + flush。已确认/无 trial →
     /// Err("no-pending-trial")——确认后回退 = 新更新事务（floor 之下不可
     /// 达，70.7.4 语义）。
-    pub fn cancel_trial(&mut self) -> Result<u64, &'static str> {
+    pub fn cancel_trial(&mut self) -> Result<u64, BootReject> {
         let (current, write_first) = self.read_current()?;
         // pending trial 判槽单源 = [`is_pending_trial`]（**非**按优先级高低——
         // trial 写后 trial 槽优先级更高，高低判据会认反）。
@@ -346,7 +437,7 @@ impl<'a> BootInstall<'a> {
                 next.slot_a.priority = (next.slot_a.priority + 1).min(15);
             }
             // 双 pending（歧义）或无 pending → 拒绝（fail-closed）。
-            _ => return Err("no-pending-trial"),
+            _ => return Err(BootReject::NoPendingTrial),
         }
         next.sequence = current.sequence + 1;
         // 写序半边单源 = [`Self::commit`]（收编前与 confirm 同型：手写恒
@@ -360,7 +451,7 @@ impl<'a> BootInstall<'a> {
 /// detail 直达站端。**零堆**：写入调用方定长缓冲（IPC 处理链上禁止
 /// alloc——REG-70.7 run24-26 冻结面收窄后仅余堆/回复两嫌疑，此处消除
 /// 堆嫌疑）。
-pub fn format_update_status(c: &BootControl, buf: &mut [u8]) -> Result<usize, &'static str> {
+pub fn format_update_status(c: &BootControl, buf: &mut [u8]) -> Result<usize, BootReject> {
     use core::fmt::Write as _;
     struct W<'a> {
         buf: &'a mut [u8],
@@ -399,7 +490,7 @@ pub fn format_update_status(c: &BootControl, buf: &mut [u8]) -> Result<usize, &'
     let _ = write!(w, " B=");
     let _ = slot(&mut w, &c.slot_b);
     if w.overflow {
-        return Err("status-overflow");
+        return Err(BootReject::StatusOverflow);
     }
     Ok(w.n)
 }
@@ -703,17 +794,17 @@ mod boot_install_tests {
             // 错槽：运行 A，确认 B。
             assert_eq!(
                 inst.confirm_running(false, 1, [9u8; 16]),
-                Err("confirm-slot-not-running")
+                Err(BootReject::ConfirmSlotNotRunning)
             );
             // 错安全版本（虚增水位：capsule secver=1，请求给 9）。
             assert_eq!(
                 inst.confirm_running(true, 9, [9u8; 16]),
-                Err("confirm-secver-mismatch")
+                Err(BootReject::ConfirmSecverMismatch)
             );
             // 错载荷身份（release_id 不符）。
             assert_eq!(
                 inst.confirm_running(true, 1, [3u8; 16]),
-                Err("confirm-image-mismatch")
+                Err(BootReject::ConfirmImageMismatch)
             );
             let (c0, _) = inst.read_current().expect("read");
             assert_eq!(c0.security_floor, 1, "floor 不得被推高");
@@ -740,11 +831,11 @@ mod boot_install_tests {
             let mut inst = BootInstall::new(&mut face);
             assert_eq!(
                 inst.confirm_running(true, 1, [9u8; 16]),
-                Err("no-running-identity")
+                Err(BootReject::NoRunningIdentity)
             );
             assert_eq!(
                 inst.write_bootctrl_trial(2, [3u8; 16]),
-                Err("install-range-not-a-slot")
+                Err(BootReject::InstallRangeNotASlot)
             );
             // 诊断/受控恢复保留：STATUS 可读。
             assert!(inst.read_current().is_ok());
@@ -771,7 +862,7 @@ mod boot_install_tests {
         let err = inst
             .confirm_running(false, 1, [9u8; 16])
             .expect_err("confirm");
-        assert_eq!(err, "confirm-slot-not-running");
+        assert_eq!(err, BootReject::ConfirmSlotNotRunning);
         let (c0, _) = inst.read_current().expect("read");
         assert_eq!(c0.security_floor, 1, "拒绝面零副作用（floor 不得被推高）");
         assert_eq!(
@@ -904,7 +995,7 @@ mod boot_install_tests {
         assert_eq!(c.slot_a.priority, 15, "活跃槽优先级恢复");
         assert!(c.slot_a.successful);
         // 再次取消 → no-pending-trial（幂等拒绝）。
-        assert_eq!(inst.cancel_trial(), Err("no-pending-trial"));
+        assert_eq!(inst.cancel_trial(), Err(BootReject::NoPendingTrial));
     }
 
     #[test]
@@ -922,7 +1013,7 @@ mod boot_install_tests {
         let mut inst = BootInstall::new(&mut face);
         inst.confirm_running(false, 2, [9u8; 16])
             .expect("confirm B");
-        assert_eq!(inst.cancel_trial(), Err("no-pending-trial"));
+        assert_eq!(inst.cancel_trial(), Err(BootReject::NoPendingTrial));
     }
 
     #[test]
@@ -939,7 +1030,7 @@ mod boot_install_tests {
         // 溢出拒绝（fail-closed，不静默裁剪）。
         assert_eq!(
             format_update_status(&c, &mut buf[..8]),
-            Err("status-overflow")
+            Err(BootReject::StatusOverflow)
         );
     }
 
@@ -978,7 +1069,7 @@ mod boot_install_tests {
     }
 
     /// 三事务统一入口（写序对偶锁按名驱动，避免夹具三份手写）。
-    fn run_transaction(name: &str, inst: &mut BootInstall<'_>) -> Result<u64, &'static str> {
+    fn run_transaction(name: &str, inst: &mut BootInstall<'_>) -> Result<u64, BootReject> {
         match name {
             "trial" => inst.write_bootctrl_trial(2, [3u8; 16]),
             "confirm" => inst.confirm_running(true, 1, [9u8; 16]),
@@ -1159,7 +1250,7 @@ mod boot_install_tests {
                 {
                     let mut inst = BootInstall::new(&mut face);
                     if let Err(e) = run_transaction(name, &mut inst) {
-                        violations.push(alloc::format!("{name}/copy{good_copy}: 事务被拒 {e}"));
+                        violations.push(alloc::format!("{name}/copy{good_copy}: 事务被拒 {:?}", e));
                         continue;
                     }
                 }
@@ -1208,7 +1299,7 @@ mod boot_install_tests {
 
     /// WP-76.3.2 变异咬合：`commit` 两笔写之后必须落 flush。恒 Ok 的 mock
     /// flush 咬不住「删掉 flush」这一刀，故给 `MockFace` 加 `flush_fail`
-    /// latch——三事务一律以 `"flush"` 失败上抛（不得静默成功、不得吞成
+    /// latch——三事务一律以 `Flush` 失败上抛（不得静默成功、不得吞成
     /// 其它词形），且两笔介质写已发生（写序半边与 flush 半边各自可见）。
     #[test]
     fn commit_propagates_flush_failure() {
@@ -1222,12 +1313,65 @@ mod boot_install_tests {
                 let mut inst = BootInstall::new(&mut face);
                 assert_eq!(
                     run_transaction(name, &mut inst),
-                    Err("flush"),
-                    "{name}: flush 失败必须以 \"flush\" 上抛"
+                    Err(BootReject::Flush),
+                    "{name}: flush 失败必须以 Flush 上抛"
                 );
             }
             let log = core::mem::take(&mut *face.log.borrow_mut());
             assert_eq!(log.len(), 2, "{name}: 双副本两笔写先于 flush");
         }
+    }
+
+    /// WP-77.2.3 词形逐字节 golden：14 个 [`BootReject`] 词与收编前
+    /// `&'static str` 全集一致——wire（ST_INVALID + payload）由本表冻结，
+    /// `from_word` 是 `as_word` 的完整逆（含未知词/截断词/带尾随字节的
+    /// 词形一律 None——客户端 `Rejected` 分类只接受完整已知词）。
+    #[test]
+    fn boot_reject_words_are_byte_stable_golden() {
+        const WORDS: [(&str, BootReject); 14] = [
+            ("read0", BootReject::Read0),
+            ("read1", BootReject::Read1),
+            ("bootctrl-both-invalid", BootReject::BootctrlBothInvalid),
+            ("encode", BootReject::Encode),
+            ("write0", BootReject::Write0),
+            ("write1", BootReject::Write1),
+            ("flush", BootReject::Flush),
+            ("install-range-not-a-slot", BootReject::InstallRangeNotASlot),
+            ("no-running-identity", BootReject::NoRunningIdentity),
+            (
+                "confirm-slot-not-running",
+                BootReject::ConfirmSlotNotRunning,
+            ),
+            ("confirm-secver-mismatch", BootReject::ConfirmSecverMismatch),
+            ("confirm-image-mismatch", BootReject::ConfirmImageMismatch),
+            ("no-pending-trial", BootReject::NoPendingTrial),
+            ("status-overflow", BootReject::StatusOverflow),
+        ];
+        for (word, reject) in WORDS {
+            assert_eq!(reject.as_word(), word, "{word}: as_word 漂移");
+            assert_eq!(
+                BootReject::from_word(word.as_bytes()),
+                Some(reject),
+                "{word}: from_word 必须还原枚举"
+            );
+            // 截断/带尾随字节 = 非完整已知词形，一律拒（客户端不得把
+            // 「脏 payload」升格成具名拒绝）。
+            assert_eq!(
+                BootReject::from_word(&word.as_bytes()[..word.len() - 1]),
+                None,
+                "{word}: 截断词必须拒"
+            );
+            let mut trailing = alloc::vec::Vec::from(word.as_bytes());
+            trailing.push(b' ');
+            assert_eq!(
+                BootReject::from_word(&trailing),
+                None,
+                "{word}: 尾随字节必须拒"
+            );
+        }
+        // 未知词 + 空词 + 非 UTF-8 词形一律 None。
+        assert_eq!(BootReject::from_word(b"no-such-word"), None);
+        assert_eq!(BootReject::from_word(b""), None);
+        assert_eq!(BootReject::from_word(&[0xff, 0xfe]), None);
     }
 }

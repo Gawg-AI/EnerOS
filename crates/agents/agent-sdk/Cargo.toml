@@ -37,3 +37,7 @@ eneros-sel4-sys = { path = "../../runtime/sel4-sys" }
 trybuild = "1"
 # S1 WP-S1.2：config_gateway 真实节 id 解码用例（protocol-* canonical 往返）。
 eneros-config-bundle = { path = "../../runtime/config-bundle", default-features = false }
+# WP-77.2.3：boot 拒绝词端到端测试替身（真 drv-svc 服务端路径需要
+# BootControl 记录构造与 boot_disk 介质图常量）。
+eneros-boot-protocol = { path = "../../boot/boot-protocol" }
+eneros-ota-ab = { path = "../../security/ota-ab" }

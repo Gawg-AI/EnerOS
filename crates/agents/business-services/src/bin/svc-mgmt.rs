@@ -891,60 +891,35 @@ impl eneros_business_services::mgmt_rpc::ActionExecutor for TargetExecutor {
             MgmtAction::UpdateCheck => {
                 self.requests_seen = self.requests_seen.saturating_add(1);
                 // 70.7.5：root 中继 OTA1 0x0E 只读投影（维护态可用）。
-                match self.root_call(&eneros_agent_sdk::root_mgmt::encode_update_status()) {
-                    Some(resp) if !resp.starts_with(b"ERR:") => match core::str::from_utf8(&resp) {
-                        Ok(text) => ActionResult {
-                            status: RpcStatus::Completed,
-                            detail: alloc::format!("update-status:{text}"),
-                            payload: None,
-                        },
-                        Err(_) => ActionResult {
-                            status: RpcStatus::Failed,
-                            detail: "update-check:bad-frame".into(),
-                            payload: None,
-                        },
-                    },
-                    Some(resp) => ActionResult {
-                        status: RpcStatus::Failed,
-                        detail: alloc::format!(
-                            "update-check:{}",
-                            core::str::from_utf8(&resp[4..]).unwrap_or("?")
-                        ),
-                        payload: None,
-                    },
-                    None => ActionResult {
-                        status: RpcStatus::Failed,
-                        detail: "update-check:root-unbound".into(),
-                        payload: None,
-                    },
+                // WP-77.2.3：判据下沉 ota_mgmt_bridge（host golden 锁死：
+                // ERR: 词 → Failed detail；空文本 = 异常应答显式失败）。
+                let (status, detail) =
+                    eneros_business_services::ota_mgmt_bridge::update_check_outcome(
+                        self.root_call(&eneros_agent_sdk::root_mgmt::encode_update_status())
+                            .as_deref(),
+                    );
+                ActionResult {
+                    status,
+                    detail,
+                    payload: None,
                 }
             }
             MgmtAction::UpdateRollback => {
                 self.requests_seen = self.requests_seen.saturating_add(1);
                 // 70.7.5：root 中继 OTA1 0x0D 取消未确认 trial（floor 不动；
-                // 已确认更新不可回退 = 新更新事务）。
-                match self.root_call(&eneros_agent_sdk::root_mgmt::encode_update_rollback()) {
-                    Some(resp) if resp.len() == 8 => {
-                        let seq = u64::from_le_bytes(resp[..8].try_into().unwrap());
-                        ActionResult {
-                            status: RpcStatus::Completed,
-                            detail: alloc::format!("update-rollback:trial-canceled seq={seq}"),
-                            payload: None,
-                        }
-                    }
-                    Some(resp) if resp.starts_with(b"ERR:") => ActionResult {
-                        status: RpcStatus::Failed,
-                        detail: alloc::format!(
-                            "update-rollback:{}",
-                            core::str::from_utf8(&resp[4..]).unwrap_or("?")
-                        ),
-                        payload: None,
-                    },
-                    _ => ActionResult {
-                        status: RpcStatus::Failed,
-                        detail: "update-rollback:bad-frame".into(),
-                        payload: None,
-                    },
+                // 已确认更新不可回退 = 新更新事务）。WP-77.2.3：判据下沉
+                // ota_mgmt_bridge——**`ERR:` 判定先于 8B seq**（四字符词的
+                // 8B 错误帧不得误记 Completed）；no-pending-trial 词直达
+                // detail。
+                let (status, detail) =
+                    eneros_business_services::ota_mgmt_bridge::update_rollback_outcome(
+                        self.root_call(&eneros_agent_sdk::root_mgmt::encode_update_rollback())
+                            .as_deref(),
+                    );
+                ActionResult {
+                    status,
+                    detail,
+                    payload: None,
                 }
             }
             MgmtAction::UpdateApply => {

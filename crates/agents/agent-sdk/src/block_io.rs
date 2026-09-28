@@ -21,7 +21,10 @@ pub use eneros_drv_svc::block_cmd::{
 use eneros_drv_svc::block_cmd::{
     BLK_CMD_FLUSH, BLK_CMD_HEALTH, BLK_CMD_READ, BLK_CMD_WRITE, BLK_READ_MAX, BLK_WRITE_MAX,
 };
-use eneros_drv_svc::runtime::{wire, DriverRequest, DriverResponse, OP_EXECUTE, ST_OK};
+/// 蓝图 77 卷二 WP-77.2.3：BootInstall 拒绝词枚举（`BootCommandError::
+/// Rejected` 载荷；词形单源 = drv-svc::boot_install）。
+pub use eneros_drv_svc::boot_install::BootReject;
+use eneros_drv_svc::runtime::{wire, DriverRequest, DriverResponse, OP_EXECUTE, ST_INVALID, ST_OK};
 use eneros_durable_state::{PersistIo, StoreError};
 // SPEC-B/C（2026-08-28）：EipcBlockDevice（BlockIo→storage BlockDevice
 // 单件）迁入本模块——storage 依赖方向已验无环。
@@ -63,6 +66,19 @@ pub mod boot_body {
     pub fn read(lba: u64, count_bytes: u32) -> Vec<u8> {
         blk_wire::pack_boot_read(lba, count_bytes).to_vec()
     }
+}
+
+/// boot 面原始命令错误（蓝图 77 卷二 WP-77.2.3 具名分类）。
+///
+/// - [`BootCommandError::Rejected`]：服务端 `ST_INVALID` + 完整已知
+///   [`BootReject`] 词（仅四个事务子码）；携带真实恢复语义
+///  （`no-pending-trial` ≠ `confirm-secver-mismatch` ≠ `write1`）。
+/// - [`BootCommandError::Io`]：传输/信封/epoch/其他状态/未知词形——
+///   与数据面同词形（`StoreError`），svc-ota 维持原 `ERR:*io`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BootCommandError {
+    Rejected(BootReject),
+    Io(StoreError),
 }
 
 /// 块客户端：经 EIPC 调 svc-storage（X3 授予表槽位）。
@@ -110,8 +126,15 @@ impl EipcSend for crate::ipc_sel4::Sel4IpcClient {
 }
 
 impl<C: EipcSend> BlockIo<C> {
-    /// 发送一个块命令信封，返回解码后的响应。失败 → StoreError。
-    fn cmd(&mut self, sub: u8, payload: &[u8]) -> Result<DriverResponse, StoreError> {
+    /// 一次 IPC 交换（蓝图 77 卷二 WP-77.2.3 私有 seam）：payload 上界 +
+    /// 一次 `drv_call` + `decode_response_padded` + epoch 验证——**不含**
+    /// status 语义映射（那是 [`Self::cmd`] 数据面与 [`Self::raw_command`]
+    /// boot 面各自的事）。私有：跨 seam 的响应状态判读只许走这两个出口。
+    ///
+    /// 错误映射（与收编前 `cmd` 逐项一致，仅不再提前吞 status）：
+    /// transport → `Unavailable`；坏信封 → `Encode("bad-envelope")`；
+    /// epoch 变化 → `Unavailable`（陈旧句柄，重启后必须重建）。
+    fn exchange(&mut self, sub: u8, payload: &[u8]) -> Result<DriverResponse, StoreError> {
         if payload.len() > eneros_drv_svc::runtime::PAYLOAD_CAP - 1 {
             return Err(StoreError::Other("block-payload-overflow"));
         }
@@ -137,27 +160,57 @@ impl<C: EipcSend> BlockIo<C> {
         } else if resp.epoch != self.epoch {
             return Err(StoreError::Unavailable);
         }
+        Ok(resp)
+    }
+
+    /// 数据面命令：非 ST_OK 一律 `WriteFailed`（fail-closed 不伪装——
+    /// 数据面无「带原因失败」语义，WP-77.2.3 后该映射显式收拢于此）。
+    fn cmd(&mut self, sub: u8, payload: &[u8]) -> Result<DriverResponse, StoreError> {
+        let resp = self.exchange(sub, payload)?;
         if resp.status != ST_OK {
             return Err(StoreError::WriteFailed);
         }
         Ok(resp)
     }
 
-    /// 读 `offset` 起 `buf.len()` 字节（分块 = [`BLK_READ_CHUNK`]；lba =
-    /// 字节偏移，与 39 命令面 RamBackend 语义一致）。
-    /// 70.7（WP-70.7.2）：原始子码命令（BLK_BOOT_* 安装面；svc-ota
-    /// 安装控制器消费）。payload = 子码后的请求体；返回 ST_OK 时的
-    /// 响应数据段。非 ST_OK → 显式错误（fail-closed 不伪装）。
+    /// 70.7（WP-70.7.2）：原始子码命令（BLK_BOOT_* 安装面；svc-ota 安装
+    /// 控制器消费）。payload = 子码后的请求体；ST_OK → 响应数据段。
+    ///
+    /// 蓝图 77 卷二 WP-77.2.3：boot 面错误**具名分类**——仅对四个事务
+    /// 子码（TRIAL/CONFIRM/CANCEL/STATUS）+ `ST_INVALID` + payload 为
+    /// **完整已知** [`BootReject`] 词构造 [`BootCommandError::Rejected`]；
+    /// 其他子码、其他状态、空词/未知词/坏字节、传输/信封/epoch 错一律
+    /// [`BootCommandError::Io`]（svc-ota 维持原 `ERR:*io` 词形）。
+    /// 判据历史（不得回退）：收编前 `cmd` 把**所有**非 ST_OK 提前映成
+    /// `WriteFailed`，本函数的 status 判断不可达——拒绝词（
+    /// `no-pending-trial`/`confirm-secver-mismatch`/`write1`…的不同恢复
+    /// 含义）到不了管理端。恢复提前状态门 = 本分类存在的前提；每事务
+    /// 仍恰好**一次** storage IPC（不追加「取原因」第二次 Call——历史
+    /// 事务链在第二次 seL4 Call 挂死，REG-70.7 run16-22 实弹）。
     pub fn raw_command(
         &mut self,
         sub: u8,
         payload: &[u8],
-    ) -> Result<alloc::vec::Vec<u8>, StoreError> {
-        let resp = self.cmd(sub, payload)?;
-        if resp.status != 0 {
-            return Err(StoreError::Other("boot-cmd-status"));
+    ) -> Result<alloc::vec::Vec<u8>, BootCommandError> {
+        let resp = self.exchange(sub, payload).map_err(BootCommandError::Io)?;
+        if resp.status == ST_OK {
+            return Ok(resp.payload[..resp.payload_len as usize].to_vec());
         }
-        Ok(resp.payload[..resp.payload_len as usize].to_vec())
+        // 拒绝词分类面：四个事务子码 + ST_INVALID + 完整已知词。
+        if resp.status == ST_INVALID
+            && matches!(
+                sub,
+                BLK_BOOT_TRIAL | BLK_BOOT_CONFIRM | BLK_BOOT_CANCEL | BLK_BOOT_STATUS
+            )
+        {
+            let word = &resp.payload[..resp.payload_len as usize];
+            if let Some(reject) = BootReject::from_word(word) {
+                return Err(BootCommandError::Rejected(reject));
+            }
+        }
+        // 其余失败 = Io（数据面既有词形 `WriteFailed` 承载，服务端
+        // ST_UNAVAILABLE/ST_INVALID 皆如此映射——行为与收编前一致）。
+        Err(BootCommandError::Io(StoreError::WriteFailed))
     }
 
     fn read_into(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), StoreError> {
@@ -817,5 +870,385 @@ mod tests {
             1000,
         );
         assert!(io.probe_health().is_none(), "12B 短应答必须拒解");
+    }
+
+    // ==================== WP-77.2.3：拒绝词穿透端到端 ====================
+    //
+    // 真实 `handle_boot_cmd`（drv-svc 服务端）经模拟 EIPC 到 `BlockIo`
+    // 的失败矩阵：带词/空词/未知词 ST_INVALID、ST_UNAVAILABLE、传输错、
+    // 坏响应长度、4B padding、epoch 改变。判据回归面（不得回退）：把
+    // `exchange` 的 status 判读提前吞掉（收编前形态）或把 `ERR:` 前缀
+    // 去掉，本族即红。
+
+    use core::cell::RefCell;
+
+    use eneros_boot_protocol::boot_control::BOOT_CONTROL_RECORD_SIZE;
+    use eneros_drv_svc::block_cmd::{InstallBackend, StorageService};
+    use eneros_drv_svc::boot_guard::{BootWriteGuard, RunningIdentity};
+    use eneros_drv_svc::runtime::{DriverService, ST_INVALID};
+
+    /// 测试安装面（与 drv-svc `MockFace` 同型：内存介质 + 守卫冻结 +
+    /// 运行身份 + 次写失败注入）。
+    struct TestInstallFace {
+        media: RefCell<vec::Vec<u8>>,
+        running: Option<RunningIdentity>,
+        fail_second_write: bool,
+        writes: usize,
+    }
+
+    const LBA: usize = 512;
+
+    impl TestInstallFace {
+        fn new() -> std::rc::Rc<core::cell::RefCell<Self>> {
+            std::rc::Rc::new(core::cell::RefCell::new(Self {
+                media: RefCell::new(vec![0u8; 18500 * LBA]),
+                running: Some(RunningIdentity {
+                    is_a: true,
+                    security_version: 1,
+                    release_id: [9u8; 16],
+                }),
+                fail_second_write: false,
+                writes: 0,
+            }))
+        }
+
+        /// 稳态种子（双 successful：A=15 / B=14 / seq=1 ⇒ 无 pending trial）。
+        fn seed_stable(&self) {
+            let id = [9u8; 16];
+            let mut c = eneros_boot_protocol::BootControl::factory(id, 1, id);
+            c.slot_a = eneros_boot_protocol::SlotState::successful(15, 1, id);
+            c.slot_b = eneros_boot_protocol::SlotState::successful(14, 1, id);
+            c.sequence = 1;
+            let rec = c.encode().unwrap();
+            let off = 18432 * LBA; // BOOTCTRL_START_LBA（boot_disk 单源）
+            self.media.borrow_mut()[off..off + BOOT_CONTROL_RECORD_SIZE]
+                .copy_from_slice(&rec[..BOOT_CONTROL_RECORD_SIZE]);
+        }
+    }
+
+    impl InstallBackend for TestInstallFace {
+        fn install_ranges(&self) -> eneros_drv_svc::boot_guard::InstallRanges {
+            let media = self.media.borrow();
+            let (bc, _) = eneros_ota_ab::boot_disk::lba_range_of(
+                eneros_ota_ab::boot_disk::BootPartition::BootCtrl,
+            );
+            let off = bc as usize * LBA;
+            let stride = eneros_drv_svc::boot_guard::BOOTCTRL_COPY_STRIDE_LBAS as usize * LBA;
+            let g = BootWriteGuard::resolve_with_running(
+                &media[off..off + BOOT_CONTROL_RECORD_SIZE],
+                &media[off + stride..off + stride + BOOT_CONTROL_RECORD_SIZE],
+                self.running,
+            )
+            .unwrap_or(BootWriteGuard {
+                inactive_start_lba: 0,
+                inactive_lbas: 0,
+                active_is_a: false,
+                active_security_version: 0,
+                sequence: 0,
+                running: None,
+            });
+            g.install_ranges()
+        }
+
+        fn read_sectors(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
+            let off = eneros_drv_svc::boot_guard::sector_byte_offset(lba).ok_or(())? as usize;
+            let media = self.media.borrow();
+            let end = off + buf.len();
+            if end > media.len() {
+                return Err(());
+            }
+            buf.copy_from_slice(&media[off..end]);
+            Ok(())
+        }
+
+        fn write_sectors(&mut self, lba: u64, data: &[u8]) -> Result<(), ()> {
+            self.writes += 1;
+            if self.fail_second_write && self.writes == 2 {
+                return Err(());
+            }
+            let off = eneros_drv_svc::boot_guard::sector_byte_offset(lba).ok_or(())? as usize;
+            let mut media = self.media.borrow_mut();
+            let end = off + data.len();
+            if end > media.len() {
+                return Err(());
+            }
+            media[off..end].copy_from_slice(data);
+            Ok(())
+        }
+
+        fn flush(&mut self) -> Result<(), ()> {
+            Ok(())
+        }
+
+        fn running_identity(&self) -> Option<RunningIdentity> {
+            self.running
+        }
+    }
+
+    /// 数据面占位后端（本族不走数据面命令）。
+    struct NullBackend;
+    impl eneros_drv_svc::block_cmd::BlockBackend for NullBackend {
+        fn read(&mut self, _o: u64, _b: &mut [u8]) -> Result<(), ()> {
+            Err(())
+        }
+        fn write(&mut self, _o: u64, _d: &[u8]) -> Result<(), ()> {
+            Err(())
+        }
+        fn flush(&mut self) -> Result<(), ()> {
+            Ok(())
+        }
+        fn health(&self) -> (u64, u32, u8) {
+            (0, 512, 0)
+        }
+    }
+
+    /// 模拟 EIPC：请求帧 → 真实 `StorageService::handle` → 响应帧
+    /// （可注入：传输错 / 截断 / 伪词 / 4B padding / epoch 漂移）。
+    enum MockMode {
+        Server,
+        TransportErr,
+        Truncated,
+        /// 伪造响应：status + payload（绕过服务端——空词/未知词形态
+        /// 真服务端不会产出，必须直摆）。
+        Raw(u8, &'static [u8]),
+        /// 正常响应 + 4B 尾部 padding（MR 整 word 形态）。
+        Padded,
+        /// 首响应 epoch=5（被吸收），次响应 epoch=6（陈旧句柄）。
+        EpochSwap,
+    }
+
+    struct BootServerMock {
+        svc: StorageService<NullBackend>,
+        face: Option<std::rc::Rc<core::cell::RefCell<TestInstallFace>>>,
+        mode: core::cell::Cell<MockMode>,
+        call: core::cell::Cell<usize>,
+    }
+
+    impl EipcSend for BootServerMock {
+        fn drv_call(&mut self, req: &[u8], _timeout_ns: u64) -> Result<Vec<u8>, ()> {
+            match &self.mode.replace(MockMode::Server) {
+                MockMode::TransportErr => return Err(()),
+                MockMode::Truncated => {
+                    let dreq = wire::decode_request(req).unwrap();
+                    let mut resp = DriverResponse::new(dreq.correlation, ST_INVALID, 7);
+                    resp.payload_len = 0;
+                    let full = wire::encode_response(&resp).to_vec();
+                    return Ok(full[..full.len() - 8].to_vec()); // < RESPONSE_LEN
+                }
+                MockMode::Raw(status, payload) => {
+                    let dreq = wire::decode_request(req).unwrap();
+                    let mut resp = DriverResponse::new(dreq.correlation, *status, 7);
+                    resp.payload[..payload.len()].copy_from_slice(payload);
+                    resp.payload_len = payload.len() as u16;
+                    return Ok(wire::encode_response(&resp).to_vec());
+                }
+                MockMode::Padded => {
+                    let full = self.serve(req, 7);
+                    let mut out = full;
+                    out.extend_from_slice(&[0u8; 4]);
+                    return Ok(out);
+                }
+                MockMode::EpochSwap => {
+                    let n = self.call.get();
+                    self.call.set(n + 1);
+                    let epoch = if n == 0 { 5 } else { 6 };
+                    return Ok(self.serve(req, epoch));
+                }
+                MockMode::Server => {}
+            }
+            Ok(self.serve(req, 7))
+        }
+    }
+
+    impl BootServerMock {
+        fn serve(&mut self, req: &[u8], epoch: u8) -> Vec<u8> {
+            let dreq = wire::decode_request(req).unwrap();
+            let mut resp = DriverResponse::new(dreq.correlation, 0, u64::from(epoch));
+            if let Some(face) = &self.face {
+                self.svc.attach_install(Box::new(SharedFace(face.clone())));
+            }
+            self.svc.handle(&dreq, &mut resp);
+            wire::encode_response(&resp).to_vec()
+        }
+    }
+
+    /// Rc<RefCell<TestInstallFace>> → InstallBackend 转发壳
+    ///（StorageService 持 Box<dyn InstallBackend>，测试要保种子引用）。
+    struct SharedFace(std::rc::Rc<core::cell::RefCell<TestInstallFace>>);
+    impl InstallBackend for SharedFace {
+        fn install_ranges(&self) -> eneros_drv_svc::boot_guard::InstallRanges {
+            self.0.borrow().install_ranges()
+        }
+        fn read_sectors(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), ()> {
+            self.0.borrow_mut().read_sectors(lba, buf)
+        }
+        fn write_sectors(&mut self, lba: u64, data: &[u8]) -> Result<(), ()> {
+            self.0.borrow_mut().write_sectors(lba, data)
+        }
+        fn flush(&mut self) -> Result<(), ()> {
+            self.0.borrow_mut().flush()
+        }
+        fn running_identity(&self) -> Option<RunningIdentity> {
+            self.0.borrow().running_identity()
+        }
+    }
+
+    fn mock_with(
+        mode: MockMode,
+        seed: bool,
+    ) -> (
+        BlockIo<BootServerMock>,
+        std::rc::Rc<core::cell::RefCell<TestInstallFace>>,
+    ) {
+        let face = TestInstallFace::new();
+        if seed {
+            face.borrow().seed_stable();
+        }
+        let inner = BootServerMock {
+            svc: StorageService::new(),
+            face: Some(face.clone()),
+            mode: core::cell::Cell::new(mode),
+            call: core::cell::Cell::new(0),
+        };
+        (BlockIo::new(inner, "svc-storage", 7, 1000), face)
+    }
+
+    /// 真服务端拒绝词 → `Rejected`（四个事务子码各取一形）。
+    #[test]
+    fn server_reject_words_classify_as_rejected() {
+        // STATUS 空介质 → bootctrl-both-invalid。
+        let (mut io, _f) = mock_with(MockMode::Server, false);
+        assert_eq!(
+            io.raw_command(BLK_BOOT_STATUS, &[]),
+            Err(BootCommandError::Rejected(BootReject::BootctrlBothInvalid))
+        );
+
+        // CANCEL 稳态记录（无 pending trial）→ no-pending-trial。
+        let (mut io, _f) = mock_with(MockMode::Server, true);
+        assert_eq!(
+            io.raw_command(BLK_BOOT_CANCEL, &[]),
+            Err(BootCommandError::Rejected(BootReject::NoPendingTrial))
+        );
+
+        // CONFIRM 虚增水位 → confirm-secver-mismatch。
+        let (mut io, _f) = mock_with(MockMode::Server, true);
+        let p = boot_body::confirm(true, 9, &[9u8; 16]);
+        assert_eq!(
+            io.raw_command(BLK_BOOT_CONFIRM, &p),
+            Err(BootCommandError::Rejected(
+                BootReject::ConfirmSecverMismatch
+            ))
+        );
+
+        // TRIAL 次写失败注入 → write1（阶段词——介质可能已部分更新）。
+        let (mut io, f) = mock_with(MockMode::Server, true);
+        f.borrow_mut().fail_second_write = true;
+        let p = boot_body::trial(2, &[3u8; 16]);
+        assert_eq!(
+            io.raw_command(BLK_BOOT_TRIAL, &p),
+            Err(BootCommandError::Rejected(BootReject::Write1))
+        );
+    }
+
+    /// 空词 / 未知词 / 其他状态 / 非事务子码的 ST_INVALID 一律 `Io`；
+    /// ST_UNAVAILABLE（无安装面）→ Io。裸词不得直返（svc-mgmt 会把
+    /// 非 `ERR:` 文本当成功）。
+    #[test]
+    fn empty_unknown_words_and_other_statuses_stay_io() {
+        // 空词 ST_INVALID（TRIAL 事务子码）→ Io。
+        let (mut io, _f) = mock_with(MockMode::Raw(ST_INVALID, b""), true);
+        let p = boot_body::trial(2, &[3u8; 16]);
+        assert_eq!(
+            io.raw_command(BLK_BOOT_TRIAL, &p),
+            Err(BootCommandError::Io(StoreError::WriteFailed))
+        );
+
+        // 未知词 ST_INVALID → Io。
+        let (mut io, _f) = mock_with(MockMode::Raw(ST_INVALID, b"no-such-word"), true);
+        assert_eq!(
+            io.raw_command(BLK_BOOT_CANCEL, &[]),
+            Err(BootCommandError::Io(StoreError::WriteFailed))
+        );
+
+        // 已知词但**非事务子码**（GUARD 不携带 BootInstall 词）→ Io。
+        let (mut io, _f) = mock_with(MockMode::Raw(ST_INVALID, b"flush"), true);
+        assert_eq!(
+            io.raw_command(BLK_BOOT_GUARD, &[]),
+            Err(BootCommandError::Io(StoreError::WriteFailed))
+        );
+
+        // ST_UNAVAILABLE（真服务端：安装面缺席 → 能力门先拒）。
+        let face = TestInstallFace::new();
+        let inner = BootServerMock {
+            svc: StorageService::new(),
+            face: None,
+            mode: core::cell::Cell::new(MockMode::Server),
+            call: core::cell::Cell::new(0),
+        };
+        let mut io = BlockIo::new(inner, "svc-storage", 7, 1000);
+        assert_eq!(
+            io.raw_command(BLK_BOOT_STATUS, &[]),
+            Err(BootCommandError::Io(StoreError::WriteFailed)),
+            "ST_UNAVAILABLE 必须落 Io（err 词形 = 服务端各臂 io）"
+        );
+        let _ = face;
+    }
+
+    /// 传输错 → Io(Unavailable)；坏响应长度 → Io(Encode)。
+    #[test]
+    fn transport_and_envelope_failures_are_io() {
+        let (mut io, _f) = mock_with(MockMode::TransportErr, true);
+        assert_eq!(
+            io.raw_command(BLK_BOOT_TRIAL, &[]),
+            Err(BootCommandError::Io(StoreError::Unavailable))
+        );
+        let (mut io, _f) = mock_with(MockMode::Truncated, true);
+        assert!(matches!(
+            io.raw_command(BLK_BOOT_STATUS, &[]),
+            Err(BootCommandError::Io(StoreError::Encode("bad-envelope")))
+        ));
+    }
+
+    /// 4B MR padding 容差（真服务端响应 + 尾部 4B）+ 成功臂 8B seq 直通。
+    #[test]
+    fn padded_response_and_success_path() {
+        // 稳态记录：trial → B（seq=2）。Padded = 响应 + 4B 尾 padding。
+        let (mut io, _f) = mock_with(MockMode::Padded, true);
+        let p = boot_body::trial(2, &[3u8; 16]);
+        let v = io.raw_command(BLK_BOOT_TRIAL, &p).expect("padded ok");
+        assert_eq!(v.len(), 8, "成功段严格 8B");
+        assert_eq!(v, 2u64.to_le_bytes());
+    }
+
+    /// epoch 变化 → 陈旧句柄 Io(Unavailable)（不跨重启复用）。
+    #[test]
+    fn epoch_change_is_io_not_rejected() {
+        // 首调吸收语义仅在 client epoch=0 时成立——直构 0 值客户端。
+        let (_f, mut io) = {
+            let (io, f) = mock_with(MockMode::EpochSwap, true);
+            (f, BlockIo::new(io.client, "svc-storage", 0, 1000))
+        };
+        let p = boot_body::trial(2, &[3u8; 16]);
+        // 首调：吸收 epoch 5。
+        assert!(io.raw_command(BLK_BOOT_TRIAL, &p).is_ok());
+        // 次调：epoch 6 ≠ 5 → Io。
+        assert_eq!(
+            io.raw_command(BLK_BOOT_TRIAL, &p),
+            Err(BootCommandError::Io(StoreError::Unavailable))
+        );
+    }
+
+    /// 数据面判据不变：非 ST_OK 仍 `WriteFailed`（收编前行为保持——
+    /// 数据面无「带原因失败」语义）。
+    #[test]
+    fn data_plane_failure_still_write_failed() {
+        let media = std::rc::Rc::new(RefCell::new(vec![0u8; 4096]));
+        let mut io = BlockIo::new(SimStorage { data: media }, "svc-storage", 7, 1000);
+        // 越界写 → 服务端 ST_UNAVAILABLE → WriteFailed。
+        let overflow: alloc::vec::Vec<u8> = vec![0x5A; 5000];
+        assert!(matches!(
+            io.write(0, &overflow),
+            Err(StoreError::WriteFailed)
+        ));
     }
 }

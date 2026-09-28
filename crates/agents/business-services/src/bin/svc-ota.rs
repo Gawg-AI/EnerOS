@@ -513,9 +513,15 @@ fn handle_boot_install(
     resp: &mut alloc::vec::Vec<u8>,
     io: &mut eneros_business_services::block_io::BlockIo<eneros_agent_sdk::ipc_sel4::Sel4IpcClient>,
 ) -> bool {
+    use eneros_agent_sdk::block_io::BootCommandError;
     use eneros_agent_sdk::block_io::{
         BLK_BOOT_CANCEL, BLK_BOOT_CONFIRM, BLK_BOOT_GUARD, BLK_BOOT_READ, BLK_BOOT_STATUS,
         BLK_BOOT_TRIAL,
+    };
+    // WP-77.2.3：失败响应构形单源 = ota_mgmt_bridge（已知拒绝 →
+    // `ERR:<word>` 穿透；Io → 原 `ERR:*io`；成功段严格定长/UTF-8）。
+    use eneros_business_services::ota_mgmt_bridge::{
+        relay_boot_err, relay_boot_ok, relay_io_err, BootRelayArm,
     };
     // 70.7.5（事务下沉）：事务臂 = **单次** guard 式 IPC 到 svc-storage
     // 新子码（BLK_BOOT_TRIAL/CONFIRM/CANCEL/STATUS）——bootctrl 记录零
@@ -548,9 +554,9 @@ fn handle_boot_install(
                     resp.extend_from_slice(b"ERR:guard-len");
                     false
                 }
-                Err(_) => {
+                Err(e) => {
                     eneros_runtime::println!("[svc-ota] BOOT-GUARD: io error —— 安装面异常");
-                    resp.extend_from_slice(b"ERR:guard-io");
+                    resp.extend_from_slice(&relay_io_err(&e, "guard-io"));
                     false
                 }
             }
@@ -612,30 +618,41 @@ fn handle_boot_install(
                         v.len(),
                         dt
                     );
-                    if v.len() == eneros_drv_svc::blk_wire::SEQ_RESP_LEN {
-                        // 定长臂已守卫，`Err` 不可达（`unwrap_or_default` 与
-                        // 收编前 `unwrap_or([0u8; 8])` 同纪律，零新 panic 面）。
-                        let seq = eneros_drv_svc::blk_wire::parse_seq_resp(&v).unwrap_or_default();
-                        eneros_runtime::println!(
-                            "[svc-ota] BOOT-TRIAL: tx committed seq={seq} target_secver={}",
-                            u64::from_le_bytes(secver_bytes)
-                        );
-                        resp.extend_from_slice(&seq.to_le_bytes());
-                        return true;
+                    // WP-77.2.3：成功段严格 8B seq（定长判据下沉桥接面）。
+                    match relay_boot_ok(BootRelayArm::Trial, &v) {
+                        Ok(data) => {
+                            // 定长臂已守卫，`Err` 不可达（`unwrap_or_default`
+                            // 与收编前同纪律，零新 panic 面）。
+                            let seq =
+                                eneros_drv_svc::blk_wire::parse_seq_resp(&data).unwrap_or_default();
+                            eneros_runtime::println!(
+                                "[svc-ota] BOOT-TRIAL: tx committed seq={seq} target_secver={}",
+                                u64::from_le_bytes(secver_bytes)
+                            );
+                            resp.extend_from_slice(&seq.to_le_bytes());
+                            true
+                        }
+                        Err(err_bytes) => {
+                            eneros_runtime::println!("[svc-ota] BOOT-TRIAL: rejected (len)");
+                            resp.extend_from_slice(&err_bytes);
+                            false
+                        }
                     }
-                    eneros_runtime::println!("[svc-ota] BOOT-TRIAL: rejected (len)");
-                    resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
-                    return false;
                 }
                 Err(e) => {
                     let dt = eneros_drv_svc::now_ms().saturating_sub(t0);
+                    // WP-77.2.3：已知拒绝词（write1/no-pending-trial 等）以
+                    // `ERR:<word>` 穿透；Io 维持 `ERR:trial-io`（不重试——
+                    // `write1`/`flush` 时介质可能已部分更新）。
+                    let err_bytes = relay_boot_err(BootRelayArm::Trial, &e);
+                    let tail = core::str::from_utf8(&err_bytes[4..]).unwrap_or("io");
                     eneros_runtime::println!(
-                        "[svc-ota] BOOT-TRIAL: RX-ERR {e:?} blocked_ms={}",
+                        "[svc-ota] BOOT-TRIAL: RX-ERR {tail} blocked_ms={}",
                         dt
                     );
-                    eneros_runtime::println!("[svc-ota] BOOT-TRIAL: rejected (io)");
-                    resp.extend_from_slice(b"ERR:trial-io");
-                    return false;
+                    eneros_runtime::println!("[svc-ota] BOOT-TRIAL: rejected ({tail})");
+                    resp.extend_from_slice(&err_bytes);
+                    false
                 }
             }
         }
@@ -656,24 +673,32 @@ fn handle_boot_install(
                 &image_id,
             );
             match io.raw_command(BLK_BOOT_CONFIRM, &p) {
-                Ok(r) if r.len() == eneros_drv_svc::blk_wire::SEQ_RESP_LEN => {
-                    let seq = eneros_drv_svc::blk_wire::parse_seq_resp(&r).unwrap_or_default();
+                Ok(r) => match relay_boot_ok(BootRelayArm::Confirm, &r) {
+                    Ok(data) => {
+                        let seq =
+                            eneros_drv_svc::blk_wire::parse_seq_resp(&data).unwrap_or_default();
+                        eneros_runtime::println!(
+                            "[svc-ota] BOOT-CONFIRM: slot={} secver={} seq={seq}",
+                            if slot_is_a { "A" } else { "B" },
+                            u64::from_le_bytes(req[6..14].try_into().unwrap())
+                        );
+                        resp.extend_from_slice(&seq.to_le_bytes());
+                        true
+                    }
+                    Err(err_bytes) => {
+                        eneros_runtime::println!("[svc-ota] BOOT-CONFIRM: rejected (len)");
+                        resp.extend_from_slice(&err_bytes);
+                        false
+                    }
+                },
+                Err(e) => {
+                    // WP-77.2.3：confirm-*-mismatch 词穿透。
+                    let err_bytes = relay_boot_err(BootRelayArm::Confirm, &e);
                     eneros_runtime::println!(
-                        "[svc-ota] BOOT-CONFIRM: slot={} secver={} seq={seq}",
-                        if slot_is_a { "A" } else { "B" },
-                        u64::from_le_bytes(req[6..14].try_into().unwrap())
+                        "[svc-ota] BOOT-CONFIRM: rejected ({})",
+                        core::str::from_utf8(&err_bytes[4..]).unwrap_or("io")
                     );
-                    resp.extend_from_slice(&seq.to_le_bytes());
-                    true
-                }
-                Ok(_) => {
-                    eneros_runtime::println!("[svc-ota] BOOT-CONFIRM: rejected (len)");
-                    resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
-                    false
-                }
-                Err(_) => {
-                    eneros_runtime::println!("[svc-ota] BOOT-CONFIRM: rejected (io)");
-                    resp.extend_from_slice(b"ERR:confirm-io");
+                    resp.extend_from_slice(&err_bytes);
                     false
                 }
             }
@@ -681,34 +706,58 @@ fn handle_boot_install(
         // 70.7.5：取消未确认 trial（mgmt update-rollback 后端）——单次
         // BLK_BOOT_CANCEL 中继。floor 不动（未确认 = 无不可逆提交）。
         0x0D => match io.raw_command(BLK_BOOT_CANCEL, &[]) {
-            Ok(r) if r.len() == eneros_drv_svc::blk_wire::SEQ_RESP_LEN => {
-                let seq = eneros_drv_svc::blk_wire::parse_seq_resp(&r).unwrap_or_default();
-                eneros_runtime::println!("[svc-ota] BOOT-CANCEL: trial canceled seq={seq}");
-                resp.extend_from_slice(&seq.to_le_bytes());
-                true
-            }
-            Ok(_) => {
-                eneros_runtime::println!("[svc-ota] BOOT-CANCEL: rejected (len)");
-                resp.extend_from_slice(eneros_business_services::svc_wire::ERR_LEN);
-                false
-            }
-            Err(_) => {
-                eneros_runtime::println!("[svc-ota] BOOT-CANCEL: rejected (io)");
-                resp.extend_from_slice(b"ERR:cancel-io");
+            Ok(r) => match relay_boot_ok(BootRelayArm::Cancel, &r) {
+                Ok(data) => {
+                    let seq = eneros_drv_svc::blk_wire::parse_seq_resp(&data).unwrap_or_default();
+                    eneros_runtime::println!("[svc-ota] BOOT-CANCEL: trial canceled seq={seq}");
+                    resp.extend_from_slice(&seq.to_le_bytes());
+                    true
+                }
+                Err(err_bytes) => {
+                    eneros_runtime::println!("[svc-ota] BOOT-CANCEL: rejected (len)");
+                    resp.extend_from_slice(&err_bytes);
+                    false
+                }
+            },
+            Err(e) => {
+                // WP-77.2.3：no-pending-trial 词穿透（mgmt update-rollback
+                // 的 detail 由此成为可判恢复语义的真实词形）。
+                let err_bytes = relay_boot_err(BootRelayArm::Cancel, &e);
+                eneros_runtime::println!(
+                    "[svc-ota] BOOT-CANCEL: rejected ({})",
+                    core::str::from_utf8(&err_bytes[4..]).unwrap_or("io")
+                );
+                resp.extend_from_slice(&err_bytes);
                 false
             }
         },
         // 状态投影（只读）：单次 BLK_BOOT_STATUS 中继。
         0x0E => match io.raw_command(BLK_BOOT_STATUS, &[]) {
             Ok(r) => {
-                let line = core::str::from_utf8(&r).unwrap_or("?");
-                eneros_runtime::println!("[svc-ota] BOOT-STATUS: {line}");
-                resp.extend_from_slice(r.as_slice());
-                true
+                // WP-77.2.3：成功文本非空且 UTF-8 合法（空载/坏字节 =
+                // 坏帧 `ERR:len`，不冒充状态文本）。
+                match relay_boot_ok(BootRelayArm::Status, &r) {
+                    Ok(data) => {
+                        let line = core::str::from_utf8(&data).unwrap_or("?");
+                        eneros_runtime::println!("[svc-ota] BOOT-STATUS: {line}");
+                        resp.extend_from_slice(&data);
+                        true
+                    }
+                    Err(err_bytes) => {
+                        eneros_runtime::println!("[svc-ota] BOOT-STATUS: rejected (len)");
+                        resp.extend_from_slice(&err_bytes);
+                        false
+                    }
+                }
             }
-            Err(_) => {
-                eneros_runtime::println!("[svc-ota] BOOT-STATUS: rejected (io)");
-                resp.extend_from_slice(b"ERR:status-io");
+            Err(e) => {
+                // WP-77.2.3：status-overflow 词穿透。
+                let err_bytes = relay_boot_err(BootRelayArm::Status, &e);
+                eneros_runtime::println!(
+                    "[svc-ota] BOOT-STATUS: rejected ({})",
+                    core::str::from_utf8(&err_bytes[4..]).unwrap_or("io")
+                );
+                resp.extend_from_slice(&err_bytes);
                 false
             }
         },
@@ -730,9 +779,9 @@ fn handle_boot_install(
                     resp.extend_from_slice(b"ERR:guard-len");
                     return false;
                 }
-                Err(_) => {
+                Err(e) => {
                     eneros_runtime::println!("[svc-ota] BOOT-CANDIDATE: guard io error");
-                    resp.extend_from_slice(b"ERR:guard-io");
+                    resp.extend_from_slice(&relay_io_err(&e, "guard-io"));
                     return false;
                 }
             };
@@ -770,9 +819,9 @@ fn handle_boot_install(
                         false
                     }
                 },
-                Err(_) => {
+                Err(e) => {
                     eneros_runtime::println!("[svc-ota] BOOT-CANDIDATE: read io error");
-                    resp.extend_from_slice(b"ERR:read-io");
+                    resp.extend_from_slice(&relay_io_err(&e, "read-io"));
                     false
                 }
             }
