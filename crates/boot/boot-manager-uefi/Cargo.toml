@@ -33,3 +33,7 @@ ed25519-dalek = { version = "2.2.0", default-features = false, features = ["allo
 [features]
 default = []
 uefi-app = ["dep:uefi"]
+# WP-77.2.1 QEMU 故障注入窗（仅测试装配）：image_factory 在
+# ENEROS_BOOT_MANAGER_FAULT_INJECT=1 时 opt-in；release 流水线恒缺省
+#（注入面与 release 构建互斥的执行机构）。
+fault-inject = ["uefi-app"]

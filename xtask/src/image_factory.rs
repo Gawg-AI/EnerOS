@@ -1465,6 +1465,16 @@ fn extract_gpt_manifest(image: &[u8], gpt: &Gpt, name: &str) -> DynResult<Releas
         .map_err(|error| invalid(format!("release manifest decode failed: {error:?}")))
 }
 
+/// boot-manager 构建特性集（WP-77.2.1）：缺省 `uefi-app`；
+/// `ENEROS_BOOT_MANAGER_FAULT_INJECT=1` → 追加 `fault-inject`（仅测试
+/// 装配；release 流水线恒不设置）。
+fn uefi_manager_features() -> String {
+    match std::env::var("ENEROS_BOOT_MANAGER_FAULT_INJECT").as_deref() {
+        Ok("1") => "uefi-app,fault-inject".to_string(),
+        _ => "uefi-app".to_string(),
+    }
+}
+
 fn build_uefi_manager(
     root: &Path,
     public_key: &[u8; 32],
@@ -1493,7 +1503,10 @@ fn build_uefi_manager(
             "boot-manager-uefi",
             "--no-default-features",
             "--features",
-            "uefi-app",
+            // WP-77.2.1 QEMU 故障注入窗：仅 ENEROS_BOOT_MANAGER_FAULT_INJECT=1
+            // 显式 opt-in（注入模式再由 ENEROS_FAULT_INJECT_MODE 构建期选定）。
+            // release 流水线恒不设置 → 注入面与 release 构建互斥。
+            &uefi_manager_features(),
         ]);
     run(&mut command)?;
     let path = root.join("target/aarch64-unknown-uefi/release/boot-manager-uefi.efi");
