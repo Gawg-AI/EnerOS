@@ -1345,7 +1345,7 @@ fn durable_plan_submitted_once_runs_four_steps_and_restart_cancels_unsent() {
             // the old plan windows and send their pending suffix.
             HELD_CLOCK.with(|clock| clock.set(10));
             engine = held_fixture(media.clone(), delivered.clone());
-            engine.drive_held_plans(None, None).unwrap();
+            engine.tick_held(None, None).unwrap();
             assert_eq!(*delivered.borrow(), 1);
             let report = engine.held_plan_reports().unwrap().remove(0);
             assert_eq!(report.final_state, BatchState::Failed);
@@ -1357,7 +1357,7 @@ fn durable_plan_submitted_once_runs_four_steps_and_restart_cancels_unsent() {
             for step in 1..=3 {
                 HELD_CLOCK.with(|clock| clock.set(now_ms() + step * 5_000));
                 engine
-                    .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+                    .tick_held(Some(&input), Some(&trusted_telemetry()))
                     .unwrap();
                 assert_eq!(
                     *delivered.borrow(),
@@ -1372,7 +1372,7 @@ fn durable_plan_submitted_once_runs_four_steps_and_restart_cancels_unsent() {
                 .iter()
                 .all(|c| c.state == CmdState::Applied && c.attempts == 1));
             engine
-                .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+                .tick_held(Some(&input), Some(&trusted_telemetry()))
                 .unwrap();
             assert_eq!(*delivered.borrow(), 4);
             drop(engine);
@@ -1438,7 +1438,7 @@ fn held_plan_horizon_beyond_control_window_rejected() {
     // ③ 过期输入：tick 时钟越过 valid_until → 未发步取消、零新写。
     HELD_CLOCK.with(|clock| clock.set(valid_until + 1_000));
     engine2
-        .drive_held_plans(Some(&input_edge), Some(&trusted_telemetry()))
+        .tick_held(Some(&input_edge), Some(&trusted_telemetry()))
         .unwrap();
     let report = engine2.held_plan_reports().unwrap().remove(0);
     use eneros_control_dispatch::saga::{BatchState, CmdState};
@@ -1476,7 +1476,7 @@ fn durable_plan_readback_settles_unknown_journal_before_next_step() {
     );
     HELD_CLOCK.with(|clock| clock.set(now_ms() + 5_000));
     engine
-        .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+        .tick_held(Some(&input), Some(&trusted_telemetry()))
         .unwrap();
     assert_eq!(
         *delivered.borrow(),
@@ -1544,7 +1544,7 @@ fn applied_commands_carry_independent_readback_not_setpoint() {
     for step in 1..=3u32 {
         HELD_CLOCK.with(|clock| clock.set(now_ms() + u64::from(step) * 5_000));
         engine
-            .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+            .tick_held(Some(&input), Some(&trusted_telemetry()))
             .unwrap();
     }
     let report = engine.held_plan_reports().unwrap().remove(0);
@@ -1645,7 +1645,7 @@ fn held_plan_pins_input_and_releases_on_completion() {
     for step in 1..=3u64 {
         HELD_CLOCK.with(|clock| clock.set(now_ms() + step * 5_000));
         engine
-            .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+            .tick_held(Some(&input), Some(&trusted_telemetry()))
             .unwrap();
     }
     // 最后一次 drive 触发 finalize：终态且无未决 ⇒ release。
@@ -1929,10 +1929,13 @@ fn held_tick_syncs_full_live_set_and_stale_blocks_admission() {
     drop(l);
 
     // 空载 tick（计划全部终态后）⇒ 空集同步（冷启动屏障解除语义）。
+    // 蓝图 78 WP-78.1.3：本段 tick 全部走生产周期 tick_held（原直接
+    // drive 的测试面分叉已收编）——**每个** held tick 都同步：install(1)
+    // + 首 tick(1) + 循环 3 + 收尾 1 = 6；末 tick 计划全终态 ⇒ 空集。
     for step in 1..=3u64 {
         HELD_CLOCK.with(|clock| clock.set(now_ms() + step * 5_000));
         engine
-            .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+            .tick_held(Some(&input), Some(&trusted_telemetry()))
             .unwrap();
     }
     HELD_CLOCK.with(|clock| clock.set(now_ms() + 16_000));
@@ -1941,7 +1944,10 @@ fn held_tick_syncs_full_live_set_and_stale_blocks_admission() {
         .unwrap();
     assert_eq!(active, 0);
     let l = log.borrow();
-    assert_eq!(l.sync_calls, 3);
+    assert_eq!(
+        l.sync_calls, 6,
+        "每个 held tick 都同步（生产周期口径，含空集 tick）"
+    );
     assert!(l.last_sync_set.is_empty(), "无活跃计划 ⇒ 空集同步");
     drop(l);
 
@@ -1997,6 +2003,207 @@ fn held_tick_syncs_full_live_set_and_stale_blocks_admission() {
         "准入恢复（晚时钟提交可能同 tick 终态）：{:?}",
         receipt.final_state
     );
+}
+
+/// 蓝图 78 卷一 WP-78.1.3（序锁）：**同步失败发生在同一 tick 内 ⇒ 该
+/// tick 即只读**——不发放新步（蓝图 §2.4「同步先行，不滞后一拍」；
+/// 验收矩阵「held 搬家：sync 晚一拍」行的回归锁）。
+/// 变异靶：tick 侧把 sync 移回 drive 之后 → 本 tick 仍按上一拍 stale=ok
+/// 发放新步 → delivered 增长 → 本测红。
+#[test]
+fn held_sync_failure_same_tick_sends_no_new_step() {
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let delivered = Rc::new(RefCell::new(0));
+    let log = Rc::new(RefCell::new(RetainerLog::default()));
+    let mut engine = held_fixture_retained(media, delivered.clone(), log.clone());
+    let (plan, input) = held_candidate();
+    engine
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
+        .unwrap();
+    let sent_at_admission = *delivered.borrow();
+    assert_eq!(sent_at_admission, 1);
+    // 远端同步失败 ⇒ 本 tick 只读：未发步取消、零新投递、活跃归零。
+    log.borrow_mut().sync_ok = false;
+    HELD_CLOCK.with(|clock| clock.set(now_ms() + 5_000));
+    let active = engine
+        .tick_held(Some(&input), Some(&trusted_telemetry()))
+        .unwrap();
+    assert_eq!(active, 0, "同步失败的 tick 取消未发步 ⇒ 活跃归零");
+    assert_eq!(
+        *delivered.borrow(),
+        sent_at_admission,
+        "同步失败的同 tick 不得发放新步（sync 先行——晚一拍即在此多出一写）"
+    );
+}
+
+/// 蓝图 78 卷一 WP-78.1.3（a）：**安装首发 sync 失败 ⇒ stale 置位于首
+/// tick 之前** ⇒ 新准入即拒（fail-closed——不需要任何设备写「试探恢
+/// 复」）；首个 tick 同步恢复 ⇒ stale 清除 ⇒ 准入恢复。
+/// 变异靶：install 侧首发同步删除 / stale 门后移到 tick 之后 → 本测红。
+#[test]
+fn held_install_sync_failure_blocks_admission_before_first_tick() {
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let delivered = Rc::new(RefCell::new(0));
+    let log = Rc::new(RefCell::new(RetainerLog {
+        sync_ok: false,
+        ..RetainerLog::default()
+    }));
+    let mut engine = held_fixture_retained(media, delivered.clone(), log.clone());
+    let (plan, input) = held_candidate();
+    // 首 tick 前：install 首发同步未确认 ⇒ 新准入拒绝（stale 已置位）。
+    let err = engine
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
+        .expect_err("install 首发 sync 未确认 ⇒ 新准入必须被拒");
+    assert!(
+        format!("{err:?}").contains("held snapshot sync pending"),
+        "stale 拒绝面（首 tick 前）：{err:?}"
+    );
+    assert_eq!(*delivered.borrow(), 0, "零投递");
+    // 首个 tick（同步恢复）⇒ stale 清除 ⇒ 新准入恢复。
+    log.borrow_mut().sync_ok = true;
+    HELD_CLOCK.with(|clock| clock.set(now_ms() + 5_000));
+    engine
+        .tick_held(Some(&input), Some(&trusted_telemetry()))
+        .unwrap();
+    let receipt = engine
+        .submit_trusted(
+            &renamed_plan(&plan, 0x81),
+            &input,
+            &trusted_telemetry(),
+            &actor(),
+        )
+        .expect("同步恢复 ⇒ 准入恢复");
+    assert_eq!(
+        receipt.final_state,
+        eneros_control_dispatch::DispatchState::Persisted
+    );
+}
+
+/// 蓝图 78 卷一 WP-78.1.3（b）：**stale 与 fault 是不同故障态**——
+/// stale 只阻新 held 准入 + 在途只读，legacy 单命令（协议写轨）不受累
+/// （REG-77-G 口径）；fault 阻一切新设备写。组合矩阵两臂互不遮蔽：
+/// 臂 1 stale×单命令 = 放行；臂 2 fault×单命令 = 拒绝。
+/// 变异靶：把 stale 合并进 fault（阻单命令）或把 fault 降为 stale
+/// （放行新写）→ 相应臂红。
+#[test]
+fn stale_leaves_legacy_single_command_alive_while_fault_blocks_it() {
+    // 臂 1：stale ⇒ legacy 单命令照常走（submit_intent 协议写轨）。
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let delivered = Rc::new(RefCell::new(0));
+    let log = Rc::new(RefCell::new(RetainerLog {
+        sync_ok: false,
+        ..RetainerLog::default()
+    }));
+    let mut engine = held_fixture_retained(media, delivered.clone(), log);
+    let intent = eneros_protocol_abstract::write::PointWriteIntent::new(
+        "grid",
+        1,
+        10,
+        eneros_upa_model::PointValue::Float(10.0),
+        1,
+        now_ms(),
+    );
+    let receipt = engine
+        .submit_intent(&intent, &trusted_telemetry(), &actor(), 5_000)
+        .expect("stale 不得阻 legacy 单命令（REG-77-G）");
+    assert_eq!(
+        receipt.final_state,
+        eneros_control_dispatch::DispatchState::Committed
+    );
+    assert_eq!(*delivered.borrow(), 1);
+    // 臂 2：fault ⇒ 同一单命令轨被阻。故障形态 = 存活计划在场而装配期
+    // 重钉被拒（空 store 装配不触发重钉——两相夹具：健康种入 + 带病重开）。
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media2 = HeldMedia(Rc::new(RefCell::new(eneros_durable_state::MemIo::new(
+        131_072,
+    ))));
+    let delivered2 = Rc::new(RefCell::new(0));
+    let (plan_seed, input_seed) = held_candidate();
+    {
+        let log_seed = Rc::new(RefCell::new(RetainerLog::default()));
+        let mut engine_seed = held_fixture_retained(media2.clone(), delivered2.clone(), log_seed);
+        engine_seed
+            .submit_trusted(&plan_seed, &input_seed, &trusted_telemetry(), &actor())
+            .expect("健康装配 ⇒ 计划入 store（fault 相位种入）");
+    }
+    let sent_before = *delivered2.borrow();
+    let log2 = Rc::new(RefCell::new(RetainerLog {
+        refuse_hold: true,
+        ..RetainerLog::default()
+    }));
+    let mut engine2 = held_fixture_retained(media2, delivered2.clone(), log2);
+    let intent2 = eneros_protocol_abstract::write::PointWriteIntent::new(
+        "grid",
+        1,
+        10,
+        eneros_upa_model::PointValue::Float(10.0),
+        1,
+        now_ms(),
+    );
+    let err = engine2
+        .submit_intent(&intent2, &trusted_telemetry(), &actor(), 5_000)
+        .expect_err("fault 必须阻一切新设备写（含单命令轨）");
+    assert!(
+        format!("{err:?}").contains("held retention fault"),
+        "fault 阻断面：{err:?}"
+    );
+    assert_eq!(
+        *delivered2.borrow(),
+        sent_before,
+        "带病重开后零新投递（种入相位的历史投递不计）"
+    );
+}
+
+/// 蓝图 78 卷一 WP-78.1.3（c）：**store 不可读 ⇒ tick 显式失败**——绝不
+/// 报活跃 0（读错折零 = EA 放行 System1 的条件性故障；WP-77.1.1 单读化
+/// 回归锁在 tick_held 面的延伸）。
+/// 变异靶：tick 侧把 plans() 读错折叠成 Ok(0) → 本测红。
+#[test]
+fn tick_with_unreadable_store_errors_never_reports_zero_active() {
+    HELD_CLOCK.with(|clock| clock.set(now_ms()));
+    let media = CutHeldMedia {
+        bytes: Rc::new(RefCell::new(vec![0; 131_072])),
+        remaining: Rc::new(std::cell::Cell::new(None)),
+    };
+    let delivered = Rc::new(RefCell::new(0));
+    let actual = Rc::new(std::cell::Cell::new(0.0));
+    let mut engine = held_fixture_channels(
+        media.clone(),
+        delivered.clone(),
+        false,
+        actual,
+        Box::new(InMemoryIntentStore::new(64)),
+    );
+    let (plan, input) = held_candidate();
+    engine
+        .submit_trusted(&plan, &input, &trusted_telemetry(), &actor())
+        .unwrap();
+    // 切断介质写 → 下一笔持久提交失败 → store poisoned（读面同判据）。
+    media.remaining.set(Some(0));
+    let _ = engine.submit_trusted(
+        &renamed_plan(&plan, 0x91),
+        &input,
+        &trusted_telemetry(),
+        &actor(),
+    );
+    HELD_CLOCK.with(|clock| clock.set(now_ms() + 5_000));
+    let result = engine.tick_held(Some(&input), Some(&trusted_telemetry()));
+    match result {
+        Ok(active) => panic!("store 不可读不得报活跃数（got Ok({active})）——读错折零"),
+        Err(e) => assert!(
+            format!("{e:?}").contains("held storage uncertain"),
+            "显式不确定错误面：{e:?}"
+        ),
+    }
 }
 
 /// 蓝图 77 卷一 WP-77.1.2：**装配未完成 ⇒ 提交被拒，完成后可恢复并重钉**。
@@ -2338,7 +2545,7 @@ fn h03_shared_snapshot_released_only_after_last_plan_finishes() {
     for step in 1..=4u64 {
         HELD_CLOCK.with(|clock| clock.set(now_ms() + step * 5_000));
         engine
-            .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+            .tick_held(Some(&input), Some(&trusted_telemetry()))
             .unwrap();
         if step <= 3 {
             assert!(
@@ -2393,18 +2600,18 @@ fn h04_release_failure_retries_on_idle_ticks() {
     for step in 1..=3u64 {
         HELD_CLOCK.with(|clock| clock.set(now_ms() + step * 5_000));
         engine
-            .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+            .tick_held(Some(&input), Some(&trusted_telemetry()))
             .unwrap();
     }
     assert_eq!(*count.borrow(), 1, "首次释放恰一次（失败）");
     // 空闲 tick（计划已全部终态、无新提案）⇒ 必须重试并收敛。
     engine
-        .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+        .tick_held(Some(&input), Some(&trusted_telemetry()))
         .unwrap();
     assert_eq!(*count.borrow(), 2, "失败释放必须在后续周期重试（R2）");
     // 已收敛：再空闲 tick 不再重发（幂等缓存生效）。
     engine
-        .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+        .tick_held(Some(&input), Some(&trusted_telemetry()))
         .unwrap();
     assert_eq!(*count.borrow(), 2, "收敛后不得重复释放");
 }
@@ -2465,13 +2672,13 @@ fn h05_release_reply_lost_converges_idempotently() {
     for step in 1..=3u64 {
         HELD_CLOCK.with(|clock| clock.set(now_ms() + step * 5_000));
         engine
-            .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+            .tick_held(Some(&input), Some(&trusted_telemetry()))
             .unwrap();
     }
     // 第一次 release "回应丢失"（远端已实际解除）；下一个（空闲）tick
     // 重试 ⇒ absent 幂等确认 ⇒ 收敛。钉集必须为空（不泄漏）。
     engine
-        .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+        .tick_held(Some(&input), Some(&trusted_telemetry()))
         .unwrap();
     assert!(
         flicker.pins.borrow().is_empty(),
@@ -2479,7 +2686,7 @@ fn h05_release_reply_lost_converges_idempotently() {
     );
     let calls_after_converge = *flicker.calls.borrow();
     engine
-        .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+        .tick_held(Some(&input), Some(&trusted_telemetry()))
         .unwrap();
     assert_eq!(
         *flicker.calls.borrow(),
@@ -2521,7 +2728,7 @@ fn h06_reheld_snapshot_releases_each_round() {
     for step in 1..=3u64 {
         HELD_CLOCK.with(|clock| clock.set(now_ms() + step * 5_000));
         engine
-            .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+            .tick_held(Some(&input), Some(&trusted_telemetry()))
             .unwrap();
     }
     assert!(log.borrow().released.contains(&sid), "第一轮释放");
@@ -2542,7 +2749,7 @@ fn h06_reheld_snapshot_releases_each_round() {
     for step in 4..=7u64 {
         HELD_CLOCK.with(|clock| clock.set(now_ms() + step * 5_000));
         engine
-            .drive_held_plans(Some(&input), Some(&trusted_telemetry()))
+            .tick_held(Some(&input), Some(&trusted_telemetry()))
             .unwrap();
     }
     assert!(
@@ -2588,7 +2795,7 @@ fn h08_restart_rebuilds_shared_pins_without_resend() {
         "共享快照按持久计划重建（集合语义恰一份）"
     );
     // 恢复 tick（旧单调窗失效——只读对账，不重发旧命令）。
-    reopened.drive_held_plans(None, None).unwrap();
+    reopened.tick_held(None, None).unwrap();
     assert_eq!(*delivered.borrow(), sent_before, "恢复不得重发旧命令");
 }
 
@@ -2685,7 +2892,7 @@ fn held_plan_100_torn_write_points_never_resend_or_lose_confirmed_prefix() {
         assert_eq!(actual.get(), 1.0);
         media.remaining.set(Some(cut * 97));
         HELD_CLOCK.with(|clock| clock.set(now_ms() + 5_000));
-        let result = engine.drive_held_plans(Some(&input), Some(&trusted_telemetry()));
+        let result = engine.tick_held(Some(&input), Some(&trusted_telemetry()));
         let sent = *delivered.borrow();
         if sent == 1 {
             before_send += 1;
@@ -2706,7 +2913,7 @@ fn held_plan_100_torn_write_points_never_resend_or_lose_confirmed_prefix() {
             actual.clone(),
             Box::new(intents),
         );
-        recovered.drive_held_plans(None, None).unwrap();
+        recovered.tick_held(None, None).unwrap();
         assert_eq!(
             *delivered.borrow(),
             sent,

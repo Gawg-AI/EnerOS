@@ -409,15 +409,58 @@ impl DispatchEngine {
         self.held_receipt(accepted)
     }
 
-    /// Independent periodic tick: no proposal is needed. Recovery is read-only,
-    /// and changing/losing the frozen input cancels every unsent command.
-    pub fn drive_held_plans(
+    /// 蓝图 78 卷一 WP-78.1.3：**内部执行核**（原 pub 面——外部测试
+    /// 绕过生产周期同步的直接驱动入口已收窄）。生产周期与行为测试一律
+    /// 穿 [`Self::held_tick_cycle`]（sync 先行 + drive + finalize 的唯一
+    /// 序）。恢复语义不变：只读对账，冻结输入变更/丢失取消未发步。
+    fn drive_held_plans(
         &mut self,
         input: Option<&TrustedInput>,
         telemetry: Option<&TrustedTelemetry>,
     ) -> Result<Vec<DriveReport>, DispatchError> {
         self.drive_held_plans_counted(input, telemetry)
             .map(|(reports, _)| reports)
+    }
+
+    /// 蓝图 78 卷一 WP-78.1.3：held 生产周期的**私有单点**（原
+    /// `ControlDispatch::tick_held` 内联编排迁入现有 held_engine module
+    /// ——序的所有权归 held_engine，trait 面只委托）。重评 → drive 前
+    /// 存活集同步 → drive → 收尾（drive 后活跃数）；返回值 = drive 完成
+    /// 后时点的在途计划数（EA 据此抑制 System1，ADR-0054）。
+    pub(crate) fn held_tick_cycle(
+        &mut self,
+        input: Option<&TrustedInput>,
+        telemetry: Option<&TrustedTelemetry>,
+    ) -> Result<usize, DispatchError> {
+        // 蓝图 77 卷一 WP-77.1.3（复查轮 B3 重构）：**同步先行**——drive
+        // 的 allowed 判据消费**本 tick** 的同步结果（同步失败 = 本 tick 即
+        // 只读，不滞后一拍）；同步集 = drive 前的存活引用（drive 终态化
+        // 引发的释放由下一 tick 收敛——过保留方向）。每个 held tick 全量
+        // 确认（重启必重建；不冒用发送方 epoch 充当服务世代）。失败 ⇒
+        // stale：新持有准入阻断 + 在途计划只读对账/取消（蓝图 §2.4）。
+        // WP-77.1.2 复查轮补口（B4）：装配保留故障逐 tick 重评（先于
+        // 同步——恢复后本 tick 的 stale 判据即用新状态）。
+        self.re_evaluate_held_retention();
+        let live_ids = self.live_held_snapshot_ids()?;
+        // retainer 缺席 = owner 未装配 = held 路径整体不可达（accept 在
+        // 「held store absent」先拒）——此处 true 只是无对象可同步的空
+        // 事实，不是把未知折成已确认（无后续消费方依赖它放行任何动作）。
+        let synced = self
+            .input_retainer
+            .as_mut()
+            .map(|r| r.sync(&live_ids))
+            .unwrap_or(true);
+        self.held_sync_stale = !synced;
+        if !synced {
+            eneros_runtime::println!(
+                "[control-dispatch] HELD-SYNC-STALE n={}（远端世代钉集未确认——新准入阻断+在途只读）",
+                live_ids.len()
+            );
+        }
+        // 蓝图 77 卷一 WP-77.1.1：活跃计数单读化——drive 内部收尾的同一
+        // 读取派生（drive 完成后时点），读错显式传播。
+        let (_, active) = self.drive_held_plans_counted(input, telemetry)?;
+        Ok(active)
     }
 
     /// 蓝图 77 卷一 WP-77.1.1：drive + **drive 完成后时点的活跃计数**一次

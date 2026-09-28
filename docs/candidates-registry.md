@@ -1652,3 +1652,29 @@ claims 对账（第三路逐条实跑）：REG-74-C/L/M 与登记册 B74-3 全�
 **核验过成立（抽样）**：BootInfo minor 1 wire↔repr(C) 全等（offset_of 互锁 + 240/244/252 逐点）；六字段比较源与比较面（slot 用本次实际槽、floor 经 accessor 同值面）；四消费点全部同源 `validated_identity()`、`read_identity_capsule` 仅 identity_freeze 一个调用点、qemu-test-synth 仅 Absent 臂可达；UEFI Address 预留先于一切 `prepare_attempt` 扣次且 loop 内预留后无 continue 路径（多盘不重复分配）；converge 三受管文件 sha256 与期望终态全等（卷二 A.2-3 补丁退化无复发）；注入门 25 判据无恒真（N1-8 BOOTCTRL 字节比对/N2 负 grep/P 正 grep 均有判别力）；卷一保持窗迁移单点/窗语义/错误路径保持历史逐条符合 §2.2；SNAP_SYNC 帧有界。
 
 **收口核算（本轮）**：host **9401 → 9405**（+4：event_face t16/t17、sel4-sys 溢出锁、boot-protocol 溢出锁；agent-sdk 为既有测补臂补断言无净增）；fmt 净；clippy 除 drv-svc 5 条既有 doc 存量外零告警（R2 修后 agent-sdk 归零）；目标构建 `sel4-build-rust.sh` EXIT=0（safe.rs/witness.rs/event_face.rs 改动入 target 闭包实弹编译过）。变异咬合：R3 双向（旧测盲区实证 + 新测红）；R4/R5 红测先于修复复现（红值 = 错留第二代区间 / 超容 Ok）；R1 双面红测 debug panic 复现。未跑 QEMU（无介质/启动语义改动，host + 目标构建口径与 REG-77-H 同先例如实登记）。
+
+## B78-1. 蓝图 78 · 卷一登记（2026-09-29，v0.351.0，冻结输入保留与持有周期）
+
+**施工口径**：蓝图 `78-保留闭环与OTA准入修复蓝图/01-冻结输入保留与持有周期.md`（判定基线 `94d05307`）。WP-78.1.1～78.1.4 全落。77-2 收口先行（94d05307：六修四登记，host 9401→9405）。
+
+**修复五项（全部红→绿）**：
+
+| # | 缺陷 | 定性 | 修复 |
+|---|---|---|---|
+| 78-A（§1.3） | meta 读故障被 `probe_snap_meta` 压成 `Absent` → 按 REG-77-F 遗留全保护接纳新持有（故障伪装旧格式，跳过来源在位检查） | 元数据三态缺口（故障前提） | `MetaProbe` 四态：仅确凿 `NotFound`=`LegacyAbsent`；I/O/坏块/不确定=`IoFault`（pin/sync 拒绝、旧钉/旧 meta 留状态）；形态坏=`Corrupt`。红测 t18（face 级降级负例四臂）+ t18b（probe 缝真实故障块设备三态判别） |
+| 78-B（§1.4） | blob/meta 短写/Ok(0)/close 失败被当完整工件发布（`File::write` 返回实际写入数被忽略；rename 成功≠工件完整） | 完整写入缺口（需短写故障） | `write_snap_file_all` 窄 helper：短写补全/零进展失败/close、rename 逐环裁决 + **写后取回核验**（blob 解码身份、meta 区间逐项相等），失败撤下。红测 t19/t20/t21（注入缝 `write_fault` thread_local：物理短写/零进展/持续失败） |
+| 78-C（§1.5） | 已钉 blob 暂不可读时 meta 被孤儿清扫误删（清扫按「可读 blob 干集」判定）→ 同 ID 从有来源区间退化成遗留全保护（丢取证界+容量压力） | 孤儿清扫判据缺口 | 孤儿判定改**文件存在性真相**：对端 blob 确凿 `NotFound` 且不在保护集才删 meta；在场（哪怕不可读）/stat 不确定=过度保留。红测 t22 |
+| 78-D（§1.6） | 写前腾位可删**当前已发布 ID**（未在钉集）→ 新工件失败后 last_input 仍指旧 ID ⇒ `snapshot_input` 给出取不回的 ID（可发布性违约，快窗条件性） | 发布原子性缺口（快窗+满卷+meta 失败） | 写前腾位/终剪保护集合 = 存活钉 ∪ **当前已发布 ID**；空间不足拒新发布保旧输入。红测 t23（真实 `TelemetryService::snapshot_input→snapshot_blob` interface + 快窗 80ms×38 批 + meta 持续失败注入）+ t24（慢周期过期门对照——条件性非普遍） |
+| 78-E（§1.8） | held 生产周期编排留在 `ControlDispatch::tick_held` 内联、`drive_held_plans` pub——外部测试可绕过生产周期同步直接驱动（interface/test surface 分叉） | 测试面分叉（蓝图 77 B1/B3/B4 已修同步次序） | 编排迁入 `held_engine::held_tick_cycle` 私有单点（trait 面只委托）；`drive_held_plans` 降私有执行核；typed_chain 20 处直接驱动全部改经 `tick_held`。红转绿判定：held_tick_syncs 同步计数期望从测试面口径改生产口径（6=install+4 tick） |
+
+**新增测试**：event_face +8（t18/t18b/t19/t20/t21/t22/t23/t24）+注入缝（`write_fault` thread_local 短写/零进展/持续失败 + `FaultReads` 故障块设备）；typed_chain +4（install 首发 sync 失败拒准入 / stale×单命令 vs fault×单命令组合矩阵 / store 不可读 tick 显式 Err / sync 失败同 tick 零新步）。host 9405→**9417**（9417=9405+12：event_face +8、typed_chain +4），全绿零失败。
+
+**变异咬合**：M1（probe 三态退化）→t18b 红；M2'（单次写忽略计数+无核验=旧形态）→t19 红；M3（去已发布保护）→t23 红；M4（孤儿可读干集误删）→t22 红；M5（sync 移 drive 后）→序锁测试红；M6（跳过空集 sync）→held_tick_syncs 红；M7（stale 并入 fault 阻单命令）→组合矩阵臂 1 红；M8（live_held 读错折空集）**存活**=双重防线覆盖（drive 内 `plans()` 读错独立传播兜住同一不变量——WP-77.1.1 单读化专锁在案，登记不补）；F1'（孤儿 meta 删除回混 kept 减项）→t26 下溢 panic；F2'（写失败路径摘清理）→t25 tmp 残留红；F5'（sync 摘降级守卫）→t18 臂 5 降级接纳红。**t22 空转事故留档**：初版 t22 在旧代码上从未变红（六红名单无它）——CachedBlocks(4) 实例内写经缓存自洽，两窗触碰从未驱逐 id1 数据块，缺陷路径不可达；M4 探针实证后重构（5 窗驱逐前提），旧缺陷形态才可判别。**恢复事故留档**：变异恢复一次 `git checkout` 把 event_face 卷一全部改动吞掉（本教训第三次在案）——靠 `/tmp` 当轮备份完整救回；变异恢复一律 `cp 显式目标路径`，永不用 git checkout。
+
+**QEMU 实弹**（tools/run78-vol1-gate.sh，qemu-test-synth 装配 r10 同款；**14 轮实弹迭代后 VOL78.1-GATE: PASS / EXIT=0**，evidence/78/vol1/ 留档）：三窗——段A 健康持有+计量（PLAN-HELD / SNAP-PIN-HELD / Applied×3 / 每 tick 同步 ×23 / 零 PANIC）；段B 持有中重启恢复=蓝图窗1（中飞盘原样重启：HELD-STORE-OPEN OK + 旧 blob 存活 blobs=1 + 旧事件段 recovered=77 + 钉/同步 face-not-open fail-closed→FAULT→重评 RECOVERED→同步收敛（末 STALE 早于 face-open）+ 恢复只读 Blocked×2 零 Executing + 释放面 absent-confirm 收敛 + 零 PANIC）；段C 快照卷抹除→同步拒绝=蓝图窗4 fail-closed（blobs=0 介质真相 + assembly-repin-failed + HELD-RETENTION-FAULT + 零 PANIC；RECOVERED 出现与否随取消 tick 竞速——存活计划取消清空 live 集后故障按重钉面语义清除，信息行不判红）。**门标定三实锤**（过程留档）：① peer 请求 assets=3 steps=4 常编译合并为 1 批×3 意图——准入 tick 内毫秒级完成，r10_b_witness「Applied 前缀+Pending 后缀」中飞形态不可达，窗1 语义改中飞盘重启承载；② QEMU 重启后合成时间轴回卷、新事件被水印防线正确拒绝 ⇒ 重启窗内快照重物化永不发生（10 轮 B 窗零准入实锤）——恢复链全程消费旧介质工件；③ telemetry 惰性开卷（首个 OBS）慢于恢复取消（首 tick）⇒ 装配重钉必先 face-not-open 失败进 FAULT，随后重评收敛——「故障→重评→收敛」即窗1 的同步恢复实弹形态。**窗2（满卷）证据边界如实登记**：合成批距 × 8 批/快照 × 容量 ≈6 份 ⇒ 满卷需 ≈40min 实时不入门；同码路径 host 实弹 t7/t8/t15/t22/t23 已锁 + 目标侧无 cfg 分叉 + 70.15 容量 soak 登记在案。legacy 单命令目标侧驱动器不在 demo 装配（窗4 的「legacy 不受累」半边由 host 组合矩阵锁定，登记边界）。
+
+**独立对抗复查轮（复查代理全量对抗复审）**：六项修复——F1(P1) PruneOutcome.kept 下溢（孤儿 meta 删除混入 blob 算术；debug panic/release 回绕虚假 kept）→ meta_removed 独立分账 + t26 红测（F1' 变异回退分账 ⇒ 下溢 panic 实证）；F2(P2) write_snap_file_all 写失败/rename 失败两条路径泄漏 tmp（meta 侧无兜底、屏障未解锁时无界积累）→ 失败路径就地清 + t25 红测（F2' 变异 ⇒ tmp 残留实证）；F3(P2) t21 的 usize::MAX 零进展哨兵在 thread_local 重写中丢失（注入退化 no-op）→ 哨兵恢复（Short(0) 形态重新可达）；F5(P3) sync 对旧集缓存 Some(ranges) 且 meta 真消失降级接纳（与 pin 的 reverify 不同律）→ sync 侧对称守卫（meta-vanished-while-pinned 整体拒绝）+ t18 臂 5（F5' 变异 ⇒ 降级接纳实证）；F6/F7(P3) t18 臂 1 注释口径 + 手工钉态理由 + close 裁决「当前值型 File 恒 Ok、保留为驱动演化防御面」文档校准。F4(P1) 登记超前口径 → 本段以 run14 PASS 实测证据重写（正是本条）。复查确认无漂移面：held 搬家逐字迁移、window_tasks/event_floor 零残留、t23 时序窗真实（age≈18s<30s）、write_fault thread_local 并行可靠、保护集 release 后语义正确。host 9417→**9419**（+t25/t26）。
+
+**CONTEXT.md 校准**：`TEL_REQ_SNAP_SYNC` 行 stale 语义补「在途计划本 tick 只读（未发步取消）」半边（蓝图 §1.1 指认的文档失准）；新增 `SnapshotRetention` 深 module 所有权行。
+
+**收口核算**：版本 v0.350.0→**v0.351.0**（Cargo.lock 同步，gng-version PASS）；目标构建 `sel4-build-rust.sh` EXIT=0 ×2（初版+复查修复后复验，event_face/held_engine/engine 全入 target 闭包）；fmt 净；clippy 除 drv-svc 5 条既有存量外零新增。host 终态 **9419/0**。过程事故追加：门脚本一次 python 重写吞掉段A 的 `kill_window` 调用（A 段进程存活占 5577/1883 ⇒ 后续段启动失败）——跨段补 `wait_ports_free` 轮询；段序（B 先于 A2 产盘）一轮次实错重排。
