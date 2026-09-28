@@ -15,21 +15,32 @@ const MANIFEST_SRC: &str = include_str!("../Cargo.toml");
 fn identity_capsule_reservation_precedes_first_prepare_attempt() {
     let alloc_needle = ["AllocateType", "::Address(IDENTITY_CAPSULE_PHYS)"].concat();
     let prepare_needle = [".", "prepare_attempt", "()"].concat();
-    let first_alloc = MAIN_SRC
-        .find(&alloc_needle)
-        .expect("capsule Address 预留行缺失（WP-77.2.1 主不变量面失联）");
+    // 真预留的唯一锚 = 绑定语句（fault-inject 占页块是 `match
+    // boot::allocate_pages`，不带绑定）——`Address(IDENTITY_CAPSULE_PHYS)`
+    // 的首个出现永远在占页块，用它定位会锁错对象：真预留被挪到
+    // prepare_attempt 之后本测仍绿（变异实证 2026-09-28，判别力盲区）。
+    let real_reserve_needle = ["let identity_capsule_page ", "= boot::allocate_pages("].concat();
+    let reserve = MAIN_SRC
+        .find(&real_reserve_needle)
+        .expect("capsule 真预留绑定缺失（WP-77.2.1 主不变量面失联）");
+    // 绑定语句之后必须紧跟 Address 类型（防绑定换成 AnyPages 等松散形态）。
+    let after = &MAIN_SRC[reserve..];
+    assert!(
+        after.find(&alloc_needle).is_some_and(|offset| offset < 200),
+        "真预留绑定未以 Address(IDENTITY_CAPSULE_PHYS) 分配"
+    );
     let first_prepare = MAIN_SRC
         .find(&prepare_needle)
         .expect("prepare_attempt 调用缺失");
     assert!(
-        first_alloc < first_prepare,
+        reserve < first_prepare,
         "capsule 预留必须先于第一次 prepare_attempt（预留晚于持久扣次 = 分配失败仍扣 trial 的旧缺陷复活）"
     );
     // 占页注入（fault-inject）也必须在真实预留之前。
     let occupy_needle = ["eneros_fault_inject_occupy", "_capsule_page()"].concat();
     if let Some(occupy) = MAIN_SRC.find(&occupy_needle) {
         assert!(
-            occupy < first_alloc,
+            occupy < reserve,
             "占页注入必须先于真实预留（否则注入建模失真）"
         );
     }

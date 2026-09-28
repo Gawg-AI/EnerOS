@@ -541,6 +541,15 @@ impl<C: EipcSend + Clone + 'static> ObsEventFace for EventFace<C> {
                 deduped.push(*id);
             }
         }
+        // 服务端自守容量门（与 pin_snapshot 对称；t17）：有界性不得只依赖
+        // wire 解帧门——trait 直调传超容集必须整体拒绝、钉集保持原样。
+        if deduped.len() > MAX_SNAP_PINS {
+            eneros_runtime::println!(
+                "[svc-telemetry] SNAP-PIN-SYNC-REJECT reason=pin-capacity ids={}",
+                deduped.len()
+            );
+            return Err(());
+        }
         let mut new_entries: Vec<SnapPinEntry> = Vec::with_capacity(deduped.len());
         {
             let FaceState::Open(face) = &mut self.state else {
@@ -593,7 +602,10 @@ impl<C: EipcSend + Clone + 'static> ObsEventFace for EventFace<C> {
     fn release_snapshot(&mut self, id: &[u8; 16]) -> bool {
         match self.snap_pins.iter().position(|p| p == id) {
             Some(idx) => {
-                self.snap_pins.swap_remove(idx);
+                // 同位删除（与 pin_ranges.remove 对称）：swap_remove 会使
+                // 两数组在非末位释放后错位，第二次释放按 pin 现位索引错删
+                // 他人区间（t16 回归锁；n≤4，移位成本可忽略）。
+                self.snap_pins.remove(idx);
                 self.pin_ranges.remove(idx);
                 eneros_runtime::println!(
                     "[svc-telemetry] SNAP-PIN-RELEASED id={:02x}{:02x} pins={}",
@@ -2482,6 +2494,97 @@ mod tests {
             face2.pruned_segments, 0,
             "持有 offset=0 时必须零删除（持有必须真的进入 min 判据）"
         );
+    }
+
+    /// 蓝图 77 卷一复查轮（≥3 钉中途释放配对锁）：`snap_pins` 与
+    /// `pin_ranges` 在**非末位释放**后必须仍同位配对。旧实现
+    /// `snap_pins.swap_remove(idx)` × `pin_ranges.remove(idx)` 不对称——
+    /// 首次非末位释放后两数组错位（集合尚各自完整），**第二次**释放按
+    /// pin 现位索引删 ranges = 错删他人区间：`event_floor` 只对集合取
+    /// min，错删低 floor 条目可把保护界抬高到越界剪删仍持有计划的来源
+    /// 事件段（ADR-0054 违约），错删 None/全保护条目同理。单钉测试对此
+    /// 天然免疫（末位 swap_remove == remove）。
+    /// 变异靶：恢复 `swap_remove` → 本测红。
+    #[test]
+    fn t16_multi_pin_interior_release_keeps_pin_range_pairing() {
+        let disk_len = (DISK_END * 512) as usize;
+        let storage = FakeStorage::new(disk_len);
+        let mut face = make_face(&storage);
+        face.set_snapshot_catalog(prod_module_catalog(), 1_000);
+        let mut seq = 0u64;
+        let mut ids: Vec<[u8; 16]> = Vec::new();
+        // 三个快照窗 → 三代冻结快照（保留窗 16 份，三代皆在、皆带 meta）。
+        for round in 0..(SNAP_EVERY_BATCHES * 3) {
+            let now = 2_000 + round * 46_000;
+            let events: Vec<ObservationEvent> = coverage_fixture_points()
+                .map(|p| {
+                    seq += 1;
+                    obs(p, seq, now, fixture_value(p, round as usize))
+                })
+                .collect();
+            face.on_obs_batch(&events, now);
+            if let Some(input) = face.current_input() {
+                let id = *input.snapshot_id();
+                if ids.last() != Some(&id) {
+                    ids.push(id);
+                }
+            }
+        }
+        assert_eq!(ids.len(), 3, "三窗必须产出三代不同冻结快照");
+        // dispatch 全量同步三钉（wire 序 = [id1, id2, id3]）。
+        face.sync_snap_pins(&ids).expect("三钉同步");
+        // 非末位释放 id1（错位源），再释放 id2——错位后按 id2 现位索引
+        // 删 ranges 会删掉 id3 的区间条目。
+        assert!(face.release_snapshot(&ids[0]));
+        assert!(face.release_snapshot(&ids[1]));
+        assert_eq!(face.snap_pins, vec![ids[2]], "剩余钉集必须只剩第三代");
+        let range_ids: alloc::vec::Vec<[u8; 16]> =
+            face.pin_ranges.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            range_ids,
+            vec![ids[2]],
+            "剩余区间条目必须仍是第三代本人——错留第二代的区间 = 保护界据错误集合重算"
+        );
+    }
+
+    /// 蓝图 77 卷一复查轮（纵深）：`sync_snap_pins` 服务端自守容量门——
+    /// 有界性不得只依赖 wire 解帧门（count ≤ SNAP_SYNC_MAX_IDS）与
+    /// dispatch 侧编译期断言，trait 直调（新测试/未来调用方）传超容集
+    /// 必须整体拒绝且钉集保持原样（与 [`Self::pin_snapshot`] 的容量门
+    /// 对称；过度保留安全，越容接纳破坏容量语义）。
+    /// 变异靶：删容量门 → 本测红。
+    #[test]
+    fn t17_sync_rejects_over_capacity_id_set_atomically() {
+        let disk_len = (DISK_END * 512) as usize;
+        let storage = FakeStorage::new(disk_len);
+        let mut face = make_face(&storage);
+        face.set_snapshot_catalog(prod_module_catalog(), 1_000);
+        let mut seq = 0u64;
+        let mut ids: Vec<[u8; 16]> = Vec::new();
+        for round in 0..(SNAP_EVERY_BATCHES * 5) {
+            let now = 2_000 + round * 46_000;
+            let events: Vec<ObservationEvent> = coverage_fixture_points()
+                .map(|p| {
+                    seq += 1;
+                    obs(p, seq, now, fixture_value(p, round as usize))
+                })
+                .collect();
+            face.on_obs_batch(&events, now);
+            if let Some(input) = face.current_input() {
+                let id = *input.snapshot_id();
+                if ids.last() != Some(&id) {
+                    ids.push(id);
+                }
+            }
+        }
+        assert_eq!(ids.len(), 5, "五窗必须产出五代不同冻结快照");
+        // 先以合法两钉建立基线钉集；超容同步必须整体拒绝、基线保持。
+        face.sync_snap_pins(&ids[..2]).expect("容量内同步");
+        assert!(
+            face.sync_snap_pins(&ids).is_err(),
+            "超容集（5 > MAX_SNAP_PINS）必须拒绝"
+        );
+        assert_eq!(face.snap_pins, ids[..2], "拒绝后钉集必须保持原样");
     }
 
     /// 栈诊断（telemetry_history diag 同法）：打开+追加全链在服务栈供给

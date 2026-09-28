@@ -702,7 +702,9 @@ impl Orchestration {
         // ready 投影 + 健康门 + 状态机裁决：R14-C 前奏单源（本方法与
         // 探针 DriveMgt2 臂共用）。
         let mut verdict = self.adjudicate(supervisor, handles, service_names, &req);
-        // 70.7.5：OTA1 单程中继（0x06 status / 0x07 rollback）——root 是
+        // 70.7.5：OTA1 单程中继（MGT2 0x06 status / 0x07 rollback 作为
+        // 中继载荷，OTA1 侧真实子码 = 0x0E status / 0x0D cancel-trial，
+        // 见 mgt_probe.rs——0x06/0x07 不是 OTA1 子码）——root 是
         // OTA1 唯一可信调用方（无 (*, svc-ota) 授予边，agent-sdk 红灯锁）；
         // OTA1 响应字节原样回填 MGT2 响应（失败 → ERR:ota-relay 不伪造）。
         if let Some(crate::mgmt::MgmtAction::OtaRelay { rollback }) = verdict.action {

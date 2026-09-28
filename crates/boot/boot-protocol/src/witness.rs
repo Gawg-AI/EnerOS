@@ -83,7 +83,9 @@ pub fn parse_witness_extra_chunk(extra: &[u8]) -> Option<[u8; crate::boot_info::
     while off + 16 <= extra.len() {
         let id = u64::from_le_bytes(extra[off..off + 8].try_into().ok()?);
         let len = u64::from_le_bytes(extra[off + 8..off + 16].try_into().ok()?) as usize;
-        if len < 16 || off + len > extra.len() {
+        // 溢出 fail-closed：len 域来自内存（u64→usize 无损），off+len 回绕会
+        // 绕过界检查致滑窗错位/切片 panic——违背本函数「不滑窗、不猜测」合同。
+        if len < 16 || off.checked_add(len).map_or(true, |end| end > extra.len()) {
             return None; // 链损坏：fail-closed（不继续滑窗）
         }
         if id == SEL4_BOOTINFO_EXTRA_CHUNK_ENEROS_WITNESS {
@@ -211,5 +213,19 @@ mod tests {
 
         // 空区（extraLen=0）→ None。
         assert_eq!(parse_witness_extra_chunk(&[]), None);
+    }
+
+    /// 链损坏（len 域 = u64::MAX）必须 `None` fail-closed——`off + len`
+    /// 整型溢出（debug panic / release 回绕绕过界检查）违背本函数
+    /// 「不滑窗、不猜测」合同。首块放合法非目标 chunk 使 off>0。
+    #[test]
+    fn extra_chunk_overflow_len_fails_closed() {
+        let mut extra: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+        extra.extend_from_slice(&0u64.to_le_bytes());
+        extra.extend_from_slice(&16u64.to_le_bytes());
+        extra.extend_from_slice(&SEL4_BOOTINFO_EXTRA_CHUNK_ENEROS_WITNESS.to_le_bytes());
+        extra.extend_from_slice(&u64::MAX.to_le_bytes());
+        extra.extend_from_slice(&[0u8; 32]);
+        assert_eq!(parse_witness_extra_chunk(&extra), None);
     }
 }

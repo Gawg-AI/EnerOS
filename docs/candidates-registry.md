@@ -1626,3 +1626,29 @@ claims 对账（第三路逐条实跑）：REG-74-C/L/M 与登记册 B74-3 全�
 **存活变异补牙（变异扫描轴）**：A4（解码 `<=`→`<` 存活）→ 容量边界臂 `held_tick_active_at_capacity_boundary_is_accepted`；C2/C3（legacy 全保护跳过、release 区间删除缺失双双存活）→ t15（遗留 blob 钉全保护 + 释放不 sync 保护界立即上移）；SYNC 帧双侧零测试 → `snap_sync_frame_roundtrip_and_bounds`；held 回执 note 标签零断言 → `held_input_repin_after_restart` 补单源标签断言。**六发存活变异复跑全部转红**（A4/C2/C3/B1/B3/B4），B2 编译红实证。**t15 测试基建事实**：跨 face 实例的 sink 水印按 (source,time,sequence) 判重放（同刻同序列被拒=正确防线）、时间轴必须跨重开单调——留档。
 
 **收口核算（卷一）**：基线 host 9346（v0.348.0）→ **9359**（+13：EA +5、typed_chain +3、telemetry +1、event_face +4（含复查轮 t12）、control-dispatch lib/gates；逐 crate 与总数吻合）；`cargo test --workspace --locked` 全绿零失败；fmt 净；clippy 本卷四 crate（control-dispatch/control-services/snapshot-service/agent-sdk）零新增（基线遗留 drv-svc 5 条 doc 告警不动）；目标构建 EXIT=0。版本 **v0.349.0**（Cargo.lock 同步）。变异总账 **10 发全咬合**（A 起×3 / 装配×2 / 屏障×3 / 区间×2），恢复一律 `cp`+编译+复测核验。**事故留档（过程如实）**：变异恢复环节一次 `cp` 目标路径写错（把 event_face 备份覆盖到 telemetry.rs）毁掉其未提交改动——按 git 基线恢复 + 本会话已文档化的四处编辑逐字重放复原，复测 232 全绿后经变异 F/G 复验未受影响；教训强化：变异恢复命令的**目标路径**必须与备份来源路径显式比对（既有教训「恢复须当轮备份」的补集：备份也要验目标）。
+
+## B77-2. 蓝图 77 · 两卷全局复查轮登记（2026-09-28，v0.350.0 后 TDD 复查测试轮）
+
+**轮次口径**：用户令「对蓝图 77 全部内容复查、测试；bug 多维度验证后全局修复，注意次生」。基线 = `9eff5ae5`（v0.350.0，工作树干净），host 9401/0 精确复现。三路对抗复查（卷一控制链 / 卷二见证链 / 拒绝词 IPC 链子代理 + 主审亲读 boot_info/witness/safe.rs/boot-manager/energy_agent 保持窗/SNAP_SYNC/注入门脚本）+ 全部发现逐条 grep 复核后才动代码。
+
+**修复六项（全部红→绿）**：
+
+| # | 缺陷 | 定性 | 修复 |
+|---|---|---|---|
+| R1（P3） | witness 解析双面溢出：`sel4-sys/safe.rs find_extra_chunk` 与 `boot-protocol/witness.rs parse_witness_extra_chunk` 的 `off + chunk_len` 对内存读出的 len 域（u64→usize 无损）无溢出防护——debug panic / release 回绕绕过界检查后错位滑窗，违背两函数自身「链损坏 → None fail-closed 不滑窗」合同 | 合同违约（输入源=自家内核，外部不可达；fail-closed 精神面） | 双面 `checked_add` fail-closed；红测各一（合法非目标 chunk 垫位使 off>0 + len=u64::MAX/usize::MAX） |
+| R2（P3） | agent-sdk `block_io.rs:75` 新增 doc 的 `doc_lazy_continuation`——卷二附录「clippy 零新增」只核了 drv-svc 存量，漏数本条 | 声明与事实不符（1 空格缩进） | 缩进修正 |
+| R3（P3） | WP-77.2.1 源序回归锁 `reservation_order_lock.rs` 判别力盲区：`find("AllocateType::Address(IDENTITY_CAPSULE_PHYS)")` 首个出现恒在 fault-inject 占页块——真预留被挪到 `prepare_attempt` 之后本测**仍绿**（真实变异实证：旧测 + 变异 = 绿） | 判据判别力（守卫锁错对象） | 改锚 `let identity_capsule_page = boot::allocate_pages`（绑定语句唯一属于真预留）+ 绑定后 Address 类型近邻校验；双向变异咬合（新测+真变异=红 / 新测+HEAD=绿） |
+| R4（P2） | `EventFace::release_snapshot` 平行数组删除不对称：`snap_pins.swap_remove(idx)` × `pin_ranges.remove(idx)`——≥3 钉时**首次**非末位释放即错位（集合尚各自完整），**第二次**释放按 pin 现位索引删 ranges = **错删他人区间**（集合污染）：`event_floor` 对集合取 min，错删低 floor/全保护条目 ⇒ 保护界错误抬高 ⇒ 仍持有计划的来源事件段可被越界剪删（ADR-0054 违约）。卷一复查轮曾判「无实害」只覆盖单次释放；红测 t16 实证第二次释放后剩余区间条目归属他人 | 真行为 bug（77db5265 引入；单钉测试对 swap/remove 差异天然免疫） | 双侧同用 `remove(idx)`（n≤4 移位成本可忽略）；红测 `t16_multi_pin_interior_release_keeps_pin_range_pairing`（三窗三代 → sync 三钉 → 非末位释放 ×2 → 剩余区间必须仍是第三代本人） |
+| R5（P3） | `sync_snap_pins` 服务端无自守容量门——有界性完全依赖 wire 解帧门（count≤4）与 dispatch 侧编译期断言，trait 直调传超容集即越容接纳 | 纵深缺口（与 `pin_snapshot` 容量门不对称） | 补 `deduped.len() > MAX_SNAP_PINS → Err`（钉集保持原样）；红测 `t17_sync_rejects_over_capacity_id_set_atomically`（五代快照 5 钉同步整体拒绝 + 基线钉集保持） |
+| R6（P3） | 「每事务恰好一次 storage IPC」与「截断已知词 → Io」两判据无端到端回归锁：BootServerMock 的 call 计数器只在 EpochSwap 臂自增（Server 模式从不计数也从不被断言）；矩阵缺截断词臂（两段判据分属两 crate，客户端侧若加 trim/补齐则截断词可升格 Rejected = `ERR:` 假成功面） | 测试锁缺失（蓝图 §3 WP-77.2.3 完成判据字面） | Server 模式计数 + `server_reject_words` 四臂各补 `call.get()==1` 断言；矩阵补 `no-pending-tria` 截断臂 → Io |
+
+**复核后登记不修四项（P3）**：
+
+- **A2（accept 内 drive 失败的第三形态）**：`accept_held_plan` 持久接纳成功后 `drive_held_plans` 失败 ⇒ Err → submit 臂 err_receipt 无 held 标签 ⇒ EA 不补记活跃史。**多维度验证后判定无可达实害**：drive 全部可达错误源（plans()/saga()/cancel_pending/drive）均经 `Repository::commit` ⇒ 失败即 `poisoned=true` 粘性（reopen required）⇒ 后续 HELD_TICK 持续 Err（EA drive 错误分支先于 worker，System1 关闭、迁移不经、历史不清零）；重启后恢复面只读对账（无新物理写）。残余 = 回执语义失真（Rejected 实为已接纳）+ 误导性 note，与本轮 R4 的「集合污染」不同量级。施工门：drive 出现非 commit 错误源（如 retainer 期调用）或回执消费面扩展时，改 Ok(Persisted)+标签回执。
+- **A4（观测 API 零消费者）**：`input_retainer_installed`/`pending_release_count`/`held_pin_failures` 仓内零调用点——「错误可观测」目前仅由 println 证据行承担。收尾欠账，非缺陷。
+- **A5（finalize 的 reports `unwrap_or_default`）**：saga 重建失败折叠空 reports ⇒ 空 `all_terminal`=true 进入 actions；但 `terminal()` 对 saga 错误恒 false ⇒ `live_refs` 计其存活 ⇒ 保留面 fail-closed 正确，仅 `HELD-PLAN-DONE` 可能打 0/0/0 误导行。与 REG-77-I 同论证不可达（RAM 镜像仅经验证提交变异）。
+- **C3/C4/C6/C7（拒绝词链防御面注记）**：svc-mgmt 执行器 root_call→outcome 胶水无 host 直测（bridge 两纯函数 8 golden 已锁）；`update_rollback_outcome` 对 `b"ERR:"` 空词产空尾 detail（生产 ERR 恒带 reason，不可达）；agent-sdk `TestInstallFace` 守卫无 init 期冻结缓存（与 drv-svc MockFace 保真度差，现矩阵每实例单命令不受累）；`relay_io_err` 对 0x0A/0x0F 臂不分变体掩成 io 词形（分类面保证这两子码只产 Io，注释已声明取舍）。
+
+**核验过成立（抽样）**：BootInfo minor 1 wire↔repr(C) 全等（offset_of 互锁 + 240/244/252 逐点）；六字段比较源与比较面（slot 用本次实际槽、floor 经 accessor 同值面）；四消费点全部同源 `validated_identity()`、`read_identity_capsule` 仅 identity_freeze 一个调用点、qemu-test-synth 仅 Absent 臂可达；UEFI Address 预留先于一切 `prepare_attempt` 扣次且 loop 内预留后无 continue 路径（多盘不重复分配）；converge 三受管文件 sha256 与期望终态全等（卷二 A.2-3 补丁退化无复发）；注入门 25 判据无恒真（N1-8 BOOTCTRL 字节比对/N2 负 grep/P 正 grep 均有判别力）；卷一保持窗迁移单点/窗语义/错误路径保持历史逐条符合 §2.2；SNAP_SYNC 帧有界。
+
+**收口核算（本轮）**：host **9401 → 9405**（+4：event_face t16/t17、sel4-sys 溢出锁、boot-protocol 溢出锁；agent-sdk 为既有测补臂补断言无净增）；fmt 净；clippy 除 drv-svc 5 条既有 doc 存量外零告警（R2 修后 agent-sdk 归零）；目标构建 `sel4-build-rust.sh` EXIT=0（safe.rs/witness.rs/event_face.rs 改动入 target 闭包实弹编译过）。变异咬合：R3 双向（旧测盲区实证 + 新测红）；R4/R5 红测先于修复复现（红值 = 错留第二代区间 / 超容 Ok）；R1 双面红测 debug panic 复现。未跑 QEMU（无介质/启动语义改动，host + 目标构建口径与 REG-77-H 同先例如实登记）。

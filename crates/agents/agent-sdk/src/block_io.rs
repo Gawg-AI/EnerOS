@@ -72,7 +72,7 @@ pub mod boot_body {
 ///
 /// - [`BootCommandError::Rejected`]：服务端 `ST_INVALID` + 完整已知
 ///   [`BootReject`] 词（仅四个事务子码）；携带真实恢复语义
-///  （`no-pending-trial` ≠ `confirm-secver-mismatch` ≠ `write1`）。
+///   （`no-pending-trial` ≠ `confirm-secver-mismatch` ≠ `write1`）。
 /// - [`BootCommandError::Io`]：传输/信封/epoch/其他状态/未知词形——
 ///   与数据面同词形（`StoreError`），svc-ota 维持原 `ERR:*io`。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1056,6 +1056,10 @@ mod tests {
                 }
                 MockMode::Server => {}
             }
+            // Server 模式同样计数（单次 IPC 回归锁的读数源；各 Raw/Padded/
+            // EpochSwap 臂此前已各自处理）。
+            let n = self.call.get();
+            self.call.set(n + 1);
             Ok(self.serve(req, 7))
         }
     }
@@ -1114,6 +1118,9 @@ mod tests {
     }
 
     /// 真服务端拒绝词 → `Rejected`（四个事务子码各取一形）。
+    /// 附「每事务恰好一次 storage IPC」回归锁（蓝图 §3 WP-77.2.3 完成判据；
+    /// 历史缺陷 = 追加「取原因」第二次 Call 卡死事务链——计数器此前只在
+    /// EpochSwap 臂工作，Server 模式从不自增也从不被断言）。
     #[test]
     fn server_reject_words_classify_as_rejected() {
         // STATUS 空介质 → bootctrl-both-invalid。
@@ -1122,6 +1129,7 @@ mod tests {
             io.raw_command(BLK_BOOT_STATUS, &[]),
             Err(BootCommandError::Rejected(BootReject::BootctrlBothInvalid))
         );
+        assert_eq!(io.client.call.get(), 1, "STATUS 事务恰一次 storage IPC");
 
         // CANCEL 稳态记录（无 pending trial）→ no-pending-trial。
         let (mut io, _f) = mock_with(MockMode::Server, true);
@@ -1129,6 +1137,7 @@ mod tests {
             io.raw_command(BLK_BOOT_CANCEL, &[]),
             Err(BootCommandError::Rejected(BootReject::NoPendingTrial))
         );
+        assert_eq!(io.client.call.get(), 1, "CANCEL 事务恰一次 storage IPC");
 
         // CONFIRM 虚增水位 → confirm-secver-mismatch。
         let (mut io, _f) = mock_with(MockMode::Server, true);
@@ -1139,6 +1148,7 @@ mod tests {
                 BootReject::ConfirmSecverMismatch
             ))
         );
+        assert_eq!(io.client.call.get(), 1, "CONFIRM 事务恰一次 storage IPC");
 
         // TRIAL 次写失败注入 → write1（阶段词——介质可能已部分更新）。
         let (mut io, f) = mock_with(MockMode::Server, true);
@@ -1174,6 +1184,16 @@ mod tests {
         let (mut io, _f) = mock_with(MockMode::Raw(ST_INVALID, b"flush"), true);
         assert_eq!(
             io.raw_command(BLK_BOOT_GUARD, &[]),
+            Err(BootCommandError::Io(StoreError::WriteFailed))
+        );
+
+        // 已知词**截断**形态（ST_INVALID + `no-pending-tria`）→ Io：词判定
+        // 是完整词匹配，截断词升格 Rejected 即 `ERR:` 假成功面打开（蓝图
+        // §2.5 明令禁止）。两段判据分属两 crate——drv-svc 单元 golden 锁
+        // 服务端词表，本臂锁客户端切片→from_word 之间不得出现 trim/补齐。
+        let (mut io, _f) = mock_with(MockMode::Raw(ST_INVALID, b"no-pending-tria"), true);
+        assert_eq!(
+            io.raw_command(BLK_BOOT_CANCEL, &[]),
             Err(BootCommandError::Io(StoreError::WriteFailed))
         );
 

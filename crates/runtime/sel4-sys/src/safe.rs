@@ -1056,7 +1056,13 @@ pub fn find_extra_chunk(extra: &[u8], id: u64) -> Option<(usize, usize)> {
     while off + 16 <= extra.len() {
         let chunk_id = u64::from_le_bytes(extra[off..off + 8].try_into().ok()?);
         let chunk_len = u64::from_le_bytes(extra[off + 8..off + 16].try_into().ok()?) as usize;
-        if chunk_len < 16 || off + chunk_len > extra.len() {
+        // 溢出 fail-closed：len 域来自内存（u64→usize 无损），off+len 回绕会
+        // 绕过界检查致滑窗错位/切片 panic——违背本函数「不滑窗、不猜测」合同。
+        if chunk_len < 16
+            || off
+                .checked_add(chunk_len)
+                .map_or(true, |end| end > extra.len())
+        {
             return None;
         }
         if chunk_id == id {
@@ -1499,6 +1505,23 @@ mod tests {
             ipc_reply_recv(1, 0, Some(&mut sender)),
             Err(Sel4Error::HostUnsupported)
         );
+    }
+
+    /// 链损坏（len 域 = usize::MAX）必须 `None` fail-closed——`off + len`
+    /// 整型溢出（debug panic / release 回绕绕过界检查）即违背本函数
+    /// 「不滑窗、不猜测」合同。off=0 不触发溢出，首块放合法非目标 chunk
+    /// 使目标块落在 off>0。
+    #[test]
+    fn find_extra_chunk_overflow_len_fails_closed() {
+        let mut extra = vec![0u8; 16];
+        extra[..8].copy_from_slice(&1u64.to_le_bytes());
+        extra[8..16].copy_from_slice(&16u64.to_le_bytes());
+        extra.extend_from_slice(&0xABCD_1234u64.to_le_bytes());
+        extra.extend_from_slice(&usize::MAX.to_le_bytes());
+        extra.extend_from_slice(&[0u8; 32]);
+        assert_eq!(find_extra_chunk(&extra, 0xABCD_1234), None);
+        // 非目标块携带溢出 len：同样必须 None（`off += len` 不得回绕滑窗）。
+        assert_eq!(find_extra_chunk(&extra, 0xDEAD_BEEF), None);
     }
 
     #[test]
