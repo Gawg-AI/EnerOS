@@ -1037,6 +1037,65 @@ pub mod bootinfo_offsets {
 /// 共享单一事实源（旧写侧 off+16 与读侧 off+9 错位，device 标志恒读 0）。
 pub const UNTYPED_FLAGS_OFFSET: usize = 9;
 
+/// seL4 extra bootinfo 区相对 BootInfo 帧基址的偏移（bootinfo_types.h：
+/// chunks "starting at the offset seL4_BootInfoFrameSize" = 4 KiB；与
+/// boot-protocol `witness::SEL4_BOOTINFO_EXTRA_REGION_OFFSET` 同事实，
+/// 两 crate 无依赖边、root-task 消费点对拍）。
+pub const EXTRA_REGION_OFFSET: u64 = 0x1000;
+/// `seL4_BootInfo.extraLen` 字段偏移（结构首字段）。
+pub const EXTRA_LEN_OFFSET: usize = 0x0;
+/// extraLen 防野切片上限（内核侧 extra 区 = DTB(~1 MiB) + 见证 272B
+/// 量级；16 MiB 已远超合法形态，防御性封顶）。
+pub const EXTRA_LEN_CAP: u64 = 16 * 1024 * 1024;
+
+/// extra bootinfo chunk 链定位（纯函数，host/target 共用）：返回
+/// `(payload 偏移, payload 长度)`。chunk 头 = `{ id: u64, len: u64 }`
+/// （len 含头）；链损坏（len<16 / 越界）→ `None` fail-closed 不滑窗。
+pub fn find_extra_chunk(extra: &[u8], id: u64) -> Option<(usize, usize)> {
+    let mut off = 0usize;
+    while off + 16 <= extra.len() {
+        let chunk_id = u64::from_le_bytes(extra[off..off + 8].try_into().ok()?);
+        let chunk_len = u64::from_le_bytes(extra[off + 8..off + 16].try_into().ok()?) as usize;
+        if chunk_len < 16 || off + chunk_len > extra.len() {
+            return None;
+        }
+        if chunk_id == id {
+            return Some((off + 16, chunk_len - 16));
+        }
+        off += chunk_len;
+    }
+    None
+}
+
+/// sel4_target：从真实 BootInfo 帧读取 extra bootinfo 区切片。
+/// `extraLen == 0` / 越界 / 超上限 → `None`。
+#[cfg(sel4_target)]
+pub fn extra_bi_slice(bi: *const crate::types::BootInfo) -> Option<&'static [u8]> {
+    let base = bi as u64;
+    if base == 0 {
+        return None;
+    }
+    let extra_len = unsafe { core::ptr::read_volatile(base as *const u64) };
+    if extra_len == 0 || extra_len > EXTRA_LEN_CAP {
+        return None;
+    }
+    // SAFETY: extra 区由内核建帧时映射进初始线程 VSpace（create_frames_
+    // of_region do_map=true），基址 = bootinfo 帧 + EXTRA_REGION_OFFSET，
+    // 生命周期 = root-task 运行期。
+    Some(unsafe {
+        core::slice::from_raw_parts(
+            (base + EXTRA_REGION_OFFSET) as *const u8,
+            extra_len as usize,
+        )
+    })
+}
+
+/// host 构建：无真实 BootInfo（root-task 测试走纯函数路径）。
+#[cfg(host_build)]
+pub fn extra_bi_slice(_bi: *const crate::types::BootInfo) -> Option<&'static [u8]> {
+    None
+}
+
 /// BootInfo 解析访问器。
 ///
 /// 从 seL4_GetBootInfo 返回的指针解析 untyped 列表与空闲 cap 区间。
@@ -1107,6 +1166,13 @@ impl BootInfoReader {
     /// untyped cap 区间起点。
     pub fn untyped_start(&self) -> CPtr {
         self.untyped_start
+    }
+
+    /// BootInfo 帧基址（sel4_target；host = 0）。WP-77.2.2：extra
+    /// bootinfo 区定位（`SEL4_BOOTINFO_EXTRA_REGION_OFFSET` 起、
+    /// `extraLen` 字节）需要基址指针。
+    pub fn base(&self) -> u64 {
+        self.base
     }
 
     /// untyped cap 区间终点。

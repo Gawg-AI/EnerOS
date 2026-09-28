@@ -2,7 +2,12 @@ use core::mem::{align_of, size_of};
 
 pub const BOOT_INFO_MAGIC: [u8; 8] = *b"ENRBOOT\0";
 pub const BOOT_INFO_ABI_MAJOR: u16 = 1;
-pub const BOOT_INFO_ABI_MINOR: u16 = 0;
+/// ABI minor 1（蓝图 77 卷二 WP-77.2.2）：`reserved1[244..252]` 版本化为
+/// `security_floor`（本次 boot 的可信水位投影，boot-manager 从
+/// `active_control.security_floor` 填写——**不得**从 capsule 回读来填）。
+/// minor 0 = 旧布局：floor 字节必须为零（reserved 语义），消费方读到
+/// floor=0 的旧记录与真实 capsule 的六字段比较必然失配 = 混配拒身份。
+pub const BOOT_INFO_ABI_MINOR: u16 = 1;
 pub const BOOT_INFO_SIZE: usize = 256;
 
 pub const BOOT_FLAG_SECURE_BOOT: u64 = 1 << 0;
@@ -238,10 +243,15 @@ pub const ENEROS_DTB_MAX_LEN: u64 = 0x200_000;
 /// 70.5（WP-70.5.1）：窗口尾页为可信身份 capsule 预留
 /// （`IDENTITY_CAPSULE_RESERVE`）——DTB 永不触及 capsule 页，两端经本
 /// 函数单源推导自动一致。
+/// 见证页预留（WP-77.2.2，1 页；单源定义在本模块、`witness` 模块
+/// re-export——`dtb_window_for` 与 mailbox 常量都要消费）。
+pub const ENEROS_BOOT_WITNESS_RESERVE: u64 = 0x1000;
+
 pub const fn dtb_window_for(bundle_len: u64) -> Option<(u64, u64)> {
     let start = (ENEROS_INIT_BUNDLE_PHYS + bundle_len + 0xFFF) & !0xFFF;
     let end = ENEROS_INIT_BUNDLE_PHYS + ENEROS_MAPPED_WINDOW_LEN
-        - crate::identity::IDENTITY_CAPSULE_RESERVE;
+        - crate::identity::IDENTITY_CAPSULE_RESERVE
+        - ENEROS_BOOT_WITNESS_RESERVE;
     if start >= end {
         return None;
     }
@@ -275,8 +285,11 @@ pub struct BootInfo {
     pub manifest_digest: [u8; 32],
     pub bootctrl_generation: u64,
     pub security_version: u64,
+    /// 本次 boot 的可信水位（WP-77.2.2，ABI minor 1——旧布局
+    /// reserved1[244..252] 版本化；六字段身份比较面之一）。
+    pub security_floor: u64,
     pub crc32: u32,
-    pub reserved1: [u8; 12],
+    pub reserved1: [u8; 4],
 }
 
 const _: () = assert!(size_of::<BootInfo>() == BOOT_INFO_SIZE);
@@ -331,8 +344,9 @@ impl BootInfo {
             manifest_digest: [0; 32],
             bootctrl_generation: 0,
             security_version: 0,
+            security_floor: 0,
             crc32: 0,
-            reserved1: [0; 12],
+            reserved1: [0; 4],
         }
     }
 
@@ -354,7 +368,12 @@ impl BootInfo {
         if self.flags & !BOOT_INFO_KNOWN_FLAGS != 0 {
             return Err(BootInfoError::Flags);
         }
-        if self.reserved0 != [0; 6] || self.reserved1 != [0; 12] {
+        if self.reserved0 != [0; 6] || self.reserved1 != [0; 4] {
+            return Err(BootInfoError::Reserved);
+        }
+        // WP-77.2.2 旧 minor 兼容判定：minor 0 无 floor 域——floor 字节
+        // 必须为零（旧 reserved 语义）；非零 = 布局外写放，fail-closed。
+        if self.abi_minor < 1 && self.security_floor != 0 {
             return Err(BootInfoError::Reserved);
         }
         if self.kernel_entry == 0 || self.kernel_entry & 0x3 != 0 {
@@ -461,8 +480,9 @@ impl BootInfo {
         bytes[192..224].copy_from_slice(&self.manifest_digest);
         put_u64(&mut bytes, 224, self.bootctrl_generation);
         put_u64(&mut bytes, 232, self.security_version);
+        put_u64(&mut bytes, 244, self.security_floor);
         put_u32(&mut bytes, CRC_OFFSET, self.crc32);
-        bytes[244..256].copy_from_slice(&self.reserved1);
+        bytes[252..256].copy_from_slice(&self.reserved1);
         bytes
     }
 
@@ -498,8 +518,9 @@ impl BootInfo {
         info.manifest_digest.copy_from_slice(&fixed[192..224]);
         info.bootctrl_generation = get_u64(&fixed, 224);
         info.security_version = get_u64(&fixed, 232);
+        info.security_floor = get_u64(&fixed, 244);
         info.crc32 = get_u32(&fixed, CRC_OFFSET);
-        info.reserved1.copy_from_slice(&fixed[244..256]);
+        info.reserved1.copy_from_slice(&fixed[252..256]);
         info.validate()?;
         Ok(info)
     }
@@ -586,6 +607,7 @@ mod tests {
         info.manifest_digest = [0xA5; 32];
         info.bootctrl_generation = 7;
         info.security_version = 3;
+        info.security_floor = 4;
         info.seal();
         info
     }
@@ -599,7 +621,13 @@ mod tests {
         assert_eq!(offset_of!(BootInfo, kernel_entry), 48);
         assert_eq!(offset_of!(BootInfo, entropy_seed), 128);
         assert_eq!(offset_of!(BootInfo, manifest_digest), 192);
-        assert_eq!(offset_of!(BootInfo, crc32), 240);
+        // repr(C) 字段序 ≠ wire 偏移（wire 单源 = to_le_bytes/decode）：
+        // u64 floor 需 8 对齐，repr(C) 落 240；wire ABI 上 floor 占旧
+        // reserved1 前 8B（244..252，u64 无对齐要求——字节编解码），
+        // crc32 wire 偏移恒 240（CRC_OFFSET）。
+        assert_eq!(offset_of!(BootInfo, security_floor), 240);
+        assert_eq!(offset_of!(BootInfo, crc32), 248);
+        assert_eq!(offset_of!(BootInfo, reserved1), 252);
         assert_eq!(size_of::<MemoryMapEntry>(), 32);
     }
 
@@ -608,9 +636,15 @@ mod tests {
         let info = valid_info();
         let bytes = info.to_le_bytes();
         assert_eq!(&bytes[0..8], b"ENRBOOT\0");
-        assert_eq!(&bytes[8..16], &[1, 0, 0, 0, 0, 1, 0, 0]);
+        // minor 1（WP-77.2.2：floor 域版本化后的 ABI 字面）。
+        assert_eq!(&bytes[8..16], &[1, 0, 1, 0, 0, 1, 0, 0]);
         assert_eq!(&bytes[48..56], &0x4100_0000u64.to_le_bytes());
         assert_eq!(&bytes[224..232], &7u64.to_le_bytes());
+        assert_eq!(
+            &bytes[244..252],
+            &4u64.to_le_bytes(),
+            "security_floor 域（minor 1）"
+        );
         assert_eq!(BootInfo::decode(&bytes), Ok(info));
     }
 
@@ -644,6 +678,36 @@ mod tests {
         info.init_bundle_len = 16;
         info.seal();
         assert_eq!(info.validate(), Err(BootInfoError::Range));
+    }
+
+    /// WP-77.2.2 ABI minor 兼容判定：minor 0（旧记录）floor 字节必须
+    /// 为零（旧 reserved 语义）；minor 1 携带真实 floor 正常通过；
+    /// minor > 1 拒绝。
+    #[test]
+    fn abi_minor_floor_compat_is_enforced() {
+        // minor 1 + floor 正例（valid_info 本身即此形态）。
+        assert_eq!(valid_info().validate(), Ok(()));
+
+        // minor 0 + 非零 floor 字节 = 布局外写放 → Reserved（fail-closed）。
+        let mut old = valid_info();
+        old.abi_minor = 0;
+        old.security_floor = 2;
+        old.seal();
+        assert_eq!(old.validate(), Err(BootInfoError::Reserved));
+
+        // minor 0 + 零 floor = 合法旧记录（消费方六字段比较必因 floor=0
+        // 与真实 capsule 失配 → 拒身份，不是猜测）。
+        let mut legacy = valid_info();
+        legacy.abi_minor = 0;
+        legacy.security_floor = 0;
+        legacy.seal();
+        assert_eq!(legacy.validate(), Ok(()));
+
+        // minor 2 → Version 拒绝。
+        let mut newer = valid_info();
+        newer.abi_minor = 2;
+        newer.seal();
+        assert_eq!(newer.validate(), Err(BootInfoError::Version));
     }
 
     #[test]

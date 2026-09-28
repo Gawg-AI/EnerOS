@@ -1,10 +1,14 @@
 //! BootInfo 消费（KRN-002）：root-task 读取并校验 boot manager 传递的 BootInfo。
 //!
-//! 契约链闭合：boot-manager-uefi 构造 `BootInfo`（BOOT_INFO_MAGIC + ABI 版本 +
-//! struct_size 等）→ seL4 elfloader 装载 rootserver → root-task 在 `_start`
-//! 中 `consume_boot_info` 解码 + `validate()`，确认启动域契约真实消费
-//! （08 §2「启动链断头路」：验签链尾接物不再是真空——boot_id、selected_slot、
-//! init_bundle_phys/len 由此进入运行时）。
+//! 契约链（蓝图 77 卷二 WP-77.2.2 起为接线事实）：boot-manager-uefi 构造
+//! 并 seal `BootInfo`（ABI 1.1，含 `security_floor`）→ elfloader（0003 补丁）
+//! 验证后经版本化 mailbox 信封发布 → 内核（0004 补丁）快照并作为具名
+//! extra bootinfo chunk 交给初始线程 → `service::identity_freeze` 从 extra
+//! 区取出并 `consume_boot_info` 解码 + validate，与 capsule 页六字段比较
+//! 后冻结 Validated/Absent/Rejected（REG-70.5-CAPSULE-STALENESS 根治面）。
+//! 本模块的 `consume_boot_info` 是该链的解码入口（host 测试 + 目标冻结点
+//! 共用）；bundle 物理地址解析（`resolve_bundle_phys`）仍走 BOOT-007 契约
+//! 窗口——见证当前只承载身份面，不改变 bundle 取数路径。
 
 extern crate alloc;
 

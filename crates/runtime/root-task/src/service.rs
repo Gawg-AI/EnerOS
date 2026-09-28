@@ -555,7 +555,9 @@ impl Orchestration {
         if self.tick % 10 != 0 {
             return;
         }
-        let Some(capsule) = resolve_identity_capsule() else {
+        // WP-77.2.2：消费冻结裁决（缺席/拒绝都不推送；裁决词形在
+        // identity_freeze 时已打印——这里保持原 skipped 词形兼容门判据）。
+        let Some(capsule) = validated_identity() else {
             self.once.mark_identity();
             eneros_runtime::println!(
                 "[eneros-root-task] IDENTITY-PUSH: skipped (capsule absent) — OTA not-ready (fail-closed, WP-70.5.1)"
@@ -781,7 +783,8 @@ impl Orchestration {
         let Some(svc_ota_ep) = self.direct.ep_of(handles, self.direct.ota) else {
             return;
         };
-        let capsule = read_identity_capsule();
+        // WP-77.2.2：探针与推送同源冻结裁决（不再绕道直读物理页）。
+        let capsule = validated_identity();
         let boot_slot = capsule.as_ref().map(|c| c.selected_slot);
         let capsule_secver = capsule
             .as_ref()
@@ -885,7 +888,7 @@ impl Orchestration {
 /// 测试链 config compile 注入的测试锚配对——release 无此路径亦无该种子）。
 #[cfg(all(target_os = "none", feature = "qemu-test-synth"))]
 fn ota_probe_body(ota_ep: u64, epoch: &mut u64) {
-    let Some(capsule) = resolve_identity_capsule() else {
+    let Some(capsule) = validated_identity() else {
         eneros_runtime::println!(
             "[eneros-root-task] OTA-DOWNLOAD: FAILED (no identity capsule) — 测试装配亦需身份"
         );
@@ -1793,6 +1796,8 @@ fn storage_persist_probe(ota_ep: u64, epoch: &mut u64) -> Result<(), alloc::stri
 /// 70.5（WP-70.5.1）：读取 boot-manager 写入的可信身份 capsule
 /// （BOOT-007 内核映射窗口尾页，boot-protocol 单源常量）。无 capsule
 /// （旧镜像/写失败/直启）→ `None`（全零页/残页 decode 失败 = 诚实缺席）。
+/// WP-77.2.2 后本函数**只**是身份冻结的原始输入，不再是消费入口——
+/// 所有消费方走 [`validated_identity`]（冻结裁决）。
 #[cfg(target_os = "none")]
 fn read_identity_capsule() -> Option<eneros_boot_protocol::IdentityCapsule> {
     use eneros_boot_protocol::{IdentityCapsule, IDENTITY_CAPSULE_PHYS, IDENTITY_CAPSULE_SIZE};
@@ -1807,32 +1812,157 @@ fn read_identity_capsule() -> Option<eneros_boot_protocol::IdentityCapsule> {
     IdentityCapsule::decode(&raw).ok()
 }
 
-/// 70.5（WP-70.5.1）：身份解析唯一入口——真实 capsule 优先；qemu-test
-/// 专属装配（`qemu-test-synth`，closure gate 强制不出现在 release 闭包）
-/// 以显式 SYNTHETIC 标签构造测试身份；release 缺 capsule → None
-/// （OTA not-ready fail-closed，无任何默认身份分支）。
-/// F70-02：同时是 svc-storage 运行槽身份页（spawn.rs）的内容单源。
+// ============================================================================
+// WP-77.2.2：本次启动见证 × capsule 六字段身份裁决（冻结一次全消费方共用）
+// ============================================================================
+
+/// 身份裁决终态（`identity_freeze` 一次写入；[`validated_identity`] 消费）。
+///
+/// - `Validated`：witness（boot-manager→elfloader→seL4→root 真实 handoff）
+///   与 capsule 页六字段逐项相等——OTA 身份/身份页唯一放行态；
+/// - `Absent`：witness 与 capsule 页**双缺席**（零页 + 直启/非 EnerOS 链）
+///   ——qemu-test-synth 仅对此态合成测试身份；
+/// - `Rejected`：解码坏或任一字段不符（含 witness 缺席但 capsule 在场 =
+///   旧 boot-manager 混配、capsule 缺席但 witness 在场 = 页被毁）——
+///   **永不兜底、永不合成**。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IdentityVerdict {
+    Validated(eneros_boot_protocol::IdentityCapsule),
+    Absent,
+    Rejected(&'static str),
+}
+
+/// 裁决矩阵（纯函数，host 可测）：六字段 = `boot_id`、**本次实际槽**、
+/// `manifest_digest`、`bootctrl_generation`、`security_version`、
+/// `security_floor`（§2.2 合同；`product_version` 只是诊断，不参与放行）。
+/// 旧 ABI（minor 0）witness 的 floor 恒 0 → 与真实 capsule（floor>0）
+/// 必失配 = 新旧混配拒身份而非猜测。
+/// host 构建下消费面（identity_freeze/spawn）被 cfg 门裁掉——目标侧
+/// 真实消费（rust_entry 一次冻结 + 全消费方引用）。
+#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+pub(crate) fn adjudicate_identity(
+    witness: Option<eneros_boot_protocol::boot_info::BootInfo>,
+    capsule: Option<eneros_boot_protocol::IdentityCapsule>,
+) -> IdentityVerdict {
+    match (witness, capsule) {
+        (None, None) => IdentityVerdict::Absent,
+        (None, Some(_)) => IdentityVerdict::Rejected("witness-absent"),
+        (Some(_), None) => IdentityVerdict::Rejected("capsule-absent"),
+        (Some(w), Some(c)) => {
+            // witness 的槽枚举 → capsule 的 wire 字节域（1/2/3，decode
+            // 已校验）；本次实际槽比较逐字节。
+            let witness_slot_byte = match w.selected_slot {
+                eneros_boot_protocol::boot_info::BootSlot::A => 1u8,
+                eneros_boot_protocol::boot_info::BootSlot::B => 2u8,
+                eneros_boot_protocol::boot_info::BootSlot::Recovery => 3u8,
+            };
+            if w.boot_id != c.boot_id {
+                IdentityVerdict::Rejected("boot-id-mismatch")
+            } else if witness_slot_byte != c.selected_slot {
+                IdentityVerdict::Rejected("slot-mismatch")
+            } else if w.manifest_digest != c.manifest_digest {
+                IdentityVerdict::Rejected("manifest-digest-mismatch")
+            } else if w.bootctrl_generation != c.bootctrl_generation {
+                IdentityVerdict::Rejected("generation-mismatch")
+            } else if w.security_version != c.security_version {
+                IdentityVerdict::Rejected("security-version-mismatch")
+            } else if w.security_floor != c.security_floor {
+                IdentityVerdict::Rejected("security-floor-mismatch")
+            } else {
+                IdentityVerdict::Validated(c)
+            }
+        }
+    }
+}
+
+#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+static IDENTITY_VERDICT: spin::Once<IdentityVerdict> = spin::Once::new();
+
+/// 目标侧：读 extra bootinfo 见证 chunk + capsule 页 → 裁决 → 冻结。
+/// rust_entry 在服务 spawn 前**调用一次**；所有身份消费方经
+/// [`validated_identity`] 引用本结果，不再各自读物理页。
 #[cfg(target_os = "none")]
-pub(crate) fn resolve_identity_capsule() -> Option<eneros_boot_protocol::IdentityCapsule> {
-    let real = read_identity_capsule();
-    #[cfg(feature = "qemu-test-synth")]
-    {
-        if real.is_none() {
+pub(crate) fn identity_freeze(bi: *const eneros_sel4_sys::types::BootInfo) {
+    use eneros_boot_protocol::witness::{
+        parse_witness_extra_chunk, SEL4_BOOTINFO_EXTRA_CHUNK_ENEROS_WITNESS,
+    };
+    let witness_chunk = eneros_sel4_sys::safe::extra_bi_slice(bi).and_then(|extra| {
+        eneros_sel4_sys::safe::find_extra_chunk(extra, SEL4_BOOTINFO_EXTRA_CHUNK_ENEROS_WITNESS)
+            .and_then(|(off, len)| extra.get(off..off + len))
+    });
+    let witness = witness_chunk
+        .map(parse_witness_extra_chunk)
+        .and_then(|r| r)
+        .and_then(|raw| crate::boot::consume_boot_info(&raw).ok());
+    match &witness {
+        Some(w) => {
             eneros_runtime::println!(
-                "[eneros-root-task] IDENTITY: capsule absent — TEST assembly synthetic identity (qemu-test-synth, non-production)"
+                "[eneros-root-task] BOOT-WITNESS: present gen={} secver={} floor={}",
+                w.bootctrl_generation,
+                w.security_version,
+                w.security_floor
             );
-            return Some(synthetic_identity_capsule());
+        }
+        None => {
+            eneros_runtime::println!(
+                "[eneros-root-task] BOOT-WITNESS: absent (direct-boot or non-EnerOS chain)"
+            );
         }
     }
-    #[cfg(not(feature = "qemu-test-synth"))]
-    {
-        if real.is_none() {
+    let capsule = read_identity_capsule();
+    let verdict = adjudicate_identity(witness, capsule);
+    match &verdict {
+        IdentityVerdict::Validated(c) => {
             eneros_runtime::println!(
-                "[eneros-root-task] IDENTITY: capsule absent — OTA not-ready (release fail-closed, WP-70.5.1)"
+                "[eneros-root-task] IDENTITY-VERDICT: validated slot={} gen={} secver={} floor={}",
+                c.selected_slot,
+                c.bootctrl_generation,
+                c.security_version,
+                c.security_floor
+            );
+        }
+        IdentityVerdict::Absent => {
+            eneros_runtime::println!(
+                "[eneros-root-task] IDENTITY-VERDICT: absent (zero page + no witness)"
+            );
+        }
+        IdentityVerdict::Rejected(reason) => {
+            eneros_runtime::println!(
+                "[eneros-root-task] IDENTITY-VERDICT: rejected ({reason}) — OTA not-ready (fail-closed)"
             );
         }
     }
-    real
+    IDENTITY_VERDICT.call_once(|| verdict);
+}
+
+/// 身份消费唯一入口（WP-77.2.2）：`Validated` → capsule；`Rejected` →
+/// None（永不兜底）；`Absent` → release None（OTA not-ready），
+/// qemu-test-synth 装配合成显式测试身份。F70-02：同时是 svc-storage
+/// 运行槽身份页（spawn.rs）的内容单源。
+#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+pub(crate) fn validated_identity() -> Option<eneros_boot_protocol::IdentityCapsule> {
+    match IDENTITY_VERDICT.get() {
+        Some(IdentityVerdict::Validated(c)) => Some(*c),
+        Some(IdentityVerdict::Rejected(_)) => None,
+        // Absent 或（host 构建）未冻结：合成仅限测试装配。
+        _ => {
+            #[cfg(all(target_os = "none", feature = "qemu-test-synth"))]
+            {
+                eneros_runtime::println!(
+                    "[eneros-root-task] IDENTITY: capsule absent — TEST assembly synthetic identity (qemu-test-synth, non-production)"
+                );
+                Some(synthetic_identity_capsule())
+            }
+            #[cfg(not(all(target_os = "none", feature = "qemu-test-synth")))]
+            {
+                #[cfg(target_os = "none")]
+                eneros_runtime::println!(
+                    "[eneros-root-task] IDENTITY: capsule absent — OTA not-ready (release fail-closed, WP-70.5.1)"
+                );
+                None
+            }
+        }
+    }
 }
 
 /// qemu-test 专属合成身份（显式测试标签；固定测试模式字节——不冒充
@@ -1854,6 +1984,131 @@ fn synthetic_identity_capsule() -> eneros_boot_protocol::IdentityCapsule {
     );
     c.seal();
     c
+}
+
+#[cfg(test)]
+mod identity_verdict_tests {
+    use eneros_boot_protocol::boot_info::{BootInfo, BootReason, BootSlot};
+
+    use super::*;
+
+    fn witness_pair() -> (BootInfo, eneros_boot_protocol::IdentityCapsule) {
+        let mut w = BootInfo::new(BootSlot::A, BootReason::Cold);
+        w.boot_id = [0x11; 16];
+        w.manifest_digest = [0x22; 32];
+        w.bootctrl_generation = 7;
+        w.security_version = 3;
+        w.security_floor = 2;
+        w.kernel_entry = 0x4100_0000;
+        w.seal();
+        let mut c = eneros_boot_protocol::IdentityCapsule::new(
+            1,
+            [0x11; 16],
+            [0x33; 16],
+            [0x44; 16],
+            [0x22; 32],
+            7,
+            3,
+            2,
+            [1, 2, 3],
+        );
+        c.seal();
+        (w, c)
+    }
+
+    /// 正例：六字段全等 → Validated。
+    #[test]
+    fn matching_witness_and_capsule_validates() {
+        let (w, c) = witness_pair();
+        assert_eq!(
+            adjudicate_identity(Some(w), Some(c)),
+            // Validated 携带 capsule 本体（copy 语义相等即同值）。
+            adjudicate_identity(Some(w), Some(c))
+        );
+        let (w, c) = witness_pair();
+        assert!(matches!(
+            adjudicate_identity(Some(w), Some(c)),
+            IdentityVerdict::Validated(_)
+        ));
+    }
+
+    /// 六字段逐一错配 → 各自具名 Rejected。
+    #[test]
+    fn every_field_mismatch_is_named_rejection() {
+        let (mut w, c) = witness_pair();
+        w.boot_id = [0x99; 16];
+        w.seal();
+        assert!(matches!(
+            adjudicate_identity(Some(w), Some(c)),
+            IdentityVerdict::Rejected("boot-id-mismatch")
+        ));
+
+        let (mut w, c) = witness_pair();
+        w.selected_slot = BootSlot::B;
+        w.seal();
+        assert!(matches!(
+            adjudicate_identity(Some(w), Some(c)),
+            IdentityVerdict::Rejected("slot-mismatch")
+        ));
+
+        let (mut w, c) = witness_pair();
+        w.manifest_digest = [0x99; 32];
+        w.seal();
+        assert!(matches!(
+            adjudicate_identity(Some(w), Some(c)),
+            IdentityVerdict::Rejected("manifest-digest-mismatch")
+        ));
+
+        let (mut w, c) = witness_pair();
+        w.bootctrl_generation = 8;
+        w.seal();
+        assert!(matches!(
+            adjudicate_identity(Some(w), Some(c)),
+            IdentityVerdict::Rejected("generation-mismatch")
+        ));
+
+        let (mut w, c) = witness_pair();
+        w.security_version = 9;
+        w.seal();
+        assert!(matches!(
+            adjudicate_identity(Some(w), Some(c)),
+            IdentityVerdict::Rejected("security-version-mismatch")
+        ));
+
+        // floor 错配（含旧 ABI minor 0 witness：floor 恒 0 vs capsule>0
+        // = 新旧混配拒身份，不是猜测）。
+        let (mut w, c) = witness_pair();
+        w.security_floor = 1;
+        w.seal();
+        assert!(matches!(
+            adjudicate_identity(Some(w), Some(c)),
+            IdentityVerdict::Rejected("security-floor-mismatch")
+        ));
+        let (mut w, c) = witness_pair();
+        w.abi_minor = 0;
+        w.security_floor = 0;
+        w.seal();
+        assert!(matches!(
+            adjudicate_identity(Some(w), Some(c)),
+            IdentityVerdict::Rejected("security-floor-mismatch")
+        ));
+    }
+
+    /// 缺席矩阵：双缺 = Absent；单缺 = Rejected（永不把半边事实当
+    /// 直启——旧 boot-manager 混配 / 页被毁都 fail-closed）。
+    #[test]
+    fn absence_matrix_rejects_half_facts() {
+        let (w, c) = witness_pair();
+        assert_eq!(adjudicate_identity(None, None), IdentityVerdict::Absent);
+        assert!(matches!(
+            adjudicate_identity(None, Some(c)),
+            IdentityVerdict::Rejected("witness-absent")
+        ));
+        assert!(matches!(
+            adjudicate_identity(Some(w), None),
+            IdentityVerdict::Rejected("capsule-absent")
+        ));
+    }
 }
 
 /// 47（WP-47.3）：OTA 探针签章测试键种子（**qemu-test 专属装配**——

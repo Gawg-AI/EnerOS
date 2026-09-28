@@ -1,0 +1,173 @@
+--- src/arch-arm/sys_boot.c
++++ src/arch-arm/sys_boot.c
+@@ -95,6 +95,157 @@
+ }
+ 
+ /*
++ * ==========================================================================
++ * EnerOS 77.2 (WP-77.2.2): this-boot boot witness consumption.
++ *
++ * boot-manager (after verifying the ReleaseManifest and resolving the
++ * anchor-matched BootControl) seals a 256-byte EnerOS BootInfo record
++ * (boot-protocol `BootInfo`, ABI 1.1 -- includes security_floor) and passes
++ * its physical pointer to this loader in the entry argument register.
++ *
++ * This hop is the first custody transfer of the independent witness:
++ *   1. verify the sealed record in place (magic / ABI / struct size / CRC32);
++ *   2. copy 256 bytes into loader-owned storage;
++ *   3. publish a *versioned envelope* (magic "ENRWIT1\0", version 1, len
++ *      256, payload) to the fixed mailbox page -- the versioned independent
++ *      channel to the kernel (the six-parameter kernel ABI is NOT extended).
++ *
++ * The kernel (patch 0004) snapshots the mailbox before any boot allocation
++ * can clobber it and republishes the record as a named extra bootinfo chunk
++ * for the initial thread. root-task compares the chunk against the fixed
++ * identity capsule page field-by-field (REG-70.5-CAPSULE-STALENESS fix).
++ *
++ * Literal contract (single source = boot-protocol::witness, cross-locked by
++ * boot-protocol tests/witness_contract_lock.rs):
++ *   mailbox paddr = 0x427FE000UL  (page before IDENTITY_CAPSULE_PHYS)
++ *   envelope      = magic(8) + version u32 LE(4) + len u32 LE(4) + 256B
++ * On any validation failure the mailbox envelope is zeroed: a stale record
++ * from a previous boot must be seen as witness-absent downstream, never as
++ * a fresh fact.
++ * ==========================================================================
++ */
++
++/* Fixed mailbox physical address (boot-protocol ENEROS_BOOT_WITNESS_MAILBOX_PHYS). */
++#define ENEROS_WITNESS_MAILBOX_PADDR 0x427FE000UL
++/* Sealed BootInfo record length (boot-protocol BOOT_INFO_SIZE). */
++#define ENEROS_WITNESS_PAYLOAD_LEN 256
++/* Envelope length: magic(8) + version(4) + len(4) + payload. */
++#define ENEROS_WITNESS_ENVELOPE_LEN (16 + ENEROS_WITNESS_PAYLOAD_LEN)
++
++/* Loader-owned verified copy (custody/diagnostics; the mailbox is the
++ * kernel-facing channel). */
++static unsigned char eneros_witness_copy[ENEROS_WITNESS_PAYLOAD_LEN];
++
++/* CRC32 (IEEE 802.3, reflected, poly 0xEDB88320) -- bitwise, table-free.
++ * Must match boot-protocol crc32 (eneros_ipc_wire) bit-for-bit; known vector
++ * "123456789" -> 0xCBF43926 is asserted on the Rust side. */
++static unsigned int eneros_crc32(const unsigned char *data, unsigned long len)
++{
++    unsigned int crc = 0xFFFFFFFFu;
++    unsigned long i;
++    int bit;
++    for (i = 0; i < len; i++) {
++        crc ^= (unsigned int)data[i];
++        for (bit = 0; bit < 8; bit++) {
++            if (crc & 1u) {
++                crc = (crc >> 1) ^ 0xEDB88320u;
++            } else {
++                crc >>= 1;
++            }
++        }
++    }
++    return crc ^ 0xFFFFFFFFu;
++}
++
++static unsigned int eneros_le32(const unsigned char *p)
++{
++    return (unsigned int)p[0] | ((unsigned int)p[1] << 8) |
++           ((unsigned int)p[2] << 16) | ((unsigned int)p[3] << 24);
++}
++
++static void eneros_witness_poison(void)
++{
++    volatile unsigned char *mbox = (volatile unsigned char *)(unsigned long)
++        ENEROS_WITNESS_MAILBOX_PADDR;
++    unsigned long i;
++    for (i = 0; i < ENEROS_WITNESS_ENVELOPE_LEN; i++) {
++        mbox[i] = 0;
++    }
++}
++
++static void eneros_witness_consume(void *arg)
++{
++    static const unsigned char rec_magic[8] = { 'E', 'N', 'R', 'B', 'O', 'O', 'T', '\0' };
++    static const unsigned char env_magic[8] = { 'E', 'N', 'R', 'W', 'I', 'T', '1', '\0' };
++    volatile unsigned char *mbox = (volatile unsigned char *)(unsigned long)
++        ENEROS_WITNESS_MAILBOX_PADDR;
++    unsigned char buf[ENEROS_WITNESS_PAYLOAD_LEN];
++    unsigned int stored_crc, computed_crc, struct_size;
++    unsigned int abi_major, abi_minor;
++    unsigned long i;
++
++    if (arg == NULL) {
++        goto fail;
++    }
++    for (i = 0; i < ENEROS_WITNESS_PAYLOAD_LEN; i++) {
++        buf[i] = ((volatile const unsigned char *)arg)[i];
++    }
++    for (i = 0; i < 8; i++) {
++        if (buf[i] != rec_magic[i]) {
++            goto fail;
++        }
++    }
++    abi_major = (unsigned int)buf[8] | ((unsigned int)buf[9] << 8);
++    abi_minor = (unsigned int)buf[10] | ((unsigned int)buf[11] << 8);
++    if (abi_major != 1u || abi_minor > 1u) {
++        goto fail;
++    }
++    struct_size = eneros_le32(&buf[12]);
++    if (struct_size != ENEROS_WITNESS_PAYLOAD_LEN) {
++        goto fail;
++    }
++    /* CRC covers the whole record with the 4 CRC bytes zeroed (boot-protocol
++     * BootInfo::seal semantics; CRC_OFFSET = 240). */
++    stored_crc = eneros_le32(&buf[240]);
++    if (stored_crc == 0u) {
++        goto fail;
++    }
++    buf[240] = 0;
++    buf[241] = 0;
++    buf[242] = 0;
++    buf[243] = 0;
++    computed_crc = eneros_crc32(buf, ENEROS_WITNESS_PAYLOAD_LEN);
++    if (computed_crc != stored_crc) {
++        goto fail;
++    }
++    buf[240] = (unsigned char)(stored_crc & 0xFFu);
++    buf[241] = (unsigned char)((stored_crc >> 8) & 0xFFu);
++    buf[242] = (unsigned char)((stored_crc >> 16) & 0xFFu);
++    buf[243] = (unsigned char)((stored_crc >> 24) & 0xFFu);
++    for (i = 0; i < ENEROS_WITNESS_PAYLOAD_LEN; i++) {
++        eneros_witness_copy[i] = buf[i];
++        mbox[16 + i] = buf[i];
++    }
++    for (i = 0; i < 8; i++) {
++        mbox[i] = env_magic[i];
++    }
++    mbox[8] = 1;
++    mbox[9] = 0;
++    mbox[10] = 0;
++    mbox[11] = 0; /* version = 1 (u32 LE) */
++    mbox[12] = 0;
++    mbox[13] = 1;
++    mbox[14] = 0;
++    mbox[15] = 0; /* len = 256 (u32 LE) */
++    printf("EnerOS: boot witness verified (abi=%lu.%lu), mailbox published\n",
++           (unsigned long)abi_major, (unsigned long)abi_minor);
++    return;
++fail:
++    eneros_witness_poison();
++    printf("EnerOS: boot witness absent or invalid -- mailbox zeroed\n");
++}
++
++/*
+  * Entry point.
+  *
+  * Unpack images, setup the MMU, jump to the kernel.
+@@ -103,6 +254,12 @@
+ {
+     void *bootloader_dtb = NULL;
+ 
++    /* EnerOS 77.2 (WP-77.2.2): first custody transfer of the boot witness
++     * (verify + copy + versioned mailbox publish). Runs before any other
++     * loader activity; pre-MMU identity mapping makes the record page and
++     * the mailbox page directly accessible. */
++    eneros_witness_consume(arg);
++
+     /* initialize platform to a state where we can print to a UART */
+     if (initialise_devices()) {
+         printf("ERROR: Did not successfully return from initialise_devices()\n");

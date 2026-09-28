@@ -330,12 +330,18 @@ mod tests {
             IDENTITY_CAPSULE_PHYS,
             ENEROS_INIT_BUNDLE_PHYS + ENEROS_MAPPED_WINDOW_LEN - 0x1000
         );
-        // dtb_window_for 预留后：DTB 窗口不再触及 capsule 页。
+        // dtb_window_for 预留后：DTB 窗口不触及 capsule 页，也不触及
+        // 见证 mailbox 页（WP-77.2.2 双预留——capsule 页前一页）。
         let (start, len) = dtb_window_for(0x1000).expect("小 bundle 有窗口");
         assert_eq!(
             start + len,
+            crate::witness::ENEROS_BOOT_WITNESS_MAILBOX_PHYS,
+            "DTB 窗口末端必须 = 见证 mailbox 页起点（双预留单源）"
+        );
+        assert_eq!(
+            crate::witness::ENEROS_BOOT_WITNESS_MAILBOX_PHYS + 0x1000,
             IDENTITY_CAPSULE_PHYS,
-            "DTB 窗口末端必须 = capsule 页起点（预留单源）"
+            "mailbox 页 = capsule 页前一页"
         );
     }
 }

@@ -172,6 +172,11 @@ pub extern "C" fn rust_entry(bi: u64) -> ! {
     use eneros_sel4_sys::safe::{get_boot_info, BootInfoReader, CapInitThreadTable};
     let bi = get_boot_info();
     let reader = BootInfoReader::from_bootinfo_ptr(bi);
+    // WP-77.2.2：身份裁决冻结——服务 spawn 前一次性完成（extra bootinfo
+    // 见证 chunk × capsule 页六字段比较）；所有身份消费方（identity push/
+    // OTA 探针/管理探针/svc-storage 身份页）经 validated_identity() 引用
+    // 该结果，不再各自读物理页。
+    crate::service::identity_freeze(bi);
     let caps = CapInitThreadTable::resolve();
     let mut ctx = crate::spawn::SpawnCtx::from_bootinfo_reader(&reader, &caps);
 

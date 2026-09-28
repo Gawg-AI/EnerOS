@@ -2438,12 +2438,14 @@ fn configure_service(
         let identity_frame = ctx.caps.alloc(1).ok_or(SpawnError::NoCapSlot)?;
         retype_one(ctx, types.arm_frame, OBJ_BITS_SMALL_PAGE, identity_frame)?;
         let mut identity_page = [0u8; eneros_boot_protocol::IDENTITY_CAPSULE_SIZE];
-        let identity_state = match crate::service::resolve_identity_capsule() {
+        // WP-77.2.2：注入面同样只信冻结裁决——Validated 才拷 capsule
+        // 字节；Absent/Rejected 一律零页（写面由空区间关闭）。
+        let identity_state = match crate::service::validated_identity() {
             Some(capsule) => {
                 identity_page.copy_from_slice(&capsule.to_bytes());
                 "capsule"
             }
-            None => "absent(zeros)",
+            None => "absent-or-rejected(zeros)",
         };
         copy_window_bytes(ctx, identity_frame, &identity_page, rights)?;
         let identity_perm = VmPermissions::RO_NX;

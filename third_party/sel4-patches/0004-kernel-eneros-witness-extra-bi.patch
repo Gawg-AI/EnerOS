@@ -1,0 +1,119 @@
+--- src/arch/arm/kernel/boot.c
++++ src/arch/arm/kernel/boot.c
+@@ -331,6 +331,69 @@
+ 
+ /* Main kernel initialisation function. */
+ 
++/* ==========================================================================
++ * EnerOS 77.2 (WP-77.2.2): this-boot boot witness snapshot.
++ *
++ * The elfloader (patch 0003) verifies the sealed 256-byte EnerOS BootInfo
++ * record handed over by the boot-manager and publishes a versioned envelope
++ * (magic "ENRWIT1\0", version u32 LE = 1, len u32 LE = 256, payload) to a
++ * fixed mailbox page -- the versioned independent channel that leaves the
++ * six-parameter kernel entry ABI untouched.
++ *
++ * This snapshot runs as the FIRST statement of try_init_kernel: the kernel
++ * window maps all of RAM at entry, and the copy is taken before any boot
++ * allocation (freemem retype / populate_bi_frame clearMemory) can clobber
++ * the page. The verified record is republished as a named extra bootinfo
++ * chunk for the initial thread; root-task walks the extra region and
++ * compares the record against the fixed identity capsule page field-by-field
++ * (REG-70.5-CAPSULE-STALENESS).
++ *
++ * Literal contract (single source = boot-protocol::witness, cross-locked by
++ * boot-protocol tests/witness_contract_lock.rs):
++ *   mailbox paddr = 0x427FE000UL  (page before IDENTITY_CAPSULE_PHYS)
++ *   chunk id      = 0x454E5237UL  ("ENR7"; upstream reserves 0..=6)
++ * Non-EnerOS direct boots (garbage/zero mailbox, bad magic/version/len)
++ * snapshot as absent: no chunk is published, downstream sees witness-absent.
++ * ========================================================================== */
++#define ENEROS_WITNESS_MAILBOX_PADDR 0x427FE000UL
++#define ENEROS_WITNESS_CHUNK_ID 0x454E5237UL
++#define ENEROS_WITNESS_PAYLOAD_LEN 256
++#define ENEROS_WITNESS_ENVELOPE_LEN (16 + ENEROS_WITNESS_PAYLOAD_LEN)
++
++static word_t eneros_witness_state; /* 0 = absent, 1 = snapshot taken */
++static unsigned char eneros_witness_copy[ENEROS_WITNESS_PAYLOAD_LEN];
++
++static void eneros_witness_snapshot(void)
++{
++    const volatile unsigned char *mbox = (const volatile unsigned char *)
++        (unsigned long)paddr_to_pptr(ENEROS_WITNESS_MAILBOX_PADDR);
++    unsigned char buf[ENEROS_WITNESS_ENVELOPE_LEN];
++    unsigned long i;
++
++    for (i = 0; i < ENEROS_WITNESS_ENVELOPE_LEN; i++) {
++        buf[i] = mbox[i];
++    }
++    /* magic "ENRWIT1\0" */
++    if (buf[0] != 'E' || buf[1] != 'N' || buf[2] != 'R' || buf[3] != 'W' ||
++        buf[4] != 'I' || buf[5] != 'T' || buf[6] != '1' || buf[7] != '\0') {
++        return;
++    }
++    /* version u32 LE == 1 */
++    if (buf[8] != 1 || buf[9] != 0 || buf[10] != 0 || buf[11] != 0) {
++        return;
++    }
++    /* len u32 LE == 256 */
++    if (buf[12] != 0 || buf[13] != 1 || buf[14] != 0 || buf[15] != 0) {
++        return;
++    }
++    for (i = 0; i < ENEROS_WITNESS_PAYLOAD_LEN; i++) {
++        eneros_witness_copy[i] = buf[16 + i];
++    }
++    eneros_witness_state = 1;
++    printf("EnerOS: boot witness snapshot taken (%u bytes)\n",
++           (unsigned int)ENEROS_WITNESS_PAYLOAD_LEN);
++}
++
+ static BOOT_CODE bool_t try_init_kernel(
+     paddr_t ui_p_reg_start,
+     paddr_t ui_p_reg_end,
+@@ -356,6 +419,12 @@
+     create_frames_of_region_ret_t create_frames_ret;
+     create_frames_of_region_ret_t extra_bi_ret;
+ 
++    /* EnerOS 77.2 (WP-77.2.2): FIRST -- copy the boot witness out of the
++     * mailbox before any later boot step can overwrite the page (freemem
++     * allocations, populate_bi_frame clearMemory). The kernel window is
++     * live at entry, so paddr_to_pptr access is valid here. */
++    eneros_witness_snapshot();
++
+     /* convert from physical addresses to userland vptrs */
+     v_region_t ui_v_reg = {
+         .start = ui_p_reg_start - pv_offset,
+@@ -412,6 +481,12 @@
+         };
+     }
+ 
++    /* EnerOS 77.2 (WP-77.2.2): reserve extra bootinfo capacity for the
++     * named boot-witness chunk (see eneros_witness_snapshot). */
++    if (eneros_witness_state) {
++        extra_bi_size += sizeof(seL4_BootInfoHeader) + sizeof(eneros_witness_copy);
++    }
++
+     /* The region of the initial thread is the user image + ipcbuf and boot info */
+     word_t extra_bi_size_bits = calculate_extra_bi_size_bits(extra_bi_size);
+     v_region_t it_v_reg = {
+@@ -470,6 +545,20 @@
+         extra_bi_offset += dtb_size;
+     }
+ 
++    /* EnerOS 77.2 (WP-77.2.2): publish the snapshot boot witness as a named
++     * extra bootinfo chunk (id = ENEROS_WITNESS_CHUNK_ID, len includes the
++     * header; layout = seL4_BootInfoHeader + 256-byte BootInfo record). */
++    if (eneros_witness_state) {
++        header.id = ENEROS_WITNESS_CHUNK_ID;
++        header.len = sizeof(header) + sizeof(eneros_witness_copy);
++        *(seL4_BootInfoHeader *)(rootserver.extra_bi + extra_bi_offset) = header;
++        extra_bi_offset += sizeof(header);
++        memcpy((void *)(rootserver.extra_bi + extra_bi_offset),
++               eneros_witness_copy, sizeof(eneros_witness_copy));
++        extra_bi_offset += sizeof(eneros_witness_copy);
++        printf("EnerOS: boot witness published to bootinfo extra chunk\n");
++    }
++
+     if (extra_bi_size > extra_bi_offset) {
+         /* provide a chunk for any leftover padding in the extended boot info */
+         header.id = SEL4_BOOTINFO_HEADER_PADDING;

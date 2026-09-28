@@ -18,6 +18,9 @@ pub mod manifest;
 pub mod measurement;
 pub mod signature;
 pub mod update_manifest;
+/// 蓝图 77 卷二 WP-77.2.2：本次启动见证 wire 契约（mailbox 信封 +
+/// seL4 extra bootinfo 具名 chunk；C 侧字面对拍互锁）。
+pub mod witness;
 
 pub use boot_control::{
     resolve_boot_control, BootControl, BootControlAnchor, BootControlCopy, BootControlError,

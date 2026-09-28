@@ -62,6 +62,10 @@ enum BootFailure {
     BootControl,
     ProtectedState,
     BootControlWrite,
+    /// WP-77.2.1：可信身份 capsule 固定页 Address 预留失败——硬失败关停
+    /// （原 soft-degrade 退役：失败页可能残留上次 boot 的 CRC 合法记录，
+    /// 继续引导 = 陈旧身份复活窗口，REG-70.5-CAPSULE-STALENESS）。
+    IdentityCapsule,
     Measurement,
     /// WP-27.2：DTB 装配布局不一致（bundle header 与 manifest 长度不符 /
     /// DTB 超窗口）——fail-closed，不静默截断。
@@ -85,6 +89,7 @@ impl BootFailure {
             Self::BootControl => "BOOTCTRL",
             Self::ProtectedState => "PROTECTED_STATE",
             Self::BootControlWrite => "BOOTCTRL_WRITE",
+            Self::IdentityCapsule => "IDENTITY_CAPSULE",
             Self::Measurement => "MEASUREMENT",
             Self::DtLayout => "DT_LAYOUT",
         }
@@ -279,6 +284,51 @@ fn main() -> Status {
     }
 }
 
+// ==================== fault-inject 注入窗（WP-77.2.1 QEMU 负例③）====================
+// 仅测试装配：`fault-inject` feature 由 image_factory 在
+// `ENEROS_BOOT_MANAGER_FAULT_INJECT=1` 时显式 opt-in（release 流水线恒不
+// 设置——注入面与 release 构建互斥的执行机构）。模式经构建期 env 选定：
+// - `capsule-alloc`：占住固定页并写入上次 CRC 合法 capsule → Address 预留
+//   失败 + 旧字节保留（§1.2 物理前提的注入建模：冲突 + 残留）；
+// - `capsule-stale`：预留照常成功，但写入一枚陈旧（boot_id/槽/代次均非
+//   本次）的合法 capsule，见证不变 → root 六字段比较必须拒绝。
+#[cfg(feature = "fault-inject")]
+fn eneros_fault_inject_occupy_capsule_page() -> bool {
+    matches!(
+        option_env!("ENEROS_FAULT_INJECT_MODE"),
+        Some("capsule-alloc")
+    )
+}
+
+#[cfg(feature = "fault-inject")]
+fn eneros_fault_inject_stale_capsule() -> bool {
+    matches!(
+        option_env!("ENEROS_FAULT_INJECT_MODE"),
+        Some("capsule-stale")
+    )
+}
+
+/// 注入用陈旧 capsule（CRC 合法、字段非本次 boot——真实 capsule 写入前
+/// 被本函数产物替换；root 侧见证六字段比较必须拒绝）。
+#[cfg(feature = "fault-inject")]
+fn stale_inject_capsule() -> IdentityCapsule {
+    let mut sku = [0u8; 16];
+    sku[..4].copy_from_slice(b"stale");
+    let mut c = IdentityCapsule::new(
+        2,          // slot B（错槽形态）
+        [0xEE; 16], // boot_id（上次 boot 模式字节——必与本次见证失配）
+        [0x66; 16], // release_id
+        sku,
+        [0x55; 32],  // manifest_digest（陈旧摘要）
+        1,           // bootctrl_generation（陈旧代次）
+        1,           // security_version
+        1,           // security_floor
+        [0, 118, 0], // product_version（旧版本）
+    );
+    c.seal();
+    c
+}
+
 fn prepare_boot() -> Result<LoadedBoot, BootFailure> {
     let handles = boot::locate_handle_buffer(SearchType::from_proto::<BlockIO>())
         .map_err(|_| BootFailure::NoBlockDevice)?;
@@ -332,6 +382,48 @@ fn prepare_boot() -> Result<LoadedBoot, BootFailure> {
             write_protected_anchor(&resolved.anchor)?;
             resolved.needs_anchor_initialization = false;
         }
+        // 70.5（WP-70.5.1）+ 蓝图 77 卷二 WP-77.2.1：可信身份 capsule 页
+        // ——BOOT-007 窗口尾页固定地址（IDENTITY_CAPSULE_PHYS）显式锁定。
+        // **时点 = 任何 prepare_attempt 持久扣次之前**（WP-77.2.1 核心不变
+        // 量：一次分配失败不得扣 trial——预留失败即整体引导失败，介质态
+        // 逐字节不变）。UEFI 分配器自顶向下，早分配防 verify_slot 的堆
+        // 分配被占页后 Address 撞车。成功句柄贯穿 loop、verify_slot 与
+        // handoff，写 capsule 时**不再二次申请**；失败 = 硬失败
+        // （`IDENTITY_CAPSULE` 结构化拒绝码关停）——原「分配失败继续引导」
+        // 退役：失败页非本程序所有，可能残留上次 boot 的 CRC 合法
+        // capsule，继续引导即陈旧身份复活窗口（REG-70.5-CAPSULE-STALENESS
+        // 代码路径就此关闭；物理前提由 fault-inject 注入窗实证）。
+        #[cfg(feature = "fault-inject")]
+        if eneros_fault_inject_occupy_capsule_page() {
+            // 占住固定页 + 写入上次 CRC 合法 capsule（模拟暖重启残留）。
+            match boot::allocate_pages(
+                AllocateType::Address(IDENTITY_CAPSULE_PHYS),
+                MemoryType::RESERVED,
+                1,
+            ) {
+                Ok(page) => {
+                    let mut stale = stale_inject_capsule();
+                    stale.seal();
+                    let bytes = stale.to_bytes();
+                    // SAFETY: `page` 为本函数以 Address 锁定的单页；写入
+                    // 范围 = capsule 编码长度（136B < 4 KiB）。
+                    let dst = page.as_ptr() as *mut u8;
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
+                    }
+                    println!(
+                        "ENEROS stage=fault-inject capsule-alloc armed (stale bytes retained)"
+                    );
+                }
+                Err(_) => return Err(BootFailure::IdentityCapsule),
+            }
+        }
+        let identity_capsule_page = boot::allocate_pages(
+            AllocateType::Address(IDENTITY_CAPSULE_PHYS),
+            MemoryType::LOADER_DATA,
+            1,
+        )
+        .map_err(|_| BootFailure::IdentityCapsule)?;
         let mut verification_fallback = false;
         let verified = loop {
             let (selection, next_control) = resolved
@@ -381,20 +473,6 @@ fn prepare_boot() -> Result<LoadedBoot, BootFailure> {
             kernel_payload,
             init_payload,
         } = verified;
-        // 70.5（WP-70.5.1）：可信身份 capsule 页——BOOT-007 窗口尾页固定
-        // 地址（IDENTITY_CAPSULE_PHYS）显式锁定。置于本函数全部显式
-        // AllocateType 分配（kernel/init/测量/映射/BootInfo）之前：UEFI
-        // 分配器自顶向下，晚分配会被占页 Address 失败 → OTA 身份缺失
-        // （verify_slot 的堆分配在此之前已发生——池分配不落固定页，70.5
-        // 复查订正原"任何 AnyPages 之前"措辞）。分配失败 = 诚实降级
-        // （soft）：root 读不到 capsule → OTA not-ready，引导继续（不因
-        // OTA 身份面阻断启动）；失败页非本程序所有，不得写零——暖重启
-        // 残留旧 capsule 的新鲜性核验属 root 消费侧（70.6 登记）。
-        let identity_capsule_page = boot::allocate_pages(
-            AllocateType::Address(IDENTITY_CAPSULE_PHYS),
-            MemoryType::LOADER_DATA,
-            1,
-        );
         // BOOT-002：kernel（elfloader）必须用 LOADER_CODE 分配——UEFI 对
         // LOADER_DATA 页设置 NX（不可执行），跳转进入会触发指令预取异常
         // （QEMU 实测 "Synchronous Exception at 0x41000000"）；LOADER_CODE
@@ -530,6 +608,10 @@ fn prepare_boot() -> Result<LoadedBoot, BootFailure> {
         info.measurement_log_len = MEASUREMENT_LOG_SIZE as u64;
         info.bootctrl_generation = active_control.sequence;
         info.security_version = manifest.header.security_version;
+        // WP-77.2.2（ABI minor 1）：本次 boot 的可信水位投影——来源 =
+        // active_control（anchor 匹配的 BootControl），**不得**从 capsule
+        // 回读来填（见证的独立性本体）。root 六字段身份比较面之一。
+        info.security_floor = active_control.security_floor;
         // BOOT-001：从 UEFI 配置表注入设备树（DTB）——旧实现 dtb_phys/dtb_len
         // 恒为 0，内核无设备树（无法初始化真实外设）。QEMU virt / 飞腾 D2000
         // 的 UEFI 均通过 DEVICE_TREE_GUID 配置表项暴露 DTB。
@@ -600,46 +682,52 @@ fn prepare_boot() -> Result<LoadedBoot, BootFailure> {
         // 投影（ReleaseManifest + anchor 匹配 BootControl），root-task 经
         // 固定物理地址消费并分发 svc-ota。写失败 = OTA not-ready（诚实
         // 降级，不阻断引导）。
-        match identity_capsule_page {
-            Ok(page) => {
-                let mut capsule = IdentityCapsule::new(
-                    selection.slot as u8,
-                    info.boot_id,
-                    manifest.header.release_id,
-                    manifest.header.platform_id,
-                    digest,
-                    active_control.sequence,
-                    manifest.header.security_version,
-                    active_control.security_floor,
-                    [
-                        manifest.header.product_version.major,
-                        manifest.header.product_version.minor,
-                        manifest.header.product_version.patch,
-                    ],
-                );
-                capsule.seal();
-                let bytes = capsule.to_bytes();
-                // SAFETY: `page` 为本函数以 Address 锁定的单页 LOADER_DATA
-                //（exit_boot_services 后保留）；写入范围 = capsule 编码
-                // 长度（136B < 4 KiB 页）。
-                let dst = page.as_ptr() as *mut u8;
-                unsafe {
-                    core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
-                }
-                println!(
-                    "ENEROS stage=identity-capsule slot={} gen={} secver={} floor={} ver={}.{}.{}",
-                    slot_name(selection.slot),
-                    active_control.sequence,
-                    manifest.header.security_version,
-                    active_control.security_floor,
+        {
+            // WP-77.2.1：预留已在 prepare_attempt 之前完成（失败 =
+            // `IDENTITY_CAPSULE` 硬失败，不会走到这里）；此处用柄直写。
+            let page = identity_capsule_page;
+            let mut capsule = IdentityCapsule::new(
+                selection.slot as u8,
+                info.boot_id,
+                manifest.header.release_id,
+                manifest.header.platform_id,
+                digest,
+                active_control.sequence,
+                manifest.header.security_version,
+                active_control.security_floor,
+                [
                     manifest.header.product_version.major,
                     manifest.header.product_version.minor,
                     manifest.header.product_version.patch,
-                );
+                ],
+            );
+            // fault-inject 注入窗（WP-77.2.1 QEMU 负例③）：stale 模式下
+            // 写入一枚 CRC 合法但**陈旧**的 capsule（boot_id/槽/代次均非
+            // 本次），见证保持真实——root 六字段比较必须拒绝。release 构
+            // 建面该 feature 恒缺省（image_factory 仅显式 opt-in）。
+            #[cfg(feature = "fault-inject")]
+            if eneros_fault_inject_stale_capsule() {
+                capsule = stale_inject_capsule();
             }
-            Err(_) => {
-                println!("ENEROS stage=identity-capsule-alloc-fail — OTA not-ready (soft degrade)");
+            capsule.seal();
+            let bytes = capsule.to_bytes();
+            // SAFETY: `page` 为本函数以 Address 锁定的单页 LOADER_DATA
+            //（exit_boot_services 后保留）；写入范围 = capsule 编码
+            // 长度（136B < 4 KiB 页）。
+            let dst = page.as_ptr() as *mut u8;
+            unsafe {
+                core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
             }
+            println!(
+                "ENEROS stage=identity-capsule slot={} gen={} secver={} floor={} ver={}.{}.{}",
+                slot_name(selection.slot),
+                active_control.sequence,
+                manifest.header.security_version,
+                active_control.security_floor,
+                manifest.header.product_version.major,
+                manifest.header.product_version.minor,
+                manifest.header.product_version.patch,
+            );
         }
         println!(
             "ENEROS stage=verified slot={} security_version={} bootctrl_generation={} media_reads={} media_writes={} kernel_bytes={} init_bytes={}",
