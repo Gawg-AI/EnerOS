@@ -1,0 +1,41 @@
+# EnerOS 现有 LLM 与 AI 决策职责盘点
+
+> 研究票：[核实 EnerOS 现有 LLM 与 AI 决策职责](https://github.com/Gawg-AI/EnerOS/issues/3)
+> 基线：`597798de93523aec26a420f6602628abb44c9d25`，2026-09-29。范围是仓库代码和产品装配声明；「在库」不等于「已进入 target 产品」。本文只记录事实和由这些事实推出的接线边界，不选择新推理框架。
+
+## 结论
+
+当前设备端 seL4 产品具备**有类型的能源决策编排与受控执行**：从可信快照取输入，`svc-ai-worker` 选择远程提案或本地 SOC 启发式，生成 `CandidatePlan`，由 `svc-control-dispatch` 认证、授权、持久化、投递及读回。它**没有在设备端运行 LLM 权重或通用文本生成服务**。真实 llama.cpp + HiGHS 联调在 host 的 `eneros-ai-runner-demo`，HiGHS 生产 planner 在站端 `eneros-planner-peer`；设计更完整的 `ModelHarness`、模型 OTA、GGUF 加载器及 LLM/Solver 对话库未接入设备端产品。[能源服务链](../../crates/agents/control-services/src/energy_agent_service.rs#L1-L14) · [AI 服务装配](../../crates/agents/control-services/src/bin/svc-ai-worker.rs#L121-L180) · [host runner](../../crates/ai/runner/src/lib.rs#L1-L13) · [站端 planner](../../crates/ai/planner-peer/src/main.rs#L1-L16) · [冻结清单](../../product/policy/frozen-crates.json#L43-L45)
+
+## 运行位置与职责
+
+| 位置 | 已装配的功能 | 证据与限定 |
+| --- | --- | --- |
+| **seL4 target，生产配置** | `svc-energy-agent` 取得带身份的可信快照，调用 `svc-ai-worker`，再向 `svc-control-dispatch` 提交；AI worker 有 `RemoteBrain<HeuristicBackend, PeerLinkEipc>` 与纯 `HeuristicBackend` 两个启动分支。前者通过 MQTT 请求/接收站端提案，后者是 SOC 死区的 O(1) 本地规则；缺配置或 MQTT capability 时退到纯启发式。 | [服务路由](../../crates/agents/control-services/src/energy_agent_service.rs#L1-L6) · [AI worker 分支](../../crates/agents/control-services/src/bin/svc-ai-worker.rs#L121-L180) · [启发式定义](../../crates/agents/control-services/src/ai_worker.rs#L147-L150)；`qemu-prod` 与 `board-prod` 均列出 `svc-ai-worker`：[QEMU](../../product/profiles/qemu-prod.json#L465-L466) · [板卡](../../product/profiles/board-prod.json#L466-L467)。 |
+| **seL4 target，外部 LLM/solver 接口** | `RemoteBrain` 负责请求关联、应答版本/数值/绑定校验、超时、健康状态及本地降级。peer 是不受信输入；v1 为单功率值提案，v2 带快照/目录/时域身份和完整分配。它是**决策提案接口**，不是任意聊天或通用推理 API。 | [RemoteBrain 职责](../../crates/agents/control-services/src/remote_brain.rs#L1-L13) · [v1 契约](../../crates/ai/intent-contract/src/peer.rs#L21-L39) · [v2 契约](../../crates/ai/intent-contract/src/peer.rs#L169-L196) · [v2 严格校验](../../crates/ai/intent-contract/src/peer.rs#L386-L405)。 |
+| **host，真实模型联调** | `eneros-ai-runner-demo` 使用 llama.cpp `LlamaCppEngine`、HiGHS、DualBrainCoordinator 和文件记录 sink，能验证一次完整意图/求解/安全链；源码明确它目前是 host 闭环和 demo 文件执行器。 | [runner 装配](../../crates/ai/runner/src/lib.rs#L1-L13) · [真实后端与 demo sink](../../crates/ai/runner/src/lib.rs#L186-L202) · [装配代码](../../crates/ai/runner/src/lib.rs#L213-L255) · [Cargo 依赖](../../crates/ai/runner/Cargo.toml#L9-L24)。 |
+| **站端 host，真实 solver** | `eneros-planner-peer` 在受控站内计算分区通过 MQTT 应答，调用真实 HiGHS；它没有设备 writer、Gateway key 或 seL4 capability。它不是 LLM 推理器。 | [planner 角色](../../crates/ai/planner-peer/src/lib.rs#L1-L18) · [常驻程序与 MQTT](../../crates/ai/planner-peer/src/main.rs#L1-L16) · [HiGHS 依赖](../../crates/ai/planner-peer/Cargo.toml#L13-L23) · [不进 target profile](../../product/policy/frozen-crates.json#L408-L409)。 |
+| **在库，未接生产闭包** | `ModelHarness` 设计了包验证、生命周期、输入投影、预算、输出门；`model-ota` 有模型字节切换/回滚；`gguf-loader` 解析 GGUF；`dialog` 是 LLM↔Solver 迭代协商库。这些不能按产品能力计。 | [Harness 自述未接线](../../crates/ai/model-harness/src/lib.rs#L24-L29) · [OTA 冻结](../../product/policy/frozen-crates.json#L43-L45) · [GGUF 职责](../../crates/ai/gguf-loader/src/lib.rs#L1-L18) · [dialog 冻结](../../product/policy/frozen-crates.json#L147-L150)。 |
+
+`eneros-dual-brain` 源码中的七步 `DualBrainCoordinator` 容易被误读为 target 产品 LLM：它是 `coordinator` feature 才编译的 host 消费面，依赖 LLM/意图解析/调度器等；`control-services` 依赖默认无 feature 的 dual-brain 子集，未启用该编排器。[feature 门](../../crates/ai/dual-brain/Cargo.toml#L34-L49) · [源码门](../../crates/ai/dual-brain/src/lib.rs#L49-L67) · [target 依赖](../../crates/agents/control-services/Cargo.toml#L40-L45) · [host runner 启用](../../crates/ai/runner/Cargo.toml#L13-L23)
+
+`eneros-energy-market-agent` 虽声明 `coordinator`、`llama-cpp` 和 `highs-ffi` 依赖，是可复用的库/历史 MVP 编排，不是当前 `svc-energy-agent` 的实现。目标服务自己的路由直接调用 `svc-ai-worker`，而产品 profile 的业务服务二进制来自 `control-services`。[库依赖](../../crates/agents/energy-market-agent/Cargo.toml#L13-L27) · [实际服务路由](../../crates/agents/control-services/src/energy_agent_service.rs#L1-L14) · [产品二进制](../../product/profiles/qemu-prod.json#L465-L466)
+
+## 四类概念须分开
+
+1. **自由文本生成**：`LlmEngine` 的底层接口支持 `infer(prompt) -> String` 与 `infer_stream`，还有加载、卸载和健康查询。这是可复用的引擎抽象；目前设备端产品没有调用它的服务装配或对外自由文本 API。`llama-cpp` feature 通过 C++/pthread 等 host 运行时链接，不能因 Rust trait 标 `no_std` 就视为 seL4 可运行。[接口](../../crates/ai/llm-engine/src/engine.rs#L11-L56) · [target feature 边界](../../crates/ai/dual-brain/Cargo.toml#L28-L49) · [本地移植证据](../../docs/ai/local-inference-spike.md#L45-L64) · [实际链接库](../../crates/ai/llm-engine/build.rs#L152-L161)
+2. **有类型的决策**：设备端 `DecisionBackend` 接收 `DecisionInput`（可信遥测与快照身份），输出候选 wire 或 `Unavailable`/`NoAction`。生产 `AI_PROPOSE_SNAP` 从同一可信快照解码；旧无身份请求可解码但无新控制资格。v2 外部提案必须匹配在途请求和事实绑定。模型只应替换候选产生者，不能绕开身份和校验。[后端 seam](../../crates/agents/control-services/src/ai_worker.rs#L85-L121) · [生产解码](../../crates/agents/control-services/src/ai_worker.rs#L538-L589) · [peer v2 验收](../../crates/agents/control-services/src/remote_brain.rs#L350-L441)
+3. **确定性求解**：HiGHS 是 LP/MILP solver，不是 LLM。`planner-peer` 可把求解结果送进同一提案入口；目标侧静态启发式也不是 LLM。完整候选的类型链区分 `IntentCandidate`、`ObjectiveSpec`、`DecisionRequest`、`CandidatePlan` 与 `CertifiedPlan`。[HiGHS 站端部署](../../crates/ai/planner-peer/src/lib.rs#L1-L18) · [启发式规则](../../crates/agents/control-services/src/ai_worker.rs#L416-L474) · [决策类型链](../../crates/ai/decision-contract/src/lib.rs#L1-L24)
+4. **控制执行**：`CertifiedPlan` 由独立 Certifier 重算硬约束，证书不替代 Gateway 授权；`ControlDispatch` 是唯一写出口，执行验证、授权、持久化、投递、ACK、readback、审计。自由文本与 solver 输出都没有直写权。[独立认证](../../crates/ai/certifier/src/lib.rs#L1-L23) · [唯一投递链](../../crates/protocols/control-dispatch/src/dispatch.rs#L1-L10) · [可信提交](../../crates/protocols/control-dispatch/src/dispatch.rs#L154-L164)
+
+## 对“两个能力原生 seL4，外部 LLM 接口保留”的直接含义
+
+- **原生能力 A：设备端受约束的决策推理。** 当前接口可容纳新的本地候选生成者，但 `svc-ai-worker` 启动时只实例化 `RemoteBrain` 或 `HeuristicBackend`；还没有本地 LLM/新模型后端、模型加载或动态切换状态机。设备端新后端须保持 `DecisionInput → CandidatePlan/结构化拒绝` 和现有执行边界。[启动分支](../../crates/agents/control-services/src/bin/svc-ai-worker.rs#L121-L180) · [决策 seam](../../crates/agents/control-services/src/ai_worker.rs#L116-L150) · [可信入口](../../crates/agents/control-services/src/dispatch_service.rs#L40-L43)
+- **原生能力 B：设备端自由生成或通用推理。** 底层 `LlmEngine` 有文本接口，但未形成 seL4 服务、IPC 契约、权限范围或产品 profile。`ModelHarness` 的现有 purpose 是结构化意图、告警解释、市场目标草案；即使接线，告警解释也受输出 schema 约束，并非任意 prompt 的聊天服务。若用户要求自由生成，应将其作为独立产品接口定义，不把 `DecisionBackend` 的候选 wire 当成聊天响应。[引擎文本接口](../../crates/ai/llm-engine/src/engine.rs#L22-L41) · [Harness purpose](../../crates/ai/model-harness/src/harness.rs#L30-L38) · [Harness 输出门](../../crates/ai/model-harness/src/gate.rs#L47-L55) · [Harness 未接线](../../crates/ai/model-harness/src/lib.rs#L24-L29)
+- **保留外部接口。** 现有 MQTT peer 有完整的请求/应答相关性、版本、序号、数值域与快照绑定校验，`RemoteBrain` 还有超时降级/恢复状态机。新增本地后端时保留此 peer 路径，明确本地/外部选择和切换规则即可；不必让外部 peer 获得设备写权限。[peer 契约](../../crates/ai/intent-contract/src/peer.rs#L1-L9) · [v2 校验](../../crates/ai/intent-contract/src/peer.rs#L386-L405) · [超时降级](../../crates/agents/control-services/src/remote_brain.rs#L491-L507) · [外部计算无 writer](../../crates/ai/planner-peer/src/lib.rs#L16-L18)
+
+## 接线缺口与证据边界
+
+- `ModelHarness` 在库却没有生产消费者；`deploy()` 把字面 `package://model` 传给引擎，而不是把注册的模型字节/磁盘句柄接到 target 加载器。[未接线声明](../../crates/ai/model-harness/src/lib.rs#L24-L29) · [部署代码](../../crates/ai/model-harness/src/harness.rs#L161-L179)
+- `model-ota::HotLoader` 切换的是 `Arc<ModelInstance>` 中的 `Vec<u8>`；这证明字节层有 `load_new/swap/rollback` API，**不证明推理引擎已完成加载、在途请求排空和运行时切换**。该 crate 本身也被登记为未接线。[热加载结构](../../crates/agents/model-ota/src/model_loader.rs#L21-L42) · [切换代码](../../crates/agents/model-ota/src/model_loader.rs#L55-L87) · [冻结状态](../../product/policy/frozen-crates.json#L43-L45)
+- 2026-08 的本地推理 spike 对当时配置作 NO-GO，并指出 llama.cpp 的 `pthread`、C++ runtime、`mmap` 等移植面；其 QEMU RAM 128 MiB 数字已与当前 `-m 1G` 配置不一致，不能直接复用内存判决。现 QEMU 镜像 MODELS 分区为 16 MiB，`svc-ai-worker` 使用的 `heap-large` 实际为 1 MiB；目标板 RAM/存储仍缺实测。需要针对选定模型和当前 target 装配重测，不把 host 结果当设备端结果。[旧 spike](../../docs/ai/local-inference-spike.md#L23-L64) · [当前 QEMU RAM](../../xtask/src/qemu_harness.rs#L1054-L1058) · [MODELS 分区](../../product/image-layouts/qemu-v1.json#L17-L19) · [AI 服务堆 feature](../../crates/agents/control-services/Cargo.toml#L15-L17) · [堆常量](../../crates/drivers/drv-svc/src/allocator.rs#L16-L42) · [板卡缺项](../../product/skus/phytium-d2000.json#L32-L45)
